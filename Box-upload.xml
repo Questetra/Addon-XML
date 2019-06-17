@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+
+<label>Upload to Box</label>
+<label locale="ja">Box アップロード</label>
+<last-modified>2019-06-14</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>1</engine-type>
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2">
+    <label>A: Set OAuth2 Setting Name</label>
+    <label locale="ja">A: OAuth2 設定名</label>
+  </config>
+  <config name="conf_DataIdB" el-enabled="true">
+    <label>B: Specified Folder to be uploaded files by ID(Empty for Root)</label>
+    <label locale="ja">B: ファイルをアップロードするフォルダの ID（空白の場合はルートフォルダ）</label>
+  </config>
+  <config name="conf_DataIdC" required="true" form-type="SELECT" select-data-type="FILE">
+    <label>C: File type data item whose </label>
+    <label locale="ja">C: Box にファイルをアップロードするファイル型データ項目</label>
+  </config>
+  <config name="conf_DataIdD" form-type="SELECT" select-data-type="STRING">
+    <label>D: String type data item that will save uploaded file ids</label>
+    <label locale="ja">D: ファイル ID を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_DataIdE" form-type="SELECT" select-data-type="STRING">
+    <label>E: String type data item that will save uploaded file urls</label>
+    <label locale="ja">E: ファイル URL を保存する文字型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/addons/services/box-upload/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/services/box-upload/</help-page-url>
+
+
+<script><![CDATA[
+// Upload to box via boxAPI (ver. 20161018)
+// (c) 2016, Questetra, Inc. (the MIT License)
+
+// OAuth2 config
+// Authorization Endpoint URL: https://app.box.com/api/oauth2/authorize
+// Token Endpoint URL: https://app.box.com/api/oauth2/token
+// Scope:
+// Consumer Key: (Get by box Application on box Developers)
+// Consumer Secret: (Get by box Application on box Developers)
+
+main();
+function main(){
+  //// == 工程コンフィグの参照 / Config Retrieving ==
+  const oauth2 = configs.get( "conf_OAuth2" );
+  const dataIdC = configs.get( "conf_DataIdC" ); // (returns Number)
+  const dataIdD = configs.get( "conf_DataIdD" );
+  const dataIdE = configs.get( "conf_DataIdE" );
+  //// == ワークフローデータの参照 / Data Retrieving ==
+  let folderId = configs.get( "conf_DataIdB");
+  if(folderId == "" || folderId == null){
+    folderId = "0";
+  }
+  const files = engine.findDataByNumber( dataIdC );
+  //// == 演算 / Calculating ==
+  //let accessLog = "";
+  let responseJson = "";
+  let uploadedFileId = "";
+  let uploadedFileUrl = "";
+  const token = httpClient.getOAuth2Token( oauth2 );
+  if (files !== null) {
+    for (let i=0; i< files.size(); i++) {
+      const file = files.get(i);
+      let attributes = {
+        //parent : '0'
+        parent : {id : folderId}
+      };
+      attributes["name"] = String(file.getName());
+      let response = httpClient.begin()
+        .bearer(token)
+        .multipart('attributes', JSON.stringify(attributes))
+        .multipart('file', file)
+        .post('https://upload.box.com/api/2.0/files/content');
+      responseJson += response.getResponseAsString() + "\n";
+      //when error thrown
+      if (response.getStatusCode() !== 201) {
+        if(dataIdD !== "" || dataIdD !==  null){
+          engine.setDataByNumber(dataIdD,uploadedFileId);
+        }
+        if(dataIdE !== "" || dataIdE !==  null){
+          engine.setDataByNumber(dataIdE,uploadedFileUrl);
+        }
+        if (response.getStatusCode() === 409) {
+          throw "failed to upload: " + file.getName() + "\n status:" + response.getStatusCode() +"\n" + responseJson + "\n Same name file already exists.";
+        }else{
+          throw "failed to upload: " + file.getName() + "\n status:" + response.getStatusCode() + "\n" + responseJson;
+        }
+      }
+      engine.log("---POST request--- " + response.getStatusCode() + "\n" + file.getName() + "\n" + responseJson + "\n");
+      let json = JSON.parse(response.getResponseAsString());
+      if(uploadedFileId !== ""){
+        uploadedFileId += "\n";
+      }
+      if(uploadedFileUrl !== ""){
+        uploadedFileUrl += "\n";
+      }
+      uploadedFileId += json.entries[0].id;
+      uploadedFileUrl +=　"https://app.box.com/file/" + json.entries[0].id;
+      responseJson = "";
+    }
+  }
+
+  // for Debug
+  //accessLog += responseJson + "\n";
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  if(dataIdD !== "" && dataIdD !==  null){
+    const idDataDef = engine.findDataDefinitionByNumber(dataIdD);
+    //Multiple Judge
+    if(idDataDef.matchDataType("STRING_TEXTFIELD") && files.size() > 1){
+      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
+    }
+    engine.setDataByNumber(dataIdD,uploadedFileId);
+  }
+  if(dataIdE !== "" && dataIdE !==  null){
+    const urlDataDef = engine.findDataDefinitionByNumber(dataIdE);
+    //Multiple Judge
+    if(urlDataDef.matchDataType("STRING_TEXTFIELD") && files.size() > 1){
+      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
+    }
+    engine.setDataByNumber(dataIdE,uploadedFileUrl);
+  }
+}
+  ]]>
+</script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABoElEQVRYR+2WwVXCQBCG9w83TpZACVCByQ0mvKdUIFSgViBWoFYgViAHMnAzHUAJlJBTbuz4lmd8ATewiTz0kDnlsDv/t7PzTxZKKUVEYwAP5vtcISKPzDxGDfAvKtDv932ttX+u+zc6nufFs9ks3vZA1fB9/8LsjeM4qZqjMoARbzabH0aYmTtnBwjDcKKUujHCIjJh5lEViEoVCMPwTin1tCd4H0XRc1mI0gC9Xu/a87x3m5DWejCfz6dlIEoBEFEbgLn3bfNZIhGRgJlXrhDOAF9NtwTQOpRcRNZpmnZcneEMQEQxgEvHk8VRFAUua50A8h3vkrSMM44CENEQwKurcH6diIyY2di1MA4CmBEtItthUzUABGbkFu0vBOh2u61Go7E80PGuTMlms+ksFou1bYMVIBuzANquKkecsUrTNLA5wwpARFMAV6cQz3KIyJSZB/s5fwAQ0TOA21OK5yBemNmM8e/YAfhNx7sC7ztjB8B0fVEiERlmfz8HsTcAVvtprZP8qD46BzKxMi/n7MXrAKpqgLoCdQXqCvx5BT4B10IBMHMpvgcAAAAASUVORK5CYII=
+</icon>
+
+</service-task-definition>
