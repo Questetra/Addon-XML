@@ -1,82 +1,79 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-06-21</last-modified>
+<last-modified>2019-07-09</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
-<label>Box: Create Folder</label>
-<label locale="ja">Box: 公開 ダウンロード URL 作成</label>
-<summary>Create a new folder in the specified folder on Box</summary>
+<label>Box: Create URL to Download (Folder)</label>
+<label locale="ja">Box: 公開 ダウンロード URL 作成(フォルダ)</label>
+<summary>Create a URL to download the specified folder on Box</summary>
 <summary locale="ja">Box の指定フォルダ内に新しいフォルダを作成します</summary>
 <help-page-url>https://support.questetra.com/addons/box-foldercreate/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-foldercreate/</help-page-url>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2">
+  <config name="OAuth2" required="true" form-type="OAUTH2">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="ParentFolderId" el-enabled="true">
-    <label>C2: Folder ID(When empty,create in Root Folder)</label>
-    <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合ルートフォルダに作成されます)</label>
+  <config name="FolderId" required="true" el-enabled="true">
+    <label>C2: Folder ID</label>
+    <label locale="ja">C2: 公開するフォルダ ID</label>
   </config>
-  <config name="FolderName" required="true" el-enabled="true">
-    <label>C3: Folder Name to create</label>
-    <label locale="ja">C3: 作成するフォルダの名称</label>
+  <config name="unsharedAt" form-type="SELECT" select-data-type="DATETIME">
+    <label>C3: Data Item with Download Limit Date-time</label>
+    <label locale="ja">C3: ダウンロード期限が格納されている日時型データ項目</label>
   </config>
-  <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C4: Data Item that will save Folder ID</label>
-    <label locale="ja">C4: 作成したフォルダの ID を保存するデータ項目</label>
+  <config name="DownloadPass" form-type="SELECT" select-data-type="STRING">
+    <label>C4: Data Item with Download Password</label>
+    <label locale="ja">C4: ダウンロードパスワードが格納されている文字型データ項目</label>
   </config>
-  <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
+  <config name="DownloadUrlItem" form-type="SELECT" select-data-type="STRING">
     <label>C5: Data Item that will save web view url of Folder</label>
-    <label locale="ja">C5: 作成したフォルダの表示 URL を保存するデータ項目</label>
+    <label locale="ja">C5: 作成した URL を保存するデータ項目</label>
   </config>
 </configs>
 
 <script><![CDATA[
 main();
 function main(){
-  let parentFolderId = configs.get("ParentFolderId");
-  const folderName = configs.get("FolderName");
-  if (folderName == "" ||folderName == null) {
-    throw "Folder Name is blank";
-  }else if(folderName.length>255){
-    throw"Folder Name shoule be less than 256 characters";
-  }else if(folderName.search(/\/\\/)|| folderName.slice(-1) == " " || folderName == "." || folderName == ".."){
-    throw "Invalid Folder Name";
+  const folderId = configs.get("FolderId");
+  if (folderId == "" ||folderId == null) {
+    throw "Folder ID is blank";
+  }
+  const dateItem = configs.get("unsharedAt");
+  const passwordItem = configs.get("DownloadPass");
+  let unsharedDate = null;
+  if (dateItem !== "" && dateItem !== null){
+    unsharedDate = engine.findDataByNumber(dateItem);
+  }
+  let password = "";
+  if (passwordItem !== "" && passwordItem !== null){
+    password = engine.findDataByNumber(passwordItem);
   }
   // get OAuth token
   let token;
   try{
-    token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
+    token = httpClient.getOAuth2Token(configs.get("OAuth2"));
   }catch(e){
     throw "Error has occurred with OAuth2 Setting named '" + OAuthName + "'.\n" + e;
   }
-  const json = createFolder(token, parentFolderId, folderName);
-  const IdData = configs.get("FolderIdItem");
-  const UrlData = configs.get("WebViewUrlItem");
-  if (IdData !== null || IdData !== "") {
-      engine.setDataByNumber(IdData, json["id"]);
-  }
-  if (UrlData !== null || UrlData !== "") {
-      engine.setDataByNumber(UrlData, "https://app.box.com/folder/" + json["id"]);
-  }
-}
-  //create folder on google drive
-function createFolder(token, parentFolderId, name) {
-  let jsonRes = {};
-  //mime type of google drive folder
-  if (parentFolderId !== "" && parentFolderId !== null){
-    jsonRes["parent"] = {"id": parentFolderId + '' };
-  }else{
-    jsonRes["parent"]= {"id": 0 + '' }
-  }
-  jsonRes["name"] = name + '';
   
-  const url = 'https://api.box.com/2.0/folders';
+  let jsonRes = {};
+
+  jsonRes["shared_link"] = {"access": "open"};
+  if(unsharedDate !== null){
+    jsonRes["shared_link"]["unshared_at"] = unsharedDate.toString();
+  }
+  if(password !== "" && password !== null){
+    jsonRes["shared_link"]["password"] = password;
+  }
+  
+  jsonRes["shared_link"]["permissions"] = {"can_download": true };
+  
+  const url = "https://api.box.com/2.0/folders/" + folderId + "?fields=shared_link";
   const response = httpClient.begin()
     .bearer(token)
     .body(JSON.stringify(jsonRes), "application/json; charset=UTF-8")
-    .post(url);
+    .put(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
   if (status >= 300) {
@@ -86,10 +83,14 @@ function createFolder(token, parentFolderId, name) {
   engine.log("status:" + status);
   engine.log(responseTxt);
   
+  
   jsonRes = JSON.parse(responseTxt);
-  return jsonRes;
-}
 
+  const UrlData = configs.get("DownloadUrlItem");
+  if (UrlData !== null || UrlData !== "") {
+      engine.setDataByNumber(UrlData,jsonRes["shared_link"]["download_url"] );
+  }
+}
 ]]></script>
 
 <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
