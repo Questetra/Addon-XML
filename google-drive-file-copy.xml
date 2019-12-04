@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>1</engine-type>
 <label>Google Drive: Copy File</label>
 <label locale="ja">Google Drive: ファイルコピー</label>
 
-<last-modified>2019-11-27</last-modified>
+<last-modified>2019-12-04</last-modified>
 
-<summary>Creates a copy of a file into the Folder (supports Team Drives)</summary>
-<summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します (チームドライブ対応)</summary>
+<summary>Creates a copy of a file into the Folder</summary>
+<summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します</summary>
 
 <help-page-url>https://support.questetra.com/addons/googledrive-filescopy/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googledrive-filescopy/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2">
-    <label>C1: OAuth2 Config Name</label>
-    <label locale="ja">C1: OAuth2設定名</label>
+  <config name="UserID" required="true" form-type="QUSER">
+    <label>C1: User who connects to Google Drive</label>
+    <label locale="ja">C1: Google ドライブ に接続するユーザ</label>
   </config>
   <config name="conf_DataIdB" required="true" form-type="TEXTFIELD" el-enabled="true">
     <label>C2: Source File ID</label>
@@ -24,105 +25,103 @@
     <label>C3: Folder ID to store</label>
     <label locale="ja">C3: 保存先フォルダの ID</label>
   </config>
+  <config name="conf_DataIdN" form-type="TEXTFIELD" el-enabled="true">
+    <label>C4: New File Name</label>
+    <label locale="ja">C4: 新しいファイルのファイル名</label>
+  </config>
   <config name="conf_DataIdE" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C4: STRING DATA for New File ID </label>
     <label locale="ja">C4: 新しいファイルの ID を保存するデータ項目</label>
   </config>
   <config name="conf_DataIdF" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: STRING DATA for New File URL </label>
-    <label locale="ja">C5: 新しいファイルの URL を保存するデータ項目</label>
+    <label>C5: STRING DATA for New File Viewing URL </label>
+    <label locale="ja">C5: 新しいファイルの表示 URL を保存するデータ項目</label>
   </config>
 </configs>
 
 
 <script><![CDATA[
-// Google Drive Files Copy (ver. 20171126)
-// (c) 2017, Questetra, Inc. (the MIT License)
-// by Google Drive APIs Files get
-// https://developers.google.com/drive/v3/reference/files/copy
+main();
+function main(){
+  //// == Config Retrieving / 工程コンフィグの参照 ==
+  const oauth2 = configs.get( "conf_OAuth2" ) + "";
+  const fileId = configs.get( "conf_DataIdB" ) + "";
+  const folderId = configs.get( "conf_DataIdC" ) + "";
+  const dataIdE = configs.get( "conf_DataIdE" ) + "";
+  const dataIdF = configs.get( "conf_DataIdF" ) + "";
+  const newFileName = configs.get( "conf_DataIdN" ) + "";
 
-// OAuth2 config sample at [OAuth 2.0 Setting]
-// - Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
-// - Token Endpoint URL: https://accounts.google.com/o/oauth2/token
-// - Scope: "https://www.googleapis.com/auth/drive" or "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-// - Consumer Key: (Get by Google Developers Console)
-// - Consumer Secret: (Get by Google Developers Console)
+  if(fileId === "" || fileId === null){
+    throw "No Source File ID";
+  }
 
+  if(folderId === "" || folderId === null){
+    throw "No Folder ID to store";
+  }
 
-//// == Config Retrieving / 工程コンフィグの参照 ==
-var oauth2 = configs.get( "conf_OAuth2" ) + "";
-var fileId = configs.get( "conf_DataIdB" ) + "";
-var folderId = configs.get( "conf_DataIdC" ) + "";
-var dataIdE = configs.get( "conf_DataIdE" ) + "";
-var dataIdF = configs.get( "conf_DataIdF" ) + "";
-// convert 'java.lang.String' to 'javascript string'
+  //// == Calculating / 演算 ==
+  const userId = configs.get("UserID");
+  const quser = quserDao.findById(parseInt(userId));
+  if (quser == null) {
+    throw "User not found:" + userId;
+  }
+  engine.log("User Name:" + quser.getName());
+  // get OAuth token
+  let token;
+  try{
+    token = httpClient.getGoogleOAuth2Token(quser, "Drive");
+  }catch(e){
+    throw "This User has not connected with Google Drive."
+  }
+  
 
-if(fileId === "" || fileId === null){
-  throw "No Source File ID";
-}
+  // preparing for API Request
+  let apiRequest = httpClient.begin(); // HttpRequestWrapper
+  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
 
-if(folderId === "" || folderId === null){
-  throw "No Folder ID to store";
-}
+  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
 
-//// == Calculating / 演算 ==
-//Get File Name
-var token  = httpClient.getOAuth2Token( oauth2 );
-var urlOne = "https://www.googleapis.com/drive/v3/files/" + fileId;
-const RequestOne = httpClient.begin()
-    .bearer(token)
-    .queryParam("supportsTeamDrives","true")
-    .get(urlOne);
+  apiRequest = apiRequest.bearer( token );
 
-
-var tempJson = JSON.parse(RequestOne.getResponseAsString());
-var newFileName = tempJson["name"];
-// preparing for API Request
-var apiRequest = httpClient.begin(); // HttpRequestWrapper
-// com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-
-// Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-
-apiRequest = apiRequest.bearer( token );
-
-// Request PATH (https://example.com/abc/def/)
-var apiUri = "https://www.googleapis.com/drive/v3/files/";
+  // Request PATH (https://example.com/abc/def/)
+  let apiUri = "https://www.googleapis.com/drive/v3/files/";
     apiUri += fileId;
     apiUri += "/copy";
 
-// Request QUERY (?a=b)
-apiRequest = apiRequest.queryParam( "supportsTeamDrives", true );
-apiRequest = apiRequest.queryParam( "fields", "id,webViewLink" );
-// Request BODY (JSON, Form Parameters, etc)
-var requestObj = {};
-  requestObj.parents = [];
-  requestObj.parents[0] = folderId;
-  if ( newFileName !== "" ){ 
+  // Request QUERY (?a=b)
+  apiRequest = apiRequest.queryParam( "supportsTeamDrives", true );
+  apiRequest = apiRequest.queryParam( "fields", "id,webViewLink" );
+  // Request BODY (JSON, Form Parameters, etc)
+  let requestObj = {};
+    requestObj.parents = [];
+    requestObj.parents[0] = folderId;
+  if ( newFileName !== "" && newFileName !== null ){ 
     requestObj.name = newFileName;
   }
-apiRequest = apiRequest.body( JSON.stringify( requestObj ), "application/json" );
+  apiRequest = apiRequest.body( JSON.stringify( requestObj ), "application/json" );
 
-// Access to the API (POST, GET, PUT, etc)
-var response = apiRequest.post( apiUri ); // HttpResponseWrapper
-var httpStatus = response.getStatusCode() + "";
-var accessLog = "---POST request--- " + httpStatus + "\n";
-accessLog += response.getResponseAsString() + "\n";
-if (httpStatus >= 300) {
-  const error = "Failed to copy \n status:" + httpStatus + "\n" + response.getResponseAsString();
-  throw error;
+  // Access to the API (POST, GET, PUT, etc)
+  let response = apiRequest.post( apiUri ); // HttpResponseWrapper
+  const httpStatus = response.getStatusCode() + "";
+  let accessLog = "---POST request--- " + httpStatus + "\n";
+  accessLog += response.getResponseAsString() + "\n";
+  if (httpStatus >= 300) {
+    const error = "Failed to copy \n status:" + httpStatus + "\n" + response.getResponseAsString();
+    throw error;
+  }
+  const responseObj = JSON.parse( response.getResponseAsString() );
+
+  // Retrieve Properties from Response-JSON
+  const newFileId = responseObj.id;
+  const newFileUrl = responseObj.webViewLink;
+  // Error Handling
+  // (no set)
+
+  //// == Data Updating / ワークフローデータへの代入 ==
+  if ( dataIdE !== "" ){ engine.setDataByNumber( dataIdE, newFileId ); }
+  if ( dataIdF !== "" ){ engine.setDataByNumber( dataIdF, newFileUrl ); }
+  engine.log(accessLog);
 }
-var responseObj = JSON.parse( response.getResponseAsString() );
-
-// Retrieve Properties from Response-JSON
-var newFileId = responseObj.id;
-var newFileUrl = responseObj.webViewLink;
-// Error Handling
-// (no set)
-
-//// == Data Updating / ワークフローデータへの代入 ==
-if ( dataIdE !== "" ){ engine.setDataByNumber( dataIdE, newFileId ); }
-if ( dataIdF !== "" ){ engine.setDataByNumber( dataIdF, newFileUrl ); }
-engine.log(accessLog);
 ]]></script>
 
 
