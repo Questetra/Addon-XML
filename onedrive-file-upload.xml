@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+
+<label>OneDrive: Upload File</label>
+<label locale="ja">OneDrive: ファイルアップロード</label>
+<last-modified>2020-01-17</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>1</engine-type>
+<summary>Upload files to the specified folder on One Drive.</summary>
+<summary locale="ja">OneDrive の指定フォルダにファイルをアップロードします。</summary>
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+    <label>C1: OAuth2 Setting Name</label>
+    <label locale="ja">C1: OAuth2 設定名</label>
+  </config>
+  <config name="uploadedFile" required="true" form-type="SELECT" select-data-type="FILE">
+    <label>C2: File type data item whose attached files will be uploaded</label>
+    <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
+  </config>
+  <config name="uploadedFolderId" el-enabled="true">
+    <label>C3: Folder ID that files will be uploaded (Root folder if blank)</label>
+    <label locale="ja">C3: ファイルをアップロードするフォルダの ID (指定がない場合は、ルートフォルダ)</label>
+  </config>
+  <config name="fileId" form-type="SELECT" select-data-type="STRING">
+    <label>C4: String type data item that will save uploaded file ids</label>
+    <label locale="ja">C4: ファイル ID を保存する文字型データ項目</label>
+  </config>
+  <config name="fileUrl" form-type="SELECT" select-data-type="STRING">
+    <label>C5: String type data item that will save uploaded file urls</label>
+    <label locale="ja">C5: ファイル URL を保存する文字型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/addons/services/box-upload/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/services/box-upload/</help-page-url>
+
+
+<script><![CDATA[
+// Upload to box via boxAPI (ver. 20161018)
+// (c) 2016, Questetra, Inc. (the MIT License)
+
+// OAuth2 config
+// Authorization Endpoint URL: https://app.box.com/api/oauth2/authorize
+// Token Endpoint URL: https://app.box.com/api/oauth2/token
+// Scope:
+// Consumer Key: (Get by box Application on box Developers)
+// Consumer Secret: (Get by box Application on box Developers)
+
+main();
+function main(){
+  //// == 工程コンフィグの参照 / Config Retrieving ==
+  const oauth2 = configs.get( "conf_OAuth2" );
+  const fileDataNumber = configs.get( "uploadedFile" ); // (returns Number)
+  const idDataNumber = configs.get( "fileId" );
+  const urlDataNumber = configs.get( "fileUrl" );
+  //// == ワークフローデータの参照 / Data Retrieving ==
+  let folderId = configs.get( "uploadedFolderId");
+  if(folderId == "" || folderId == null){
+    folderId = "0";
+  }
+  const files = engine.findDataByNumber( fileDataNumber );
+  //// == 演算 / Calculating ==
+  //let accessLog = "";
+  let responseJson = "";
+  let uploadedFileId = "";
+  let uploadedFileUrl = "";
+  const token = httpClient.getOAuth2Token( oauth2 );
+  if (files !== null) {
+    for (let i=0; i< files.size(); i++) {
+      const file = files.get(i);
+      let attributes = {
+        //parent : '0'
+        parent : {id : folderId}
+      };
+      attributes["name"] = String(file.getName());
+      let response = httpClient.begin()
+        .bearer(token)
+        .multipart('attributes', JSON.stringify(attributes))
+        .multipart('file', file)
+        .post('https://upload.box.com/api/2.0/files/content');
+      responseJson += response.getResponseAsString() + "\n";
+      //when error thrown
+      if (response.getStatusCode() !== 201) {
+        if (response.getStatusCode() === 409) {
+          throw "failed to upload: " + file.getName() + "\n status:" + response.getStatusCode() +"\n" + responseJson + "\n Same name file already exists.";
+        }else{
+          throw "failed to upload: " + file.getName() + "\n status:" + response.getStatusCode() + "\n" + responseJson;
+        }
+      }
+      engine.log("---POST request--- " + response.getStatusCode() + "\n" + file.getName() + "\n" + responseJson + "\n");
+      let json = JSON.parse(response.getResponseAsString());
+      if(uploadedFileId !== ""){
+        uploadedFileId += "\n";
+      }
+      if(uploadedFileUrl !== ""){
+        uploadedFileUrl += "\n";
+      }
+      uploadedFileId += json.entries[0].id;
+      uploadedFileUrl +=　"https://app.box.com/file/" + json.entries[0].id;
+      responseJson = "";
+    }
+  }
+
+  // for Debug
+  //accessLog += responseJson + "\n";
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  if(idDataNumber !== "" && idDataNumber !==  null){
+    const idDataDef = engine.findDataDefinitionByNumber(idDataNumber);
+    //Multiple Judge
+    if(idDataDef.matchDataType("STRING_TEXTFIELD") && files.size() > 1){
+      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
+    }
+    engine.setDataByNumber(idDataNumber,uploadedFileId);
+  }
+  if(urlDataNumber !== "" && urlDataNumber !==  null){
+    const urlDataDef = engine.findDataDefinitionByNumber(urlDataNumber);
+    //Multiple Judge
+    if(urlDataDef.matchDataType("STRING_TEXTFIELD") && files.size() > 1){
+      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
+    }
+    engine.setDataByNumber(urlDataNumber,uploadedFileUrl);
+  }
+}
+  ]]>
+</script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
+2qSd65x11aC0YgJWZUwEWZ0D/SJaHYKKmgykbL70Bf2k4IYwZOKWOhFRMM9QZxHUjSEo+7AOlA1E
+7WSRThzdqq1tWWxjm7Zrk1y5N+SlydM2XdvN50sebs5z7u+e8z/n3iu4xo9Y1Pz+3x6F5BagAYQb
+oX4BSTfIUaAbIboIeY8W63dhAH+vGyZaQLYihLsox1LBiCA4OjA9CmzOZ34Af9gP8kDRE+dPo0GM
+AObtR+YimBvAfzaIEC1FrXghIymDmL42KzNrgMBZE8RzC/ld1P8SE9MbyP+mEGA5V16Ykg5MX2vu
+8GwAlXNBaFErW6yxFE25msgCaLXHeq9YcMWCaGE6PenqyAEI70bwRrF+lmQn2YPp3a18ZAECYVWv
+rrTj0I4bqHLaeOTgn0uay/JjFQXTV5kFUB1OyK9zjYeC9ThKBeW7epYfQHfPlBZSEbBQ/nBHCmDN
+zpUCkLoiUgCBcBegenzmUQDO1QaHT0dpqC3T4yd7YrzyxZB+33V/Jds3VbBmtUH/SJzmQwN07ryR
+7r4p2jtTNh88uwHPdaU8uP+iVRRPEvI2pgEuADflA6wrtxV8+GPvJBcuzfDY3RXYjBzgfxNU2A0M
+AW2fD1Jht/FmUzWx6STuFyyiqDYw03tnGkDmz6QioADUZO98F8HtMHh521o9lpQwNSMxvx/l9PkJ
+XtpWxSaPnZFYArfDRmQ8oeFcDhvvHv+Hts5Bax2FvGJeAFUFW97q5Yc/JrWDVx9ay74n1uv3Iz+P
+0fRetkIiB+uxlxj80jfFvbfatc2Jnhhb91mGPwWUA1CQgoH9dawrX0VN+zmGxxLa/qnNLj5rrtHv
+ShtPf9ifWdnfB+p02X7z6zhNd5Xr8U9PRXnmo6zN7DDIM4R8DXOK8NRrHu65xY7K+QNvX2SDaxXH
+Wmqpu75U+1FhVsL78qcxDjfX8ORml05BeZmN6YTUDUalQenh/RMjC4jQogwb6x189eJGKp02YpeT
+2AxBWYmgLzLDwGhcw8UTaJG57AaT0xIlJGXTcTyi09HcWMml8QTVLecKAWRuGVo0IvXF1tuc7N1e
+rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
+24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
+vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
+l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==
+</icon>
+
+</service-task-definition>
