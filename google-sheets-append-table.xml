@@ -106,155 +106,162 @@ function main(){
     throw "No Data to add is selected.";
   }
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const myTable = engine.findDataByNumber( dataIdT );
-  // myTable: com.questetra.bpms.core.model.formdata.ListArray
-  if(myTable === null){
+  const tableData = engine.findDataByNumber( dataIdT );
+  // tableData: com.questetra.bpms.core.model.formdata.ListArray
+  if(tableData === null){
     throw "the table data is empty.";
   }
   tableData = engine.findDataDefinitionByNumber( dataIdT );
   tableDataList = tableData.getSubDataDefinitions();
   //// == 演算 / Calculating ==
   let accessLog = "";
-  let responseJson = "";
   let sheetId = -1;
   const token = httpClient.getOAuth2Token( oauth2 );
   
   try{
     // check spreadsheet
-    let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
-    uri += spreadsheetId;
-    uri += "?includeGridData=false";
-    const response = httpClient.begin()
-      .bearer(token)
-      .get( uri ); 
-    accessLog += "---GET request--- " + response.getStatusCode() + "\n";
-    responseJson = response.getResponseAsString();
-    if( response.getStatusCode() == 200 ){
-      let jsonObj = JSON.parse( responseJson );
-      accessLog += " SPREADSHEET TITLE: \"" + jsonObj.properties.title + "\" has";
-      accessLog += jsonObj.sheets.length + " sheets\n";
-      for( var i = 0; i < jsonObj.sheets.length; i++ ){
-        if( jsonObj.sheets[i].properties.title == sheetName ){
-          sheetId = parseInt( jsonObj.sheets[i].properties.sheetId, 10 );
-          accessLog += " SHEET TITLE: \"" + sheetName + "\" exists (id: " + sheetId + ")\n";
-        }else{
-          accessLog += " SHEET TITLE: \"" + sheetName + "\" does not exist\n";
-        }
-      }
-    }else{
-      accessLog += responseJson;
-      throw "Can't get sheet information";
-    }
-
+    checkSheet(token,spreadsheetId,accessLog,sheetName,sheetId);
     // add sheet (not exsist)
     if( sheetId == -1 ){  
-      let uri2 = "https://sheets.googleapis.com/v4/spreadsheets/";
-      uri2 += spreadsheetId;
-      uri2 += ":batchUpdate";
-
-      sheetId = processInstance.getProcessInstanceId() - 0;
-      let myObj2 = {};
-      myObj2.requests = []; // Array
-      myObj2.requests[0] = {};
-      myObj2.requests[0].addSheet = {};
-      myObj2.requests[0].addSheet.properties = {};
-      myObj2.requests[0].addSheet.properties.sheetId = sheetId;
-      myObj2.requests[0].addSheet.properties.title = sheetName;
-
-      const response2 = httpClient.begin()
-        .bearer(token)
-        .body( JSON.stringify( myObj2 ), "application/json" )
-        .post( uri2 ); 
-      accessLog += "---POST request--- " + response2.getStatusCode() + "\n";
-      if( response2.getStatusCode() == 200 ){
-        accessLog += " SHEET TITLE: \"" + sheetName + "\" created (id: " + sheetId + ")\n";
-      }
+      addSheet(token,spreadsheetId,accessLog,sheetName,sheetId);
     }
 
     // append records
     if( sheetId >= 0 ){
-      if( myTable !== null){
-        var numOfRows = myTable.size() - 0; // 行（Tableの高さ）
-
-        let myObj3 = {};
-        myObj3.requests = []; // Array
-        myObj3.requests[0] = {};
-        myObj3.requests[0].appendCells = {};
-        myObj3.requests[0].appendCells.rows = []; // Array
-        myObj3.requests[0].appendCells.sheetId = sheetId;
-        myObj3.requests[0].appendCells.fields = "*";
-        
-        let dataNumberList = [];
-        for(let i = 0;i < tableDataList.length; i++){
-          let temp = tableDataList[i].getNumber() + "";
-          dataNumberList.push(temp);
-        }
-        let pointedCol = 0;
-        for( let i = 0; i < numOfRows; i++ ){
-          myObj3.requests[0].appendCells.rows[i] = {};
-          myObj3.requests[0].appendCells.rows[i].values = []; // Array
-          for( var j = 0; j < 10; j++ ){
-            if(dataidArray[j] !== "" && dataidArray[j] !== null ){
-              pointedCol = dataNumberList.indexOf(dataidArray[j]);
-              let cellValue = myTable.get(i, pointedCol );
-              if(cellValue.length > 50000){
-                throw "Can't set text over 50,000 character.";
-              }
-              if(tableDataList[pointedCol].matchDataType("DECIMAL")){
-                myObj3.requests[0].appendCells.rows[i].values[j]
-              = {"userEnteredValue": {"numberValue": cellValue }}; 
-              }else{
-                myObj3.requests[0].appendCells.rows[i].values[j]
-              = {"userEnteredValue": {"stringValue": cellValue }};
-              }
-            }else{
-              myObj3.requests[0].appendCells.rows[i].values[j]
-              = {"userEnteredValue": {"stringValue": "" }};
-            }
-          }
-          let count = 0;
-          let flag = 1;
-          for(let k = 9; k > -1; k--){
-            if((myObj3.requests[0].appendCells.rows[i].values[k].userEnteredValue.stringValue == null || 
-            myObj3.requests[0].appendCells.rows[i].values[k].userEnteredValue.stringValue == "") && 
-            (myObj3.requests[0].appendCells.rows[i].values[k].userEnteredValue.numberValue == null ||
-            myObj3.requests[0].appendCells.rows[i].values[k].userEnteredValue.numberValue == "")){
-              count++;
-              if(flag){
-                myObj3.requests[0].appendCells.rows[i].values[k] = null;
-              }
-            }else{
-              flag = 0;
-            }
-          }
-          if(count == 10){
-            throw "All selected data are empty.";
-          }
-        }
-
-        let uri3 = "https://sheets.googleapis.com/v4/spreadsheets/";
-        uri3 += spreadsheetId;
-        uri3 += ":batchUpdate";
-
-        let response3 = httpClient.begin()
-          .bearer(token)
-          .body( JSON.stringify( myObj3 ), "application/json" )
-          .post( uri3 ); 
-        accessLog += "---POST request--- " + response3.getStatusCode() + "\n";
-        if( response3.getStatusCode() == 200 ){
-          accessLog += "ADDED DATA";
-        }else if( response3.getStatusCode() >= 300 ){
-          throw response3.getResponseAsString();
-        }
+      if( tableData !== null){
+        let Obj = {};
+        makeAppendData(tableData,sheetId,tableDataList,Obj);
+        sendAppendData(token,spreadsheetId,accessLog,Obj);
       }
     }
   }catch(e){
     accessLog = e + accessLog;
     throw accessLog;
  }
-
   //// == ワークフローデータへの代入 / Data Updating ==
   engine.log(accessLog );
+}
+
+function checkSheet(token,spreadsheetId,accessLog,sheetName,sheetId){
+  let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
+    uri += spreadsheetId;
+    uri += "?includeGridData=false";
+  const response = httpClient.begin()
+    .bearer(token)
+    .get( uri ); 
+  accessLog += "---GET request--- " + response.getStatusCode() + "\n";
+  let responseJson = response.getResponseAsString();
+  if( response.getStatusCode() == 200 ){
+    let jsonObj = JSON.parse( responseJson );
+    accessLog += " SPREADSHEET TITLE: \"" + jsonObj.properties.title + "\" has";
+    accessLog += jsonObj.sheets.length + " sheets\n";
+    for( var i = 0; i < jsonObj.sheets.length; i++ ){
+      if( jsonObj.sheets[i].properties.title == sheetName ){
+        sheetId = parseInt( jsonObj.sheets[i].properties.sheetId, 10 );
+        accessLog += " SHEET TITLE: \"" + sheetName + "\" exists (id: " + sheetId + ")\n";
+      }else{
+        accessLog += " SHEET TITLE: \"" + sheetName + "\" does not exist\n";
+      }
+    }
+  }else{
+    accessLog += responseJson;
+    throw "Can't get sheet information";
+  }
+}
+function addSheet(token,spreadsheetId,sheetId,sheetName,accessLog){
+  let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
+    uri += spreadsheetId;
+    uri += ":batchUpdate";
+
+  sheetId = processInstance.getProcessInstanceId() - 0;
+  let Obj = {};
+  Obj.requests = []; // Array
+  Obj.requests[0] = {};
+  Obj.requests[0].addSheet = {};
+  Obj.requests[0].addSheet.properties = {};
+  Obj.requests[0].addSheet.properties.sheetId = sheetId;
+  Obj.requests[0].addSheet.properties.title = sheetName;
+
+  const response = httpClient.begin()
+    .bearer(token)
+    .body( JSON.stringify( Obj ), "application/json" )
+    .post( uri ); 
+  accessLog += "---POST request--- " + response.getStatusCode() + "\n";
+  if( response.getStatusCode() == 200 ){
+     accessLog += " SHEET TITLE: \"" + sheetName + "\" created (id: " + sheetId + ")\n";
+  }
+}
+
+function makeAppendData(table,sheetId,tableDataList,Obj){
+  const numOfRows = table.size() - 0; // 行（Tableの高さ）
+  Obj.requests = []; // Array
+  Obj.requests[0] = {};
+  Obj.requests[0].appendCells = {};
+  Obj.requests[0].appendCells.rows = []; // Array
+  Obj.requests[0].appendCells.sheetId = sheetId;
+  Obj.requests[0].appendCells.fields = "*";
+        
+  let dataNumberList = [];
+  for(let i = 0;i < tableDataList.length; i++){
+    let temp = tableDataList[i].getNumber() + "";
+    dataNumberList.push(temp);
+  }
+  let pointedCol = 0;
+  for( let i = 0; i < numOfRows; i++ ){
+    Obj.requests[0].appendCells.rows[i] = {};
+    Obj.requests[0].appendCells.rows[i].values = []; // Array
+    for( let j = 0; j < 10; j++ ){
+      if(dataidArray[j] !== "" && dataidArray[j] !== null ){
+        pointedCol = dataNumberList.indexOf(dataidArray[j]);
+        let cellValue = table.get(i, pointedCol );
+        if(cellValue.length > 50000){
+          throw "Can't set text over 50,000 character.";
+        }
+        if(tableDataList[pointedCol].matchDataType("DECIMAL")){
+          Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"numberValue": cellValue }}; 
+        }else{
+          Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"stringValue": cellValue }};
+        }
+      }else{
+        Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"stringValue": "" }};
+      }
+    }
+    let count = 0;
+    let flag = 1;
+    for(let k = 9; k > -1; k--){
+      if((Obj.requests[0].appendCells.rows[i].values[k].userEnteredValue.stringValue == null || 
+          Obj.requests[0].appendCells.rows[i].values[k].userEnteredValue.stringValue == "") && 
+          (Obj.requests[0].appendCells.rows[i].values[k].userEnteredValue.numberValue == null ||
+          Obj.requests[0].appendCells.rows[i].values[k].userEnteredValue.numberValue == "")){
+        count++;
+        if(flag){
+          Obj.requests[0].appendCells.rows[i].values[k] = null;
+        }
+      }else{
+        flag = 0;
+      }
+    }
+    if(count == 10){
+      throw "All selected data are empty.";
+    }
+  }
+}
+
+function sendAppendData(token,spreadsheetId,accessLog,Obj){
+  let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
+      uri += spreadsheetId;
+      uri += ":batchUpdate";
+
+  let response = httpClient.begin()
+    .bearer(token)
+    .body( JSON.stringify( Obj ), "application/json" )
+    .post( uri ); 
+  accessLog += "---POST request--- " + response.getStatusCode() + "\n";
+  if( response.getStatusCode() == 200 ){
+    accessLog += "ADDED DATA";
+  }else if( response.getStatusCode() >= 300 ){
+    throw response.getResponseAsString();
+  }
 }
 ]]></script>
 
