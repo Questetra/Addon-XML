@@ -86,16 +86,8 @@ function main(){
   dataidArray[7] = configs.get( "conf_DataIdH" );
   dataidArray[8] = configs.get( "conf_DataIdI" );
   dataidArray[9] = configs.get( "conf_DataIdJ" );
-  let dataidCheck = 0;
-  for(let i = 0; i < 10; i++){
-    if(dataidArray[i] === null || dataidArray[i] === ""){
-      dataidCheck++;
-    }
-  }
-
-  if(dataidCheck === 10){
-    throw "No Data to add is selected.";
-  }
+  dataidCheck(dataidArray);
+  
   //// == ワークフローデータの参照 / Data Retrieving ==
   const tableData = engine.findDataByNumber( dataIdT );
   // tableData: com.questetra.bpms.core.model.formdata.ListArray
@@ -108,29 +100,27 @@ function main(){
   let sheetId;
   const token = httpClient.getOAuth2Token( oauth2 );
   
-  try{
     // check spreadsheet
-    sheetId = checkSheet(token,spreadsheetId,sheetName);
-    // error (not exist)
-    if( sheetId == -1 ){ 
-      throw 'Sheet "' + sheetName + '" does not exist';
-      //sheetId = addSheet(token,spreadsheetId,sheetName);
-    }
+  sheetId = checkSheet(token,spreadsheetId,sheetName);
+    
 
-    // append records
-    if( sheetId >= 0 ){
-      if( tableData !== null){
-        const Obj = makeAppendData(tableData,sheetId,tableDataList,dataidArray);
-        sendAppendData(token,spreadsheetId,Obj);
-      }
-    }
-  }catch(e){
-    throw e;
- }
+  // append records
+  const Obj = makeAppendData(tableData,sheetId,tableDataList,dataidArray);
+  sendAppendData(token,spreadsheetId,Obj);
   //// == ワークフローデータへの代入 / Data Updating ==
   //none
 }
-
+function dataidCheck(dataidArray){
+  let dataidCheck = 0;
+  for(let i = 0; i < 10; i++){
+    if(dataidArray[i] === null || dataidArray[i] === ""){
+      dataidCheck++;
+    }
+  }
+  if(dataidCheck === 10){
+    throw "No Data to add is selected.";
+  }
+}
 function checkSheet(token,spreadsheetId,sheetName){
   let sheetId = -1;
   let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
@@ -155,6 +145,10 @@ function checkSheet(token,spreadsheetId,sheetName){
   }else{
     engine.log(responseJson);
     throw "Can't get sheet information";
+  }
+  // error (not exist)
+  if( sheetId === -1 ){ 
+    throw 'Sheet "' + sheetName + '" does not exist';
   }
   return sheetId;
 }
@@ -235,36 +229,43 @@ function objNullCheck(Obj){
   return Obj;
 }
 function makingDataLoop(tableData,tableDataList,dataidArray,Obj,dataNumberList){
-  let pointedCol = 0;
   const numOfRows = tableData.size() - 0; // 行（Tableの高さ）
   for( let i = 0; i < numOfRows; i++ ){
     Obj.requests[0].appendCells.rows[i] = {};
     Obj.requests[0].appendCells.rows[i].values = []; // Array
+
     for( let j = 0; j < 10; j++ ){
-      if(dataidArray[j] !== "" && dataidArray[j] !== null ){
-        pointedCol = dataNumberList.indexOf(dataidArray[j]);
-        if(pointedCol === -1){
-          //when selected column doesn't exist
-          throw "Data Number " + dataidArray[j] + " doesn't exist";
-        }
-        let cellValue = tableData.get(i, pointedCol );
-        if(cellValue.length > 50000){
-          //when the number of letters in text is over 50000 
-          throw "Can't set text over 50,000 character.";
-        }
-        if(tableDataList[pointedCol].matchDataType("DECIMAL")){
-          Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"numberValue": cellValue }}; 
-        }else{
-          Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"stringValue": cellValue }};
-        }
-      }else{
-        //when selected cell is empty
-        Obj.requests[0].appendCells.rows[i].values[j] = {"userEnteredValue": {"stringValue": "" }};
-      }
+      Obj.requests[0].appendCells.rows[i].values[j] = makeCellValue(tableData,tableDataList,dataidArray,dataNumberList);
     }
   }
   return Obj;
 }
+
+function makeCellValue(tableData,tableDataList,dataidArray,dataNumberList){
+  let valueData = "";
+  if(dataidArray[j] !== "" && dataidArray[j] !== null ){
+    const pointedCol = dataNumberList.indexOf(dataidArray[j]);
+    if(pointedCol === -1){
+      //when selected column doesn't exist
+      throw "Data Number " + dataidArray[j] + " doesn't exist";
+    }
+    const cellValue = tableData.get(i, pointedCol );
+    if(cellValue.length > 50000){
+      //when the number of letters in text is over 50000 
+      throw "Can't set text over 50,000 character.";
+    }
+    if(tableDataList[pointedCol].matchDataType("DECIMAL")){
+      valueData = {"userEnteredValue": {"numberValue": cellValue }}; 
+    }else{
+      valueData = {"userEnteredValue": {"stringValue": cellValue }};
+    }
+  }else{
+    //when selected cell is empty
+    valueData = {"userEnteredValue": {"stringValue": "" }};
+  }
+  return valueData;
+}
+
 function sendAppendData(token,spreadsheetId,Obj){
   let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
       uri += spreadsheetId;
