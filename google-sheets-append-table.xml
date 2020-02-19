@@ -2,8 +2,8 @@
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
 <label>Google Sheets: Append New Rows (Table type data)</label>
-<label locale="ja">Google スプレッドシート: 行追加(テーブル型データ)</label>
-<last-modified>2020-02-17</last-modified>
+<label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
+<last-modified>2020-02-19</last-modified>
 <help-page-url>https://support.questetra.com/addons/googlesheets-appendtable/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googlesheets-appendtable/</help-page-url>
 
@@ -21,7 +21,7 @@
     <label locale="ja">C3: 入力先のシートのタイトル</label>
   </config>
   <config name="conf_DataIdT" required="true" form-type="SELECT" select-data-type="LIST">
-    <label>C4: Table Type DATA</label>
+    <label>C4: Table type data item</label>
     <label locale="ja">C4: テーブル型データ項目</label>
   </config>
   <config name="conf_DataIdA" required="false" form-type="TEXTFIELD">
@@ -96,16 +96,15 @@ function main(){
   tableDataDef = engine.findDataDefinitionByNumber( dataIdT );
   tableDataList = tableDataDef.getSubDataDefinitions();
   //// == 演算 / Calculating ==
-  let sheetId;
   const token = httpClient.getOAuth2Token( oauth2 );
   
     // check spreadsheet
-  sheetId = checkSheet(token,spreadsheetId,sheetName);
+  const sheetId = checkSheet(token,spreadsheetId,sheetName);
     
 
   // append records
-  const Obj = makeAppendData(tableData,sheetId,tableDataList,dataidArray);
-  sendAppendData(token,spreadsheetId,Obj);
+  const obj = makeAppendData(tableData,sheetId,tableDataList,dataidArray);
+  sendAppendData(token,spreadsheetId,obj);
   //// == ワークフローデータへの代入 / Data Updating ==
   //none
 }
@@ -130,20 +129,17 @@ function checkSheet(token,spreadsheetId,sheetName){
     .get( uri ); 
   engine.log('---GET request--- ' + response.getStatusCode());
   const responseJson = response.getResponseAsString();
-  if( response.getStatusCode() === 200 ){
-    const jsonObj = JSON.parse( responseJson );
-    engine.log(' SPREADSHEET TITLE: \"' + jsonObj.properties.title + '\" has' + jsonObj.sheets.length + ' sheets');
-    for( var i = 0; i < jsonObj.sheets.length; i++ ){
-      if( jsonObj.sheets[i].properties.title === sheetName ){
-        sheetId = parseInt( jsonObj.sheets[i].properties.sheetId, 10 );
-        engine.log(' SHEET TITLE: \"' + sheetName + '\" exists (id: " + sheetId + ")');
-      }else{
-        engine.log(' SHEET TITLE: \"' + sheetName + '\" does not exist');
-      }
-    }
-  }else{
+  if( response.getStatusCode() !== 200 ){
     engine.log(responseJson);
     throw "Can't get sheet information";
+  }
+  const jsonObj = JSON.parse( responseJson );
+  engine.log(' SPREADSHEET TITLE: \"' + jsonObj.properties.title + '\" has' + jsonObj.sheets.length + ' sheets');
+  for( var i = 0; i < jsonObj.sheets.length; i++ ){
+    if( jsonObj.sheets[i].properties.title === sheetName ){
+      sheetId = parseInt( jsonObj.sheets[i].properties.sheetId, 10 );
+      engine.log(' SHEET TITLE: \"' + sheetName + '\" exists (id: " + sheetId + ")');
+    }
   }
   // error (not exist)
   if( sheetId === -1 ){ 
@@ -182,76 +178,98 @@ function checkSheet(token,spreadsheetId,sheetName){
 
 function makeAppendData(tableData,sheetId,tableDataList,dataidArray){
   //prepare object
-  let Obj = {};
+  let obj = {
+    requests : [{
+      appendCells : {
+        rows : [],
+        sheetId : sheetId,
+        fields : "*"
+      }
+    }]
+  };
 
-  Obj.requests = []; // Array
-  Obj.requests[0] = {};
-  Obj.requests[0].appendCells = {};
-  Obj.requests[0].appendCells.rows = []; // Array
-  Obj.requests[0].appendCells.sheetId = sheetId;
-  Obj.requests[0].appendCells.fields = "*";
+  //obj.requests = []; // Array
+  //obj.requests[0] = {};
+  //obj.requests[0].appendCells = {};
+  //obj.requests[0].appendCells.rows = []; // Array
+  //obj.requests[0].appendCells.sheetId = sheetId;
+  //obj.requests[0].appendCells.fields = "*";
         
-  makingDataLoop(tableData,tableDataList,dataidArray,Obj);
-  return Obj;
+  makingDataLoop(tableData,tableDataList,dataidArray,obj);
+  return obj;
 }
 
-function makingDataLoop(tableData,tableDataList,dataidArray,Obj){
+function makingDataLoop(tableData,tableDataList,dataidArray,obj){
   const numOfRows = tableData.size() - 0; // 行（Tableの高さ）
   let dataNumberList = [];
+  let flagAll = true;
   //make list of table data number
   for(let i = 0;i < tableDataList.length; i++){
     let temp = tableDataList[i].getNumber() + "";
     dataNumberList.push(temp);
   }
   for( let i = 0; i < numOfRows; i++ ){
-    Obj.requests[0].appendCells.rows[i] = {};
-    Obj.requests[0].appendCells.rows[i].values = []; // Array
-  
+    obj.requests[0].appendCells.rows[i] = {
+      values: new Array(dataidArray.length)
+    };
+    //obj.requests[0].appendCells.rows[i].values = []; 
+    // Array
+
+    
+
     let flag = true;
 
     for( let j = dataidArray.length - 1; j > -1; j-- ){
       let cellValue = makeCellValue(i,tableData,tableDataList,dataidArray[j],dataNumberList);
-      if(flag && (cellValue.userEnteredValue.stringValue === null || cellValue.userEnteredValue.stringValue === "") && 
-          (cellValue.userEnteredValue.numberValue === null || cellValue.userEnteredValue.numberValue === "")){
-        //put null if all latter cells are empty 
-        if(flag){
-          cellValue = null;
-        }
-      }else{
-        flag = false;
-      }
-      Obj.requests[0].appendCells.rows[i].values[j] = cellValue;
+      flag = cellValueEmptyCheck(cellValue,flag);
+      engine.log("out:" + cellValue);
+      obj.requests[0].appendCells.rows[i].values[j] = cellValue;
     }
-    if(flag){
-      throw "All selected data are empty.";
-    }
+    flagAll = flagAll&&flag;  
   }
-//  return Obj;
+  if(flagAll){
+    throw "All selected data are empty.";
+  }
 }
 
 function makeCellValue(i,tableData,tableDataList,dataId,dataNumberList){
   let valueData = "";
-  if(dataId !== "" && dataId !== null ){
-    const pointedCol = dataNumberList.indexOf(dataId);
-    if(pointedCol === -1){
-      //when selected column doesn't exist
-      throw "Data Number " + dataId + " doesn't exist";
-    }
-    const cellValue = tableData.get(i, pointedCol );
-    if(cellValue.length > 50000){
-      //when the number of letters in text is over 50000 
-      throw "Can't set text over 50,000 character.";
-    }
-    if(tableDataList[pointedCol].matchDataType("DECIMAL")){
-      valueData = {"userEnteredValue": {"numberValue": cellValue }}; 
-    }else{
-      valueData = {"userEnteredValue": {"stringValue": cellValue }};
-    }
-  }else{
+  if(dataId === "" || dataId === null ){
     //when selected cell is empty
+    engine.log("cellempty")
     valueData = {"userEnteredValue": {"stringValue": "" }};
+    return valueData;
+  }
+  const pointedCol = dataNumberList.indexOf(dataId);
+  if(pointedCol === -1){
+    //when selected column doesn't exist
+    throw "Data Number " + dataId + " doesn't exist";
+  }
+  const cellValue = tableData.get(i, pointedCol );
+  if(cellValue.length > 50000){
+    //when the number of letters in text is over 50000 
+    throw "Can't set text over 50,000 character.";
+  }
+  if(tableDataList[pointedCol].matchDataType("DECIMAL")){
+    valueData = {"userEnteredValue": {"numberValue": cellValue }};
+  }else{
+    valueData = {"userEnteredValue": {"stringValue": cellValue }};
   }
   return valueData;
+}
+
+function cellValueEmptyCheck(cellValue,flag){
+  engine.log(cellValue.userEnteredValue.stringValue);
+  engine.log(flag);
+  if(flag && (cellValue.userEnteredValue.stringValue === null || cellValue.userEnteredValue.stringValue === "") && 
+    (cellValue.userEnteredValue.numberValue === null || cellValue.userEnteredValue.numberValue === "")){
+    //put null if all latter cells are empty
+    cellValue = null;
+    engine.log("in:" + cellValue);
+  }else{
+    flag = false;
+  }
+  return flag;
 }
 
 function sendAppendData(token,spreadsheetId,Obj){
