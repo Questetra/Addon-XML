@@ -3,7 +3,7 @@
 <engine-type>1</engine-type>
 <label>Google Sheets: Append New Rows (Table type data)</label>
 <label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
-<last-modified>2020-02-25</last-modified>
+<last-modified>2020-02-28</last-modified>
 <help-page-url>https://support.questetra.com/addons/googlesheets-appendtable/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googlesheets-appendtable/</help-page-url>
 
@@ -139,42 +139,12 @@ function checkSheet(token,spreadsheetId,sheetName){
     if( jsonObj.sheets[i].properties.title === sheetName ){
       sheetId = parseInt( jsonObj.sheets[i].properties.sheetId, 10 );
       engine.log(' SHEET TITLE: \"' + sheetName + '\" exists (id: " + sheetId + ")');
+      return sheetId;
     }
   }
   // error (not exist)
-  if( sheetId === -1 ){ 
-    throw 'Sheet "' + sheetName + '" does not exist';
-  }
-  return sheetId;
+  throw 'Sheet "' + sheetName + '" does not exist';
 }
-
-//function addSheet(token,spreadsheetId,sheetName){
-//  let uri = "https://sheets.googleapis.com/v4/spreadsheets/";
-//    uri += spreadsheetId;
-//    uri += ":batchUpdate";
-//
-//  let Obj = {};
-//  Obj.requests = []; // Array
-//  Obj.requests[0] = {};
-//  Obj.requests[0].addSheet = {};
-//  Obj.requests[0].addSheet.properties = {};
-//  Obj.requests[0].addSheet.properties.title = sheetName;
-//
-//  const response = httpClient.begin()
-//    .bearer(token)
-//    .body( JSON.stringify( Obj ), "application/json" )
-//    .post( uri ); 
-//  engine.log('---POST request--- ' + response.getStatusCode());
-//  const responseJson = response.getResponseAsString();
-//  const jsonObj = JSON.parse( responseJson );
-//  const sheetId = parseInt( jsonObj.properties.sheetId, 10 );
-// if( response.getStatusCode() === 200 ){
-//    engine.log(' SHEET TITLE: \"' + sheetName + '\" created (id: ' + sheetId + ')');
-//  }else if( response.getStatusCode() >= 300 ){
-//    throw response.getResponseAsString();
-//  }
-//  return sheetId;
-//}
 
 function makeAppendData(tableData,sheetId,tableDataList,dataidArray){
   //prepare object
@@ -186,15 +156,7 @@ function makeAppendData(tableData,sheetId,tableDataList,dataidArray){
         fields : "*"
       }
     }]
-  };
-
-  //obj.requests = []; // Array
-  //obj.requests[0] = {};
-  //obj.requests[0].appendCells = {};
-  //obj.requests[0].appendCells.rows = []; // Array
-  //obj.requests[0].appendCells.sheetId = sheetId;
-  //obj.requests[0].appendCells.fields = "*";
-        
+  }; 
   makingDataLoop(tableData,tableDataList,dataidArray,obj);
   return obj;
 }
@@ -221,12 +183,15 @@ function makingDataLoop(tableData,tableDataList,dataidArray,obj){
 
     for( let j = dataidArray.length - 1; j > -1; j-- ){
       let cellValue = makeCellValue(i,tableData,tableDataList,dataidArray[j],dataNumberList);
-      let checkResult = cellValueEmptyCheck(cellValue,flag);
-      flag = checkResult.flag;
-      cellValue = checkResult.cellValue;
-      obj.requests[0].appendCells.rows[i].values[j] = cellValue;
+      if(flag && cellValueEmptyCheck(cellValue)) {
+        //put null if all latter cells are empty
+        obj.requests[0].appendCells.rows[i].values[j] = null;
+      }else{
+        obj.requests[0].appendCells.rows[i].values[j] = cellValue;
+        flag = false;
+      }
     }
-    flagAll = flagAll&&flag;  
+    flagAll = flagAll&&flag;
   }
   if(flagAll){
     throw "All selected data are empty.";
@@ -234,11 +199,9 @@ function makingDataLoop(tableData,tableDataList,dataidArray,obj){
 }
 
 function makeCellValue(i,tableData,tableDataList,dataId,dataNumberList){
-  let valueData = "";
   if(dataId === "" || dataId === null ){
     //when selected cell is empty
-    valueData = {"userEnteredValue": {"stringValue": "" }};
-    return valueData;
+    return {"userEnteredValue": {"stringValue": "" }};
   }
   const pointedCol = dataNumberList.indexOf(dataId);
   if(pointedCol === -1){
@@ -251,25 +214,15 @@ function makeCellValue(i,tableData,tableDataList,dataId,dataNumberList){
     throw "Can't set text over 50,000 character.";
   }
   if(tableDataList[pointedCol].matchDataType("DECIMAL")){
-    valueData = {"userEnteredValue": {"numberValue": cellValue }};
+    return {"userEnteredValue": {"numberValue": cellValue }};
   }else{
-    valueData = {"userEnteredValue": {"stringValue": cellValue }};
+    return {"userEnteredValue": {"stringValue": cellValue }};
   }
-  return valueData;
 }
 
-function cellValueEmptyCheck(cellValue,flag){
-  let checkResult = {};
-  if(flag && (cellValue.userEnteredValue.stringValue === null || cellValue.userEnteredValue.stringValue === "") && 
-    (cellValue.userEnteredValue.numberValue === null || cellValue.userEnteredValue.numberValue === undefined || cellValue.userEnteredValue.numberValue === "")){
-    //put null if all latter cells are empty
-    cellValue = null;
-  }else{
-    flag = false;
-  }
-  checkResult.flag = flag;
-  checkResult.cellValue = cellValue;
-  return checkResult;
+function cellValueEmptyCheck(cellValue){
+  return (cellValue.userEnteredValue.stringValue === null || cellValue.userEnteredValue.stringValue === undefined || cellValue.userEnteredValue.stringValue === "") && 
+    (cellValue.userEnteredValue.numberValue === null || cellValue.userEnteredValue.numberValue === undefined || cellValue.userEnteredValue.numberValue === "")
 }
 
 function sendAppendData(token,spreadsheetId,Obj){
