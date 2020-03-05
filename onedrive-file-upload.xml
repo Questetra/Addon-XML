@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>OneDrive: Upload File</label>
 <label locale="ja">OneDrive: ファイルアップロード</label>
-<last-modified>2020-02-17</last-modified>
+<last-modified>2020-03-05</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
 <summary>Upload files to the specified folder on One Drive.</summary>
@@ -15,7 +15,7 @@
     <label>C2: File type data item whose attached files will be uploaded</label>
     <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
   </config>
-  <config name="uploadedFolderId" el-enabled="true">
+  <config name="uploadedFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Folder ID that files will be uploaded (Root folder if blank)</label>
     <label locale="ja">C3: ファイルをアップロードするフォルダの ID (指定がない場合は、ルートフォルダ)</label>
   </config>
@@ -37,44 +37,49 @@ main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get( "conf_OAuth2" );
-  const fileDataNumber = configs.get( "uploadedFile" ); // (returns Number)
-  const idDataNumber = configs.get( "fileId" );
-  const urlDataNumber = configs.get( "fileUrl" );
+  const idDataDef = configs.getObject("fileId");
+  const urlDataDef = configs.getObject("fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
   let folderId = configs.get( "uploadedFolderId");
   if(folderId == "" || folderId == null){
+    //when folder id isn't set, set "root"
     folderId = "root";
   }
-  const files = engine.findDataByNumber( fileDataNumber );
+  const files = engine.findData(configs.getObject("uploadedFile")  );
   if (files === null) {
     return;
   }
-  if(files.size() > httpClient.getRequestingLimit()){
+  //number of files
+  const fileNum = files.size();
+  judgeDataNum(idDataDef,fileNum);
+  judgeDataNum(urlDataDef ,fileNum);
+  if(fileNum > httpClient.getRequestingLimit()){
     throw "Too many files are set to upload.";
   }
   //// == 演算 / Calculating ==
-  let uploadedFileId = "";
-  let uploadedFileUrl = "";
+  //0:ID,1:URL
+  let uploadedFileData = ["",""];
   const token = httpClient.getOAuth2Token( oauth2 );
 
   for (let i=0; i< files.size(); i++) {
-    upload(token,files.get(i),folderId,uploadedFileId,uploadedFileUrl);
+    upload(token,files.get(i),folderId,uploadedFileData);
   }
   //// == ワークフローデータへの代入 / Data Updating ==
-  setData(idDataNumber,uploadedFileId);
-  setData(urlDataNumber,uploadedFileUrl);
+  setData(idDataDef,uploadedFileData[0]);
+  setData(urlDataDef ,uploadedFileData[1]);
 }
 
-function upload(token,file,folderId,uploadedFileId,uploadedFileUrl){
+function upload(token,file,folderId,uploadedFileData){
+  //upload each file
   const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + folderId + ":/" + file.getName() + ":/content";
   let response = httpClient.begin()
     .bearer(token)
     .body(file)
-    .post(url);
+    .put(url);
   //when error thrown
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
-  if (status !== 201) {
+  if (status >= 300) {
     if (status === 409) {
       throw "failed to upload: " + file.getName() + "\n status:" + status +"\n" + responseJson + "\n Same name file already exists.";
     }else{
@@ -84,23 +89,28 @@ function upload(token,file,folderId,uploadedFileId,uploadedFileUrl){
   engine.log("---POST request--- \n status:" + status + "\n" + file.getName() + "\n" + responseJson + "\n");
   const json = JSON.parse(responseJson);
   //if not first file,enter id/url to new line
-  if(uploadedFileId !== ""){
-    uploadedFileId += "\n";
+  if(uploadedFileData[0] !== ""){
+    uploadedFileData[0] += "\n";
   }
-  if(uploadedFileUrl !== ""){
-    uploadedFileUrl += "\n";
+  if(uploadedFileData[1] !== ""){
+    uploadedFileData[1] += "\n";
   }
-  uploadedFileId += json.id;
-  uploadedFileUrl += json.webUrl;
+  uploadedFileData[0] += json.id;
+  uploadedFileData[1] += json.webUrl;
 }
-function setData(DataNumber,uploadedFileData){
-  if(DataNumber !== "" && DataNumber !==  null){
-    const idDataDef = engine.findDataDefinitionByNumber(DataNumber);
+function setData(dataDef,uploadedFileData){
+  //set ID or URL to data item
+  if(configName !== "" && configName !==  null){
+    engine.setData(dataDef,uploadedFileData);
+  }
+}
+function judgeDataNum(dataDef,fileNum){
+  //when id/url data is TEXTFIELD and files to upload are multiple,throw error
+  if(dataDef !== "" && dataDef !==  null){
     //Multiple Judge
-    if(idDataDef.matchDataType("STRING_TEXTFIELD") && files.size() > 1){
+    if(dataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
       throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
     }
-    engine.setDataByNumber(DataNumber,uploadedFileData);
   }
 }
   ]]>
