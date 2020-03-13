@@ -1,34 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-<label>OneDrive: Upload File</label>
-<label locale="ja">OneDrive: ファイルアップロード</label>
+<label>OneDrive: Create Folder</label>
+<label locale="ja">OneDrive: フォルダ作成</label>
 <last-modified>2020-03-13</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDrive の指定フォルダにファイルをアップロードします。</summary>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2">
+  <config name="OAuth2" required="true" form-type="OAUTH2">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="uploadedFile" required="true" form-type="SELECT" select-data-type="FILE">
-    <label>C2: File type data item whose attached files will be uploaded</label>
-    <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
+    <config name="parentFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Parent Folder ID(When empty,create in root folder)</label>
+    <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合マイドライブのルートに作成されます)</label>
   </config>
-  <config name="uploadedFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C3: Folder ID that files will be uploaded (Root folder if blank)</label>
-    <label locale="ja">C3: ファイルをアップロードするフォルダの ID (指定がない場合は、ルートフォルダ)</label>
+  <config name="folderName" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder Name to create</label>
+    <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
-  <config name="fileId" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data item that will save uploaded file ids</label>
-    <label locale="ja">C4: ファイル ID を保存する文字型データ項目</label>
+  <config name="folderId" form-type="SELECT" select-data-type="STRING">
+    <label>C4: Data Item that will save Folder ID</label>
+    <label locale="ja">C4: 作成したフォルダの ID を保存する文字型データ項目</label>
   </config>
-  <config name="fileUrl" form-type="SELECT" select-data-type="STRING">
-    <label>C5: String type data item that will save uploaded file urls</label>
-    <label locale="ja">C5: ファイル URL を保存する文字型データ項目</label>
+  <config name="folderUrl" form-type="SELECT" select-data-type="STRING">
+    <label>C5: Data Item that will save web view url of Folder</label>
+    <label locale="ja">C5: 作成したフォルダの表示 URL を保存する文字型データ項目</label>
   </config>
 </configs>
-<help-page-url>https://support.questetra.com/addons/services/onedrive-upload/</help-page-url>
+<help-page-url>https://support.questetra.com/addons/services/onedrive-createFolder/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/services/onedrive-upload/</help-page-url>
 
 
@@ -43,124 +43,96 @@
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get( "conf_OAuth2" );
-  const idDataDef = configs.getObject("fileId");
-  const urlDataDef = configs.getObject("fileUrl");
+  const oauth2 = configs.get( "OAuth2" );
+  const idDataDef = configs.getObject("folderId");
+  const urlDataDef = configs.getObject("folderUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const folderId = folderIdDecision();
-  const files = engine.findData(configs.getObject("uploadedFile")  );
-  if (files === null) {
-    setData(idDataDef,[""]);
-    setData(urlDataDef,[""]);
-    return;
-  } 
-  fileCheck(files,idDataDef,urlDataDef);
-  
-  
+  const parentFolderId = folderIdDecision();
+
+  let folderName = "";
+  const folderNameDef = configs.getObject("folderName");
+  if(folderNameDef === null){
+    folderName = configs.get( "folderName");
+  }else{
+    folderName = engine.findData(folderNameDef);
+  }
+  if(folderName === "" || folderName === null){
+    throw "Folder Name is empty";
+  }
+
   //// == 演算 / Calculating ==
-  let uploadedFileData = [[],[]]; //0:ID,1:URL
+  let uploadedFileData = ["",""]; //0:ID,1:URL
   const token = httpClient.getOAuth2Token( oauth2 );
 
-  for (let i=0; i< files.size(); i++) {
-    upload(token,files.get(i),folderId,uploadedFileData);
-  }
+  create(token,parentFolderId,folderName,uploadedFileData);
   //// == ワークフローデータへの代入 / Data Updating ==
   setData(idDataDef,uploadedFileData[0]);
   setData(urlDataDef,uploadedFileData[1]);
 }
 
 /**
-  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
-  * @param {Array<File>}  アップロードしようとするファイル
-  * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
-  * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
-  */
-function fileCheck(files,idDataDef,urlDataDef){
-  const fileNum = files.size(); //number of files
-  const limitSize = 4194304; //FIle size limit of Microsoft Graph
-  fileNumCheck(idDataDef,fileNum);
-  fileNumCheck(urlDataDef,fileNum);
-  if(fileNum > httpClient.getRequestingLimit()){
-    throw "Too many files are set to upload.";
-  }
-  for (let i = 0; i < fileNum; i++){
-    if(files.get(i).getLength() > limitSize){
-      throw "Set File is too large";
-    }
-  }
-}
-
-/**
-  * フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
+  * 親フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
   * @return {String}  フォルダの ID
   */
 function folderIdDecision(){
   let folderId = "";
-  const folderIdDef = configs.getObject("uploadedFolderId");
+  const folderIdDef = configs.getObject("parentFolderId");
   if(folderIdDef === null){
-    folderId = configs.get( "uploadedFolderId");
+    folderId = configs.get( "parentFolderId");
   }else{
     folderId = engine.findData(folderIdDef);
   }
-  if(folderId == "" || folderId == null){
-    //when folder id isn't set, set "root"
+  if(folderId === "" || folderId === null){
+    //when parent folder id isn't set, set "root"
     folderId = "root";
   }
   return folderId;
 }
 
 /**
-  * ファイルをアップロードする。一回につき一つのみ。
+  * フォルダを作成する。
   * @param {String} token  OAuth2 トークン
-  * @param {File} file  アップロードするファイル
-  * @param {String} folderId  アップロード先フォルダの ID
-  * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
+  * @param {String} parentFolderId  親フォルダの ID
+  * @param {String} folderName  作成するフォルダの名前
+  * @param {Array<String>} uploadedFileData  アップロードしたファイルの情報を格納する配列
   */
-function upload(token,file,folderId,uploadedFileData){
-  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + folderId + ":/" + file.getName() + ":/content";
+function create(token,parentFolderId,folderName,uploadedFileData){
+  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + parentFolderId + "/children";
+  const body = {
+    "name": folderName,
+    "folder":{}
+    //重複時の振る舞いを決めること
+  }
   let response = httpClient.begin()
     .bearer(token)
-    .body(file)
-    .put(url);
+    .body(body)
+    .post(url);
   //when error thrown
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
   if (status >= 300) {
     if (status === 409) {
-      throw "failed to upload: " + file.getName() + "\n status:" + status +"\n" + responseJson + "\n Same name file already exists.";
+      //重複時エラーにするなら使う
+      throw "failed to upload: " + file.getName() + "\n status:" + status +"\n" + responseJson + "\n Same name folder already exists.";
     }else{
       throw "failed to upload: " + file.getName() + "\n status:" + status + "\n" + responseJson;
     }
   }
-  engine.log("---POST request--- \n status:" + status + "\n" + file.getName() + "\n" + responseJson + "\n");
+  engine.log("---POST request--- \n status:" + status + "\n" + folderName + "\n" + responseJson + "\n");
   const json = JSON.parse(responseJson);
   //if not first file,enter id/url to new line
-  uploadedFileData[0].push(json.id);
-  uploadedFileData[1].push(json.webUrl);
+  uploadedFileData[0] = json.id;
+  uploadedFileData[1] = json.webUrl;
 }
 
 /**
   * アップロードしたデータのIDとURLをデータ項目に出力する。
   * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
-  * @param {Array<String>} uploadedFileData  アップロードしたファイルの情報が格納されている二次元配列
+  * @param {String} uploadedFileData  アップロードしたファイルの情報が格納されている文字列
   */
 function setData(dataDef,uploadedFileData){
   if(dataDef !== "" && dataDef !==  null){
-    engine.setData(dataDef,uploadedFileData.join('\n'));
-  }
-}
-
-/**
-  * アップロードするデータが複数で ID・URL 出力先のデータ項目が単一行ならエラーにする
-  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
-  * @param {Number} fileNum  アップロードしようとしているファイルの個数
-  */
-function fileNumCheck(dataDef,fileNum){
-  if(dataDef !== "" && dataDef !==  null){
-    //Multiple Judge
-    if(dataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
-    }
+    engine.setData(dataDef,uploadedFileData);
   }
 }
   ]]>
