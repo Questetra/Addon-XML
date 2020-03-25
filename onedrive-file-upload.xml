@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>OneDrive: Upload File</label>
 <label locale="ja">OneDrive: ファイルアップロード</label>
-<last-modified>2020-03-13</last-modified>
+<last-modified>2020-03-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -55,50 +55,25 @@ function main(){
     setData(urlDataDef,[""]);
     return;
   } 
-  //ここまでが共通
-  fileCheck(files,idDataDef,urlDataDef);
-  //ファイル数、通信制限をチェック
-  //通信数 = 4MB以下のファイルの数 + for(i<4MBを超えるファイルの数){ファイルサイズ/パケットの最大サイズ + 1}
-  //パケットサイズは共通部分で定義しておく
-  for(let i = 0; i< files.size(); i++){
-    //4MBを境に関数を分ける
-    //4MB以下→upload
-    //4MB超過→processLargeFile(未作成、largefileアドオンの演算部分に相当)
-  }
-  
-  
   
   //// == 演算 / Calculating ==
+  const packetMaxSize = 1; //size of each packet,must be a multiple of 327680
+  fileCheck(files,idDataDef,urlDataDef,packetMaxSize);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
-  
 
-  for (let i=0; i< files.size(); i++) {
-    upload(token,files.get(i),folderId,uploadedFileData);
+  for(let i = 0; i< files.size(); i++){
+    engine.log(files.get(i).getName());
+    //4MBを境に関数を分ける
+    //4194304 : File size limit of Microsoft Graph method 
+    if(files.get(i).getSize() > 4194304){
+      processLargeFile(token,files.get(i),folderId,packetMaxSize,uploadedFileData);
+    }else{
+      upload(token,files.get(i),folderId,uploadedFileData);
+    }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
   setData(idDataDef,uploadedFileData[0]);
   setData(urlDataDef,uploadedFileData[1]);
-}
-
-/**
-  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
-  * @param {Array<File>}  アップロードしようとするファイル
-  * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
-  * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
-  */
-function fileCheck(files,idDataDef,urlDataDef){
-  const fileNum = files.size(); //number of files
-  const limitSize = 4194304; //FIle size limit of Microsoft Graph
-  fileNumCheck(idDataDef,fileNum);
-  fileNumCheck(urlDataDef,fileNum);
-  if(fileNum > httpClient.getRequestingLimit()){
-    throw "Too many files are set to upload.";
-  }
-  for (let i = 0; i < fileNum; i++){
-    if(files.get(i).getLength() > limitSize){
-      throw "Set File is too large";
-    }
-  }
 }
 
 /**
@@ -121,6 +96,48 @@ function folderIdDecision(){
 }
 
 /**
+  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
+  * ファイル数、通信制限をチェック
+  * 通信数 = 4MB以下のファイルの数 + for(i<4MBを超えるファイルの数){ファイルサイズ/パケットの最大サイズ + 1}
+  * @param {Array<File>}  アップロードしようとするファイル
+  * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
+  * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
+  * @param {Number} packetMaxSize  バイナリの最大サイズ
+  */
+function fileCheck(files,idDataDef,urlDataDef,packetMaxSize){
+  const fileNum = files.size(); //number of files
+  const limitSize = 4194304; //File size limit of Microsoft Graph method 
+  fileNumCheck(idDataDef,fileNum);
+  fileNumCheck(urlDataDef,fileNum);
+  let requestNum = 0;
+  for (let i = 0; i < fileNum; i++){
+    let size = files.get(i).getSize();
+    if(size > limitSize){
+      requestNum += (Math.ceil(size / packetMaxSize)) + 1);
+    }else{
+      requestNum++;
+    }
+  }
+  if(requestNum > httpClient.getRequestingLimit()){
+    throw "Number of request is over the limit"; //考える
+  }
+}
+
+/**
+  * アップロードするデータが複数で ID・URL 出力先のデータ項目が単一行ならエラーにする
+  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
+  * @param {Number} fileNum  アップロードしようとしているファイルの個数
+  */
+function fileNumCheck(dataDef,fileNum){
+  if(dataDef !== "" && dataDef !==  null){
+    //Multiple Judge
+    if(dataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
+      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
+    }
+  }
+}
+
+/**
   * ファイルをアップロードする。一回につき一つのみ。
   * @param {String} token  OAuth2 トークン
   * @param {File} file  アップロードするファイル
@@ -137,17 +154,112 @@ function upload(token,file,folderId,uploadedFileData){
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
   if (status >= 300) {
-    if (status === 409) {
-      throw "failed to upload: " + file.getName() + "\n status:" + status +"\n" + responseJson + "\n Same name file already exists.";
-    }else{
-      throw "failed to upload: " + file.getName() + "\n status:" + status + "\n" + responseJson;
-    }
+    throw `failed to upload
+    status: ${status}
+    ${response.getResponseAsString()}`;
   }
-  engine.log("---POST request--- \n status:" + status + "\n" + file.getName() + "\n" + responseJson + "\n");
+  engine.log("---POST request---");
+  engine.log(`status: ${status}`);
+  engine.log(responseJson + "\n");
   const json = JSON.parse(responseJson);
   //if not first file,enter id/url to new line
   uploadedFileData[0].push(json.id);
   uploadedFileData[1].push(json.webUrl);
+}
+
+/**
+  * 4MBを超えるファイルのアップロード処理を行う
+  * @param {String} token  OAuth2 のトークン
+  * @param {File} file  アップロードするファイル
+  * @param {String} folderId  アップロード先のフォルダの ID
+  * @param {Number} packetMaxSize  バイナリの最大サイズ
+  * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
+  */
+processLargeFile(token,file,folderId,packetMaxSize,uploadedFileData){
+  const upUrl = createSession(token,file.getName(),folderId);
+  let uploadReturn = [0,["",""]]; //[range,[ID,URL]]
+  const fileSize = file.getLength();
+
+  fileRepository.readFile(file, packetMaxSize, function(packet){
+    //upload each fragment of file
+    uploadReturn = uploadLarge(token,upUrl,uploadReturn[0],packet,fileSize,packetMaxSize);
+  });
+  uploadedFileData[0].push(uploadReturn[0]);
+  uploadedFileData[1].push(uploadReturn[1]);
+}
+
+/**
+  * アップロード用のセッションを作成する
+  * @param {String} token  OAuth2 のトークン
+  * @param {String} fileName  アップロードするファイルのファイル名
+  * @param {String} folderId  アップロード先のフォルダの ID
+  * @return {String}  アップロード先 URL
+  */
+function createSession(token,fileName,folderId){
+  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${folderId}:/${fileName}:/createUploadSession`;
+  const body = {
+    "item": {
+      "@microsoft.graph.conflictBehavior": "replace",
+      "name" : fileName
+    }
+  };
+  let response = httpClient.begin()
+    .bearer(token)
+    .body(JSON.stringify(body), "application/json; charset=UTF-8")
+    .post(url);
+
+  const status = response.getStatusCode();
+  const jsonStr = response.getResponseAsString();
+  if(status >= 300){
+    throw `failed to create upload session 
+    status: ${status}
+    ${jsonStr}`;
+  }
+  return JSON.parse(jsonStr).uploadUrl;
+}
+
+/**
+  * 4MBを超えるファイルについて、各部分のアップロードを実行する
+  * @param {String} token  OAuth2 のトークン
+  * @param {String} upUrl  アップロードするファイルのファイル名
+  * @param {Number} range  これまでにアップロードしたサイズ
+  * @param {ByteArrayWrapper} packet  アップロードするバイナリ
+  * @param {Number} fileSize  アップロードするファイルのサイズ
+  * @param {Number} packetMaxSize  バイナリの最大サイズ
+  * @return {Array[Number,Array<String>]}  Number は新しい range, String はアップロードしたファイルの ID と URL
+  */
+function uploadLarge(token,upUrl,range,packet,fileSize,packetMaxSize){
+  let packetSize = 0;
+  if(fileSize - range < packetMaxSize){
+    let temp = fileSize;
+    while(temp > packetMaxSize){
+      temp -= packetMaxSize;
+    }
+    packetSize = temp;
+  }else{
+    packetSize = packetMaxSize;
+  }
+  const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
+  let sending = httpClient.begin()
+    .header("Content-Range", rangetxt )
+    .body(packet,"application/octet-stream")
+    .put(upUrl);
+    
+  const status = sending.getStatusCode();
+  const responseStr = sending.getResponseAsString();
+  if(status >= 300){
+    throw `failed to upload
+    status: ${status}
+    ${response.getResponseAsString()}`;
+  }else if(status === 202){
+    range += packetSize;
+    engine.log(responseStr);
+    return [range,["",""]];
+  }else{
+    const json = JSON.parse(responseStr);
+    engine.log(responseStr + "\n");
+    return [range,[json.id,json.webUrl]];
+  }
 }
 
 /**
@@ -158,20 +270,6 @@ function upload(token,file,folderId,uploadedFileData){
 function setData(dataDef,uploadedFileData){
   if(dataDef !== "" && dataDef !==  null){
     engine.setData(dataDef,uploadedFileData.join('\n'));
-  }
-}
-
-/**
-  * アップロードするデータが複数で ID・URL 出力先のデータ項目が単一行ならエラーにする
-  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
-  * @param {Number} fileNum  アップロードしようとしているファイルの個数
-  */
-function fileNumCheck(dataDef,fileNum){
-  if(dataDef !== "" && dataDef !==  null){
-    //Multiple Judge
-    if(dataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple files are uploaded.Can't set data to single-line string Data Item."
-    }
   }
 }
   ]]>
