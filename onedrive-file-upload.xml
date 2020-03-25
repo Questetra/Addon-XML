@@ -7,7 +7,7 @@
 <summary>Upload files to the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDrive の指定フォルダにファイルをアップロードします。</summary>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2">
+  <config name="OAuth2" required="true" form-type="OAUTH2">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
@@ -43,7 +43,7 @@
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get( "conf_OAuth2" );
+  const oauth2 = configs.get("OAuth2");
   const idDataDef = configs.getObject("fileId");
   const urlDataDef = configs.getObject("fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
@@ -57,15 +57,14 @@ function main(){
   } 
   
   //// == 演算 / Calculating ==
-  const packetMaxSize = 3276800; //size of each packet,must be a multiple of 327680
-  fileCheck(files,idDataDef,urlDataDef,packetMaxSize);
+  const limitSize = 4194304; //File size border of Microsoft Graph method 
+  const packetMaxSize = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
+  fileCheck(files,idDataDef,urlDataDef,limitSize,packetMaxSize);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
-    //4MBを境に関数を分ける
-    //4194304 : File size limit of Microsoft Graph method 
-    if(files.get(i).getLength() > 4194304){
+    if(files.get(i).getLength() > limitSize){
       processLargeFile(token,files.get(i),folderId,packetMaxSize,uploadedFileData);
     }else{
       upload(token,files.get(i),folderId,uploadedFileData);
@@ -104,11 +103,11 @@ function folderIdDecision(){
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   * @param {Number} packetMaxSize  バイナリの最大サイズ
   */
-function fileCheck(files,idDataDef,urlDataDef,packetMaxSize){
+function fileCheck(files,idDataDef,urlDataDef,limitSize,packetMaxSize){
   const fileNum = files.size(); //number of files
-  const limitSize = 4194304; //File size limit of Microsoft Graph method 
   fileNumCheck(idDataDef,fileNum);
   fileNumCheck(urlDataDef,fileNum);
+
   let requestNum = 0;
   for (let i = 0; i < fileNum; i++){
     let size = files.get(i).getLength();
@@ -119,7 +118,7 @@ function fileCheck(files,idDataDef,urlDataDef,packetMaxSize){
     }
   }
   if(requestNum > httpClient.getRequestingLimit()){
-    throw "Number of request is over the limit"; //考える
+    throw "Number of request is over the limit";
   }
 }
 
@@ -158,7 +157,6 @@ function upload(token,file,folderId,uploadedFileData){
     status: ${status}
     ${response.getResponseAsString()}`;
   }
-  engine.log("---POST request---");
   engine.log(`status: ${status}`);
   engine.log(responseJson + "\n");
   const json = JSON.parse(responseJson);
@@ -228,16 +226,7 @@ function createSession(token,fileName,folderId){
   * @return {Number}  新しい range
   */
 function uploadLarge(token,upUrl,range,packet,fileSize,packetMaxSize,uploadedFileData){
-  let packetSize = 0;
-  if(fileSize - range < packetMaxSize){
-    let temp = fileSize;
-    while(temp > packetMaxSize){
-      temp -= packetMaxSize;
-    }
-    packetSize = temp;
-  }else{
-    packetSize = packetMaxSize;
-  }
+  const packetSize = packet.getLength();
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
   let sending = httpClient.begin()
     .header("Content-Range", rangetxt )
@@ -252,10 +241,10 @@ function uploadLarge(token,upUrl,range,packet,fileSize,packetMaxSize,uploadedFil
     ${response.getResponseAsString()}`;
   }else if(status === 202){
     range += packetSize;
-    engine.log(responseStr);
     return range;
   }else{
     const json = JSON.parse(responseStr);
+    engine.log(status: ${status});
     engine.log(responseStr + "\n");
     uploadedFileData[0].push(json.id);
     uploadedFileData[1].push(json.webUrl);
