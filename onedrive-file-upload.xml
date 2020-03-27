@@ -40,6 +40,9 @@
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
 
+const limitSize = 4194304; //File size border of Microsoft Graph
+const packetMaxSize = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
+
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
@@ -57,16 +60,15 @@ function main(){
   } 
   
   //// == 演算 / Calculating ==
-  const limitSize = 4194304; //File size border of Microsoft Graph
-  const packetMaxSize = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
-  fileCheck(files,idDataDef,urlDataDef,limitSize,packetMaxSize);
+
+  fileCheck(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
     if(files.get(i).getLength() > limitSize){
       //over 4MB
-      processLargeFile(token,files.get(i),folderId,packetMaxSize,uploadedFileData);
+      processLargeFile(token,files.get(i),folderId,uploadedFileData);
     }else{
       //under 4MB
       upload(token,files.get(i),folderId,uploadedFileData);
@@ -103,9 +105,8 @@ function folderIdDecision(){
   * @param {Array<File>}  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
-  * @param {Number} packetMaxSize  バイナリの最大サイズ
   */
-function fileCheck(files,idDataDef,urlDataDef,limitSize,packetMaxSize){
+function fileCheck(files,idDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
   fileNumCheck(idDataDef,fileNum);
   fileNumCheck(urlDataDef,fileNum);
@@ -146,7 +147,7 @@ function fileNumCheck(dataDef,fileNum){
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   */
 function upload(token,file,folderId,uploadedFileData){
-  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + folderId + ":/" + file.getName() + ":/content";
+  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${folderId}:/${file.getName()}:/content`;
   let response = httpClient.begin()
     .bearer(token)
     .body(file)
@@ -172,17 +173,16 @@ function upload(token,file,folderId,uploadedFileData){
   * @param {String} token  OAuth2 のトークン
   * @param {File} file  アップロードするファイル
   * @param {String} folderId  アップロード先のフォルダの ID
-  * @param {Number} packetMaxSize  バイナリの最大サイズ
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   */
-function processLargeFile(token,file,folderId,packetMaxSize,uploadedFileData){
+function processLargeFile(token,file,folderId,uploadedFileData){
   const upUrl = createSession(token,file.getName(),folderId);
   let range = 0;
   const fileSize = file.getLength();
 
   fileRepository.readFile(file, packetMaxSize, function(packet){
     //upload each fragment of file
-    range = uploadLarge(token,upUrl,range,packet,fileSize,packetMaxSize,uploadedFileData);
+    range = uploadLarge(token,upUrl,range,packet,fileSize,uploadedFileData);
   });
 }
 
@@ -218,16 +218,14 @@ function createSession(token,fileName,folderId){
 
 /**
   * 4MBを超えるファイルについて、各部分のアップロードを実行する
-  * @param {String} token  OAuth2 のトークン
   * @param {String} upUrl  アップロードするファイルのファイル名
   * @param {Number} range  これまでにアップロードしたサイズ
   * @param {ByteArrayWrapper} packet  アップロードするバイナリ
   * @param {Number} fileSize  アップロードするファイルのサイズ
-  * @param {Number} packetMaxSize  バイナリの最大サイズ
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   * @return {Number}  新しい range
   */
-function uploadLarge(token,upUrl,range,packet,fileSize,packetMaxSize,uploadedFileData){
+function uploadLarge(upUrl,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
   let sending = httpClient.begin()
