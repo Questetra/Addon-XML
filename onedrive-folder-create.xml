@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<label>OneDrive: Create Folder</label>
+<label locale="ja">OneDrive: フォルダ作成</label>
+<last-modified>2020-03-27</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>1</engine-type>
+<summary>Create a folder in the specified folder on OneDrive.</summary>
+<summary locale="ja">OneDrive の指定フォルダ内にフォルダを作成します。</summary>
+<configs>
+  <config name="OAuth2" required="true" form-type="OAUTH2">
+    <label>C1: OAuth2 Setting Name</label>
+    <label locale="ja">C1: OAuth2 設定名</label>
+  </config>
+    <config name="parentFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Parent Folder ID (Root Folder if blank)</label>
+    <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合ルートフォルダに作成されます)</label>
+  </config>
+  <config name="folderName" required="true" form-type="TEXTFIELD" el-enabled="true">
+    <label>C3: Folder Name to create</label>
+    <label locale="ja">C3: 作成するフォルダの名称</label>
+  </config>
+  <config name="folderId" form-type="SELECT" select-data-type="STRING">
+    <label>C4: String type data Item that will save Folder ID</label>
+    <label locale="ja">C4: フォルダ ID を保存する文字型データ項目</label>
+  </config>
+  <config name="folderUrl" form-type="SELECT" select-data-type="STRING">
+    <label>C5: String type data Item that will save Folder URL</label>
+    <label locale="ja">C5: フォルダ URL を保存する文字型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/addons/services/onedrive-createFolder/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/services/onedrive-upload/</help-page-url>
+
+
+<script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Files.ReadWrite offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+main();
+
+function main(){
+  //// == 工程コンフィグの参照 / Config Retrieving ==
+  const oauth2 = configs.get( "OAuth2" );
+  const idDataDef = configs.getObject("folderId");
+  const urlDataDef = configs.getObject("folderUrl");
+  //// == ワークフローデータの参照 / Data Retrieving ==
+  const parentFolderId = parentFolderIdDecision();
+  const folderName = folderNameDecision();
+  
+  //// == 演算 / Calculating ==
+  let createdFolderData = ["",""]; //0:ID,1:URL
+  const token = httpClient.getOAuth2Token( oauth2 );
+
+  create(token,parentFolderId,folderName,createdFolderData);
+  //// == ワークフローデータへの代入 / Data Updating ==
+  setData(idDataDef,createdFolderData[0]);
+  setData(urlDataDef,createdFolderData[1]);
+}
+
+/**
+  * 親フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
+  * @return {String}  フォルダの ID
+  */
+function parentFolderIdDecision(){
+  let folderId = "";
+  const folderIdDef = configs.getObject("parentFolderId");
+  if(folderIdDef === null){
+    folderId = configs.get( "parentFolderId");
+  }else{
+    folderId = engine.findData(folderIdDef);
+  }
+  if(folderId === "" || folderId === null){
+    //when parent folder id isn't set, set "root"
+    folderId = "root";
+  }
+  return folderId;
+}
+
+/**
+  * 作成するフォルダの名前を config から読み出して出力する。空の場合はエラーとする。
+  * @return {String}  フォルダの ID
+  */
+function folderNameDecision(){
+  let folderName = "";
+  const folderNameDef = configs.getObject("folderName");
+  if(folderNameDef === null){
+    folderName = configs.get( "folderName");
+  }else{
+    folderName = engine.findData(folderNameDef);
+  }
+  if(folderName === "" || folderName === null){
+    throw "Folder Name is empty";
+  }
+  return folderName;
+}
+
+/**
+  * フォルダを作成する。
+  * @param {String} token  OAuth2 トークン
+  * @param {String} parentFolderId  親フォルダの ID
+  * @param {String} folderName  作成するフォルダの名前
+  * @param {Array<String>} createdFolderData  アップロードしたファイルの情報を格納する配列
+  */
+function create(token,parentFolderId,folderName,createdFolderData){
+  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + parentFolderId + "/children";
+  const body = {
+    "name": folderName,
+    "folder":{},
+    "@microsoft.graph.conflictBehavior": "fail"
+    //重複時の振る舞いを決めること
+  }
+  let response = httpClient.begin()
+    .bearer(token)
+    .body(JSON.stringify(body), "application/json; charset=UTF-8")
+    .post(url);
+  //when error thrown
+  const responseJson = response.getResponseAsString();
+  const status = response.getStatusCode();
+  if (status >= 300) {
+    throw `failed to create: ${folderName} \n status: ${status} \n ${responseJson}`;
+  }
+  engine.log("---POST request---");
+  engine.log(`status: ${status}`);
+  engine.log(responseJson);
+  const json = JSON.parse(responseJson);
+
+  createdFolderData[0] = json.id;
+  createdFolderData[1] = json.webUrl;
+}
+
+/**
+  * アップロードしたデータのIDとURLをデータ項目に出力する。
+  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
+  * @param {String} createdFolderData  アップロードしたファイルの情報が格納されている文字列
+  */
+function setData(dataDef,createdFolderData){
+  if(dataDef !==  null){
+    engine.setData(dataDef,createdFolderData);
+  }
+}
+  ]]>
+</script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADXUlEQVRYR8WXW0hUURSG/33GbC5e
+8pJJF6nM6YKUmsFAIAZSONOM4FtqL/mQVg9GhXR5iCIiEAqF9KEMsvKpi06OZoRPGaRmVoSGU4om
+aqaMzeXYOLPjTJ7R41w8k8bZLwNn1r/Wt9dee+29CSQeRHR8vVEpd7vzGTAHKKXpADYDiJnTTwEY
+IIR0u+FuYxnmCYx6uxjfSwKotE2JbuoqB0EJALkYpwBYUNQwRHbDZtKNBtMEBVBqG0ooSAUAlcjA
+i81sBPSs3ZRXE0gfEECuM94mlJb+Y2CBjBJSzTbpT/jz5RdAoTU+BGjBSgSf90EeOUz6wsU+fQBW
+cuaLg/nLhABgbs2rV3bmQm8EtHRhTXgBPNUOV/8yCk4st42BbBu/O7wAitzGmyAoE+tlWXYUtxzN
+htOcj78AeqNS4aI/Q9jneH5Ng0x1DCLkMlhZFz59m0ZZ9UfPr4jBOmQkjmtWHgC5rqGIUFIXTHih
+QI3UzVHoH7HhsCYROzZF+JgPjNqxq/iViPgAJfQo25T3wAOg1BnvUkqP+VNGKsLQXpmF5PXCXmR1
+zKJvyAqL3Yn4qHCoN0ZCHs6gvm0YxRXdS0IQQmrtTfpiD4BC2/gOANfffUbjVQ1yMtYKvnNZGJlg
+kZESDeVqGSy2WbzoHPdkpdtswcnKniUBAHQ7TIYMHmBywcEiEPfey0FSgsL7zWJzosc8jazdcQI7
+l5tiwvIbUaowTE47UfXMjMqnX4OBTDlMhlgegC62TNmgwp0z6UhLjsaqMMbzN5f25o4x5O5bhwhF
+WNBZ2mdcyDn3Gu/NloB2DpOBBAToqs7GzqRIr/j7BIu+4V9I2xqN2KhwMSlGbcsgTlV9EAXgswSW
+Bp135pQCrV3jOJSZICowb2RjXWjtHEfh9U5/OsES+BThj8daqOQyb+q/DFuRkbImJADOmKuNg+Xt
+ePOZm6NgzBehv21YfzETek0iGIZgxun2OMjeEx8yACfIv/wWLR1jAq1gGwZqROePqLE/NRZjUzOo
+ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
+FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
+TkSuQmCC
+</icon>
+
+</service-task-definition>
