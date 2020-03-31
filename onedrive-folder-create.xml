@@ -1,22 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-<label>OneDrive: Delete Folder</label>
-<label locale="ja">OneDrive: フォルダ削除</label>
-<last-modified>2020-03-27</last-modified>
+<label>OneDrive: Delete File/Folder</label>
+<label locale="ja">OneDrive: ファイル/フォルダ削除</label>
+<last-modified>2020-03-31</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
-<summary locale="ja">OneDrive 上のフォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつIDを書くようにしてください。</summary>
+<summary>Delete files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one folder ID on each line.</summary>
+<summary locale="ja">OneDrive 上のファイル/フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつIDを書くようにしてください。</summary>
 <configs>
   <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="FolderIdsItem" form-type="SELECT" select-data-type="STRING" required="true">
-    <label>C2: Data Item with Folder IDs to delete</label>
-    <label locale="ja">C2: 削除するフォルダ ID が保存されている文字型データ項目</label>
+  <config name="itemIds" form-type="SELECT" select-data-type="STRING" required="true">
+    <label>C2: Data Item with File/Folder IDs to delete</label>
+    <label locale="ja">C2: 削除するファイル/フォルダの ID が保存されている文字型データ項目</label>
   </config>
 </configs>
-<help-page-url>https://support.questetra.com/addons/box-folder-delete/</help-page-url>
-<help-page-url locale="ja">https://support.questetra.com/ja/addons/box-folder-delete/</help-page-url>
+<help-page-url>https://support.questetra.com/addons/onedrive-item-delete/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/onedrive-item-delete/</help-page-url>
 
 
 <script><![CDATA[
@@ -26,108 +27,47 @@
 // - Scope: https://graph.microsoft.com/Files.ReadWrite offline_access
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
-
 main();
 
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get( "OAuth2" );
-  const idDataDef = configs.getObject("folderId");
-  const urlDataDef = configs.getObject("folderUrl");
+  const idsConfig = configs.get("itemIds");
+  if (folderIds == null) {
+    throw "File/Folder ID isn't set.";
+  }
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const parentFolderId = parentFolderIdDecision();
-  const folderName = folderNameDecision();
-  
+  const ids = engine.findDataByNumber(idsConfig);
+  const idArray = ids.split("\n");
+  if (idArray.length > httpClient.getRequestingLimit()){
+  	throw "Number of File/Folder IDs is over the limit."
+  }
   //// == 演算 / Calculating ==
-  let createdFolderData = ["",""]; //0:ID,1:URL
   const token = httpClient.getOAuth2Token( oauth2 );
-
-  create(token,parentFolderId,folderName,createdFolderData);
-  //// == ワークフローデータへの代入 / Data Updating ==
-  setData(idDataDef,createdFolderData[0]);
-  setData(urlDataDef,createdFolderData[1]);
+  for (let i = 0; i < idArray.length; i++){
+    delete(token, idArray[i])
+  }
 }
 
 /**
-  * 親フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
-  * @return {String}  フォルダの ID
-  */
-function parentFolderIdDecision(){
-  let folderId = "";
-  const folderIdDef = configs.getObject("parentFolderId");
-  if(folderIdDef === null){
-    folderId = configs.get( "parentFolderId");
-  }else{
-    folderId = engine.findData(folderIdDef);
-  }
-  if(folderId === "" || folderId === null){
-    //when parent folder id isn't set, set "root"
-    folderId = "root";
-  }
-  return folderId;
-}
-
-/**
-  * 作成するフォルダの名前を config から読み出して出力する。空の場合はエラーとする。
-  * @return {String}  フォルダの ID
-  */
-function folderNameDecision(){
-  let folderName = "";
-  const folderNameDef = configs.getObject("folderName");
-  if(folderNameDef === null){
-    folderName = configs.get( "folderName");
-  }else{
-    folderName = engine.findData(folderNameDef);
-  }
-  if(folderName === "" || folderName === null){
-    throw "Folder Name is empty";
-  }
-  return folderName;
-}
-
-/**
-  * フォルダを作成する。
+  * フォルダを削除する。
   * @param {String} token  OAuth2 トークン
-  * @param {String} parentFolderId  親フォルダの ID
-  * @param {String} folderName  作成するフォルダの名前
-  * @param {Array<String>} createdFolderData  アップロードしたファイルの情報を格納する配列
-  *//me/drive/items/{item-id}
-function create(token,parentFolderId,folderName,createdFolderData){
-  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + parentFolderId + "/children";
-  const body = {
-    "name": folderName,
-    "folder":{},
-    "@microsoft.graph.conflictBehavior": "fail"
-    //重複時の振る舞いを決めること
-  }
+  * @param {String} id  アイテムの ID
+  */
+function delete(token,id){
+  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${id}`;
   let response = httpClient.begin()
     .bearer(token)
-    .body(JSON.stringify(body), "application/json; charset=UTF-8")
-    .post(url);
-  //when error thrown
+    .delete(url);
+  
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
   if (status >= 300) {
-    throw `failed to create: ${folderName} \n status: ${status} \n ${responseJson}`;
+    //when error thrown
+    throw `failed to delete: ${id} \n status: ${status} \n ${responseJson}`;
   }
-  engine.log("---POST request---");
-  engine.log(`status: ${status}`);
-  engine.log(responseJson);
-  const json = JSON.parse(responseJson);
-
-  createdFolderData[0] = json.id;
-  createdFolderData[1] = json.webUrl;
-}
-
-/**
-  * アップロードしたデータのIDとURLをデータ項目に出力する。
-  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
-  * @param {String} createdFolderData  アップロードしたファイルの情報が格納されている文字列
-  */
-function setData(dataDef,createdFolderData){
-  if(dataDef !==  null){
-    engine.setData(dataDef,createdFolderData);
-  }
+  engine.log(`Item ID: ${id});
+  engine.log("delete successful");
 }
   ]]>
 </script>
