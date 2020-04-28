@@ -15,13 +15,13 @@
     <label>C2: File type data item whose attached files will be uploaded</label>
     <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
   </config>
-  <config name="uploadedFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C3: Folder ID that files will be uploaded (Root folder if blank)</label>
-    <label locale="ja">C3: ファイルをアップロードするフォルダの ID (指定がない場合は、ルートフォルダ)</label>
+  <config name="uploadedFolderPath" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder Path files will be uploaded (Root folder if blank)</label>
+    <label locale="ja">C3: ファイルをアップロードするフォルダのパス (指定がない場合は、ルートフォルダ)</label>
   </config>
-  <config name="fileId" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data item that will save uploaded file ids</label>
-    <label locale="ja">C4: ファイル ID を保存する文字型データ項目</label>
+  <config name="filePath" form-type="SELECT" select-data-type="STRING">
+    <label>C4: String type data item that will save uploaded file paths</label>
+    <label locale="ja">C4: ファイルパス を保存する文字型データ項目</label>
   </config>
   <config name="fileUrl" form-type="SELECT" select-data-type="STRING">
     <label>C5: String type data item that will save uploaded file urls</label>
@@ -47,55 +47,58 @@ main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("OAuth2");
-  const idDataDef = configs.getObject("fileId");
+  const pathDataDef = configs.getObject("filePath");
   const urlDataDef = configs.getObject("fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
   const token = httpClient.getOAuth2Token( oauth2 );
-  const folderId = folderIdDecision();
+  const folderPath = folderPathDecision();
   const files = engine.findData(configs.getObject("uploadedFile")  );
   if (files === null) {
-    setData(idDataDef,[""]);
+    setData(pathDataDef,[""]);
     setData(urlDataDef,[""]);
     return;
   } 
   
   //// == 演算 / Calculating ==
 
-  fileCheck(files,idDataDef,urlDataDef);
-  let uploadedFileData = [[],[]]; //0:ID,1:URL
+  fileCheck(files,pathDataDef,urlDataDef);
+  let uploadedFileData = [[],[]]; //0:Path,1:URL
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
     if(files.get(i).getLength() > limitSize){
       //over 4MB
-      processLargeFile(token,files.get(i),folderId,uploadedFileData);
+      processLargeFile(token,files.get(i),folderPath,uploadedFileData);
     }else{
       //under 4MB
-      upload(token,files.get(i),folderId,uploadedFileData);
+      upload(token,files.get(i),folderPath,uploadedFileData);
     }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
-  setData(idDataDef,uploadedFileData[0]);
+  setData(pathDataDef,uploadedFileData[0]);
   setData(urlDataDef,uploadedFileData[1]);
 }
 
 /**
-  * フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
-  * @return {String}  フォルダの ID
+  * フォルダのフルパスをconfigから読み出して出力する。空の場合は"root:/"とする。
+  * @return {String}  フォルダのパス(先頭に"root:/")
   */
-function folderIdDecision(){
-  let folderId = "";
-  const folderIdDef = configs.getObject("uploadedFolderId");
-  if(folderIdDef === null){
-    folderId = configs.get( "uploadedFolderId");
+function folderPathDecision(){
+  let folderPath = "";
+  const folderPathDef = configs.getObject("uploadedFolderPath");
+  if(folderPathDef === null){
+    folderPath = configs.get( "uploadedFolderPath");
   }else{
-    folderId = engine.findData(folderIdDef);
+    folderPath = engine.findData(folderPathDef);
   }
-  if(folderId === "" || folderId === null){
-    //when folder id isn't set, set "root"
-    folderId = "root";
+  if(folderPath === "" || folderPath === null){
+    //when folder path isn't set, set ""
+    folderPath = "drive/root:";
+  }else{
+    //add "drive/root:/" before path
+    folderPath = "drive/root:/" + folderPath;
   }
-  return folderId;
+  return folderPath;
 }
 
 /**
@@ -106,9 +109,9 @@ function folderIdDecision(){
   * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   */
-function fileCheck(files,idDataDef,urlDataDef){
+function fileCheck(files,pathDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
-  fileNumCheck(idDataDef,fileNum);
+  fileNumCheck(pathDataDef,fileNum);
   fileNumCheck(urlDataDef,fileNum);
 
   let requestNum = 0;
@@ -146,26 +149,21 @@ function fileNumCheck(dataDef,fileNum){
   * @param {String} folderId  アップロード先フォルダの ID
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   */
-function upload(token,file,folderId,uploadedFileData){
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${folderPath}:/${encodeURIComponent(file.getName())}:/content`;
+function upload(token,file,folderPath,uploadedFileData){
+  const url = `https://graph.microsoft.com/v1.0/me/${folderPath}/${encodeURIComponent(file.getName())}:/content`;
   let response = httpClient.begin()
     .bearer(token)
     .body(file)
     .put(url);
   //when error thrown
-  const responseJson = response.getResponseAsString();
+  const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
   if (status >= 300) {
     throw `failed to upload
     status: ${status}
-    ${response.getResponseAsString()}`;
+    ${responseStr}`;
   }
-  engine.log(`status: ${status}`);
-  engine.log(responseJson + "\n");
-  const json = JSON.parse(responseJson);
-  //if not first file,enter id/url to new line
-  uploadedFileData[0].push(json.id);
-  uploadedFileData[1].push(json.webUrl);
+  outputDataSet(status,responseStr,uploadedFileData);
 }
 
 /**
@@ -175,8 +173,8 @@ function upload(token,file,folderId,uploadedFileData){
   * @param {String} folderId  アップロード先のフォルダの ID
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   */
-function processLargeFile(token,file,folderId,uploadedFileData){
-  const upUrl = createSession(token,file.getName(),folderId);
+function processLargeFile(token,file,folderPath,uploadedFileData){
+  const upUrl = createSession(token,file.getName(),folderPath);
   let range = 0;
   const fileSize = file.getLength();
 
@@ -193,8 +191,8 @@ function processLargeFile(token,file,folderId,uploadedFileData){
   * @param {String} folderId  アップロード先のフォルダの ID
   * @return {String}  アップロード先 URL
   */
-function createSession(token,fileName,folderId){
-  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${folderId}:/${encodeURIComponent(fileName)}:/createUploadSession`;
+function createSession(token,fileName,folderPath){
+  const url = `https://graph.microsoft.com/v1.0/me/${folderPath}/${encodeURIComponent(fileName)}:/createUploadSession`;
   const body = {
     "item": {
       "@microsoft.graph.conflictBehavior": "replace",
@@ -238,20 +236,31 @@ function uploadLarge(upUrl,range,packet,fileSize,uploadedFileData){
   if(status >= 300){
     throw `failed to upload
     status: ${status}
-    ${response.getResponseAsString()}`;
+    ${responseStr}`;
   }else if(status === 202){
     range += packetSize;
     return range;
   }else{
-    const json = JSON.parse(responseStr);
-    engine.log(`status: ${status}`);
-    engine.log(responseStr + "\n");
-    uploadedFileData[0].push(json.id);
-    uploadedFileData[1].push(json.webUrl);
+    outputDataSet(status,responseStr,uploadedFileData);
     return range;
   }
 }
 
+/**
+  * ログを出力し、アップロードしたデータのIDとURLを配列にセットする。
+  * @param {Number} status  送信時のステータスコード
+  * @param {String} responseStr  送信時のレスポンスをテキスト出力したもの
+  * @param {Array<String>} uploadedFileData  アップロードしたファイルの情報が格納される配列
+  */
+function outputDataSet(status,responseStr,uploadedFileData){
+  engine.log(`status: ${status}`);
+  engine.log(responseStr + "\n");
+  const json = JSON.parse(responseStr);
+  //if not first file,enter id/url to new line
+  const path = json.parentReference.path + "/" + json.name;
+  uploadedFileData[0].push(path.slice(13));
+  uploadedFileData[1].push(json.webUrl);
+}
 /**
   * アップロードしたデータのIDとURLをデータ項目に出力する。
   * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
