@@ -4,36 +4,36 @@
 <label>Box: Copy File</label>
 <label locale="ja">Box: ファイルコピー</label>
 
-<last-modified>2020-05-04</last-modified>
+<last-modified>2020-05-07</last-modified>
 
-<summary>Creates a copy of a file into the Folder</summary>
+<summary>Copy the File and save it in the specified Folder</summary>
 <summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します</summary>
 
-<help-page-url>https://support.questetra.com/addons/Box-filescopy/</help-page-url>
-<help-page-url locale="ja">https://support.questetra.com/ja/addons/Box-filescopy/</help-page-url>
+<help-page-url>https://support.questetra.com/addons/box-file-copy/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/box-file-copy/</help-page-url>
 
 <configs>
-  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Config Name</label>
     <label locale="ja">C1: OAuth2設定名</label>
   </config>
-  <config name="SourceFileId" required="true" form-type="TEXTFIELD" el-enabled="true">
+  <config name="conf_SourceFileId" required="true" form-type="TEXTFIELD" el-enabled="true">
     <label>C2: Source File ID</label>
     <label locale="ja">C2: コピー元ファイルの ID</label>
   </config>
-  <config name="FolderId" form-type="TEXTFIELD" el-enabled="true">
+  <config name="conf_FolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Folder ID to store (When empty, create in origin folder)</label>
-    <label locale="ja">C3: 保存先フォルダの ID (空白の場合元ファイルと同じ場所に作成されます)</label>
+    <label locale="ja">C3: 保存先フォルダの ID (空白の場合、元ファイルと同じ場所に作成されます)</label>
   </config>
-  <config name="NewFileName" form-type="TEXTFIELD" el-enabled="true">
+  <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
     <label>C4: New File Name (When empty, named automatically)</label>
-    <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合自動的に設定されます)</label>
+    <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合、自動的に設定されます)</label>
   </config>
-  <config name="DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+  <config name="conf_DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C5: STRING DATA for New File ID </label>
     <label locale="ja">C5: 新しいファイルの ID を保存するデータ項目</label>
   </config>
-  <config name="DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+  <config name="conf_DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C6: STRING DATA for New File Viewing URL </label>
     <label locale="ja">C6: 新しいファイルの表示 URL を保存するデータ項目</label>
   </config>
@@ -44,16 +44,23 @@
 main();
 function main(){
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get( "OAuth2" ) + "";
-  const fileId = configs.get( "SourceFileId" ) + "";
-  const folderId = configs.get( "FolderId" ) + "";
-  const saveIdData = configs.get( "DataForId" ) + "";
-  const saveUrlData = configs.get( "DataForUrl" ) + "";
-  const newFileName = configs.get( "NewFileName" ) + "";
+  const oauth2 = configs.get( "conf_OAuth2" ) + "";
+  const fileId = configs.get( "conf_SourceFileId" ) + "";
 
   if(fileId === "" || fileId === null){
     throw "No Source File ID";
-  }
+    }
+
+  const token  = httpClient.getOAuth2Token( oauth2 );
+  const json2 = getFolderID(token, fileId);
+  const folderId = folderIdDecision();
+
+  const saveIdData = configs.get( "conf_DataForId" ) + "";
+  const saveUrlData = configs.get( "conf_DataForUrl" ) + "";
+  const newFileName = configs.get( "conf_NewFileName" ) + "";
+
+
+  
 
   const reg = new RegExp('[/\]');
   if(newFileName.length>255){
@@ -62,18 +69,42 @@ function main(){
     throw "Invalid File Name";
   }
 
-  const token  = httpClient.getOAuth2Token( oauth2 );
-  const json2 = getFolderID(token, fileId);
   const json = copyFile(token, folderId, fileId, newFileName);
 
   if (saveIdData !== null && saveIdData !== "") {
-      engine.setDataByNumber(saveIdData, json["id"]);
+        engine.setDataByNumber(saveIdData, json);
   }
   if (saveUrlData !== null && saveUrlData !== "") {
-      engine.setDataByNumber(saveUrlData, "https://app.box.com/file/" + json["id"]);
+        engine.setDataByNumber(saveUrlData, "https://app.box.com/file/" + json);
   }
 
-  //get parent folderID of file
+
+/**
+  * フォルダのIDをconfigから読み出して出力する。空の場合は"元ファイルが配置されているフォルダ"とする。
+  * @return {String}  フォルダの ID
+  */
+function folderIdDecision(){
+  let folderId = "";
+  const folderIdDef = configs.getObject("conf_FolderId");
+  if(folderIdDef === null){
+    folderId = configs.get( "conf_FolderId");
+  }else{
+    folderId = engine.findData(folderIdDef);
+  }
+  if(folderId === "" || folderId === null){
+    //when folder id isn't set, set "same folder"
+    folderId = json2;
+  }
+  return folderId;
+}
+
+
+
+/**
+  * get parent folderID of file
+  * ファイルが配置されているフォルダのIDを取得する。
+  * @return {String}  フォルダの ID
+  */
 function getFolderID(token, fileId){
 
   let url2 = "https://api.box.com/2.0/files/";
@@ -88,28 +119,22 @@ function getFolderID(token, fileId){
     let jsonRes2 = JSON.parse(responseTxt2);
 
     engine.log(responseTxt2);
+
+    jsonRes2 = jsonRes2.parent.id;
     return jsonRes2;
       
 
 }
 
-  //copy file on Box
+  //copy file on Box  @return {String}  ファイルの ID
 function copyFile(token, folderId, fileId, newFileName) {
   let jsonReq = {};
 
-  if (folderId !== "" && folderId !== null){
     jsonReq["parent"] = {"id": folderId + '' };
-  }
-    else{
-        jsonReq["parent"] = {"id": json2["parent"].id + '' };
-        }
-
 
   if ( newFileName !== "" && newFileName !== null ){ 
     jsonReq["name"] = newFileName + '';
-  }
-
-  
+  }  
   
   let url = "https://api.box.com/2.0/files/";
     url += fileId;
@@ -140,7 +165,8 @@ function copyFile(token, folderId, fileId, newFileName) {
   
   engine.log("status:" + status);
   engine.log(responseTxt);
-  
+
+  jsonRes = jsonRes.id;  
   return jsonRes;
 }
 
@@ -168,3 +194,5 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+
+</service-task-definition>
