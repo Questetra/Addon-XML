@@ -17,25 +17,25 @@
     <label>C1: OAuth2 Config Name</label>
     <label locale="ja">C1: OAuth2設定名</label>
   </config>
-  <config name="conf_SourceFileId" required="true" form-type="TEXTFIELD" el-enabled="true">
+  <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Source File ID</label>
     <label locale="ja">C2: コピー元ファイルの ID</label>
   </config>
   <config name="conf_FolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C3: Folder ID to store (When empty, create in origin folder)</label>
+    <label>C3: Folder ID to store (The same folder of Source File if blank)</label>
     <label locale="ja">C3: 保存先フォルダの ID (空白の場合、元ファイルと同じ場所に作成されます)</label>
   </config>
   <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
-    <label>C4: New File Name (When empty, named automatically)</label>
+    <label>C4: New File Name (named automatically if blank)</label>
     <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合、自動的に設定されます)</label>
   </config>
   <config name="conf_DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C5: STRING DATA for New File ID </label>
-    <label locale="ja">C5: 新しいファイルの ID を保存するデータ項目</label>
+    <label locale="ja">C5: ファイル ID を保存する文字型データ項目</label>
   </config>
   <config name="conf_DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C6: STRING DATA for New File Viewing URL </label>
-    <label locale="ja">C6: 新しいファイルの表示 URL を保存するデータ項目</label>
+    <label locale="ja">C6: ファイル URL を保存する文字型データ項目</label>
   </config>
 </configs>
 
@@ -44,8 +44,8 @@
 main();
 function main(){
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get( "conf_OAuth2" ) + "";
-  const fileId = configs.get( "conf_SourceFileId" ) + "";
+  const oauth2 = configs.get( "conf_OAuth2" ) ;
+  const fileId = decideFileId();
 
   if(fileId === "" || fileId === null){
     throw "No Source File ID";
@@ -53,13 +53,16 @@ function main(){
 
   const token  = httpClient.getOAuth2Token( oauth2 );
   const json2 = getFolderID(token, fileId);
-  const folderId = folderIdDecision();
+  let folderId = decideFolderId();
+
+  if(folderId === "" || folderId === null){
+    //空の場合は"元ファイルが配置されているフォルダ"とする when folder id isn't set, set "same folder"
+    folderId = json2;
+    }
 
   const saveIdData = configs.get( "conf_DataForId" ) + "";
   const saveUrlData = configs.get( "conf_DataForUrl" ) + "";
   const newFileName = configs.get( "conf_NewFileName" ) + "";
-
-
   
 
   const reg = new RegExp('[/\]');
@@ -77,23 +80,38 @@ function main(){
   if (saveUrlData !== null && saveUrlData !== "") {
         engine.setDataByNumber(saveUrlData, "https://app.box.com/file/" + json);
   }
+}
+
 
 
 /**
-  * フォルダのIDをconfigから読み出して出力する。空の場合は"元ファイルが配置されているフォルダ"とする。
+  * ファイルのIDをconfigから読み出して出力する。
+  * @return {String}  ファイルの ID
+  */
+function decideFileId(){
+  let fileId = "";
+  const fileIdDef = configs.getObject("conf_SourceFileId");
+  if(fileIdDef === null){
+    fileId = configs.get( "conf_SourceFileId");
+  }else{
+    fileId = engine.findData(fileIdDef);
+  }
+  return fileId;
+}
+
+
+
+/**
+  * フォルダのIDをconfigから読み出して出力する。
   * @return {String}  フォルダの ID
   */
-function folderIdDecision(){
+function decideFolderId(){
   let folderId = "";
   const folderIdDef = configs.getObject("conf_FolderId");
   if(folderIdDef === null){
     folderId = configs.get( "conf_FolderId");
   }else{
     folderId = engine.findData(folderIdDef);
-  }
-  if(folderId === "" || folderId === null){
-    //when folder id isn't set, set "same folder"
-    folderId = json2;
   }
   return folderId;
 }
@@ -107,33 +125,31 @@ function folderIdDecision(){
   */
 function getFolderID(token, fileId){
 
-  let url2 = "https://api.box.com/2.0/files/";
-    url2 += fileId;
+  let url = "https://api.box.com/2.0/files/";
+    url += fileId;
 
-    const response2 = httpClient.begin()
+    const response = httpClient.begin()
       .bearer(token)
-      .get(url2);
+      .get(url);
 
 
-    const responseTxt2 = response2.getResponseAsString();
-    let jsonRes2 = JSON.parse(responseTxt2);
+    const responseTxt = response.getResponseAsString();
+    let jsonRes = JSON.parse(responseTxt);
 
-    engine.log(responseTxt2);
+    engine.log(responseTxt);
 
-    jsonRes2 = jsonRes2.parent.id;
-    return jsonRes2;
-      
-
+    return jsonRes.parent.id;      
 }
+
 
   //copy file on Box  @return {String}  ファイルの ID
 function copyFile(token, folderId, fileId, newFileName) {
   let jsonReq = {};
 
-    jsonReq["parent"] = {"id": folderId + '' };
+    jsonReq["parent"] = {"id": folderId };
 
   if ( newFileName !== "" && newFileName !== null ){ 
-    jsonReq["name"] = newFileName + '';
+    jsonReq["name"] = newFileName;
   }  
   
   let url = "https://api.box.com/2.0/files/";
@@ -166,11 +182,10 @@ function copyFile(token, folderId, fileId, newFileName) {
   engine.log("status:" + status);
   engine.log(responseTxt);
 
-  jsonRes = jsonRes.id;  
-  return jsonRes;
+  return jsonRes.id;
 }
 
-}
+
 ]]></script>
 
 
