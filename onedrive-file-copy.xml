@@ -3,7 +3,7 @@
 <engine-type>1</engine-type>
 <label>One Drive: Copy File</label>
 <label locale="ja">One Drive: ファイルコピー</label>
-<last-modified>2020-05-12</last-modified>
+<last-modified>2020-05-25</last-modified>
 <summary>Creates a copy of a file into the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDriveのファイルを複製し、指定フォルダに新規保存します。</summary>
 
@@ -12,25 +12,21 @@
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="sourceFilePath" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C2: Source File Path</label>
-    <label locale="ja">C2: コピー元ファイルのパス</label>
+  <config name="sourceFileSharingUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Source File Sharing URL</label>
+    <label locale="ja">C2: コピー元ファイルの共有URL</label>
   </config>
-  <config name="folderPath" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C3: Folder Path to store (If blank, copied in the same folder)</label>
-    <label locale="ja">C3: 保存先フォルダのパス (空白の場合元ファイルと同じ場所にコピーされます)</label>
+  <config name="folderSharingUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder Sharing URL to store (If blank, the same folder)</label>
+    <label locale="ja">C3: 保存先フォルダの共有URL (空白の場合元ファイルと同じ場所にコピーされます)</label>
   </config>
   <config name="newFileName" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C4: New File Name (If blank, named automatically)</label>
+    <label>C4: New File Name</label>
     <label locale="ja">C4: 新しいファイルのファイル名</label>
   </config>
-  <config name="dataForPath" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: String type data item to save new file path</label>
-    <label locale="ja">C5: 新しいファイルのパスを保存するデータ項目</label>
-  </config>
   <config name="dataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C6: String type data item to save new file URL </label>
-    <label locale="ja">C6: 新しいファイルの URL を保存するデータ項目</label>
+    <label>C5: String type data item to save new file URL </label>
+    <label locale="ja">C5: 新しいファイルの URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -39,7 +35,7 @@
 // OAuth2 config sample at [OAuth 2.0 Setting]
 // - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
 // - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
-// - Scope: https://graph.microsoft.com/Files.ReadWrite offline_access
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
 
@@ -47,23 +43,22 @@
   function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const oauth2 = configs.get( "OAuth2" );
-    const filePathDef = configs.getObject( "sourceFilePath" );
-    const folderPathDef = configs.getObject( "folderPath" );
-    const savePathDataDef = configs.getObject( "dataForPath" );
-    const saveUrlDataDef = configs.getObject( "dataForUrl" );
+    const fileSharingUrlDef = configs.getObject( "sourceFileSharingUrl" );
+    const folderSharingUrlDef = configs.getObject( "folderSharingUrl" );
     const newFileNameDef = configs.getObject( "newFileName" );
+    const saveUrlDataDef = configs.getObject( "dataForUrl" );
 
-    let filePath = configs.get( "sourceFilePath" );
-    if (filePathDef !== null){
-      filePath = engine.findData(filePathDef);
+    let fileSharingUrl = configs.get( "sourceFileSharingUrl" );
+    if (fileSharingUrlDef !== null){
+      fileSharingUrl = engine.findData(fileSharingUrlDef);
     }
-    if(filePath === "" || filePath === null){
-      throw "Source file path is empty.";
+    if(fileSharingUrl === "" || fileSharingUrl === null){
+      throw "Source file sharing URL is empty.";
     }
 
-    let folderPath = configs.get( "folderPath" );
-    if (folderPathDef !== null){
-      folderPath = engine.findData(folderPathDef);
+    let folderSharingUrl = configs.get( "folderSharingUrl" );
+    if (folderSharingUrlDef !== null){
+      folderSharingUrl = engine.findData(folderSharingUrlDef);
     }
 
     let newFileName = configs.get( "newFileName" );
@@ -75,7 +70,7 @@
     }
 
     //// == Calculating / 演算 ==
-    const driveUri = "https://graph.microsoft.com/v1.0/me/drive/";
+    const graphUri = "https://graph.microsoft.com/v1.0/"
     const token  = httpClient.getOAuth2Token( oauth2 );
     // preparing for API Request
     let apiRequest = httpClient.begin(); // HttpRequestWrapper
@@ -83,36 +78,25 @@
     // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
     apiRequest = apiRequest.bearer( token );
     // Request PATH
-    const fileObj = getFileObj( filePath, driveUri, token );
-    const fileId = fileObj.id;
-    const apiUri = driveUri + "items/" + fileId + "/copy";
+    const sourceFileObj = getObjBySharingUrl( fileSharingUrl, graphUri, token);
+    const sourceFileId = sourceFileObj.id;
+    const sourceDriveId = sourceFileObj.parentReference.driveId;
+    const apiUri = graphUri
+      + "drives/" + sourceDriveId + "/items/" + sourceFileId + "/copy";
 
     // Request BODY (JSON, Form Parameters, etc)
     let requestObj = {};
     let folderObj = null;
-    if ( folderPath !== "" && folderPath !== null ){
-      const driveId = getDriveId( driveUri, token );
-      folderObj = getFolderObj( folderPath, driveUri, token );
-      const folderId = folderObj.id;
-      requestObj.parentReference = {
-        "driveId" : driveId,
-        "id" : folderId
-      };
-    }else{ // parentReferenceを空にすれば同じフォルダにコピーされるが、明示的に同じフォルダを指定
-      let i = filePath.lastIndexOf("/");
-      if ( i < 0 ){
-        folderPath = "";
-      }else{
-        folderPath = filePath.substr(0, i); // ワークフローデータへの代入でも使用
-      }
-      const driveId = getDriveId( driveUri, token );
-      folderObj = getFolderObj( folderPath, driveUri, token ); // ワークフローデータへの代入でも使用
+    if ( folderSharingUrl !== "" && folderSharingUrl !== null ){
+      folderObj = getObjBySharingUrl( folderSharingUrl, graphUri, token );
+      const driveId = folderObj.parentReference.driveId;
       const folderId = folderObj.id;
       requestObj.parentReference = {
         "driveId" : driveId,
         "id" : folderId
       };
     }
+
     if ( newFileName !== "" && newFileName !== null ){
       requestObj.name = newFileName;
     }
@@ -128,65 +112,118 @@
     }
     engine.log(accessLog);
 
-    // ワークフローデータへの代入データの作成
-    let newFilePath = "";
-    let newFileUrl = "";
-    if ( folderPath !== "" && folderPath !== null ) {
-      newFilePath = folderPath + "/" + newFileName;
-    }else{
-      newFilePath = newFileName;
+    // コピー状況の確認
+    const location = response.getHeaderValues("Location").get(0);
+    let monitorResponseObj = getMonitorResponseObj( location );
+    let copyStatus = monitorResponseObj.status;
+    while ( copyStatus == "inProgress" ) {
+      engine.log("Copy status:" + copyStatus);
+      myWait(1000);
+      monitorResponseObj = getMonitorResponseObj( location );
+      copyStatus = monitorResponseObj.status;
     }
-    if ( folderObj !== "" && folderObj !== null) {
-      newFileUrl = folderObj.webUrl + "/" + encodeURIComponent(newFileName);
+    let newFileId = "";
+    if ( copyStatus == "completed" ) {
+      engine.log("Copy status:" + copyStatus);
+      newFileId = monitorResponseObj.resourceId;
+    } else {
+      const error = "Copy is not in progress nor completed \n status:" + copyStatus;
+      throw error;
     }
 
+    // ワークフローデータへの代入データの作成
+    const newFileUrl = getFileUrlById( newFileId, graphUri, token );
+
     //// == Data Updating / ワークフローデータへの代入 ==
-    if ( savePathDataDef !== "" && savePathDataDef !== null ){
-      engine.setData( savePathDataDef, newFilePath );
-    }
     if ( saveUrlDataDef !== "" && saveUrlDataDef !== null ){
       engine.setData( saveUrlDataDef, newFileUrl );
     }
-
   }
 
   /**
-    * OneDriveのドライブのメタデータを取得し、ドライブIDを返す
-    * @param {String} driveUri  ドライブのURI
-    * @param {String} token  OAuth2 トークン
-    * @return {String} responseObj.id  ドライブID
+    * 指定したミリ秒の間、処理を待つ（ビジー状態になる）
+    * @param {Number} msec  ミリ秒
     */
-  function getDriveId( driveUri, token ) {
+  function myWait(msec) {
+    const startTime = Date.now();
+    while ( true ) {
+        const diffTime = Date.now() - startTime;
+        if (diffTime >= msec) {
+            return;
+        }
+    }
+  }
+
+  /**
+    * OneDriveのファイルのメタデータを取得し、ファイルのURLを返す
+    * @param {String} fileId  ファイルのID
+    * @param {String} graphUri  Microsoft GraphのURI
+    * @param {String} token  OAuth2 トークン
+    * @return {String} fileUrl  ファイルのURL
+    */
+  function getFileUrlById( fileId, graphUri, token ) {
+    if (fileId === "" || fileId === null) {
+      throw "File ID is empty.";
+    }
+
     // preparing for API Request
     let apiRequest = httpClient.begin(); // HttpRequestWrapper
     // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
     // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
     apiRequest = apiRequest.bearer( token );
     // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( driveUri ); // HttpResponseWrapper
+    let response = apiRequest.get( graphUri + "me/drive/items/" + fileId ); // HttpResponseWrapper
     const httpStatus = response.getStatusCode() + "";
     let accessLog = "---GET request--- " + httpStatus + "\n";
     accessLog += response.getResponseAsString() + "\n";
     if (httpStatus >= 300) {
-      const error = "Failed to get drive \n status:" + httpStatus + "\n" + response.getResponseAsString();
+      const error = "Failed to get file \n status:" + httpStatus + "\n" + response.getResponseAsString();
       throw error;
     }
     engine.log(accessLog);
     const responseObj = JSON.parse( response.getResponseAsString() );
-    return responseObj.id;
+    const fileUrl = responseObj.webUrl;
+    return fileUrl;
   }
 
   /**
-    * OneDriveのファイルのメタデータを取得し、JSONオブジェクトを返す
-    * @param {String} filePath  ファイルのパス
-    * @param {String} driveUri  ドライブのURI
+    * copyの完了状態レポートを取得し、JSONオブジェクトを返す
+    * @param {String} location  copy応答のLocationヘッダの値（コピー操作の現在の状況を返すサービスの URL）
     * @param {String} token  OAuth2 トークン
-    * @return {Object} responseObj  ファイルのメタデータのJSONオブジェクト
+    * @return {Object} responseObj  copy完了状態レポートのJSONオブジェクト
     */
-  function getFileObj( filePath, driveUri, token ) {
-    if (filePath === "" || filePath === null) {
-      throw "File path is empty.";
+  function getMonitorResponseObj( location ) {
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( location ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    let accessLog = "---GET request--- " + httpStatus + "\n";
+    accessLog += response.getResponseAsString() + "\n";
+    if (httpStatus >= 300) {
+      const error = "Failed to get monitor \n status:" + httpStatus + "\n" + response.getResponseAsString();
+      throw error;
     }
+    engine.log(accessLog);
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    return responseObj;
+  }
+
+  /**
+    * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
+    * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+    * @param {String} sharingUrl  ファイルの共有URL
+    * @param {String} graphUri  Microsoft GraphのURI
+    * @param {String} token  OAuth2 トークン
+    * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
+    */
+  function getObjBySharingUrl( sharingUrl, graphUri, token ) {
+    if (sharingUrl === "" || sharingUrl === null) {
+      throw "Sharing URL is empty.";
+    }
+
+    // encoding sharing URL
+    let encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
     // preparing for API Request
     let apiRequest = httpClient.begin(); // HttpRequestWrapper
@@ -194,7 +231,7 @@
     // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
     apiRequest = apiRequest.bearer( token );
     // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( driveUri + "root:/" + filePath ); // HttpResponseWrapper
+    let response = apiRequest.get( graphUri + "shares/" + encodedSharingUrl + "/driveItem" ); // HttpResponseWrapper
     const httpStatus = response.getStatusCode() + "";
     let accessLog = "---GET request--- " + httpStatus + "\n";
     accessLog += response.getResponseAsString() + "\n";
@@ -208,37 +245,19 @@
   }
 
   /**
-    * OneDriveのフォルダのメタデータを取得し、JSONオブジェクトを返す
-    * @param {String} folderPath  フォルダのパス
-    * @param {String} driveUri  ドライブのURI
-    * @param {String} token  OAuth2 トークン
-    * @return {Object} responseObj  フォルダのメタデータのJSONオブジェクト
+    * 共有URLをunpadded base64url 形式にエンコードする
+    * @param {String} sharingUrl  共有URL
+    * @return {String} encodedSharingUrl  エンコードされた共有URL
     */
-  function getFolderObj( folderPath, driveUri, token ) {
-    if (folderPath === "" || folderPath === null) {
-      folderPath = "root";
-    }else{
-      folderPath = "root:/" + folderPath;
+  function encodeSharingUrl( sharingUrl ) {
+    let encodedSharingUrl = base64.encodeToUrlSafeString( sharingUrl );
+    while ( encodedSharingUrl.slice(-1) === '=' ) {
+      encodedSharingUrl = encodedSharingUrl.slice(0,-1);
     }
-
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( driveUri + folderPath ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    let accessLog = "---GET request--- " + httpStatus + "\n";
-    accessLog += response.getResponseAsString() + "\n";
-    if (httpStatus >= 300) {
-      const error = "Failed to get folder \n status:" + httpStatus + "\n" + response.getResponseAsString();
-      throw error;
-    }
-    engine.log(accessLog);
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    return responseObj;
+    encodedSharingUrl = "u!" + encodedSharingUrl;
+    return encodedSharingUrl;
   }
+
 
 ]]></script>
 
