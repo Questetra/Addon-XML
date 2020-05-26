@@ -70,9 +70,15 @@
     }
 
     //// == Calculating / 演算 ==
+    // checking the HTTP requesting limit
+    const reqLimit = httpClient.getRequestingLimit();
+    if ( reqLimit < 4 ) {
+      throw "HTTP requesting limit is fewer than required requests.";
+    }
+
+    // preparing for API Request
     const graphUri = "https://graph.microsoft.com/v1.0/"
     const token  = httpClient.getOAuth2Token( oauth2 );
-    // preparing for API Request
     let apiRequest = httpClient.begin(); // HttpRequestWrapper
     // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
     // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
@@ -88,7 +94,11 @@
     let requestObj = {};
     let folderObj = null;
     let destDriveId = sourceDriveId;
-    if ( folderUrl !== "" && folderUrl !== null ){
+    if ( folderUrl !== "" && folderUrl !== null ) {
+      // checking the HTTP requesting limit
+      if ( reqLimit < 5 ) {
+        throw "HTTP requesting limit is fewer than required requests.";
+      }
       folderObj = getObjBySharingUrl( folderUrl, graphUri, token );
       destDriveId = folderObj.parentReference.driveId;
       const folderId = folderObj.id;
@@ -98,7 +108,7 @@
       };
     }
 
-    if ( newFileName !== "" && newFileName !== null ){
+    if ( newFileName !== "" && newFileName !== null ) {
       requestObj.name = newFileName;
     }
     apiRequest = apiRequest.body( JSON.stringify( requestObj ), "application/json" );
@@ -113,21 +123,21 @@
     }
     engine.log(accessLog);
 
-    // コピー状況の確認
+    // コピー状況を確認し、完了であればファイルIDを取得
     const location = response.getHeaderValues("Location").get(0);
     let monitorResponseObj = getMonitorResponseObj( location );
     let copyStatus = monitorResponseObj.status;
-    while ( copyStatus == "inProgress" ) {
-      engine.log("Copy status:" + copyStatus);
-      myWait(1000);
-      monitorResponseObj = getMonitorResponseObj( location );
-      copyStatus = monitorResponseObj.status;
-    }
     let newFileId = "";
-    if ( copyStatus == "completed" ) {
-      engine.log("Copy status:" + copyStatus);
+    if ( copyStatus == "inProgress" ) { // 進行中の場合、C5を空文字列で上書きして正常終了
+      engine.log("Copy status:" + copyStatus + "\n" + "To retrieve copy status, GET " + location + "\n");
+      if ( saveUrlDataDef !== "" && saveUrlDataDef !== null ){
+        engine.setData( saveUrlDataDef, "" );
+      }
+      return;
+    } else if ( copyStatus == "completed" ) { // 完了の場合、ファイルIDを取得
+      engine.log("Copy status:" + copyStatus + "\n");
       newFileId = monitorResponseObj.resourceId;
-    } else {
+    } else { // 不明なステータスの場合はエラー
       const error = "Copy is not in progress nor completed \n status:" + copyStatus;
       throw error;
     }
@@ -138,20 +148,6 @@
     //// == Data Updating / ワークフローデータへの代入 ==
     if ( saveUrlDataDef !== "" && saveUrlDataDef !== null ){
       engine.setData( saveUrlDataDef, newFileUrl );
-    }
-  }
-
-  /**
-    * 指定したミリ秒の間、処理を待つ（ビジー状態になる）
-    * @param {Number} msec  ミリ秒
-    */
-  function myWait(msec) {
-    const startTime = Date.now();
-    while ( true ) {
-        const diffTime = Date.now() - startTime;
-        if (diffTime >= msec) {
-            return;
-        }
     }
   }
 
@@ -228,7 +224,7 @@
     }
 
     // encoding sharing URL
-    let encodedSharingUrl = encodeSharingUrl(sharingUrl);
+    const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
     // preparing for API Request
     let apiRequest = httpClient.begin(); // HttpRequestWrapper
