@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>OneDrive: Create Folder</label>
 <label locale="ja">OneDrive: フォルダ作成</label>
-<last-modified>2020-03-31</last-modified>
+<last-modified>2020-05-26</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>1</engine-type>
 <summary>Create a folder in the specified folder on OneDrive.</summary>
@@ -11,17 +11,17 @@
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-    <config name="parentFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C2: Parent Folder ID (Root Folder if blank)</label>
-    <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合ルートフォルダに作成されます)</label>
+    <config name="parentFolderPath" form-type="TEXTFIELD" el-enabled="true">
+    <label>C2: Parent Folder Path (Root Folder if blank)</label>
+    <label locale="ja">C2: 作成するフォルダの親フォルダのパス (空白の場合、ルートフォルダ)</label>
   </config>
   <config name="folderName" required="true" form-type="TEXTFIELD" el-enabled="true">
     <label>C3: Folder Name to create</label>
     <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
-  <config name="folderId" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data Item that will save Folder ID</label>
-    <label locale="ja">C4: フォルダ ID を保存する文字型データ項目</label>
+  <config name="folderPath" form-type="SELECT" select-data-type="STRING">
+    <label>C4: String type data item that will save created folder path</label>
+    <label locale="ja">C4: 作成したフォルダのパスを保存する文字型データ項目</label>
   </config>
   <config name="folderUrl" form-type="SELECT" select-data-type="STRING">
     <label>C5: String type data Item that will save Folder URL</label>
@@ -45,53 +45,48 @@ main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get( "OAuth2" );
-  const idDataDef = configs.getObject("folderId");
+  const pathDataDef = configs.getObject("folderPath");
   const urlDataDef = configs.getObject("folderUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const parentFolderId = parentFolderIdDecision();
+  const parentFolderPath = parentFolderPathDecision();
   const folderName = folderNameDecision();
   
   //// == 演算 / Calculating ==
-  let createdFolderData = ["",""]; //0:ID,1:URL
+  const createdFolderData = ["",""]; //0:Path,1:URL
   const token = httpClient.getOAuth2Token( oauth2 );
 
-  create(token,parentFolderId,folderName,createdFolderData);
+  create(token,parentFolderPath,folderName,createdFolderData);
   //// == ワークフローデータへの代入 / Data Updating ==
-  setData(idDataDef,createdFolderData[0]);
+  setData(pathDataDef,createdFolderData[0]);
   setData(urlDataDef,createdFolderData[1]);
 }
 
 /**
-  * 親フォルダのIDをconfigから読み出して出力する。空の場合は"root"とする。
-  * @return {String}  フォルダの ID
+  * フォルダのフルパスをconfigから読み出して出力する。空の場合は"drive/root"とする。
+  * パスは/始まりで、drive/root:は省略する。
+  * @return {String}  フォルダのパス(先頭に"drive/root:")
   */
-function parentFolderIdDecision(){
-  let folderId = "";
-  const folderIdDef = configs.getObject("parentFolderId");
-  if(folderIdDef === null){
-    folderId = configs.get( "parentFolderId");
+function parentFolderPathDecision(){
+  let folderPath = configs.get("parentFolderPath");
+
+  if(folderPath === "" || folderPath === null){
+    //when folder path isn't set, set "drive/root"
+    folderPath = "drive/root";
+    //in this method, you can't use "drive/root:". 
   }else{
-    folderId = engine.findData(folderIdDef);
+    //add "drive/root:/" before path
+    folderPath = "drive/root:" + folderPath + ":";
   }
-  if(folderId === "" || folderId === null){
-    //when parent folder id isn't set, set "root"
-    folderId = "root";
-  }
-  return folderId;
+  return folderPath;
 }
 
 /**
   * 作成するフォルダの名前を config から読み出して出力する。空の場合はエラーとする。
-  * @return {String}  フォルダの ID
+  * @return {String}  フォルダの名前
   */
 function folderNameDecision(){
-  let folderName = "";
-  const folderNameDef = configs.getObject("folderName");
-  if(folderNameDef === null){
-    folderName = configs.get( "folderName");
-  }else{
-    folderName = engine.findData(folderNameDef);
-  }
+  const folderName = configs.get("folderName");
+
   if(folderName === "" || folderName === null){
     throw "Folder Name is empty";
   }
@@ -101,12 +96,12 @@ function folderNameDecision(){
 /**
   * フォルダを作成する。
   * @param {String} token  OAuth2 トークン
-  * @param {String} parentFolderId  親フォルダの ID
+  * @param {String} parentFolderPath  親フォルダのパス
   * @param {String} folderName  作成するフォルダの名前
   * @param {Array<String>} createdFolderData  アップロードしたファイルの情報を格納する配列
   */
-function create(token,parentFolderId,folderName,createdFolderData){
-  const url = "https://graph.microsoft.com/v1.0/me/drive/items/" + parentFolderId + "/children";
+function create(token,parentFolderPath,folderName,createdFolderData){
+  const url = `https://graph.microsoft.com/v1.0/me/${encodeURIComponent(parentFolderPath)}/children`;
   const body = {
     "name": folderName,
     "folder":{},
@@ -127,13 +122,14 @@ function create(token,parentFolderId,folderName,createdFolderData){
   engine.log(`status: ${status}`);
   engine.log(responseJson);
   const json = JSON.parse(responseJson);
-
-  createdFolderData[0] = json.id;
+  const path = json.parentReference.path + "/" + json.name;
+  //removing "drive/root:" from path
+  createdFolderData[0] =path.slice(12);
   createdFolderData[1] = json.webUrl;
 }
 
 /**
-  * アップロードしたデータのIDとURLをデータ項目に出力する。
+  * アップロードしたデータのパスとURLをデータ項目に出力する。
   * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
   * @param {String} createdFolderData  アップロードしたファイルの情報が格納されている文字列
   */
