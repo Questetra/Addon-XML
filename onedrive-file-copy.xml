@@ -3,7 +3,7 @@
 <engine-type>2</engine-type>
 <label>One Drive: Copy File</label>
 <label locale="ja">One Drive: ファイルコピー</label>
-<last-modified>2020-06-01</last-modified>
+<last-modified>2020-06-02</last-modified>
 <summary>Creates a copy of a file into the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDriveのファイルを複製し、指定フォルダに新規保存します。</summary>
 <help-page-url>https://support.questetra.com/addons/onedrive-file-copy/</help-page-url>
@@ -34,119 +34,41 @@
 
 
 <script><![CDATA[
-// OAuth2 config sample at [OAuth 2.0 Setting]
-// - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
-// - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
-// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
-// - Consumer Key: (Get by Microsoft Azure Active Directory)
-// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+  // OAuth2 config sample at [OAuth 2.0 Setting]
+  // - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+  // - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
+  // - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+  // - Consumer Key: (Get by Microsoft Azure Active Directory)
+  // - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+  // グローバル変数
+  const graphUri = "https://graph.microsoft.com/v1.0/";
 
   main();
   function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const oauth2 = configs.get( "conf_OAuth2" );
-    const fileUrlDef = configs.getObject( "conf_sourceFileUrl" );
-    const folderUrlDef = configs.getObject( "conf_folderUrl" );
-    const newFileNameDef = configs.getObject( "conf_newFileName" );
+    const fileUrl = retrieveFileUrl();
+    const folderUrl = retrieveFolderUrl();
+    const newFileName = retrieveNewFileName();
     const saveUrlDataDef = configs.getObject( "conf_dataForUrl" );
-
-    let fileUrl = configs.get( "conf_sourceFileUrl" );
-    if (fileUrlDef !== null){
-      fileUrl = engine.findData(fileUrlDef);
-    }
-    if(fileUrl === "" || fileUrl === null){
-      throw `Source file URL is empty.`;
-    }
-
-    let folderUrl = configs.get( "conf_folderUrl" );
-    if (folderUrlDef !== null){
-      folderUrl = engine.findData(folderUrlDef);
-    }
-
-    let newFileName = configs.get( "conf_newFileName" );
-    if (newFileNameDef !== null){
-      newFileName = engine.findData(newFileNameDef);
-    }
-    if(newFileName === "" || newFileName === null){
-      throw `New file name is empty.`;
-    }
 
     //// == Calculating / 演算 ==
     // checking the HTTP requesting limit
-    const reqLimit = httpClient.getRequestingLimit();
-    if ( reqLimit < 4 ) {
-      throw `HTTP requesting limit is fewer than neceessary requests.`;
-    }
-
-    // preparing for API Request
-    const graphUri = "https://graph.microsoft.com/v1.0/"
+    checkHttpRequestingLimit( folderUrl );
+    // preparing token for API Requests
     const token  = httpClient.getOAuth2Token( oauth2 );
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
-    // Request PATH
-    const sourceFileObj = getObjBySharingUrl( fileUrl, graphUri, token);
-    const sourceFileId = sourceFileObj.id;
-    const sourceDriveId = sourceFileObj.parentReference.driveId;
-    const apiUri = `${graphUri}drives/${sourceDriveId}/items/${sourceFileId}/copy`;
+    // getting itemInfo for Requesting Copy and Updating Data
+    const fileInfo = getItemInfoByUrl( fileUrl, token );
+    const folderInfo = getItemInfoByUrl( folderUrl, token );
+    // sending Copy Request
+    const copyResponse = sendCopyRequest( fileInfo, folderInfo, newFileName, token );
 
-    // Request BODY (JSON, Form Parameters, etc)
-    let requestObj = {};
-    let folderObj = null;
-    let destDriveId = sourceDriveId;
-    if ( folderUrl !== "" && folderUrl !== null ) {
-      // checking the HTTP requesting limit
-      if ( reqLimit < 5 ) {
-        throw `HTTP requesting limit is fewer than necessary requests.`;
-      }
-      folderObj = getObjBySharingUrl( folderUrl, graphUri, token );
-      destDriveId = folderObj.parentReference.driveId;
-      const folderId = folderObj.id;
-      requestObj.parentReference = {
-        "driveId" : destDriveId,
-        "id" : folderId
-      };
-    }
-
-    if ( newFileName !== "" && newFileName !== null ) {
-      requestObj.name = newFileName;
-    }
-    apiRequest = apiRequest.body( JSON.stringify( requestObj ), "application/json" );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.post( apiUri ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---POST request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    if (httpStatus >= 300) {
-      const error = `Failed to copy. status: ${httpStatus}\n${response.getResponseAsString()}`;
-      throw error;
-    }
-    engine.log(accessLog);
-
-    // コピー状況を確認し、完了であればファイルIDを取得
-    const location = response.getHeaderValues("Location").get(0);
-    let monitorResponseObj = getMonitorResponseObj( location );
-    let copyStatus = monitorResponseObj.status;
-    let newFileId = "";
-    if ( copyStatus == "notStarted" || copyStatus == "inProgress" ) {
-      // 未開始または進行中の場合、C5を空文字列で上書きして正常終了
-      engine.log(`Copy status: ${copyStatus}\nTo retrieve copy status, GET ${location}\n`);
-      if ( saveUrlDataDef !== null ){
-        engine.setData( saveUrlDataDef, "" );
-      }
-      return;
-    } else if ( copyStatus == "completed" ) {
-      // 完了の場合、ファイルIDを取得
-      engine.log(`Copy status: ${copyStatus}\n`);
-      newFileId = monitorResponseObj.resourceId;
-    } else {
-      // 不明なステータスの場合はエラー
-      const error = `Copy is not in progress nor completed.\n status: ${copyStatus}\n error: ${JSON.stringify( monitorResponseObj.error )}`;
-      throw error;
-    }
+    // コピー状況を確認し、ファイルIDを取得
+    const newFileId = getNewFileId( copyResponse );
 
     // ワークフローデータへの代入データの作成
-    const newFileUrl = getFileUrlById( destDriveId, newFileId, graphUri, token );
+    const newFileUrl = getNewFileUrl( fileInfo.driveId, folderInfo.driveId, newFileId, token );
 
     //// == Data Updating / ワークフローデータへの代入 ==
     if ( saveUrlDataDef !== null ){
@@ -155,71 +77,83 @@
   }
 
   /**
-    * OneDriveのファイルのメタデータを取得し、ファイルのURLを返す
-    * @param {String} driveId  ドライブのID
-    * @param {String} fileId  ファイルのID
-    * @param {String} graphUri  Microsoft GraphのURI
-    * @param {String} token  OAuth2 トークン
-    * @return {String} fileUrl  ファイルのURL
+    * configから値を読み出し、必要に応じて値チェックを行った後、値を返す
+    * @return {String} configの値
     */
-  function getFileUrlById( driveId, fileId, graphUri, token ) {
-    if (fileId === "" || fileId === null) {
-      throw `File ID is empty.`;
+  function retrieveFileUrl() {
+    const fileUrlDef = configs.getObject( "conf_sourceFileUrl" );
+    let fileUrl = configs.get( "conf_sourceFileUrl" );
+    if ( fileUrlDef !== null ) {
+      fileUrl = engine.findData( fileUrlDef );
     }
-    if (driveId === "" || driveId === null) {
-      throw `Drive ID is empty.`;
+    if ( fileUrl === "" || fileUrl === null ) {
+      throw `Source file URL is empty.`;
     }
-
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( `${graphUri}drives/${driveId}/items/${fileId}` ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    if (httpStatus >= 300) {
-      const error = `Failed to get file. status: ${httpStatus}\n${response.getResponseAsString()}`;
-      throw error;
-    }
-    engine.log(accessLog);
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    const fileUrl = responseObj.webUrl;
     return fileUrl;
   }
 
-  /**
-    * copyの完了状態レポートを取得し、JSONオブジェクトを返す
-    * @param {String} location  copy応答のLocationヘッダの値（コピー操作の現在の状況を返すサービスの URL）
-    * @param {String} token  OAuth2 トークン
-    * @return {Object} responseObj  copy完了状態レポートのJSONオブジェクト
-    */
-  function getMonitorResponseObj( location ) {
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( location ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    if (httpStatus >= 300) {
-      const error = `Failed to get monitor. status: ${httpStatus}\n${response.getResponseAsString()}`;
-      throw error;
+  function retrieveFolderUrl() {
+    const folderUrlDef = configs.getObject( "conf_folderUrl" );
+    let folderUrl = configs.get( "conf_folderUrl" );
+    if ( folderUrlDef !== null ) {
+      folderUrl = engine.findData( folderUrlDef );
     }
-    engine.log(accessLog);
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    return responseObj;
+    return folderUrl;
+  }
+
+  function retrieveNewFileName() {
+    const newFileName = configs.get( "conf_newFileName" );
+    if ( newFileName === "" || newFileName === null ) {
+      throw `New file name is empty.`;
+    }
+    return newFileName;
+  }
+
+  /**
+    * HTTPリクエストの上限を超えないか確認する
+    * @param {String} folderUrl  コピー先フォルダのURL
+    */
+  function checkHttpRequestingLimit( folderUrl ) {
+    const reqLimit = httpClient.getRequestingLimit();
+    if ( folderUrl !== "" && folderUrl !== null ) {
+      if ( reqLimit < 5 ) {
+        throw `HTTP requesting limit is fewer than necessary requests.`;
+      }
+    } else if ( reqLimit < 4 ) {
+      throw `HTTP requesting limit is fewer than neceessary requests.`;
+    }
+  }
+
+  /**
+    * ドライブアイテムのURLからアイテム情報（ドライブIDとアイテムID）を取得し、
+    * オブジェクトで返す（URLが空の場合はドライブIDもアイテムIDも空文字列）
+    * @param {String} driveItemUrl  ドライブアイテム（ファイル、フォルダ）のURL
+    * @param {String} token  OAuth2 トークン
+    * @return {Object} itemInfo  フォルダ情報 {driveId, id}
+    */
+  function getItemInfoByUrl( driveItemUrl, token ) {
+    let itemInfo = {driveId: "", id: ""};
+    if ( driveItemUrl !== "" && driveItemUrl !== null ) {
+      // 分割代入
+      const {
+        id: id,
+        parentReference: {
+          driveId: driveId
+        }
+      } = getObjBySharingUrl( driveItemUrl, token );
+      itemInfo = {driveId: driveId, id: id};
+    }
+    return itemInfo;
   }
 
   /**
     * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
     * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
     * @param {String} sharingUrl  ファイルの共有URL
-    * @param {String} graphUri  Microsoft GraphのURI
     * @param {String} token  OAuth2 トークン
     * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
     */
-  function getObjBySharingUrl( sharingUrl, graphUri, token ) {
+  function getObjBySharingUrl( sharingUrl, token ) {
     if (sharingUrl === "" || sharingUrl === null) {
       throw `Sharing URL is empty.`;
     }
@@ -236,11 +170,11 @@
     let response = apiRequest.get( `${graphUri}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
     const httpStatus = response.getStatusCode() + "";
     const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
     if (httpStatus >= 300) {
-      const error = `Failed to get file. status: ${httpStatus}\n${response.getResponseAsString()}`;
+      const error = `Failed to get file. status: ${httpStatus}`;
       throw error;
     }
-    engine.log(accessLog);
     const responseObj = JSON.parse( response.getResponseAsString() );
     return responseObj;
   }
@@ -259,6 +193,158 @@
     return encodedSharingUrl;
   }
 
+  /**
+    * copyリクエストをPOSTし、レスポンスを返す
+    * @param {String} fileUrl  コピー元ファイルのURL
+    * @param {String} folderUrl  コピー先フォルダのURL
+    * @param {String} newFileName  新しいファイルの名前
+    * @param {String} token  OAuth2 トークン
+    * @return {HttpResponseWrapper} response  レスポンス
+    */
+  function sendCopyRequest( fileInfo, folderInfo, newFileName, token ) {
+    // preparing token for API Requests
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+    apiRequest = apiRequest.bearer( token );
+    // Request PATH
+    const apiUri = `${graphUri}drives/${fileInfo.driveId}/items/${fileInfo.id}/copy`;
+    // Request BODY (JSON, Form Parameters, etc)
+    const requestBody = generateCopyRequestBody( folderInfo, newFileName );
+    apiRequest = apiRequest.body( requestBody, "application/json" );
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.post( apiUri ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---POST request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to copy. status: ${httpStatus}`;
+      throw error;
+    }
+    return response;
+  }
+
+  /**
+    * copyリクエストのBODYを生成し、JSON文字列で返す
+    * @param {Object} folderInfo  コピー先フォルダ情報 {driveId, folderId}
+    * @param {String} newFileName  新しいファイルの名前
+    * @return {JSON String} requestBody  リクエストBODY
+    */
+  function generateCopyRequestBody( folderInfo, newFileName ) {
+    let requestBodyObj = {};
+    if ( folderInfo.driveId !== "" ) {
+      requestBodyObj.parentReference = {
+        driveId: folderInfo.driveId,
+        id: folderInfo.id
+      };
+    }
+    if ( newFileName !== "" && newFileName !== null ) {
+      requestBodyObj.name = newFileName;
+    }
+    const requestBody = JSON.stringify( requestBodyObj );
+    return requestBody;
+  }
+
+  /**
+    * コピーAPIのレスポンスからコピーの完了状態を確認し、新しいファイルのIDを返す
+    * @param {HttpResponseWrapper} copyResponse  コピーAPIのレスポンス
+    * @return {String} newFileId  新しいファイルのID
+    */
+  function getNewFileId( copyResponse ) {
+    const location = copyResponse.getHeaderValues("Location").get(0);
+    let monitorResponseObj = getMonitorResponseObj( location );
+    let copyStatus = monitorResponseObj.status;
+    let newFileId = "";
+    if ( copyStatus == "notStarted" || copyStatus == "inProgress" ) {
+      // 未開始または進行中の場合、newFileIdは空文字列のまま
+      engine.log(`Copy status: ${copyStatus}\nTo retrieve copy status, GET ${location}\n`);
+    } else if ( copyStatus == "completed" ) {
+      // 完了の場合、ファイルIDを取得
+      engine.log(`Copy status: ${copyStatus}\n`);
+      newFileId = monitorResponseObj.resourceId;
+    } else {
+      // 不明なステータスの場合はエラー
+      const error = `Copy is not in progress nor completed.\n status: ${copyStatus}`;
+      engine.log(`error: ${JSON.stringify( monitorResponseObj.error )}\n`);
+      throw error;
+    }
+    return newFileId;
+  }
+
+  /**
+    * copyの完了状態レポートを取得し、JSONオブジェクトを返す
+    * @param {String} location  copy応答のLocationヘッダの値（コピー操作の現在の状況を返すサービスの URL）
+    * @return {Object} responseObj  copy完了状態レポートのJSONオブジェクト
+    */
+  function getMonitorResponseObj( location ) {
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( location ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to get monitor. status: ${httpStatus}`;
+      throw error;
+    }
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    return responseObj;
+  }
+
+  /**
+    * 新しいファイルのURLを返す
+    * @param {String} driveIdOfFile  コピー元ファイルのドライブのID
+    * @param {String} driveIdOfFolder  コピー先フォルダのドライブID
+    * @param {String} newFileId  新しいファイルのId
+    * @param {String} token  OAuth2 トークン
+    * @return {String} newFileUrl  新しいファイルのURL
+    */
+  function getNewFileUrl( driveIdOfFile, driveIdOfFolder, newFileId, token ) {
+    let newFileUrl = "";
+    let destDriveId = driveIdOfFile;
+    if ( driveIdOfFolder !== "" ) {
+      destDriveId = driveIdOfFolder;
+    }
+    if ( newFileId !== "" ) {
+      newFileUrl = getFileUrlById( destDriveId, newFileId, token );
+    }
+    return newFileUrl;
+  }
+
+  /**
+    * OneDriveのファイルのメタデータを取得し、ファイルのURLを返す
+    * @param {String} driveId  ドライブのID
+    * @param {String} fileId  ファイルのID
+    * @param {String} token  OAuth2 トークン
+    * @return {String} fileUrl  ファイルのURL
+    */
+  function getFileUrlById( driveId, fileId, token ) {
+    if (fileId === "" || fileId === null) {
+      throw `File ID is empty.`;
+    }
+    if (driveId === "" || driveId === null) {
+      throw `Drive ID is empty.`;
+    }
+
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+    apiRequest = apiRequest.bearer( token );
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( `${graphUri}drives/${driveId}/items/${fileId}` ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to get file. status: ${httpStatus}`;
+      throw error;
+    }
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    const fileUrl = responseObj.webUrl;
+    return fileUrl;
+  }
 
 ]]></script>
 
