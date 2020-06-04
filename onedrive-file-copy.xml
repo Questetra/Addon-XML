@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>One Drive: Copy File</label>
+<label locale="ja">One Drive: ファイルコピー</label>
+<last-modified>2020-06-04</last-modified>
+<summary>Creates a copy of a file into the specified folder on OneDrive.</summary>
+<summary locale="ja">OneDriveのファイルを複製し、指定フォルダに新規保存します。</summary>
+<help-page-url>https://support.questetra.com/addons/onedrive-file-copy/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/onedrive-file-copy/</help-page-url>
+
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
+    <label>C1: OAuth2 Setting Name</label>
+    <label locale="ja">C1: OAuth2 設定名</label>
+  </config>
+  <config name="conf_sourceFileUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Source File URL</label>
+    <label locale="ja">C2: コピー元ファイルの URL</label>
+  </config>
+  <config name="conf_folderUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder URL to store (The same folder as the Source if blank)</label>
+    <label locale="ja">C3: 保存先フォルダの URL (空白の場合、元ファイルと同じ場所にコピーされます)</label>
+  </config>
+  <config name="conf_newFileName" required="true" form-type="TEXTFIELD" el-enabled="true">
+    <label>C4: New File Name</label>
+    <label locale="ja">C4: 新しいファイルのファイル名</label>
+  </config>
+  <config name="conf_dataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C5: String type data item to save new file URL </label>
+    <label locale="ja">C5: ファイル URL を保存する文字型データ項目</label>
+  </config>
+</configs>
+
+
+<script><![CDATA[
+  // OAuth2 config sample at [OAuth 2.0 Setting]
+  // - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+  // - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
+  // - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+  // - Consumer Key: (Get by Microsoft Azure Active Directory)
+  // - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+  // グローバル変数
+  const graphUri = "https://graph.microsoft.com/v1.0/";
+
+  main();
+  function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const oauth2 = configs.get( "conf_OAuth2" );
+    const fileUrl = retrieveFileUrl();
+    const folderUrl = retrieveFolderUrl();
+    const newFileName = retrieveNewFileName();
+    const saveUrlDataDef = configs.getObject( "conf_dataForUrl" );
+
+    //// == Calculating / 演算 ==
+    // checking the HTTP requesting limit
+    checkHttpRequestingLimit( folderUrl );
+    // preparing token for API Requests
+    const token  = httpClient.getOAuth2Token( oauth2 );
+    // getting itemInfo for Requesting Copy and Updating Data
+    const fileInfo = getItemInfoByUrl( fileUrl, token );
+    const folderInfo = getItemInfoByUrl( folderUrl, token );
+    // sending Copy Request
+    const copyResponse = sendCopyRequest( fileInfo, folderInfo, newFileName, token );
+
+    // コピー状況を確認し、ファイルIDを取得
+    const newFileId = getNewFileId( copyResponse );
+
+    // ワークフローデータへの代入データの作成
+    const newFileUrl = getNewFileUrl( fileInfo.driveId, folderInfo.driveId, newFileId, token );
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    if ( saveUrlDataDef !== null ){
+      engine.setData( saveUrlDataDef, newFileUrl );
+    }
+  }
+
+  /**
+    * configから値を読み出し、必要に応じて値チェックを行った後、値を返す
+    * @return {String} configの値
+    */
+  function retrieveFileUrl() {
+    const fileUrlDef = configs.getObject( "conf_sourceFileUrl" );
+    let fileUrl = configs.get( "conf_sourceFileUrl" );
+    if ( fileUrlDef !== null ) {
+      fileUrl = engine.findData( fileUrlDef );
+    }
+    if ( fileUrl === "" || fileUrl === null ) {
+      throw `Source file URL is empty.`;
+    }
+    return fileUrl;
+  }
+
+  function retrieveFolderUrl() {
+    const folderUrlDef = configs.getObject( "conf_folderUrl" );
+    let folderUrl = configs.get( "conf_folderUrl" );
+    if ( folderUrlDef !== null ) {
+      folderUrl = engine.findData( folderUrlDef );
+    }
+    return folderUrl;
+  }
+
+  function retrieveNewFileName() {
+    const newFileName = configs.get( "conf_newFileName" );
+    if ( newFileName === "" || newFileName === null ) {
+      throw `New file name is empty.`;
+    }
+    return newFileName;
+  }
+
+  /**
+    * HTTPリクエストの上限を超えないか確認する
+    * @param {String} folderUrl  コピー先フォルダのURL
+    */
+  function checkHttpRequestingLimit( folderUrl ) {
+    const reqLimit = httpClient.getRequestingLimit();
+    if ( folderUrl !== "" && folderUrl !== null ) {
+      if ( reqLimit < 5 ) {
+        throw `HTTP requesting limit is fewer than necessary requests.`;
+      }
+    } else if ( reqLimit < 4 ) {
+      throw `HTTP requesting limit is fewer than neceessary requests.`;
+    }
+  }
+
+  /**
+    * ドライブアイテムのURLからアイテム情報（ドライブIDとアイテムID）を取得し、
+    * オブジェクトで返す（URLが空の場合はドライブIDもアイテムIDも空文字列）
+    * @param {String} driveItemUrl  ドライブアイテム（ファイル、フォルダ）のURL
+    * @param {String} token  OAuth2 トークン
+    * @return {Object} itemInfo  フォルダ情報 {driveId, id}
+    */
+  function getItemInfoByUrl( driveItemUrl, token ) {
+    let itemInfo = {driveId: "", id: ""};
+    if ( driveItemUrl !== "" && driveItemUrl !== null ) {
+      // 分割代入
+      const {
+        id: id,
+        parentReference: {
+          driveId: driveId
+        }
+      } = getObjBySharingUrl( driveItemUrl, token );
+      itemInfo = {driveId: driveId, id: id};
+    }
+    return itemInfo;
+  }
+
+  /**
+    * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
+    * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+    * @param {String} sharingUrl  ファイルの共有URL
+    * @param {String} token  OAuth2 トークン
+    * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
+    */
+  function getObjBySharingUrl( sharingUrl, token ) {
+    if (sharingUrl === "" || sharingUrl === null) {
+      throw `Sharing URL is empty.`;
+    }
+
+    // encoding sharing URL
+    const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+    apiRequest = apiRequest.bearer( token );
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( `${graphUri}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to get file. status: ${httpStatus}`;
+      throw error;
+    }
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    return responseObj;
+  }
+
+  /**
+    * 共有URLをunpadded base64url 形式にエンコードする
+    * @param {String} sharingUrl  共有URL
+    * @return {String} encodedSharingUrl  エンコードされた共有URL
+    */
+  function encodeSharingUrl( sharingUrl ) {
+    let encodedSharingUrl = base64.encodeToUrlSafeString( sharingUrl );
+    while ( encodedSharingUrl.slice(-1) === '=' ) {
+      encodedSharingUrl = encodedSharingUrl.slice(0,-1);
+    }
+    encodedSharingUrl = "u!" + encodedSharingUrl;
+    return encodedSharingUrl;
+  }
+
+  /**
+    * copyリクエストをPOSTし、レスポンスを返す
+    * @param {String} fileUrl  コピー元ファイルのURL
+    * @param {String} folderUrl  コピー先フォルダのURL
+    * @param {String} newFileName  新しいファイルの名前
+    * @param {String} token  OAuth2 トークン
+    * @return {HttpResponseWrapper} response  レスポンス
+    */
+  function sendCopyRequest( fileInfo, folderInfo, newFileName, token ) {
+    // preparing token for API Requests
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+    apiRequest = apiRequest.bearer( token );
+    // Request PATH
+    const apiUri = `${graphUri}drives/${fileInfo.driveId}/items/${fileInfo.id}/copy`;
+    // Request BODY (JSON, Form Parameters, etc)
+    const requestBody = generateCopyRequestBody( folderInfo, newFileName );
+    apiRequest = apiRequest.body( requestBody, "application/json" );
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.post( apiUri ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---POST request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to copy. status: ${httpStatus}`;
+      throw error;
+    }
+    return response;
+  }
+
+  /**
+    * copyリクエストのBODYを生成し、JSON文字列で返す
+    * @param {Object} folderInfo  コピー先フォルダ情報 {driveId, folderId}
+    * @param {String} newFileName  新しいファイルの名前
+    * @return {JSON String} requestBody  リクエストBODY
+    */
+  function generateCopyRequestBody( folderInfo, newFileName ) {
+    let requestBodyObj = {};
+    if ( folderInfo.driveId !== "" ) {
+      requestBodyObj.parentReference = {
+        driveId: folderInfo.driveId,
+        id: folderInfo.id
+      };
+    }
+    if ( newFileName !== "" && newFileName !== null ) {
+      requestBodyObj.name = newFileName;
+    }
+    const requestBody = JSON.stringify( requestBodyObj );
+    return requestBody;
+  }
+
+  /**
+    * コピーAPIのレスポンスからコピーの完了状態を確認し、新しいファイルのIDを返す
+    * @param {HttpResponseWrapper} copyResponse  コピーAPIのレスポンス
+    * @return {String} newFileId  新しいファイルのID
+    */
+  function getNewFileId( copyResponse ) {
+    const location = copyResponse.getHeaderValues("Location").get(0);
+    let monitorResponseObj = getMonitorResponseObj( location );
+    let copyStatus = monitorResponseObj.status;
+    let newFileId = "";
+    if ( copyStatus === "notStarted" || copyStatus === "inProgress" ) {
+      // 未開始または進行中の場合、newFileIdは空文字列のまま
+      engine.log(`Copy status: ${copyStatus}\nTo retrieve copy status, GET ${location}\n`);
+    } else if ( copyStatus === "completed" ) {
+      // 完了の場合、ファイルIDを取得
+      engine.log(`Copy status: ${copyStatus}\n`);
+      newFileId = monitorResponseObj.resourceId;
+    } else {
+      // 不明なステータスの場合はエラー
+      const error = `Copy is not in progress nor completed.\n status: ${copyStatus}`;
+      engine.log(`error: ${JSON.stringify( monitorResponseObj.error )}\n`);
+      throw error;
+    }
+    return newFileId;
+  }
+
+  /**
+    * copyの完了状態レポートを取得し、JSONオブジェクトを返す
+    * @param {String} location  copy応答のLocationヘッダの値（コピー操作の現在の状況を返すサービスの URL）
+    * @return {Object} responseObj  copy完了状態レポートのJSONオブジェクト
+    */
+  function getMonitorResponseObj( location ) {
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( location ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to get monitor. status: ${httpStatus}`;
+      throw error;
+    }
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    return responseObj;
+  }
+
+  /**
+    * 新しいファイルのURLを返す
+    * @param {String} driveIdOfFile  コピー元ファイルのドライブのID（フォルダのドライブIDが空文字列の場合に使用）
+    * @param {String} driveIdOfFolder  コピー先フォルダのドライブID
+    * @param {String} newFileId  新しいファイルのId
+    * @param {String} token  OAuth2 トークン
+    * @return {String} newFileUrl  新しいファイルのURL
+    */
+  function getNewFileUrl( driveIdOfFile, driveIdOfFolder, newFileId, token ) {
+    let newFileUrl = "";
+    // コピー先ドライブIDを決める（フォルダのドライブIDが空文字列でなければフォルダのドライブID）
+    let destDriveId = driveIdOfFile;
+    if ( driveIdOfFolder !== "" ) {
+      destDriveId = driveIdOfFolder;
+    }
+    if ( newFileId !== "" ) {
+      newFileUrl = getFileUrlById( destDriveId, newFileId, token );
+    }
+    return newFileUrl;
+  }
+
+  /**
+    * OneDriveのファイルのメタデータを取得し、ファイルのURLを返す
+    * @param {String} driveId  ドライブのID
+    * @param {String} fileId  ファイルのID
+    * @param {String} token  OAuth2 トークン
+    * @return {String} fileUrl  ファイルのURL
+    */
+  function getFileUrlById( driveId, fileId, token ) {
+    if (fileId === "" || fileId === null) {
+      throw `File ID is empty.`;
+    }
+    if (driveId === "" || driveId === null) {
+      throw `Drive ID is empty.`;
+    }
+
+    // preparing for API Request
+    let apiRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+    apiRequest = apiRequest.bearer( token );
+    // Access to the API (POST, GET, PUT, etc)
+    let response = apiRequest.get( `${graphUri}drives/${driveId}/items/${fileId}` ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode() + "";
+    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    engine.log(accessLog);
+    if (httpStatus >= 300) {
+      const error = `Failed to get file. status: ${httpStatus}`;
+      throw error;
+    }
+    const responseObj = JSON.parse( response.getResponseAsString() );
+    const fileUrl = responseObj.webUrl;
+    return fileUrl;
+  }
+
+]]></script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADXUlEQVRYR8WXW0hUURSG/33GbC5e
+8pJJF6nM6YKUmsFAIAZSONOM4FtqL/mQVg9GhXR5iCIiEAqF9KEMsvKpi06OZoRPGaRmVoSGU4om
+aqaMzeXYOLPjTJ7R41w8k8bZLwNn1r/Wt9dee+29CSQeRHR8vVEpd7vzGTAHKKXpADYDiJnTTwEY
+IIR0u+FuYxnmCYx6uxjfSwKotE2JbuoqB0EJALkYpwBYUNQwRHbDZtKNBtMEBVBqG0ooSAUAlcjA
+i81sBPSs3ZRXE0gfEECuM94mlJb+Y2CBjBJSzTbpT/jz5RdAoTU+BGjBSgSf90EeOUz6wsU+fQBW
+cuaLg/nLhABgbs2rV3bmQm8EtHRhTXgBPNUOV/8yCk4st42BbBu/O7wAitzGmyAoE+tlWXYUtxzN
+htOcj78AeqNS4aI/Q9jneH5Ng0x1DCLkMlhZFz59m0ZZ9UfPr4jBOmQkjmtWHgC5rqGIUFIXTHih
+QI3UzVHoH7HhsCYROzZF+JgPjNqxq/iViPgAJfQo25T3wAOg1BnvUkqP+VNGKsLQXpmF5PXCXmR1
+zKJvyAqL3Yn4qHCoN0ZCHs6gvm0YxRXdS0IQQmrtTfpiD4BC2/gOANfffUbjVQ1yMtYKvnNZGJlg
+kZESDeVqGSy2WbzoHPdkpdtswcnKniUBAHQ7TIYMHmBywcEiEPfey0FSgsL7zWJzosc8jazdcQI7
+l5tiwvIbUaowTE47UfXMjMqnX4OBTDlMhlgegC62TNmgwp0z6UhLjsaqMMbzN5f25o4x5O5bhwhF
+WNBZ2mdcyDn3Gu/NloB2DpOBBAToqs7GzqRIr/j7BIu+4V9I2xqN2KhwMSlGbcsgTlV9EAXgswSW
+Bp135pQCrV3jOJSZICowb2RjXWjtHEfh9U5/OsES+BThj8daqOQyb+q/DFuRkbImJADOmKuNg+Xt
+ePOZm6NgzBehv21YfzETek0iGIZgxun2OMjeEx8yACfIv/wWLR1jAq1gGwZqROePqLE/NRZjUzOo
+ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
+FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
+TkSuQmCC
+</icon>
+
+</service-task-definition>
