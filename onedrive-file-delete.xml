@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-<label>OneDrive: Delete File / Folder</label>
-<label locale="ja">OneDrive: ファイル / フォルダ削除</label>
-<last-modified>2020-06-09</last-modified>
+<label>OneDrive for Business: Delete File / Folder</label>
+<label locale="ja">OneDrive for Business: ファイル / フォルダ削除</label>
+<last-modified>2020-06-11</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
-<summary>Delete files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one Path on each line.</summary>
-<summary locale="ja">OneDrive 上のファイル / フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつパスを書くようにしてください。</summary>
+<engine-type>2</engine-type>
+<summary>Delete files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one URL on each line.</summary>
+<summary locale="ja">OneDrive 上のファイル / フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつ URL を書くようにしてください。</summary>
 <configs>
-  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="paths" required="true" form-type="SELECT" select-data-type="STRING" >
-    <label>C2: Data Item with File / Folder Paths to delete</label>
-    <label locale="ja">C2: 削除するファイル / フォルダのパスが保存されている文字型データ項目</label>
+  <config name="conf_urls" required="true" form-type="SELECT" select-data-type="STRING">
+    <label>C2: Data Item with File / Folder URLs to delete</label>
+    <label locale="ja">C2: 削除するファイル / フォルダの URL が保存されている文字型データ項目</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/onedrive-file-delete/</help-page-url>
@@ -23,56 +23,132 @@
 // OAuth2 config sample at [OAuth 2.0 Setting]
 // - Authorization Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
 // - Token Endpoint URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
-// - Scope: https://graph.microsoft.com/Files.ReadWrite offline_access
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
-main();
 
+const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
+
+main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get("OAuth2");
-  const pathsDef = configs.getObject("paths");
-  
-  
+  const oauth2 = configs.get("conf_OAuth2");
+  const urlsDef = configs.getObject("conf_urls");
+
+
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const paths = engine.findData(pathsDef);
-  if (paths === "" || paths === null) {
-    throw "File / Folder Paths aren't set.";
+  const urls = engine.findData(urlsDef);
+  if (urls === "" || urls === null) {
+    throw "File / Folder URLs aren't set.";
   }
-  const pathArray = paths.split("\n");
-  const fileNum = pathArray.length;
-  if (fileNum > httpClient.getRequestingLimit()){
-  	throw "Number of File / Folder Paths is over the limit.";
+  const urlArray = urls.split("\n");
+  const itemNum = urlArray.length;
+  if (itemNum*2 > httpClient.getRequestingLimit()){
+  	throw "Necessary HTTP requests exceeds the limit.";
   }
   //// == 演算 / Calculating ==
   const token = httpClient.getOAuth2Token(oauth2);
-  for (let i = 0; i < fileNum; i++){
-    deleteItem(token, pathArray[i]);
+  let c = 0;
+  for (let i = 0; i < itemNum; i++){
+    if (urlArray[i] !== ""){ // 空でない場合のみ削除
+      engine.log(`item ${c}: ${urlArray[i]}\n`);
+      const itemInfo = getItemInfoByUrl(urlArray[i],token);
+      deleteItem(itemInfo,token);
+      c++;
+    }
   }
+  engine.log(`\nSuccessfully deleted ${c} items.`);
 }
 
 /**
-  * ファイル/フォルダを削除する。
+  * ドライブアイテム（ファイル/フォルダ）の URL からアイテム情報（ドライブIDとアイテムID）を取得し、
+  * オブジェクトで返す
+  * @param {String} driveItemUrl  ドライブアイテムの URL
   * @param {String} token  OAuth2 トークン
-  * @param {String} path  アイテムのパス
+  * @return {Object} itemInfo  ドライブアイテム情報 {driveId, id}
   */
-function deleteItem(token,path){
-  //paths must start with "/"
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:${encodeURIComponent(path)}`;
+function getItemInfoByUrl( driveItemUrl, token ) {
+  // 分割代入
+  const {
+    id,
+    parentReference: {
+      driveId
+    }
+  } = getObjBySharingUrl( driveItemUrl, token ); // driveItemUrlが不正ならここでエラー
+  const itemInfo = {driveId, id};
+  return itemInfo;
+}
+
+/**
+  * OneDriveのドライブアイテム（ファイル/フォルダ）のメタデータを取得し、JSONオブジェクトを返す
+  * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+  * @param {String} sharingUrl  ファイルの共有URL
+  * @param {String} token  OAuth2 トークン
+  * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
+  */
+function getObjBySharingUrl( sharingUrl, token ) {
+  if (sharingUrl === "" || sharingUrl === null) {
+    throw `Sharing URL is empty.`;
+  }
+
+  // encoding sharing URL
+  const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+
+  // preparing for API Request
+  let apiRequest = httpClient.begin(); // HttpRequestWrapper
+  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
+  apiRequest = apiRequest.bearer( token );
+  // Access to the API (POST, GET, PUT, etc)
+  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+  const httpStatus = response.getStatusCode();
+  const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+  engine.log(accessLog);
+  if (httpStatus >= 300) {
+    const error = `Failed to get drive item: ${sharingUrl}. status: ${httpStatus}`;
+    throw error;
+  }
+  const responseObj = JSON.parse( response.getResponseAsString() );
+  return responseObj;
+}
+
+/**
+  * 共有URLをunpadded base64url 形式にエンコードする
+  * @param {String} sharingUrl  共有URL
+  * @return {String} encodedSharingUrl  エンコードされた共有URL
+  */
+function encodeSharingUrl( sharingUrl ) {
+  let encodedSharingUrl = base64.encodeToUrlSafeString( sharingUrl );
+  while ( encodedSharingUrl.slice(-1) === '=' ) {
+    encodedSharingUrl = encodedSharingUrl.slice(0,-1);
+  }
+  encodedSharingUrl = "u!" + encodedSharingUrl;
+  return encodedSharingUrl;
+}
+
+/**
+  * ドライブアイテム（ファイル/フォルダ）を削除する。
+  * @param {String,String} driveId,id  ドライブアイテムのドライブID、アイテムID
+  * @param {String} token  OAuth2 トークン
+  */
+function deleteItem( {
+  driveId,
+  id
+}, token ){
+  const apiUrl = `${GRAPH_URI}drives/${driveId}/items/${id}`;
   let response = httpClient.begin()
     .bearer(token)
-    .delete(url);
-  
+    .delete(apiUrl);
+
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
+  const accessLog = `---DELETE request--- ${status}\n${responseJson}\n`;
+  engine.log(accessLog);
   if (status >= 300) {
     //when error thrown
-    throw `failed to delete: ${path}
-    status: ${status}
-    ${responseJson}`;
+    throw `Failed to delete. status: ${status}`;
   }
-  engine.log(`Item Path: ${path}`);
-  engine.log("delete successful");
+  engine.log("Successfully deleted.");
 }
   ]]>
 </script>
