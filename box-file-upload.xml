@@ -7,7 +7,7 @@
 <summary>Upload files to the specified folder on Box.</summary>
 <summary locale="ja">Box の指定フォルダにファイルをアップロードします。</summary>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
@@ -68,14 +68,19 @@ function main(){
 
   fileCheck(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
+  let requestNum = 0;
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
     if(files.get(i).getLength() > limitSize){
       //over 50MB
-      processLargeFile(token,files.get(i),folderId,uploadedFileData);
+      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,requestNum);
     }else{
       //under 50MB
+      requestNum++;
+      if(requestNum > httpClient.getRequestingLimit()){
+        throw "Number of requests is over the limit";
+      }
       upload(token,files.get(i),folderId,uploadedFileData);
     }
   }
@@ -100,7 +105,7 @@ function folderIdDecision(){
 /**
   * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
   * ファイル数、通信制限をチェック
-  * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 2)
+  * 
   * 要修正かも
   * @param {Array<File>}  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
@@ -110,19 +115,6 @@ function fileCheck(files,idDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
   fileNumCheck(idDataDef,fileNum);
   fileNumCheck(urlDataDef,fileNum);
-
-  let requestNum = 0;
-  for (let i = 0; i < fileNum; i++){
-    let size = files.get(i).getLength();
-    if(size > limitSize){
-      requestNum += (Math.ceil(size / packetMaxSize) + 1);
-    }else{
-      requestNum++;
-    }
-  }
-  if(requestNum > httpClient.getRequestingLimit()){
-    throw "Number of requests is over the limit";
-  }
 }
 
 /**
@@ -138,6 +130,7 @@ function fileNumCheck(dataDef,fileNum){
     }
   }
 }
+
 
 /**
   * 50MB以下のファイルをアップロードする。一回につき一つのみ。
@@ -177,9 +170,14 @@ function upload(token,file,folderId,uploadedFileData){
   * @param {File} file  アップロードするファイル
   * @param {String} folderId  アップロード先のフォルダのパス
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
+  * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 2)
   */
-function processLargeFile(token,file,folderId,uploadedFileData){
-  const session = createSession(token,file.getName(),folderId);
+function processLargeFile(token,file,folderId,uploadedFileData,requestNum){
+  const session = createSession(token,file,folderId);
+  requestNum += (Math.ceil(size / session.part_size + 2));
+  if(requestNum > httpClient.getRequestingLimit()){
+    throw "Number of requests is over the limit";
+  }
   const sessionId = session.id;
   const fileSize = file.getLength();
   let part;
@@ -191,8 +189,8 @@ function processLargeFile(token,file,folderId,uploadedFileData){
     partArray.push(part);
     range += part.size;
   });
-
   commitSession(sessionId,file);
+  return requestNum;
 }
 
 /**
@@ -207,7 +205,7 @@ function createSession(token,file,folderId){
   const body = {
     "item": {
       "file_name" : file.getName(),
-      "file_size" : file.getSize(),
+      "file_size" : file.getLength(),
       "folder_id" : folderId
     }
   };
@@ -238,7 +236,7 @@ function createSession(token,file,folderId){
   */
 function uploadLarge(sessionId,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
-  const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId};
+  const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}`;
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
   let sending = httpClient.begin()
     .header("content-range", rangetxt )
@@ -288,10 +286,8 @@ function outputDataSet(status,responseStr,uploadedFileData){
   engine.log(`status: ${status}`);
   engine.log(responseStr + "\n");
   const json = JSON.parse(responseStr);
-
-  const id = json.parentReference.id + "/" + json.name;
-  uploadedFileData[0].push(id.slice(12));
-  uploadedFileData[1].push(json.webUrl);
+  uploadedFileData[0].push(json.entries.id);
+  uploadedFileData[1].push(`https://app.box.com/file/${json.entries[0].id}`);
 }
 /**
   * アップロードしたデータのパスとURLをデータ項目に出力する。
