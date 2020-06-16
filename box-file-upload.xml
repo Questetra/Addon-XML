@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-
 <label>Box: Upload File</label>
 <label locale="ja">Box: ファイルアップロード</label>
-<last-modified>2020-06-02</last-modified>
+<last-modified>2020-06-16</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <summary>Upload files to the specified folder on Box.</summary>
 <summary locale="ja">Box の指定フォルダにファイルをアップロードします。</summary>
 <configs>
@@ -44,44 +43,44 @@
 // Consumer Key: (Get by box Application on box Developers)
 // Consumer Secret: (Get by box Application on box Developers)
 
-const limitSize = 4194304; //File size border of Microsoft Graph
-//20MBにする
-const packetMaxSize = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
+const limitSize = 52428800; //File size border of Microsoft Graph
+//50MB
+//const packetMaxSize = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
 
 main();
 function main(){
   //main内は最後に直す
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("OAuth2");
-  const pathDataDef = configs.getObject("filePath");
+  const idDataDef = configs.getObject("fileId");
   const urlDataDef = configs.getObject("fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
   const token = httpClient.getOAuth2Token( oauth2 );
-  const folderPath = folderPathDecision();
+  const folderId = folderIdDecision();
   const files = engine.findData(configs.getObject("uploadedFile")  );
   if (files === null) {
-    setData(pathDataDef,[""]);
+    setData(idDataDef,[""]);
     setData(urlDataDef,[""]);
     return;
   } 
   
   //// == 演算 / Calculating ==
 
-  fileCheck(files,pathDataDef,urlDataDef);
-  let uploadedFileData = [[],[]]; //0:Path,1:URL
+  fileCheck(files,idDataDef,urlDataDef);
+  let uploadedFileData = [[],[]]; //0:ID,1:URL
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
     if(files.get(i).getLength() > limitSize){
-      //over 4MB
-      processLargeFile(token,files.get(i),folderPath,uploadedFileData);
+      //over 50MB
+      processLargeFile(token,files.get(i),folderId,uploadedFileData);
     }else{
-      //under 4MB
-      upload(token,files.get(i),folderPath,uploadedFileData);
+      //under 50MB
+      upload(token,files.get(i),folderId,uploadedFileData);
     }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
-  setData(pathDataDef,uploadedFileData[0]);
+  setData(idDataDef,uploadedFileData[0]);
   setData(urlDataDef,uploadedFileData[1]);
 }
 
@@ -92,7 +91,7 @@ function main(){
 function folderIdDecision(){
   let folderId  = configs.get("uploadedFolderId");
   if(folderId === "" || folderId === null){
-    //when folder path isn't set, set "0"
+    //when folder ID isn't set, set "0"
     folderId = 0;
   }
   return folderId;
@@ -101,15 +100,15 @@ function folderIdDecision(){
 /**
   * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
   * ファイル数、通信制限をチェック
-  * 通信数=4MB以下のファイルの数 + <4MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 1)
+  * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 2)
   * 要修正かも
   * @param {Array<File>}  アップロードしようとするファイル
-  * @param {ProcessDataDefinitionView} pathDataDef  パスを保存するデータ項目の ProcessDataDefinitionView
+  * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   */
-function fileCheck(files,pathDataDef,urlDataDef){
+function fileCheck(files,idDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
-  fileNumCheck(pathDataDef,fileNum);
+  fileNumCheck(idDataDef,fileNum);
   fileNumCheck(urlDataDef,fileNum);
 
   let requestNum = 0;
@@ -141,7 +140,7 @@ function fileNumCheck(dataDef,fileNum){
 }
 
 /**
-  * 20MB以下のファイルをアップロードする。一回につき一つのみ。
+  * 50MB以下のファイルをアップロードする。一回につき一つのみ。
   * @param {String} token  OAuth2 トークン
   * @param {File} file  アップロードするファイル
   * @param {String} folderId  アップロード先フォルダのID
@@ -173,21 +172,27 @@ function upload(token,file,folderId,uploadedFileData){
 }
 
 /**
-  * 20MBを超えるファイルのアップロード処理を行う
+  * 50MBを超えるファイルのアップロード処理を行う
   * @param {String} token  OAuth2 のトークン
   * @param {File} file  アップロードするファイル
-  * @param {String} folderPath  アップロード先のフォルダのパス
+  * @param {String} folderId  アップロード先のフォルダのパス
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   */
-function processLargeFile(token,file,folderPath,uploadedFileData){
-  const upUrl = createSession(token,file.getName(),folderPath);
-  let range = 0;
+function processLargeFile(token,file,folderId,uploadedFileData){
+  const session = createSession(token,file.getName(),folderId);
+  const sessionId = session.id;
   const fileSize = file.getLength();
-
-  fileRepository.readFile(file, packetMaxSize, function(packet){
+  let part;
+  let partArray = [];
+  let range = 0;
+  fileRepository.readFile(file, session.part_size, function(packet){
     //upload each fragment of file
-    range = uploadLarge(upUrl,range,packet,fileSize,uploadedFileData);
+    part = uploadLarge(sessionId,range,packet,fileSize,uploadedFileData);
+    partArray.push(part);
+    range += part.size;
   });
+
+  commitSession(sessionId,file);
 }
 
 /**
@@ -195,7 +200,7 @@ function processLargeFile(token,file,folderPath,uploadedFileData){
   * @param {String} token  OAuth2 のトークン
   * @param {String} fileName  アップロードするファイルのファイル名
   * @param {String} folderId  アップロード先のフォルダのID
-  * @return {String}  アップロード先 URL
+  * @return {JSON Object}  アップロードセッション
   */
 function createSession(token,file,folderId){
   const url = "https://upload.box.com/api/2.0/files/upload_sessions";
@@ -218,26 +223,26 @@ function createSession(token,file,folderId){
     status: ${status}
     ${jsonStr}`;
   }
-  return JSON.parse(jsonStr).id;
+  return JSON.parse(jsonStr);
 }
 
 /**
-  * 4MBを超えるファイルについて、各部分のアップロードを実行する
+  * 20MBを超えるファイルについて、各部分のアップロードを実行する
   * 要修正
-  * @param {String} upUrl  アップロードするファイルのファイル名
-  * @param {Number} range  これまでにアップロードしたサイズ
+  * @param {String} sessionId  アップロードセッションの ID
+  * @param {Number} range  range
   * @param {ByteArrayWrapper} packet  アップロードするバイナリ
   * @param {Number} fileSize  アップロードするファイルのサイズ
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
-  * @return {Object}  Upload Part
+  * @return {Object}  Uploaded Part
   */
-function uploadLarge(sessionId,part,packet,fileSize,uploadedFileData){
+function uploadLarge(sessionId,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId};
-  const rangetxt = `bytes ${part.offset}-${part.offset + packetSize - 1}/${fileSize}`;
+  const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
   let sending = httpClient.begin()
     .header("content-range", rangetxt )
-    .header("digest", part.sha1 )
+    .header("digest", crypto.subtle.digest('SHA-1', packet) ) //sha1どうする？
     .body(packet,"application/octet-stream")
     .put(url);
     
@@ -247,10 +252,7 @@ function uploadLarge(sessionId,part,packet,fileSize,uploadedFileData){
     throw `failed to upload
     status: ${status}
     ${responseStr}`;
-  }else if(status === 202){
-    return JSON.Parse(responseStr).part;
   }else{
-    outputDataSet(status,responseStr,uploadedFileData);
     return JSON.Parse(responseStr).part;
   }
 }
@@ -258,10 +260,10 @@ function uploadLarge(sessionId,part,packet,fileSize,uploadedFileData){
 /**
   * commit
  */
-function commitSession(sessionId,partArray){
+function commitSession(sessionId,file,uploadedFileData){
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}/commit`;
   let commit = httpClient.begin()
-    .header("digest", partArray[part.length - 1].sha1 )//whole fileらしいので要書き換え
+    .header("digest", crypto.subtle.digest('SHA-1', file) )//whole fileらしいので要書き換え
     //if-(none-)matchを入れるか否か
     .body(partArray,"application/application/json")
     .push(url);
@@ -272,10 +274,12 @@ function commitSession(sessionId,partArray){
     throw `failed to create upload session 
     status: ${status}
     ${responseStr}`;
+  }else{
+    outputDataSet(status,responseStr,uploadedFileData);
   }
 }
 /**
-  * ログを出力し、アップロードしたデータのPathとURLを配列にセットする。
+  * ログを出力し、アップロードしたデータのIDとURLを配列にセットする。
   * @param {Number} status  送信時のステータスコード
   * @param {String} responseStr  送信時のレスポンスをテキスト出力したもの
   * @param {Array<String>} uploadedFileData  アップロードしたファイルの情報が格納される配列
@@ -285,9 +289,8 @@ function outputDataSet(status,responseStr,uploadedFileData){
   engine.log(responseStr + "\n");
   const json = JSON.parse(responseStr);
 
-  const path = json.parentReference.path + "/" + json.name;
-  //removing "drive/root:" from path
-  uploadedFileData[0].push(path.slice(12));
+  const id = json.parentReference.id + "/" + json.name;
+  uploadedFileData[0].push(id.slice(12));
   uploadedFileData[1].push(json.webUrl);
 }
 /**
