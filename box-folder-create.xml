@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-10-21</last-modified>
+<last-modified>2020-07-06</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Box: Create Folder</label>
 <label locale="ja">Box: フォルダ作成</label>
 <summary>Create a new folder in the specified folder on Box, and save the folder ID and URL. When there is the folder having the same name, save that folder ID and URL. </summary>
@@ -16,19 +16,19 @@
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="ParentFolderId" el-enabled="true">
+  <config name="conf_ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (Root Folder if blank)</label>
     <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合ルートフォルダに作成されます)</label>
   </config>
-  <config name="FolderName" required="true" el-enabled="true">
+  <config name="conf_NewFolderName" required="true" el-enabled="true">
     <label>C3: Folder Name to create</label>
     <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
-  <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
+  <config name="conf_FolderIdItem" form-type="SELECT" select-data-type="STRING">
     <label>C4: String type data Item that will save Folder ID</label>
     <label locale="ja">C4: フォルダ ID を保存する文字型データ項目</label>
   </config>
-  <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
+  <config name="conf_WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
     <label>C5: String type data Item that will save Folder URL</label>
     <label locale="ja">C5: フォルダ URL を保存する文字型データ項目</label>
   </config>
@@ -37,38 +37,71 @@
 <script><![CDATA[
 main();
 function main(){
-  let parentFolderId = configs.get("ParentFolderId");
-  const folderName = configs.get("FolderName");
-  const reg = new RegExp('[/\]');
-  if (folderName == "" ||folderName == null) {
-    throw "Folder Name is blank";
-  }else if(folderName.length>255){
-    throw"Folder Name shoule be less than 256 characters";
-  }else if(folderName.search(reg) !== -1|| folderName.slice(-1) == " " || folderName == "." || folderName == ".."){
-    throw "Invalid Folder Name";
-  }
+  const newFolderName = configs.get("conf_NewFolderName");
+  checkNewFolderName(newFolderName);
+
+  const parentFolderId = configs.get("conf_ParentFolderId");
+  
   // get OAuth token
   const token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
-  const json = createFolder(token, parentFolderId, folderName);
-  const IdData = configs.get("FolderIdItem");
-  const UrlData = configs.get("WebViewUrlItem");
+
+  const newFolderId = createFolder(token, parentFolderId, newFolderName);
+
+  const IdData = configs.get("conf_FolderIdItem");
+  const UrlData = configs.get("conf_WebViewUrlItem");
   if (IdData !== null && IdData !== "") {
-      engine.setDataByNumber(IdData, json["id"]);
+      engine.setDataByNumber(IdData, newFolderId);
   }
   if (UrlData !== null && UrlData !== "") {
-      engine.setDataByNumber(UrlData, "https://app.box.com/folder/" + json["id"]);
+      engine.setDataByNumber(UrlData, `https://app.box.com/folder/${newFolderId}`);
   }
 }
-  //create folder on google drive
+
+
+
+/**
+  * 新しいフォルダのフォルダ名をチェックする。（サポートされていない文字が使われていないか）
+  */
+function checkNewFolderName(newFolderName){
+
+//空ではないか
+ if(newFolderName === "" ||newFolderName === null) {
+    throw "Folder Name is blank";
+  }
+
+//255文字を超えていないか
+ if(newFolderName.length > 255){
+    throw"Folder Name shoule be less than 256 characters";
+  }
+
+//「/」や「\」が含まれていないか
+ const reg = new RegExp('[/\\\\]');
+ if(newFolderName.search(reg) !== -1) {
+    throw "Invalid Folder Name";
+  }
+
+//先頭と末尾に半角スペースが使われていないか
+ if(newFolderName.slice(0,1) === " " || newFolderName.slice(-1) === " ") {
+    throw "Invalid Folder Name";
+  }
+
+//「.」や「..」ではないか
+ if(newFolderName === "." || newFolderName === ".."){
+    throw "Invalid Folder Name";
+  }
+}
+
+
+  //create folder on box
 function createFolder(token, parentFolderId, name) {
   let jsonReq = {};
   //mime type of google drive folder
   if (parentFolderId !== "" && parentFolderId !== null){
-    jsonReq["parent"] = {"id": parentFolderId + '' };
+    jsonReq["parent"] = {"id": parentFolderId };
   }else{
-    jsonReq["parent"]= {"id": 0 + '' }
+    jsonReq["parent"]= {"id": 0 };
   }
-  jsonReq["name"] = name + '';
+  jsonReq["name"] = name;
   
   const url = 'https://api.box.com/2.0/folders';
   const response = httpClient.begin()
@@ -77,26 +110,38 @@ function createFolder(token, parentFolderId, name) {
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  let jsonRes = JSON.parse(responseTxt);
+
+  engine.log(`status: ${status}`);
+  engine.log(responseTxt);
+
+  let jsonRes;
+   try {
+     jsonRes = JSON.parse(responseTxt);
+   } catch(e) {
+     engine.log("failed to parse as json");
+     throw `Failed to creat. status: ${status}`;
+   }
+
+  
+
+
   try{
     if (status === 409){
       if(jsonRes["context_info"]["conflicts"][0]["type"] === "folder"){
         jsonRes = jsonRes["context_info"]["conflicts"][0];
       }else{
-        throw "";
+        throw "Failed to create";
       }
     }else if (status >= 300) {
-      throw "";
+      throw "Failed to create";
     }
   }catch(e){
-      const error = "Failed to create \n status:" + status + "\n" + responseTxt;
+      const error = `Failed to create \n status: ${status}\n${responseTxt}`;
       throw error;
     }
   
-  engine.log("status:" + status);
-  engine.log(responseTxt);
   
-  return jsonRes;
+  return jsonRes.id;
 }
 
 ]]></script>
