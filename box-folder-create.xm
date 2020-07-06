@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-07-06</last-modified>
+<last-modified>2020-06-15</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Folder</label>
@@ -16,7 +16,7 @@
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
-  <config name="conf_ParentFolderId" el-enabled="true">
+  <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (Root Folder if blank)</label>
     <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合ルートフォルダに作成されます)</label>
   </config>
@@ -40,7 +40,7 @@ function main(){
   const newFolderName = configs.get("conf_NewFolderName");
   checkNewFolderName(newFolderName);
 
-  const parentFolderId = configs.get("conf_ParentFolderId");
+  const parentFolderId = configs.get("ParentFolderId");
   
   // get OAuth token
   const token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
@@ -49,11 +49,11 @@ function main(){
 
   const IdData = configs.get("conf_FolderIdItem");
   const UrlData = configs.get("conf_WebViewUrlItem");
-  if (IdData !== null && IdData !== "") {
+  if (IdData !== null) {
       engine.setDataByNumber(IdData, newFolderId);
   }
-  if (UrlData !== null && UrlData !== "") {
-      engine.setDataByNumber(UrlData, `https://app.box.com/folder/${newFolderId}`);
+  if (UrlData !== null) {
+      engine.setDataByNumber(UrlData, `https://app.box.com/file/${newFolderId}`);
   }
 }
 
@@ -75,7 +75,7 @@ function checkNewFolderName(newFolderName){
   }
 
 //「/」や「\」が含まれていないか
- const reg = new RegExp('[/\\\\]');
+ const reg = new RegExp('[/\]');
  if(newFolderName.search(reg) !== -1) {
     throw "Invalid Folder Name";
   }
@@ -110,19 +110,10 @@ function createFolder(token, parentFolderId, name) {
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
+  let jsonRes = JSON.parse(responseTxt);
 
   engine.log(`status: ${status}`);
   engine.log(responseTxt);
-
-  let jsonRes;
-   try {
-     jsonRes = JSON.parse(responseTxt);
-   } catch(e) {
-     engine.log("failed to parse as json");
-     throw `Failed to creat. status: ${status}`;
-   }
-
-  
 
 
   try{
