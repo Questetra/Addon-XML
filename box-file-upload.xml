@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Box: Upload File</label>
 <label locale="ja">Box: ファイルアップロード</label>
-<last-modified>2020-07-01</last-modified>
+<last-modified>2020-07-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on Box.</summary>
@@ -15,7 +15,7 @@
     <label>C2: File type data item whose attached files will be uploaded</label>
     <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
   </config>
-  <config name="uploadedFolderId" el-enabled="true">
+  <config name="uploadedFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Folder ID that files will be uploaded (Root folder if blank)</label>
     <label locale="ja">C3: ファイルをアップロードするフォルダの ID (指定がない場合は、ルートフォルダ)</label>
   </config>
@@ -94,10 +94,16 @@ function main(){
   * @return {String}  フォルダのID
   */
 function folderIdDecision(){
-  let folderId  = configs.get("uploadedFolderId");
+  let folderId;
+  const folderIdDef = configs.getObject("uploadedFolderId");
+  if(folderIdDef === null){
+    folderId = configs.get("uploadedFolderId");
+  }else{
+    folderId = engine.findData(folderIdDef);
+  }
   if(folderId === "" || folderId === null){
     //when folder ID isn't set, set "0"
-    folderId = 0;
+    folderId = "0";
   }
   return folderId;
 }
@@ -181,15 +187,15 @@ function processLargeFile(token,file,folderId,uploadedFileData,requestNum){
   const sessionId = session.id;
   const fileSize = file.getLength();
   let part;
-  let partArray = [];
+  let partObj = {"parts" : []};
   let range = 0;
   fileRepository.readFile(file, session.part_size, function(packet){
     //upload each fragment of file
-    part = uploadLarge(sessionId,range,packet,fileSize,uploadedFileData);
-    partArray.push(part);
+    part = uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData);
+    partObj.parts.push(part);
     range += part.size;
   });
-  commitSession(sessionId,file);
+  commitSession(token,sessionId,partObj,file,uploadedFileData);
   return requestNum;
 }
 
@@ -232,13 +238,13 @@ function createSession(token,file,folderId){
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   * @return {Object}  Uploaded Part
   */
-function uploadLarge(sessionId,range,packet,fileSize,uploadedFileData){
+function uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}`;
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
-  const hash = `sha=${base64.encodeToString(digest.sha1(packet));}`;
-  engine.log(hash);
+  const hash = `sha=${base64.encodeToString(digest.sha1(packet))}`;
   let sending = httpClient.begin()
+    .bearer(token)
     .header("Content-Range", rangetxt )
     .header("Digest", hash ) //sha1どうする？
     .body(packet,"application/octet-stream")
@@ -246,29 +252,31 @@ function uploadLarge(sessionId,range,packet,fileSize,uploadedFileData){
     
   const status = sending.getStatusCode();
   const responseStr = sending.getResponseAsString();
+  const json = JSON.parse(responseStr);
   if(status >= 300){
     throw `failed to upload
     status: ${status}
     ${responseStr}`;
   }else{
-    return JSON.Parse(responseStr).part;
+    return json.part;
   }
 }
 
 /**
   * commit
  */
-function commitSession(sessionId,file,uploadedFileData){
+function commitSession(token,sessionId,partObj,file,uploadedFileData){
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}/commit`;
-  const hash = digest.sha1Hex(file);
+  const hash = `sha=${base64.encodeToString(digest.sha1(file))}`;
   let commit = httpClient.begin()
-    .header("digest", hash )//whole fileらしいので要書き換え
+    .bearer(token)
+    .header("Digest", hash )
     //if-(none-)matchを入れるか否か
-    .body(partArray,"application/application/json")
-    .push(url);
+    .body(JSON.stringify(partObj),"application/json")
+    .post(url);
 
   const status = commit.getStatusCode();
-  const responseStr = sending.getResponseAsString();
+  const responseStr = commit.getResponseAsString();
   if(status >= 300){
     throw `failed to create upload session 
     status: ${status}
@@ -287,7 +295,7 @@ function outputDataSet(status,responseStr,uploadedFileData){
   engine.log(`status: ${status}`);
   engine.log(responseStr + "\n");
   const json = JSON.parse(responseStr);
-  uploadedFileData[0].push(json.entries.id);
+  uploadedFileData[0].push(json.entries[0].id);
   uploadedFileData[1].push(`https://app.box.com/file/${json.entries[0].id}`);
 }
 /**
