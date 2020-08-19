@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Box: Upload File</label>
 <label locale="ja">Box: ファイルアップロード</label>
-<last-modified>2020-08-17</last-modified>
+<last-modified>2020-08-19</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on Box.</summary>
 <summary locale="ja">Box の指定フォルダにファイルをアップロードします。</summary>
 <configs>
-  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting Name</label>
     <label locale="ja">C1: OAuth2 設定名</label>
   </config>
@@ -33,9 +33,6 @@
 
 
 <script><![CDATA[
-// Upload to box via boxAPI (ver. 20161018)
-// (c) 2016, Questetra, Inc. (the MIT License)
-
 // OAuth2 config
 // Authorization Endpoint URL: https://app.box.com/api/oauth2/authorize
 // Token Endpoint URL: https://app.box.com/api/oauth2/token
@@ -43,18 +40,18 @@
 // Consumer Key: (Get by box Application on box Developers)
 // Consumer Secret: (Get by box Application on box Developers)
 
-const limitSize = 52428800; //File size border of Box
+const SIZE_LIMIT = 52428800; //File size border of Box
 //50MB
 
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get("OAuth2");
+  const oauth2 = configs.get("conf_OAuth2");
   const idDataDef = configs.getObject("fileId");
   const urlDataDef = configs.getObject("fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
   const token = httpClient.getOAuth2Token( oauth2 );
-  const folderId = folderIdDecision();
+  const folderId = decideFolderId();
   const files = engine.findData(configs.getObject("uploadedFile")  );
   if (files === null) {
     setData(idDataDef,[""]);
@@ -64,21 +61,21 @@ function main(){
   
   //// == 演算 / Calculating ==
 
-  fileCheck(files,idDataDef,urlDataDef);
+  checkFile(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
   let requestNum = 0;
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
-    if(files.get(i).getLength() > limitSize){
-      //over 50MB
-      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,requestNum);
-    }else{
-      //under 50MB
+    //under 50MB
       requestNum++;
       if(requestNum > httpClient.getRequestingLimit()){
         throw "Number of requests is over the limit";
       }
+    if(files.get(i).getLength() > SIZE_LIMIT){
+      //over 50MB
+      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,requestNum);
+    }else{
       upload(token,files.get(i),folderId,uploadedFileData);
     }
   }
@@ -91,7 +88,7 @@ function main(){
   * フォルダのIDをconfigから読み出して出力する。空の場合は"0"とする。
   * @return {String}  フォルダのID
   */
-function folderIdDecision(){
+function decideFolderId(){
   let folderId;
   const folderIdDef = configs.getObject("uploadedFolderId");
   if(folderIdDef === null){
@@ -107,17 +104,16 @@ function folderIdDecision(){
 }
 
 /**
-  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
-  * ファイル数、通信制限をチェック
+  * アップロードしようとするファイルの数・名前が適切かどうかチェックする
   * @param {Array<File>}  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   */
-function fileCheck(files,idDataDef,urlDataDef){
+function checkFile(files,idDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
-  fileNumCheck(idDataDef,fileNum);
-  fileNumCheck(urlDataDef,fileNum);
-  fileNameCheck(files);
+  checkfileNum(idDataDef,fileNum);
+  checkfileNum(urlDataDef,fileNum);
+  checkFileName(files);
 }
 
 /**
@@ -125,7 +121,7 @@ function fileCheck(files,idDataDef,urlDataDef){
   * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
   * @param {Number} fileNum  アップロードしようとしているファイルの個数
   */
-function fileNumCheck(dataDef,fileNum){
+function checkfileNum(dataDef,fileNum){
   if(dataDef !==  null){
     //Multiple Judge
     if(dataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
@@ -134,7 +130,7 @@ function fileNumCheck(dataDef,fileNum){
   }
 }
 
-function fileNameCheck(files){
+function checkFileName(files){
   for(let i = 0; i < files.size(); i++){
     let fileName = files[i].getName();
     if(fileName.indexOf("/") !== -1 || fileName.indexOf("\\") !== -1){
@@ -168,14 +164,12 @@ function upload(token,file,folderId,uploadedFileData){
   //when error thrown
   const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
+  engine.log(responseStr)
   if (status !== 201) {
-    if (status === 409) {
-      throw "failed to upload: " + file.getName() + "\n status:" + status +"\n" + responseStr + "\n Same name file already exists.";
-    }else{
-      throw "failed to upload: " + file.getName() + "\n status:" + status + "\n" + responseStr;
-    }
+    throw `failed to upload: ${file.getName()} 
+     status: ${status}`;
   }
-  outputDataSet(status,responseStr,uploadedFileData);
+  addOutputToArray(status,uploadedFileData);
 }
 
 /**
@@ -191,7 +185,7 @@ function upload(token,file,folderId,uploadedFileData){
   */
 function processLargeFile(token,file,folderId,uploadedFileData,requestNum){
   const session = createSession(token,file,folderId);
-  requestNum += (Math.ceil(file.getLength() / session.part_size + 2));
+  requestNum += (Math.ceil(file.getLength() / session.part_size + 1));
   if(requestNum > httpClient.getRequestingLimit()){
     throw "Number of requests is over the limit";
   }
@@ -202,7 +196,7 @@ function processLargeFile(token,file,folderId,uploadedFileData,requestNum){
   let range = 0;
   fileRepository.readFile(file, session.part_size, function(packet){
     //upload each fragment of file
-    part = uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData);
+    part = uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData);
     partObj.parts.push(part);
     range += part.size;
   });
@@ -232,9 +226,9 @@ function createSession(token,file,folderId){
   const status = response.getStatusCode();
   const jsonStr = response.getResponseAsString();
   if(status >= 300){
+    engine.log(jsonStr);
     throw `failed to create upload session 
-    status: ${status}
-    ${jsonStr}`;
+    status: ${status}`;
   }
   return JSON.parse(jsonStr);
 }
@@ -249,7 +243,7 @@ function createSession(token,file,folderId){
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   * @return {Object}  Uploaded Part
   */
-function uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData){
+function uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}`;
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
@@ -257,7 +251,7 @@ function uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData){
   let sending = httpClient.begin()
     .bearer(token)
     .header("Content-Range", rangetxt )
-    .header("Digest", hash ) //sha1どうする？
+    .header("Digest", hash ) 
     .body(packet,"application/octet-stream")
     .put(url);
     
@@ -265,9 +259,9 @@ function uploadLarge(token,sessionId,range,packet,fileSize,uploadedFileData){
   const responseStr = sending.getResponseAsString();
   const json = JSON.parse(responseStr);
   if(status >= 300){
+    engine.log(responseStr);
     throw `failed to upload
-    status: ${status}
-    ${responseStr}`;
+    status: ${status}`;
   }else{
     return json.part;
   }
@@ -287,18 +281,17 @@ function commitSession(token,sessionId,partObj,file,uploadedFileData){
   let commit = httpClient.begin()
     .bearer(token)
     .header("Digest", hash )
-    //if-(none-)matchを入れるか否か
     .body(JSON.stringify(partObj),"application/json")
     .post(url);
 
   const status = commit.getStatusCode();
   const responseStr = commit.getResponseAsString();
+  engine.log(responseStr);
   if(status >= 300){
     throw `failed to create upload session 
-    status: ${status}
-    ${responseStr}`;
+    status: ${status}`;
   }else{
-    outputDataSet(status,responseStr,uploadedFileData);
+    addOutputToArray(status,uploadedFileData);
   }
 }
 /**
@@ -307,9 +300,7 @@ function commitSession(token,sessionId,partObj,file,uploadedFileData){
   * @param {String} responseStr  送信時のレスポンスをテキスト出力したもの
   * @param {Array<String>} uploadedFileData  アップロードしたファイルの情報が格納される配列
   */
-function outputDataSet(status,responseStr,uploadedFileData){
-  engine.log(`status: ${status}`);
-  engine.log(responseStr + "\n");
+function addOutputToArray(status,responseStr,uploadedFileData){
   const json = JSON.parse(responseStr);
   uploadedFileData[0].push(json.entries[0].id);
   uploadedFileData[1].push(`https://app.box.com/file/${json.entries[0].id}`);
