@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Get Record</label>
 <label locale="ja">kintone: レコード取得</label>
-<last-modified>2020-09-08</last-modified>
+<!--
+<last-modified>2020-09-11</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get values of a record in a Kintone App.</summary>
@@ -130,6 +132,11 @@ function retrieveRecordId() {
 
 /**
   * config のフィールド情報を読み出し、配列に格納する
+  * 以下の場合はエラーとする
+  * 1. フィールドコードが空で、値を保存するデータ項目が設定されている
+  * 2. フィールドコードが設定されていて、値を保存するデータ項目が設定されていない
+  * 3. 値を保存するデータ項目が重複して設定されている
+  * 4. フィールドコードが一つも設定されていない
   * @param {Array<String>} fieldCodeList  フィールドコードを格納する配列
   * @param {Array<ProcessDataDefinitionView>} fieldValueDefList  フィールドの値を格納するデータ項目の ProcessDataDefinitionView を格納する配列
   */
@@ -139,10 +146,26 @@ function retrieveFieldConfigs( fieldCodeList, fieldValueDefList ) {
     const fieldValueConfigName = `conf_fieldValue${i+1}`;
     const fieldCode = configs.get( fieldCodeConfigName );
     const fieldValueDef = configs.getObject( fieldValueConfigName );
+    if ( fieldCode === "" || fieldCode === null ) { // フィールドコードが空
+      if ( fieldValueDef !== null ) { // 値を保存するデータ項目が設定されている
+        throw `Field Code ${i+1} is empty but String type data item to save the Value is set.`;
+      } else { // 値を保存するデータ項目が設定されていない
+        continue;
+      }
+    } else { // フィールドコードが設定されている
+      if ( fieldValueDef === null ) { // 値を保存するデータ項目が設定されていない
+        throw `String type data item that will save Value ${i+1} is not set.`;
+      }
+    }
+    if ( fieldValueDefList.indexOf( fieldValueDef ) !== -1 ) { // 既に存在するデータ項目
+      throw "The same String type data item is set multiple times.";
+    }
     fieldCodeList.push( fieldCode );
     fieldValueDefList.push( fieldValueDef );
   }
-  return;
+  if ( fieldCodeList.length === 0 ) { // フィールドコードが一つも設定されていない
+    throw "No Field Code is set.";
+  }
 }
 
 /**
@@ -239,7 +262,7 @@ function getRecord( apiUri, apiToken, fieldCodeList, fieldValueList ) {
 function extractFieldValues( recordObj, fieldCodeList, fieldValueList ) {
   for ( const i in fieldCodeList ) {
     if ( !recordObj.hasOwnProperty(fieldCodeList[i]) ) { // レコード情報に一致するフィールドコードがない場合、エラー
-      throw `${fieldCodeList[i]} does not exist in the App.`;
+      throw `${fieldCodeList[i]} does not exist in the record.`;
     }
     const fieldValueObj = recordObj[fieldCodeList[i]].value;
     const toString = Object.prototype.toString; // オブジェクトクラス判別用の toString
@@ -255,7 +278,6 @@ function extractFieldValues( recordObj, fieldCodeList, fieldValueList ) {
       throw `Unable to save the value of ${fieldCodeList[i]}. Field Type ${recordObj[fieldCodeList[i]].type} is not supported.`;
     }
   }
-  return;
 }
 
 /**
@@ -263,16 +285,19 @@ function extractFieldValues( recordObj, fieldCodeList, fieldValueList ) {
   * @param {Array<ProcessDataDefinitionView>} dataDefList  データ項目の ProcessDataDefinitionView が格納された配列
   * @param {Array<String>} dataStringList  出力する文字列が格納された配列
   */
-function setDataByLists( dataDefList, dataStringList ){
+function setDataByLists( dataDefList, dataStringList ) {
   if ( dataDefList.length !== dataStringList.length ) {
     throw "Array length does not match.";
   }
   for (let i in dataDefList) {
-    if(dataDefList[i] !==  null){
+    if ( dataDefList[i] !==  null ) {
+      if ( dataDefList[i].matchDataType("STRING_TEXTFIELD") && ( dataStringList[i].indexOf('\n') !== -1) ) {
+        // 保存先データ項目が単一行で、保存する文字列に改行が含まれる場合
+        throw `Multiple-line value cannot be saved to Single-line String type data item.`;
+      }
       engine.setData( dataDefList[i], dataStringList[i] );
     }
   }
-  return;
 }
 
   ]]>
