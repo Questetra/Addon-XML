@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Box: Upload File</label>
 <label locale="ja">Box: ファイルアップロード</label>
-<last-modified>2020-08-28</last-modified>
+<last-modified>2020-09-11</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on Box.</summary>
@@ -64,16 +64,29 @@ function main(){
   checkFile(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
   let requestNum = 0;
-
+  let session[i]
   for(let i = 0; i< files.size(); i++){
-    engine.log(files.get(i).getName());
-    requestNum++;
+    if(files.get(i).getLength() > SIZE_LIMIT){
+      //over 50MB
+      session[i] = createSession(token,files.get(i),folderId);
+      const sessionId = session[i].id;
+      requestNum += (Math.ceil(files.get(i).getLength() / session[i].part_size + 2));
+      if(requestNum > httpClient.getRequestingLimit()){
+        throw "Number of requests is over the limit";
+      }
+    }else{
+      //under 50MB
+      requestNum++;
     if(requestNum > httpClient.getRequestingLimit()){
       throw "Number of requests is over the limit";
     }
+    }
+  }
+  for(let i = 0; i< files.size(); i++){
+    engine.log(files.get(i).getName());
     if(files.get(i).getLength() > SIZE_LIMIT){
       //over 50MB
-      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,requestNum);
+      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,session[i]);
     }else{
       //under 50MB
       upload(token,files.get(i),folderId,uploadedFileData);
@@ -181,12 +194,7 @@ function upload(token,file,folderId,uploadedFileData){
   * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットサイズ) + 2)
   * パケットサイズはセッション作成時に指定される
   */
-function processLargeFile(token,file,folderId,uploadedFileData,requestNum){
-  const session = createSession(token,file,folderId);
-  requestNum += (Math.ceil(file.getLength() / session.part_size + 1));
-  if(requestNum > httpClient.getRequestingLimit()){
-    throw "Number of requests is over the limit";
-  }
+function processLargeFile(token,file,folderId,uploadedFileData,session){
   const sessionId = session.id;
   const fileSize = file.getLength();
   let part;
