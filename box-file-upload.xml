@@ -64,34 +64,9 @@ function main(){
   checkFile(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
   let requestNum = 0;
-  let session = [];
-  for(let i = 0; i< files.size(); i++){
-    requestNum++;
-    if(requestNum > httpClient.getRequestingLimit()){
-      throw "Number of requests is over the limit";
-    }
-    if(files.get(i).getLength() > SIZE_LIMIT){
-      //over 50MB
-      session[i] = createSession(token,files.get(i),folderId);
-      requestNum += (Math.ceil(files.get(i).getLength() / session[i].part_size + 1));
-      if(requestNum > httpClient.getRequestingLimit()){
-        engine.log(session[i].part_size);
-        throw "Number of requests is over the limit";
-      }
-    }else{
-      session[i] = {};
-    }
-  }
-  engine.log("---upload successful---");
-  for(let i = 0; i< files.size(); i++){
-    if(files.get(i).getLength() > SIZE_LIMIT){
-      //over 50MB
-      requestNum = processLargeFile(token,files.get(i),folderId,uploadedFileData,session[i]);
-    }else{
-      //under 50MB
-      upload(token,files.get(i),folderId,uploadedFileData);
-    }
-  }
+  const session = prepareSessionsAndCheckRequestNumber(token,files,folderId);
+  uploadAllFiles(token,files.get(i),folderId,uploadedFileData,session[i]);
+
   //// == ワークフローデータへの代入 / Data Updating ==
   setData(idDataDef,uploadedFileData[0]);
   setData(urlDataDef,uploadedFileData[1]);
@@ -154,6 +129,61 @@ function checkFileName(files){
 }
 
 /**
+  * ファイル数が通信制限を超えたらエラーを出す
+  * その後、50MBを超えるファイルについてセッションを作成し、通信数を確認する
+  * 通信数が制限を超えたらエラーを出す
+  * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットサイズ) + 2)
+  * パケットサイズはセッション作成時に指定される
+  * @param {String} token  OAuth2 トークン
+  * @param {Array<File>}  アップロードしようとするファイルの配列
+  * @param {String} folderId  アップロード先フォルダのID
+  * @return {Array<Object>} アップロードセッションの配列(50MB以下のファイルについては空オブジェクト)
+  */
+function prepareSessionsAndCheckRequestNumber(token,files,folderId){
+  let requestNum = 0;
+  let session = [];
+  if(files.size() > httpClient.getRequestingLimit()){
+    throw "Number of requests is over the limit";
+  }
+  for(let i = 0; i< files.size(); i++){
+    requestNum++;
+    if(files.get(i).getLength() > SIZE_LIMIT){
+      //over 50MB
+      session[i] = createSession(token,files.get(i),folderId);
+      requestNum += (Math.ceil(files.get(i).getLength() / session[i].part_size + 1));
+    }else{
+      session[i] = {};
+    }
+  }
+  if(requestNum > httpClient.getRequestingLimit()){
+    throw "Number of requests is over the limit";
+  }
+  return session;
+}
+
+/**
+  * 各ファイルのアップロード処理を行う
+  * ファイルのサイズごとに工程は異なる
+  * @param {String} token  OAuth2 のトークン
+  * @param {Array<File>}  アップロードしようとするファイルの配列
+  * @param {String} folderId  アップロード先のフォルダのパス
+  * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
+  * @param {Array<Object>} session アップロードセッションの配列(50MB以下のファイルについては空オブジェクト)
+  */
+function uploadAllFiles(token,files,folderId,uploadedFileData,session){
+  for(let i = 0; i< files.size(); i++){
+    engine.log(files.get(i).getName());
+    if(files.get(i).getLength() > SIZE_LIMIT){
+      //over 50MB
+      processLargeFile(token,files.get(i),folderId,uploadedFileData,session[i]);
+    }else{
+      //under 50MB
+      upload(token,files.get(i),folderId,uploadedFileData);
+    }
+  }
+}
+
+/**
   * 50MB以下のファイルをアップロードする。一回につき一つのみ。
   * @param {String} token  OAuth2 トークン
   * @param {File} file  アップロードするファイル
@@ -175,11 +205,11 @@ function upload(token,file,folderId,uploadedFileData){
   //when error thrown
   const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  if (status !== 201) {
-    engine.log(`---upload failure---\n${fileName}\n${responseStr}`);
+  if (status >= 300) {
+    engine.log(` upload failure\n${responseStr}`);
     throw `failed to upload\nstatus: ${status}`;
   }
-  engine.log(file.getName());
+  engine.log("upload successful");
   addOutputToArray(responseStr,uploadedFileData);
 }
 
@@ -190,8 +220,6 @@ function upload(token,file,folderId,uploadedFileData){
   * @param {String} folderId  アップロード先のフォルダのパス
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   * @param {Object} session  アップロードセッション
-  * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットサイズ) + 2)
-  * パケットサイズはセッション作成時に指定される
   */
 function processLargeFile(token,file,folderId,uploadedFileData,session){
   const sessionId = session.id;
@@ -201,7 +229,7 @@ function processLargeFile(token,file,folderId,uploadedFileData,session){
   let range = 0;
   fileRepository.readFile(file, session.part_size, function(packet){
     //upload each fragment of file
-    part = uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData,file.getName());
+    part = uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData);
     partObj.parts.push(part);
     range += part.size;
   });
@@ -230,7 +258,7 @@ function createSession(token,file,folderId){
   const status = response.getStatusCode();
   const jsonStr = response.getResponseAsString();
   if(status >= 300){
-    engine.log(`---upload failure---\n${file.getName()}\n${jsonStr}`);
+    engine.log(` upload failure\n${jsonStr}`);
     throw `failed to create upload session \nstatus: ${status}`;
   }
   return JSON.parse(jsonStr);
@@ -246,7 +274,7 @@ function createSession(token,file,folderId){
   * @param {Array<Array<String>>} uploadedFileData  アップロードしたファイルの情報を格納する二次元配列
   * @return {Object}  Uploaded Part
   */
-function uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData,fileName){
+function uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData){
   const packetSize = packet.getLength();
   const url = `https://upload.box.com/api/2.0/files/upload_sessions/${sessionId}`;
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
@@ -262,7 +290,7 @@ function uploadLargeFile(token,sessionId,range,packet,fileSize,uploadedFileData,
   const responseStr = sending.getResponseAsString();
   const json = JSON.parse(responseStr);
   if(status >= 300){
-    engine.log(`---upload failure---\n${fileName}\n${responseStr}`);
+    engine.log(` upload failure\n${responseStr}`);
     throw `failed to upload\nstatus: ${status}`;
   }else{
     return json.part;
@@ -289,10 +317,10 @@ function commitSession(token,sessionId,partObj,file,uploadedFileData){
   const status = commit.getStatusCode();
   const responseStr = commit.getResponseAsString();
   if(status >= 300){
-    engine.log(`---upload failure---\n${file.getName()}\n${responseStr}`);
+    engine.log(` upload failure\n${responseStr}`);
     throw `failed to commit upload session \nstatus: ${status}`;
   }
-  engine.log(file.getName());
+  engine.log("upload successful");
   addOutputToArray(responseStr,uploadedFileData);
 }
 /**
