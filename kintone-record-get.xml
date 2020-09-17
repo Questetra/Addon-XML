@@ -2,7 +2,7 @@
 <label>kintone: Get Record</label>
 <label locale="ja">kintone: レコード取得</label>
 <!--
-<last-modified>2020-09-15</last-modified>
+<last-modified>2020-09-17</last-modified>
 -->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
@@ -286,9 +286,9 @@ function extractFieldValues( recordObj, fieldCodeList, fieldValueList, fieldType
 
 /**
   * データ項目に出力する
-  * @param {Array<ProcessDataDefinitionView>} dataDefList  データ項目の ProcessDataDefinitionView が格納された配列
-  * @param {Array<String>} dataStringList  出力する文字列が格納された配列
-  * @param {Array<String>} fieldTypeList  出力する文字列のフィールド型が格納された配列
+  * @param {Array<ProcessDataDefinitionView>} dataDefList  保存先データ項目の ProcessDataDefinitionView が格納された配列
+  * @param {Array<String>} dataStringList  出力するデータが格納された配列
+  * @param {Array<String>} fieldTypeList  出力するデータのフィールド型が格納された配列
   */
 function setDataByLists( dataDefList, dataStringList, fieldTypeList ) {
   if ( (dataDefList.length !== dataStringList.length) || (dataDefList.length !== fieldTypeList.length) ) {
@@ -300,45 +300,60 @@ function setDataByLists( dataDefList, dataStringList, fieldTypeList ) {
         // 保存先データ項目が改行に対応しておらず、保存する文字列に改行が含まれる場合のエラーは QBPMS のバリデーションに任せる
         engine.setData( dataDefList[i], dataStringList[i] );
       } else if ( dataDefList[i].matchDataType("DECIMAL") ) { // 保存先データ項目が数値型の場合
-        const supportedFieldTypes = [ "_ID_", "_REVISION_", "RECORD_NUMBER", "NUMBER", "CALC" ];
-        if ( supportedFieldTypes.indexOf( fieldTypeList[i] ) === -1 ) { // 数値型データ項目に保存できないフィールド型の場合
-          throw `The value of Field Type ${fieldTypeList[i]} cannot be saved to Numeric type data item.`;
-        }
-        let decimal;
-        try {
-          decimal = new java.math.BigDecimal( dataStringList[i] );
-        } catch (e) { // フィールド型が CALC や RECORD_NUMBER で、 BigDecimal に変換できない値の場合はエラー
-          throw `Returned value "${dataStringList[i]}" cannot be saved to Numeric type data item.`;
-        }
-        engine.setData( dataDefList[i], decimal );
+        convertTypeAndSetData( dataDefList[i], dataStringList[i], fieldTypeList[i], "DECIMAL", "Numeric" );
       } else if ( dataDefList[i].matchDataType("SELECT") ) { // 保存先データ項目が選択型の場合
-        const supportedFieldTypes = [ "DROP_DOWN", "RADIO_BUTTON" ];
-        if ( supportedFieldTypes.indexOf( fieldTypeList[i] ) === -1 ) { // 選択型データ項目に保存できないフィールド型の場合
-          throw `The value of Field Type ${fieldTypeList[i]} cannot be saved to Select type data item.`;
-        }
-        const select = new java.util.ArrayList();
-        select.add( dataStringList[i] );
-        // 保存先データ項目に一致する選択肢 ID がない場合のエラーは QBPMS のバリデーションに任せる
-        engine.setData( dataDefList[i], select );
+        convertTypeAndSetData( dataDefList[i], dataStringList[i], fieldTypeList[i], "SELECT", "Select" );
       } else if ( dataDefList[i].matchDataType("DATE") ) { // 保存先データ項目が日付型の場合
-        const supportedFieldTypes = [ "DATE" ];
-        if ( supportedFieldTypes.indexOf( fieldTypeList[i] ) === -1 ) { // 日付型データ項目に保存できないフィールド型の場合
-          throw `The value of Field Type ${fieldTypeList[i]} cannot be saved to Date type data item.`;
-        }
-        const date = java.sql.Date.valueOf( dataStringList[i] );
-        engine.setData( dataDefList[i], date );
+        convertTypeAndSetData( dataDefList[i], dataStringList[i], fieldTypeList[i], "DATE", "Date" );
       } else if ( dataDefList[i].matchDataType("DATETIME") ) { // 保存先データ項目が日時型の場合
-        const supportedFieldTypes = [ "DATETIME", "CREATED_TIME", "UPDATED_TIME" ];
-        if ( supportedFieldTypes.indexOf( fieldTypeList[i] ) === -1 ) { // 日時型データ項目に保存できないフィールド型の場合
-          throw `The value of Field Type ${fieldTypeList[i]} cannot be saved to Datetime type data item.`;
-        }
-        const dateFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
-        dateFormatter.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
-        const ts = new java.sql.Timestamp( dateFormatter.parse( dataStringList[i] ).getTime() );
-        engine.setData( dataDefList[i], ts );
+        convertTypeAndSetData( dataDefList[i], dataStringList[i], fieldTypeList[i], "DATETIME", "Datetime" );
       }
     }
   }
+}
+
+/**
+  * データ項目の型にしたがってデータを変換して出力する
+  * 対応しないフィールド型の場合はエラーとする
+  * 変換できない値の場合はエラーとする
+  * @param {ProcessDataDefinitionView} dataDef  保存先データ項目の ProcessDataDefinitionView
+  * @param {String} dataString  出力するデータ（変換前の文字列データ）
+  * @param {String} fieldType  出力するデータのフィールド型
+  * @param {String} dataType  保存先データ項目のデータ型
+  * @param {String} dataTypeLabel  保存先データ項目のデータ型の表示名（エラー出力用）
+  */
+function convertTypeAndSetData( dataDef, dataString, fieldType, dataType, dataTypeLabel ) {
+  const supportedFieldTypes = { // 保存先データ項目が文字型以外の場合にサポートするフィールド型
+    "DECIMAL": [ "_ID_", "_REVISION_", "RECORD_NUMBER", "NUMBER", "CALC" ],
+    "SELECT": [ "DROP_DOWN", "RADIO_BUTTON" ],
+    "DATE": [ "DATE", "CALC" ],
+    "DATETIME": [ "DATETIME", "CREATED_TIME", "UPDATED_TIME", "CALC" ]
+  };
+  if ( supportedFieldTypes[dataType].indexOf( fieldType ) === -1 ) { // 対応しないフィールド型の場合はエラー
+    throw `The value of Field Type ${fieldType} cannot be saved to ${dataTypeLabel} type data item.`;
+  }
+  let convertedData;
+  try {
+    switch (dataType) {
+      case 'DECIMAL':
+        convertedData = new java.math.BigDecimal( dataString );
+        break;
+      case 'SELECT': // 一致する選択肢 ID がない場合のエラーは QBPMS のバリデーションに任せる
+        convertedData = new java.util.ArrayList();
+        convertedData.add( dataString );
+        break;
+      case 'DATE':
+        convertedData = java.sql.Date.valueOf( dataStringList[i] );
+        break;
+      case 'DATETIME':
+        const dateFormatter = new java.text.SimpleDateFormat( "yyyy-MM-dd'T'HH:mm:ssX" );
+        convertedData = new java.sql.Timestamp( dateFormatter.parse( dataStringList[i] ).getTime() );
+        break;
+    }
+  } catch (e) { // 変換できない値の場合はエラー
+    throw `Returned value "${dataString}" cannot be saved to ${dataTypeLabel} type data item.`;
+  }
+  engine.setData( dataDef, convertedData );
 }
 
   ]]>
