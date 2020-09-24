@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download Choice Data</label>
 <label locale="ja">kintone: 選択肢データの一括取得</label>
-<!--
-<last-modified>2020-09-18</last-modified>
--->
+<last-modified>2020-09-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Download Choice Data in specified two fields from a Kintone App.</summary>
@@ -70,11 +68,14 @@ function main(){
   //// == 演算 / Calculating ==
   const apiUri = determineApiUri( domain, guestSpaceId );
   const initialParams = prepareInitialParams( appId, idField, labelField, query );
+
   const records = []; // レコードオブジェクトを格納する配列
-  // ★まずここでアプリ情報を参照し、指定した２つのフィールドの型をチェックする（value が単一行の文字列のもののみ）
   getRecords( apiUri, apiToken, initialParams, records );
-  const idList = records.map( obj => obj[idField].value );
-  const labelList = records.map( obj => obj[labelField].value );
+
+  checkRecords( records, idField, labelField );
+  const idList = records.map( record => record[idField].value );
+  const labelList = records.map( record => record[labelField].value );
+  checkValues( idList, labelList );
 
   //// == ワークフローデータへの代入 / Data Updating ==
   setData( idsDef, idList );
@@ -126,6 +127,14 @@ function isValidId( idString ) {
   return idReg.test( idString );
 }
 
+/**
+  * 初回の GET リクエストのパラメータに使用する情報を準備する
+  * @param {String} appId  アプリ ID
+  * @param {String} idField  選択肢 ID のフィールドコード
+  * @param {String} labelField  選択肢ラベルのフィールドコード
+  * @param {String} query  検索クエリ
+  * @return {Object} initialParams  リクエストのパラメータに使用する情報を格納した JSON オブジェクト
+  */
 function prepareInitialParams( appId, idField, labelField, query ) {
   if ( appId === "" || appId === null ) {
     throw "App ID is empty.";
@@ -133,8 +142,6 @@ function prepareInitialParams( appId, idField, labelField, query ) {
   if ( !isValidId(appId) ) {
     throw "Invalid App ID.";
   }
-
-  // ★query に order by や limit や改行が含まれていないかチェック
 
   const fields = [ idField, labelField ];
   // $id で並べ替えを行うため、取得フィールドに $id が含まれていなければ追加する
@@ -190,6 +197,67 @@ function getRecords( apiUri, apiToken, params, records ) {
     // params.lastRecordId を更新し、getRecords を再帰呼び出しする
     params.lastRecordId = json.records[json.records.length - 1].$id.value;
     getRecords( apiUri, apiToken, params, records );
+  }
+}
+
+/** 取得したレコード情報をチェックし、以下の場合はエラーとする
+  * 1. レコード件数が0の場合
+  * 2. レコード件数が15万件を超える場合
+  * 3. 指定したフィールドの型がサポート外の場合
+  *  サポートするフィールド型： レコードID, レコード番号, 文字列（１行）, リンク, 数値, 日付, 時刻, 日時, 計算
+  * @param {Array<Object>} records  レコードオブジェクトの配列
+  * @param {String} idField  選択肢 ID のフィールドコード
+  * @param {String} labelField  選択肢ラベルのフィールドコード
+  */
+function checkRecords( records, idField, labelField ) {
+  if ( records.length === 0 ) { // 該当するレコードが一件もなければエラー
+    throw "No Choice Data found.";
+  }
+  if ( records.length > 150000 ) { // 15万件を超える場合はエラー
+    throw "Number of Choice Data is over 150,000.";
+  }
+  const supportedFieldTypes = new Set( [ "__ID__", "RECORD_NUMBER", "SINGLE_LINE_TEXT", "LINK", "NUMBER", "DATE", "TIME", "DATETIME", "CALC" ] );
+  if ( !supportedFieldTypes.has( records[0][idField].type ) ) { // idField のフィールド型がサポート外であればエラー
+    throw `Unable to use ${idField} as Choice ID. Field Type ${records[0][idField].type} is not supported.`;
+  }
+  if ( !supportedFieldTypes.has( records[0][labelField].type ) ) { // labelField のフィールド型がサポート外であればエラー
+    throw `Unable to use ${labelField} as Choice Label. Field Type ${records[0][labelField].type} is not supported.`;
+  }
+}
+
+/** 選択肢 ID と選択肢ラベルの配列の値をチェックし、以下の場合はエラーとする
+  * 1. 空文字列や null が含まれる場合
+  * 2. idList に重複がある場合
+  * 3. 1,000文字を超えるものがある場合
+  * @param {Array<String>} idList  選択肢 ID の配列
+  * @param {Array<String>} labelList  選択肢ラベルの配列
+  */
+function checkValues( idList, labelList ) {
+  // 空文字列や null が含まれる場合はエラー
+  if ( idList.indexOf("") !== -1 || idList.indexOf(null) !== -1 ) {
+    throw "Empty data is in Choice IDs.";
+  }
+  if ( labelList.indexOf("") !== -1 || labelList.indexOf(null) !== -1 ) {
+    throw "Empty data is in Choice Labels.";
+  }
+
+  // idList に重複があればエラー
+  const idSet = new Set( idList ); // idList の重複確認用の Set
+  if ( idSet.size !== idList.length ) {
+    throw "Same values are in Choice IDs.";
+  }
+
+  // 1,000文字を超えるものがあればエラー
+  if ( idList.length !== labelList.length ) { // 次の for 文に備えて配列の長さ一致をチェック
+    throw "Array length does not match.";
+  }
+  for ( let i in idList ) {
+    if ( idList[i].length > 1000 ) {
+      throw "Unable to use string over 1,000 characters as Choice ID.";
+    }
+    if ( labelList[i].length > 1000 ) {
+      throw "Unable to use string over 1,000 characters as Choice Label.";
+    }
   }
 }
 
