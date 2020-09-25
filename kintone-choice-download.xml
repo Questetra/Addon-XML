@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download Choice Data</label>
 <label locale="ja">kintone: 選択肢データの一括取得</label>
-<last-modified>2020-09-24</last-modified>
+<last-modified>2020-09-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Download Choice Data in specified two fields from a Kintone App.</summary>
@@ -67,12 +67,15 @@ function main(){
 
   //// == 演算 / Calculating ==
   const apiUri = determineApiUri( domain, guestSpaceId );
+  checkAppId( appId );
+
+  checkFields( apiUri, apiToken, appId, idField, labelField );
+
   const initialParams = prepareInitialParams( appId, idField, labelField, query );
-
   const records = []; // レコードオブジェクトを格納する配列
-  getRecords( apiUri, apiToken, initialParams, records );
+  const requestNum = 1; // 現時点での HTTP リクエスト回数
+  getRecords( apiUri, apiToken, initialParams, records, requestNum );
 
-  checkRecords( records, idField, labelField );
   const idList = records.map( record => record[idField].value );
   const labelList = records.map( record => record[labelField].value );
   checkValues( idList, labelList );
@@ -93,12 +96,12 @@ function determineApiUri( domain, guestSpaceId ) {
   checkDomain( domain );
   let apiUri;
   if ( guestSpaceId === "" || guestSpaceId === null ) {
-    apiUri = `https://${domain}/k/v1/records.json`;
+    apiUri = `https://${domain}/k/v1/`;
   } else {
     if ( !isValidId(guestSpaceId) ) {
       throw "Invalid Guest Space ID.";
     }
-    apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json`;
+    apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
   }
   return apiUri;
 }
@@ -118,6 +121,19 @@ function checkDomain( domain ) {
 }
 
 /**
+  * アプリ ID が空または不正な文字列であればエラーとする
+  * @param {String} appId  アプリ ID
+  */
+function checkAppId( appId ) {
+  if ( appId === "" || appId === null ) {
+    throw "App ID is empty.";
+  }
+  if ( !isValidId(appId) ) {
+    throw "Invalid App ID.";
+  }
+}
+
+/**
   * ID が有効か（自然数か）を判定する
   * @param {String} idString  ID の文字列
   * @return {Boolean}  有効な ID かどうか
@@ -125,6 +141,52 @@ function checkDomain( domain ) {
 function isValidId( idString ) {
   const idReg = new RegExp( '^[1-9][0-9]*$' );
   return idReg.test( idString );
+}
+
+/**
+  * kintone REST API にフィールド一覧取得の GET リクエストを送信し、
+  * 指定したフィールドの存在とフィールド型をチェックする
+  *  サポートするフィールド型： レコードID, レコード番号, 文字列（１行）, リンク, 数値, 日付, 時刻, 日時, 計算
+  * @param {String} apiUri  API の URI
+  * @param {String} apiToken  API トークン
+  * @param {String} appId  アプリ ID
+  * @param {String} idField  選択肢 ID のフィールドコード
+  * @param {String} labelField  選択肢ラベルのフィールドコード
+  */
+function checkFields( apiUri, apiToken, appId, idField, labelField ) {
+  const getFieldsUri = `${apiUri}app/form/fields.json?app=${appId}`;
+  engine.log(`API URI: ${getFieldsUri}`);
+  const response = httpClient.begin()
+    .header( "X-Cybozu-API-Token", apiToken )
+    .get( getFieldsUri );
+  //when error thrown
+  const responseJson = response.getResponseAsString();
+  const status = response.getStatusCode();
+  const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+  engine.log(accessLog);
+  if (status >= 300) {
+    throw `Failed to get form fields. status: ${status}`;
+  }
+  const json = JSON.parse(responseJson);
+
+  // フィールドコードの存在とフィールド型をチェック（フィールドコードが'$id'であればチェック不要）
+  const supportedFieldTypes = new Set( [ "RECORD_NUMBER", "SINGLE_LINE_TEXT", "LINK", "NUMBER", "DATE", "TIME", "DATETIME", "CALC" ] );
+  if ( idField !== '$id' ) {
+    if ( json.properties[idField] === undefined ) {
+      throw `${idField} does not exist in the app.`;
+    }
+    if ( !supportedFieldTypes.has( json.properties[idField].type ) ) { // idField のフィールド型がサポート外であればエラー
+      throw `Unable to use ${idField} as Choice ID. Field Type ${json.properties[idField].type} is not supported.`;
+    }
+  }
+  if ( labelField !== '$id' ) {
+    if ( json.properties[labelField] === undefined ) {
+      throw `${labelField} does not exist in the app.`;
+    }
+    if ( !supportedFieldTypes.has( json.properties[labelField].type ) ) { // labelField のフィールド型がサポート外であればエラー
+      throw `Unable to use ${labelField} as Choice Label. Field Type ${json.properties[labelField].type} is not supported.`;
+    }
+  }
 }
 
 /**
@@ -136,19 +198,8 @@ function isValidId( idString ) {
   * @return {Object} initialParams  リクエストのパラメータに使用する情報を格納した JSON オブジェクト
   */
 function prepareInitialParams( appId, idField, labelField, query ) {
-  if ( appId === "" || appId === null ) {
-    throw "App ID is empty.";
-  }
-  if ( !isValidId(appId) ) {
-    throw "Invalid App ID.";
-  }
-
-  const fields = [ idField, labelField ];
-  // $id で並べ替えを行うため、取得フィールドに $id が含まれていなければ追加する
-  if ( fields.indexOf('$id') === -1 ) {
-    fields.push('$id');
-  }
-
+  const fields = new Set([ idField, labelField ]);
+  fields.add( '$id' ); // $id で並べ替えを行うため、取得フィールドに $id を追加する
   const initialParams = {
       app: appId,
       fields: fields,
@@ -165,20 +216,27 @@ function prepareInitialParams( appId, idField, labelField, query ) {
   * @param {String} apiToken  API トークン
   * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
   * @param {Array<Object>} records  レコードオブジェクトを格納する配列
+  * @param {Number} requestNum  HTTP リクエスト回数
   */
-function getRecords( apiUri, apiToken, params, records ) {
+function getRecords( apiUri, apiToken, params, records, requestNum ) {
+  // リクエスト回数の上限チェック
+  if ( requestNum + 1 > httpClient.getRequestingLimit() ) {
+    throw "Necessary HTTP requests exceed the limit.";
+  }
+
   const LIMIT = 500; // 1回の GET リクエストで取得できるレコードの上限件数
+  const getRecordsUri = `${apiUri}records.json`;
   let queryString;
   if ( params.query === "" || params.query === null ) {
     queryString = `query=$id > ${params.lastRecordId} order by $id asc limit ${LIMIT}`;
   } else {
-    queryString = `query=${params.query} and $id > ${params.lastRecordId} order by $id asc limit ${LIMIT}`;
+    queryString = `query=( ${params.query} ) and $id > ${params.lastRecordId} order by $id asc limit ${LIMIT}`;
   }
-  const fieldsString = params.fields.map( (field, i) => `fields[${i}]=${field}` ).join('&');
+  const fieldsString = Array.from( params.fields ).map( (field, i) => `fields[${i}]=${field}` ).join('&');
   const paramsString = `app=${params.app}&${queryString}&${fieldsString}`;
-  engine.log(`API URI: ${apiUri}`);
+  engine.log(`API URI: ${getRecordsUri}`);
   engine.log(`Params: ${paramsString}`);
-  const uriWithParams = encodeURI( `${apiUri}?${paramsString}` );
+  const uriWithParams = encodeURI( `${getRecordsUri}?${paramsString}` );
   const response = httpClient.begin()
     .header( "X-Cybozu-API-Token", apiToken )
     .get( uriWithParams );
@@ -192,36 +250,22 @@ function getRecords( apiUri, apiToken, params, records ) {
   }
   const json = JSON.parse(responseJson);
   Array.prototype.push.apply(records, json.records); // レコードオブジェクトを配列に追加
-  if ( json.records.length === LIMIT ) {
-    // 取得レコードの件数が LIMIT と同じ場合は、未取得のレコードが残っている場合があるので、
-    // params.lastRecordId を更新し、getRecords を再帰呼び出しする
-    params.lastRecordId = json.records[json.records.length - 1].$id.value;
-    getRecords( apiUri, apiToken, params, records );
-  }
-}
+  requestNum++; // リクエスト回数を加算
 
-/** 取得したレコード情報をチェックし、以下の場合はエラーとする
-  * 1. レコード件数が0の場合
-  * 2. レコード件数が15万件を超える場合
-  * 3. 指定したフィールドの型がサポート外の場合
-  *  サポートするフィールド型： レコードID, レコード番号, 文字列（１行）, リンク, 数値, 日付, 時刻, 日時, 計算
-  * @param {Array<Object>} records  レコードオブジェクトの配列
-  * @param {String} idField  選択肢 ID のフィールドコード
-  * @param {String} labelField  選択肢ラベルのフィールドコード
-  */
-function checkRecords( records, idField, labelField ) {
+  // レコード件数のチェック
   if ( records.length === 0 ) { // 該当するレコードが一件もなければエラー
     throw "No Choice Data found.";
   }
   if ( records.length > 150000 ) { // 15万件を超える場合はエラー
     throw "Number of Choice Data is over 150,000.";
   }
-  const supportedFieldTypes = new Set( [ "__ID__", "RECORD_NUMBER", "SINGLE_LINE_TEXT", "LINK", "NUMBER", "DATE", "TIME", "DATETIME", "CALC" ] );
-  if ( !supportedFieldTypes.has( records[0][idField].type ) ) { // idField のフィールド型がサポート外であればエラー
-    throw `Unable to use ${idField} as Choice ID. Field Type ${records[0][idField].type} is not supported.`;
-  }
-  if ( !supportedFieldTypes.has( records[0][labelField].type ) ) { // labelField のフィールド型がサポート外であればエラー
-    throw `Unable to use ${labelField} as Choice Label. Field Type ${records[0][labelField].type} is not supported.`;
+
+  // 再帰呼び出し
+  if ( json.records.length === LIMIT ) {
+    // 取得レコードの件数が LIMIT と同じ場合は、未取得のレコードが残っている場合があるので、
+    // params.lastRecordId を更新し、getRecords を再帰呼び出しする
+    params.lastRecordId = json.records[json.records.length - 1].$id.value;
+    getRecords( apiUri, apiToken, params, records );
   }
 }
 
