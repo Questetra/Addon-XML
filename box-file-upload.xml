@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Box: Upload File</label>
 <label locale="ja">Box: ファイルアップロード</label>
-<last-modified>2020-09-23</last-modified>
+<last-modified>2020-09-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on Box.</summary>
@@ -61,7 +61,7 @@ function main(){
   
   //// == 演算 / Calculating ==
 
-  checkFile(token,files,folderId,idDataDef,urlDataDef);
+  checkFile(files,idDataDef,urlDataDef);
   let uploadedFileData = [[],[]]; //0:ID,1:URL
   let requestNum = 0;
   const session = prepareSessionsAndCheckRequestNumber(token,files,folderId);
@@ -87,18 +87,22 @@ function decideFolderId(){
 
 /**
   * アップロードしようとするファイルの数・名前が適切かどうかチェックする
+  * ファイル数が通信制限を超えたらエラーを出し、その後各関数を呼び出す
   * @param {String} token  OAuth2 トークン
   * @param {Array<File>}　files アップロードしようとするファイルの配列
   * @param {String} folderId  アップロード先フォルダのID
   * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   */
-function checkFile(token,files,folderId,idDataDef,urlDataDef){
+function checkFile(files,idDataDef,urlDataDef){
   const fileNum = files.size(); //number of files
+  if(fileNum > httpClient.getRequestingLimit()){
+    throw "Number of requests is over the limit";
+  }
   checkfileNum(idDataDef,fileNum);
   checkfileNum(urlDataDef,fileNum);
   checkFileName(files);
-  checkFileNameOverlap(token,files,folderId);
+  checkFileNameOverlap(files);
 }
 
 /**
@@ -132,45 +136,22 @@ function checkFileName(files){
 }
 
 /**
-  * アップロードするファイルの名前がBoxにすでに存在するファイル/フォルダと重複していないかチェックする、していればエラー
-  * また、アップロードするファイルの中に同じファイル名のものが2つ以上あればエラー
-  * @param {String} token  OAuth2 トークン
+  * アップロードするファイルの中に同じファイル名のものが2つ以上あればエラー
   * @param {Array<File>}  アップロードしようとするファイルの配列
-  * @param {String} folderId  アップロード先フォルダのID
   */
-function checkFileNameOverlap(token,files,folderId){
-  const url = `https://api.box.com/2.0/folders/${folderId}/items/`;
-  let response = httpClient.begin()
-    .bearer(token)
-    .queryParam("fields","name")
-    .get(url);
-  const responseStr = response.getResponseAsString();
-  const json = JSON.parse(responseStr);
-
-  let usedNames = [];
-  for (let i = 0; i < json.entries.length; i++){
-    usedNames[i] = json.entries[i].name;
-  }
-
+function checkFileNameOverlap(files){
   let fileNames = [];
-  const filesNumber = files.size();
-  for (let i = 0; i < filesNumber; i++){
+  const fileNum = files.size();
+  for (let i = 0; i < fileNum; i++){
     if(fileNames.includes(files[i].getName())){
       throw "Two or more files to upload have the same name.";
     }
     fileNames[i] = files[i].getName();
   }
-  
-  for (let i = 0; i < filesNumber; i++){
-    if(usedNames.includes(fileNames[i])){
-      throw `File or Folder named "${fileNames[i]}" already exists in the specified Folder.`;
-    }
-  }
 }
 
 /**
-  * ファイル数が通信制限を超えたらエラーを出す
-  * その後、50MBを超えるファイルについてセッションを作成し、通信数を確認する
+  * 50MBを超えるファイルについてセッションを作成し、通信数を確認する
   * 通信数が制限を超えたらエラーを出す
   * 通信数=50MB以下のファイルの数 + <50MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットサイズ) + 2)
   * パケットサイズはセッション作成時に指定される
@@ -182,9 +163,6 @@ function checkFileNameOverlap(token,files,folderId){
 function prepareSessionsAndCheckRequestNumber(token,files,folderId){
   let requestNum = 1;
   let session = [];
-  if(files.size() > httpClient.getRequestingLimit()){
-    throw "Number of requests is over the limit";
-  }
   for(let i = 0; i< files.size(); i++){
     requestNum++;
     if(files.get(i).getLength() > SIZE_LIMIT){
