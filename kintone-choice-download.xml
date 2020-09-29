@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download Choice Data</label>
 <label locale="ja">kintone: 選択肢データの一括取得</label>
-<last-modified>2020-09-28</last-modified>
+<last-modified>2020-09-29</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Download Choice Data in specified two fields from a Kintone App.</summary>
@@ -36,11 +36,11 @@
     <label locale="ja">C7: 検索クエリ</label>
   </config>
   <config name="conf_ids" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C8: STRING Data item that will save Choise IDs</label>
+    <label>C8: String type data item that will save Choise IDs</label>
     <label locale="ja">C8: 選択肢 ID の一覧を保存する文字型データ項目</label>
   </config>
   <config name="conf_labels" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C9: STRING Data item that will save Choice Labels</label>
+    <label>C9: String type data item that will save Choice Labels</label>
     <label locale="ja">C9: 選択肢ラベルの一覧を保存する文字型データ項目</label>
   </config>
 </configs>
@@ -196,6 +196,10 @@ function checkFields( apiUri, apiToken, appId, idField, labelField ) {
   * @param {String} labelField  選択肢ラベルのフィールドコード
   * @param {String} query  検索クエリ
   * @return {Object} initialParams  リクエストのパラメータに使用する情報を格納した JSON オブジェクト
+  *   プロパティ： {String} app  アプリ ID
+  *              {Set<String>} fields  フィールドコードの集合
+  *              {String} query  検索クエリ
+  *              {Number} lastRecordId  検索済みの最後のレコード番号
   */
 function prepareInitialParams( appId, idField, labelField, query ) {
   const fields = new Set([ idField, labelField ]);
@@ -215,10 +219,14 @@ function prepareInitialParams( appId, idField, labelField, query ) {
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
   * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
+  *   プロパティ： {String} app  アプリ ID
+  *              {Set<String>} fields  フィールドコードの集合
+  *              {String} query  検索クエリ
+  *              {Number} lastRecordId  検索済みの最後のレコード番号
   * @param {Array<Object>} records  レコードオブジェクトを格納する配列
   * @param {Number} requestNum  HTTP リクエスト回数
   */
-function getRecords( apiUri, apiToken, params, records, requestNum ) {
+function getRecords( apiUri, apiToken, { app, fields, query, lastRecordId }, records, requestNum ) {
   // リクエスト回数の上限チェック
   if ( requestNum + 1 > httpClient.getRequestingLimit() ) {
     throw "HTTP requests exceed the limit.";
@@ -227,13 +235,13 @@ function getRecords( apiUri, apiToken, params, records, requestNum ) {
   const LIMIT = 500; // 1回の GET リクエストで取得できるレコードの上限件数
   const getRecordsUri = `${apiUri}records.json`;
   let queryString;
-  if ( params.query === "" || params.query === null ) {
-    queryString = `query=$id > ${params.lastRecordId} order by $id asc limit ${LIMIT}`;
+  if ( query === "" || query === null ) {
+    queryString = `query=$id > ${lastRecordId} order by $id asc limit ${LIMIT}`;
   } else {
-    queryString = `query=( ${params.query} ) and $id > ${params.lastRecordId} order by $id asc limit ${LIMIT}`;
+    queryString = `query=( ${query} ) and $id > ${lastRecordId} order by $id asc limit ${LIMIT}`;
   }
-  const fieldsString = Array.from( params.fields ).map( (field, i) => `fields[${i}]=${field}` ).join('&');
-  const paramsString = `app=${params.app}&${queryString}&${fieldsString}`;
+  const fieldsString = Array.from( fields, (fieldCode, i) => `fields[${i}]=${fieldCode}` ).join('&');
+  const paramsString = `app=${app}&${queryString}&${fieldsString}`;
   engine.log(`API URI: ${getRecordsUri}`);
   engine.log(`Params: ${paramsString}`);
   const uriWithParams = encodeURI( `${getRecordsUri}?${paramsString}` );
@@ -270,7 +278,8 @@ function getRecords( apiUri, apiToken, params, records, requestNum ) {
   }
 }
 
-/** 選択肢 ID と選択肢ラベルの配列の値をチェックし、以下の場合はエラーとする
+/**
+  * 選択肢 ID と選択肢ラベルの配列の値をチェックし、以下の場合はエラーとする
   * 1. 空文字列や null が含まれる場合
   * 2. idList に重複がある場合
   * 3. 1,000文字を超えるものがある場合
