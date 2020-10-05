@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+<last-modified>2020-10-05</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Box: Create Collaboration</label>
+<label locale="ja">Box: コラボレーション作成</label>
+<summary>Create a collaboation for the specified user in the specified folder as "editor". The user is specified by the email address of the Box account.You can specify multiple email address at once. In that case, write one email address separated by commas.</summary>
+<summary locale="ja">Box の指定フォルダに、"編集者"として指定ユーザをコラボレーションします。指定ユーザはBoxアカウントのメールアドレスで指定します。一度に複数のメールアドレスの指定が可能です。複数指定する場合、カンマで区切ってメールアドレスを書いてください。</summary>
+<help-page-url>https://support.questetra.com/addons/box-folder-create-collaboation/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/box-folder-create-collaboation/</help-page-url>
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+   oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+    <label>C1: OAuth2 Setting Name</label>
+    <label locale="ja">C1: OAuth2 設定名</label>
+  </config>
+  <config name="conf_FolderId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Folder ID or File ID to collaborate with</label>
+    <label locale="ja">C2: コラボレーションするフォルダの ID </label>
+  </config>
+  <config name="conf_Emailaddress" required="true" form-type="SELECT" select-data-type="STRING" editable="true">
+    <label>C3: Email address of specified user(Box)</label>
+    <label locale="ja">C3: 指定ユーザのメールアドレス(Box)</label>
+  </config>
+</configs>
+
+<script><![CDATA[
+main();
+function main(){
+
+  let folderId = decideFolderId();
+  if(folderId === "" ||folderId === null) {
+    throw "folderId is blank";
+  }
+  if(folderId === "0") {
+    throw "Root folder cannot be collaborated";
+  }
+
+  let emailaddress = decideEmailaddress();
+  if(emailaddress === "" ||emailaddress === null) {
+    throw "Email address is blank";
+  }
+
+  let linesArray = emailaddress.split(",");
+  linesArray = linesArray.filter(lines => lines !== ""); // 空文字列を削除
+  if (linesArray.length === 0) {
+    throw "Email address is blank";
+  }
+
+  const numOfLines = linesArray.length;
+  if (numOfLines > httpClient.getRequestingLimit()){
+  	throw "Number of Email address is over the limit."
+  }
+
+  // get OAuth token
+  const token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
+
+  for (let i = 0; i < numOfLines; i++){
+    createCollaboration(token, folderId, linesArray[i],i+1)
+  }
+}
+
+
+/**
+  * 指定するメールアドレスをconfigから読み出して出力する。
+  * @return {String}  メールアドレス
+  */
+function decideEmailaddress(){
+  let emailaddress = "";
+  const emailaddressDef = configs.getObject("conf_Emailaddress");
+  if(emailaddressDef === null){
+    emailaddress = configs.get("conf_Emailaddress");
+  }else{
+    emailaddress = engine.findData(emailaddressDef);
+  }
+  return emailaddress;
+}
+
+/**
+  * コラボレーションするフォルダのIDをconfigから読み出して出力する。
+  * @return {String}  フォルダの ID
+  */
+function decideFolderId(){
+  let folderId = "";
+  const folderIdDef = configs.getObject("conf_FolderId");
+  if(folderIdDef === null){
+    folderId = configs.get( "conf_FolderId");
+  }else{
+    folderId = engine.findData(folderIdDef);
+  }
+  return folderId;
+}
+
+
+  //create collaboration on box
+function createCollaboration(token, folderId, emailaddress, num) {
+  let jsonReq = {};
+    jsonReq["item"] = {"id": folderId, "type": "folder"};
+    jsonReq["accessible_by"] = {"login": emailaddress };
+    jsonReq["role"] = "editor";
+  
+  const url = 'https://api.box.com/2.0/collaborations';
+  const response = httpClient.begin()
+    .bearer(token)
+    .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+    .post(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+
+  let jsonRes;
+   try {
+     jsonRes = JSON.parse(responseTxt);
+   } catch(e) {
+     engine.log("failed to parse as json");
+     throw `Failed to create collaboration. status: ${status}`;
+   }
+
+if (status === 201){
+  if (jsonRes["invite_email"] === null ){
+  engine.log(`${num}: ${jsonRes.accessible_by.login} collborated as ${jsonRes.role}`);
+  }else{
+  engine.log(`${num}: ${jsonRes.invite_email} collborated as ${jsonRes.role}, and Box sends an invitation email`); 
+  }
+  engine.log(`status: ${status}`);
+  engine.log(`${responseTxt} \n`);
+    }
+
+  if (status !== 201){
+      if(status === 400 && jsonRes["code"] === "user_already_collaborator"){
+        throw `Failed to create collboration, user_already_collaborator \n status: ${status}\n${responseTxt}`;
+      }else{
+        throw `Failed to create collboration \n status: ${status}\n${responseTxt}`;
+      }
+    }else if (status >= 300) {
+        throw `Failed to create collboration \n status: ${status}\n${responseTxt}`;
+    }
+  }
+
+]]></script>
+
+<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
+aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
+9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
+mLcfmY9gfgB/dxBBU14rXsxIyiCmr8XKzBog0GWCeG6xeQv6X2JiegPZY3IBVnLlOVtCG6a3ObN7
+LoDacyFCBa2sUGMpGjI1kQbQao/0Lllw+YJoYTqrk9mRAdC9G8Eb+c6zLDvJHkzvbjVHGiDQpXLX
+nZw4tOMGyp02Hjn457J8WQ5WUTB9ZWkAdcIJ+XWm8XCwFkexwLWrZ+UB9OmZ0EIiAhbKH2lLAKzZ
+eaUAEhmRAAh0dYBQZ3yqKQDnaoPDp8PUVZXo/pM9EV75Ylh/77q/jO2bSlmz2mBgLErjoUHad95I
+Z/80re0Jmw+e3UD1dcU8uP+8RRTlSUK++ssA3X3ATdkA61y2nIE/9k7Rd2GWx+4uxWZkAP8bo9Ru
+YAho+XyIUruNNxsqiMzE8bxgEUV1gZneO5MAMtuTioACUM7e+W4Uj8Pg5W1rdV9cwvSsxPx+nNPn
+LvLStnI2VdsZi8TwOGyMTsY0nNth493j/9DSPmSto5BXLAigsmDLW7388MeUnuDVh9ay74n1+vvI
+zxM0vJfOkNGDtdiLDH7pn+beW+3a5kRPhK37rMJ/mScDIGcLBvfXsM61isrWs4xMxPSIpza7+ayx
+Un8rbTz94UBqZX8fqNFp+82vkzTc5dL9n54K88xHaZu5YZBnCPnq5hXhqdequecWO2rPH3j7PBvc
+qzjWVEXN9cV6HhVmJbwvf5rgcGMlT2526y1wldiYiUl9wKhtUHp4/8TYIiK0SMP6WgdfvbiRMqeN
+yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
+2bu9QqdSNC7pHrjEjo8H+GssyifPV3JfjQNHscFQOMqeoyPsfXw9vw/P8HBbv3b4bWsVG8uL8L5+
+zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
+0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
+Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
+YII=</icon>
+</service-task-definition>
