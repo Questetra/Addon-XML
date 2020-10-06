@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-09-14</last-modified>
+<last-modified>2020-10-06</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Shared Link to Folder</label>
 <label locale="ja">Box: フォルダ共有リンク作成</label>
-<summary>Create a URL to download the specified folder on Box</summary>
-<summary locale="ja">Box の指定フォルダのダウンロード URL を作成します</summary>
+<summary>Create a URL to download the specified folder on Box (Created indefinitely if blank, Created without a password request if blank.)</summary>
+<summary locale="ja">Box の指定フォルダのダウンロード URL を作成します （有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します）</summary>
 <help-page-url>https://support.questetra.com/addons/box-folder-link-create</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-folder-link-create</help-page-url>
 <configs>
@@ -36,10 +36,7 @@
 main();
 function main(){
   const folderId = configs.get("FolderId");
-  let timezone = engine.getTimeZoneId();
-  if (timezone === "GMT"){
-    timezone += "+00:00";
-  }
+
   if (folderId === "" ||folderId === null) {
     throw "Folder ID is blank";
   }
@@ -55,11 +52,66 @@ function main(){
   if (passwordItem !== "" && passwordItem !== null){
     password = engine.findDataByNumber(passwordItem);
   }
-  
+
   // get OAuth token
   let token;
   token = httpClient.getOAuth2Token(configs.get("OAuth2"));
+
+  let sharedlinkUrl;
+
+  // フォルダが既に共有リンク作成されているか調べる
+  const existingUrl = getFolderInformation(token, folderId);
+
   
+  // フォルダに共有リンクが無い場合は作成する　既に共有リンクがある場合はエラーにする
+  if (existingUrl === null){
+  sharedlinkUrl = createSharedLink(token, folderId, unsharedDate, password);
+   }else{
+    const error = `Failed to Create Shared Link \n The Shared link(${existingUrl.url}) was already created.`;
+    throw error;
+  }
+
+  const UrlData = configs.getObject( "DownloadUrlItem" );
+  if (UrlData !== null) {
+      engine.setData(UrlData,sharedlinkUrl );
+
+}
+
+/**
+  * Get Folder Information on Box  フォルダが既に共有リンク作成されているか調べる
+  * @return {String}  フォルダの共有リンクオブジェクト
+  */
+function getFolderInformation(token, folderId) {
+
+  const url = "https://api.box.com/2.0/folders/" + folderId + "?fields=shared_link";
+  const response = httpClient.begin()
+    .bearer(token)
+    .get(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  if (status >= 400) {
+    const error = `Failed to get folder information \n status: ${status}\n ${responseTxt}`;
+    throw error;
+  }
+
+  const jsonRes = JSON.parse(responseTxt);
+
+  return jsonRes.shared_link;
+}
+
+
+
+/**
+  * Create Shared Link to Folder on Box  共有リンク作成
+  * @return {String}  フォルダの共有リンクURL
+  */
+function createSharedLink(token, folderId, unsharedDate, password) {
+
+  let timezone = engine.getTimeZoneId();
+  if (timezone === "GMT"){
+    timezone += "+00:00";
+  }
+
   let jsonBody = {};
 
   jsonBody["shared_link"] = {"access": "open"};
@@ -79,21 +131,20 @@ function main(){
     .put(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  if (status >= 300) {
+  if (status >= 400) {
     const error = `Failed to create \n status: ${status}\n ${responseTxt}`;
     throw error;
   }
   engine.log(`status: ${status}`);
   engine.log(responseTxt);
   
-  
   const jsonRes = JSON.parse(responseTxt);
 
-  const UrlData = configs.getObject( "DownloadUrlItem" );
-  if (UrlData !== null) {
-      engine.setData(UrlData,jsonRes["shared_link"]["url"] );
+  return jsonRes.shared_link.url;
   }
 }
+
+
 ]]></script>
 
 <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
