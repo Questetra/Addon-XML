@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+<last-modified>2020-10-03</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Google Sheets: Create File</label>
+<label locale="ja">Google スプレッドシート: ファイル作成</label>
+<summary>Create a new Spreadsheet in the specified folder on Google Drive</summary>
+<summary locale="ja">Google ドライブ の指定フォルダ内に新しいスプレッドシートを作成します</summary>
+<help-page-url>https://support.questetra.com/addons/google-sheets-file-create/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/google-sheets-file-create/</help-page-url>
+<configs>
+  <config name="Conf_UserID" required="true" form-type="QUSER">
+    <label>C1: User who connects to Google Drive</label>
+    <label locale="ja">C1: Google ドライブ に接続するユーザ</label>
+  </config>
+  <config name="Conf_ParentFolderId" el-enabled="true">
+    <label>C2: Parent Folder ID(When empty,create in My Drive root)</label>
+    <label locale="ja">C2: 作成するファイルの親フォルダの ID (空白の場合マイドライブのルートに作成されます)</label>
+  </config>
+  <config name="Conf_FileName" required="true" el-enabled="true">
+    <label>C3: File Name</label>
+    <label locale="ja">C3: ファイル名</label>
+  </config>
+  <config name="Conf_SheetTitle" required="true" el-enabled="true">
+    <label>C4: First Sheet Title</label>
+    <label locale="ja">C4: 最初のシートのタイトル</label>
+  </config>
+  <config name="Conf_FileIdItem" form-type="SELECT" select-data-type="STRING">
+    <label>C5: STRING Data Item that will save Spreadsheet ID</label>
+    <label locale="ja">C5: 作成したスプレッドシートの ID を保存する文字型データ項目</label>
+  </config>
+  <config name="Conf_WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
+    <label>C6: STRING Data Item that will save web view url of Spreadsheet</label>
+    <label locale="ja">C6: 作成したスプレッドシートの表示 URL を保存する文字型データ項目</label>
+  </config>
+</configs>
+
+<script><![CDATA[
+main();
+function main() {
+  const parentFolderId = configs.get("Conf_ParentFolderId");
+  const fileName = configs.get("Conf_FileName");
+  if (fileName == "" || fileName == null) {
+    throw "File Name is blank";
+  }
+  const sheetTitle = configs.get("Conf_SheetTitle");
+  if (sheetTitle == "" || sheetTitle == null) {
+    throw "Sheet Title is blank";
+  }
+  if (sheetTitle.length > 100) {
+    throw "Sheet Title should be 100 characters or less";
+  }
+  const userId = configs.get("Conf_UserID");
+  const quser = quserDao.findById(parseInt(userId));
+  if (quser == null) {
+    throw "User not found:" + userId;
+  }
+  engine.log("User Name:" + quser.getName());
+  
+  // get OAuth token
+  let token;
+  try{
+    token = httpClient.getGoogleOAuth2Token(quser, "Drive");
+  }catch(e){
+    throw "This User has not connected with Google Drive."
+  }
+  
+  const json = createFile(token, parentFolderId, fileName);
+  
+  // get spreadsheetId
+  const fileId = json["id"];
+ 
+  updateSheetTitle(token, fileId, sheetTitle);
+  
+  setData("Conf_FileIdItem", json, "id");
+  setData("Conf_WebViewUrlItem", json, "webViewLink");
+}
+
+// save Data to process data
+function setData(configName, json, property) {
+  const item = configs.get(configName);
+  if (item == null || item == "") {
+    return;
+  }
+  const data = json[property];
+  engine.setDataByNumber(item, data);
+}
+
+// create spreadsheet on google drive
+function createFile(token, parentFolderId, fileName) {
+  let jsonRes = {};
+  jsonRes["mimeType"] = "application/vnd.google-apps.spreadsheet";
+  if (parentFolderId !== "" && parentFolderId !== null){
+    jsonRes["parents"] = [ parentFolderId + '' ];
+  }
+  jsonRes["name"] = fileName + '';
+  
+  const url = 'https://www.googleapis.com/drive/v3/files/';
+  const response = httpClient.begin()
+    .bearer(token)
+    .queryParam("fields", "id, webViewLink")
+    .queryParam("supportsAllDrives", "true")
+    .body(JSON.stringify(jsonRes), "application/json; charset=UTF-8")
+    .post(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  if (status >= 300) {
+    const error = "Failed to create \n status:" + status + "\n" + responseTxt
+    throw error;
+  }
+  engine.log("status of file create:" + status);
+  engine.log(responseTxt);
+  
+  jsonRes = JSON.parse(responseTxt);
+  return jsonRes;
+}
+
+// update sheet title on google drive
+function updateSheetTitle(token, fileId, sheetTitle) {
+  
+  let jsonRes = {};
+  jsonRes.requests = [];
+  jsonRes.requests[0] = {};
+  jsonRes.requests[0].updateSheetProperties = {};
+  jsonRes.requests[0].updateSheetProperties.fields = "title";
+  jsonRes.requests[0].updateSheetProperties.properties = {};
+  jsonRes.requests[0].updateSheetProperties.properties.sheetId = 0;
+  jsonRes.requests[0].updateSheetProperties.properties.title = sheetTitle;
+  
+  const url = "https://sheets.googleapis.com/v4/spreadsheets/"+ fileId + ":batchUpdate";
+  const response = httpClient.begin()
+    .bearer(token)
+    .body(JSON.stringify(jsonRes), "application/json")
+    .post(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  if (status >= 300) {
+    const error = "Failed to update sheet title \n status:" + status + "\n" + responseTxt
+    throw error;
+  }
+  engine.log("status of sheet title update:" + status);
+  engine.log(responseTxt);
+  
+  jsonRes = JSON.parse(responseTxt);
+}
+
+]]></script>
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADbElEQVRYR8WXS0hUURjH/2dGJFDz
+lqNimmORhAU5hRVFojgTQSTarl3azN5x1aboQdAqGoVc2AyOFoGCpQuN7E6MRIVW4BBZUqJkbYTw
++H7M48Sdx3Ve986d0crFuDjfd8/v+5/vcQ7Bf/4jyezPWfX1IKQKDDoAHIj/P8AwBoCCYAwETnqF
+71f63YQAXEc1B19aE8DMAOGUfZhRgFig8rTQRieV85EF4Gw1DQC5r3zj6K0YBUMjNTn6pCAkATir
+3gJCmpRFnNDKQo18czyruACcVW8HIZcTfjYpA2anRkdjtEsMQHjkvefuoqawQvTxMV8w54S8Y2DM
+/4uhmRGUZhfj9gcbBn+8lcZirIWaHOZwgwiAwJmrOkIGzro2lOeUJozzxcwITuYf8ts1v2lB39Sw
+HMTF8JwQAQLZrp4KT7hkAbj0LMxvLOHquwfonuQlIBiFyrsvVB2bADbDTQA3wr1SARD8F9zLuD7a
+jq6JQSklblEjL+yHTQCrQWgk2akC7FCnY2d6hug+uzqHSy+vSapAjY5dIkCwwz2LtlaqwNz6Ihbd
+yxHuK551nHpqSpgLfgWkal4pQLxdlj1rKOqqTVgRAQCbwQmgKlUFUgIAhqmRrw4pMA1CtHIAK541
+LGxEyhxtr1apkbsjMC4SK4AxauKPhhRg8aIIPwLX7294NPEch3fvR/d3HpUFOuzJ0IhuHuYF//M9
+us/eUQYgjE8jT5ICGJoZhU5TivbxPpwvPo2izLxNAJ8X9omBFAGs+oRHICjw6tdHHNMcRNvnXtRq
+z2BvZr4I4PZ58PBLfxIAzEWNDp3iJBQAeiYdOJJzAJ1fB2AoOoHCzFwRwOvzon/6dRIAkUkYd/RG
+58Do7DgqcsvQ+qkHdSWV0GYVRChwz/VEOUBwMIWqQLhqyTaibU9CxvxDSXErFspwyb0q3VgAqAiB
+RkkZMsxTE++v120ZRik0ojjDSBjH3rTp8IH0V1oxwzzUnpKYcRxoyZEXkqELrTieVyYru9Si0DW1
+j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
+kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
+AEwJzTC2ALrNAAAAAElFTkSuQmCC
+</icon>
+</service-task-definition>
