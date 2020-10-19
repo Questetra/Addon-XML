@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-10-15</last-modified>
+<last-modified>2020-10-19</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Collaboration</label>
@@ -12,8 +12,8 @@
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2"
    oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
-    <label>C1: Authentication Settings</label>
-    <label locale="ja">C1: 認証設定</label>
+    <label>C1: OAuth2 Setting Name</label>
+    <label locale="ja">C1: OAuth2 設定名</label>
   </config>
   <config name="conf_FolderId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Folder ID to collaborate with</label>
@@ -41,8 +41,17 @@ function main(){
   // get OAuth token
   const token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
 
+  // フォルダコラボレーションリストを取得する  
+  const collaborationList = getCollaborationList(token, folderId);
+
   for (let i = 0; i < numOfLines; i++){
-    createCollaboration(token, folderId, emailaddress[i],i+1)
+
+  // Box ユーザのメールアドレスが既にコラボレーションされていたらエラーにする
+  // Box ユーザでないメールアドレスでコラボレーションに招待されていたらエラーにする
+    judgeEmailaddress(collaborationList, emailaddress[i]);
+
+  // コラボレーション作成
+    createCollaboration(token, folderId, emailaddress[i],i+1);
   }
 }
 
@@ -69,9 +78,6 @@ function decideEmailaddress(){
   if (linesArray.length === 0) {
     throw "Email address is blank";
   }
-
-
-
   return linesArray;
 }
 
@@ -99,6 +105,62 @@ function decideFolderId(){
 }
 
 
+/**
+  * フォルダコラボレーションリストを取得する
+  *  @return {String}  コラボレーションリストの オブジェクト 
+  */
+
+function getCollaborationList(token, folderId){
+
+const url = `https://api.box.com/2.0/folders/${folderId}/collaborations/`;
+
+
+  const response = httpClient.begin()
+    .bearer(token)
+    .get(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+
+  let jsonRes;
+   try {
+     jsonRes = JSON.parse(responseTxt);
+   } catch(e) {
+     engine.log("failed to parse as json");
+     throw `Failed to create collaboration. status: ${status}`;
+   }
+
+  if (status !== 200) {
+    engine.log(`${responseTxt}`);
+    throw `Failed to get folder information \n status: ${status}`;
+  }
+  engine.log(`${responseTxt}`);
+
+return jsonRes;
+}
+
+
+/**
+  * Box ユーザのメールアドレスが既にコラボレーションされていたらエラー
+  * Box ユーザでないメールアドレスでコラボレーションに招待されていたらエラー
+  */
+
+function judgeEmailaddress(collaborationList, emailaddress){
+
+for (let i = 0; i < collaborationList.total_count; i++){
+  if(collaborationList["entries"][i]["accessible_by"] !== null){
+    if(collaborationList["entries"][i]["accessible_by"]["login"] === emailaddress ){
+    throw `Failed to create collboration, user(${emailaddress})_already_collaborator`;
+   }
+  }
+  if(collaborationList["entries"][i]["invite_email"] === emailaddress){
+    throw `Failed to create collboration, user(${emailaddress})_already_invited_collaborator`;
+  }
+}
+}
+
+
+
   //create collaboration on box
 function createCollaboration(token, folderId, emailaddress, num) {
   let jsonReq = {};
@@ -123,22 +185,22 @@ function createCollaboration(token, folderId, emailaddress, num) {
      throw `Failed to create collaboration. status: ${status}`;
    }
 
-if (status === 201){
-  if (jsonRes["invite_email"] === null ){
+if (status !== 201) {
+  engine.log(`${responseTxt}`);
+  throw `Failed to create collboration \n status: ${status}`;
+}
+
+if (jsonRes["invite_email"] === null ){
   engine.log(`${num}: ${jsonRes.accessible_by.login} collborated as ${jsonRes.role}`);
   }else{
   engine.log(`${num}: ${jsonRes.invite_email} collborated as ${jsonRes.role}, and Box sends an invitation email`); 
   }
-  engine.log(`status: ${status}`);
-  engine.log(`${responseTxt} \n`);
-    }
+  engine.log(`status: ${status}\n`);    
+}
 
-    else if (status === 400 && jsonRes["code"] === "user_already_collaborator"){
-    throw `Failed to create collboration, user(${emailaddress})_already_collaborator \n status: ${status}\n${responseTxt}`;
-    }else{
-    throw `Failed to create collboration \n status: ${status}\n${responseTxt}`;
-      }
-  }
+
+
+
 
 ]]></script>
 
