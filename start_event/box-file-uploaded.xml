@@ -26,6 +26,10 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/start-addons/box-file-uploaded/</help-page-url>
 
     <script><![CDATA[
+/**
+ * configs から必要な情報を取り出す
+ * @return {{oauth2: any, folderId: any}}
+ */
 const prepare = () => {
     const oauth2 = configs.get("conf_OAuth2");
     let folderId = configs.get("conf_FolderId");
@@ -33,38 +37,70 @@ const prepare = () => {
         folderId = "0";
     }
 
-    const token = httpClient.getOAuth2Token(oauth2);
-
     return {
         folderId,
-        token
+        oauth2
     };
 };
 
+/**
+ * 初期化
+ * @return {*}
+ */
 const init = () => {
     const files = [{
         timestamp: Date.now()
     }];
-    return convertFiles(files); // timestamp を String に戻して返す
+    return convertTimestamps(files); // timestamp を String に戻して返す
 };
 
-const list = (lastData) => {
+/**
+ * 追加されたファイルの検索
+ * @param limit
+ * @param lastData
+ */
+const list = (limit, lastData) => {
     engine.log(`lastData: ${JSON.stringify(lastData)}`);
     const {
         folderId,
-        token
+        oauth2
     } = prepare();
-    const timestamp = Number(lastData.timestamp); // String から Number に変換する
+    const from = Number(lastData.timestamp); // String から Number に変換する
+    const to = Date.now();
 
-    const files = getFiles(token, folderId, timestamp);
+    // timestamp が from - to の間のファイルを検索
+    let files = getFiles(oauth2, folderId, from, to);
+
+    // 検索結果が 0 の場合、to の値のみ返す
+    if (files.length === 0) {
+        return convertTimestamps([{
+            timestamp: to
+        }])
+    }
+
     // 古い順に並べ替え
     files.sort((a, b) => a.timestamp - b.timestamp);
+    // 先頭から limit で切って、新しい順に並べ替え
+    files = files.slice(0, limit).reverse();
+    // 検索結果が limit より少ない場合、to の値を追加して返す
+    if (files.length < limit) {
+        files.unshift({
+            timestamp: to
+        });
+    }
     engine.log(JSON.stringify(files));
-    return convertFiles(files); // timestamp を String に戻して返す
+    return convertTimestamps(files); // timestamp を String に戻して返す
 };
 
-//search folder on box
-const getFiles = (token, folderId, timestamp) => {
+/**
+ * ファイルの検索
+ * @param oauth2 OAuth2 設定
+ * @param folderId 検索対象のフォルダ ID
+ * @param from timestamp の下限
+ * @param to timestamp の上限
+ * @return {*[]} ファイル一覧
+ */
+const getFiles = (oauth2, folderId, from, to) => {
     const url = `https://api.box.com/2.0/folders/${folderId}/items`;
     let marker = "";
     let files = [];
@@ -72,7 +108,7 @@ const getFiles = (token, folderId, timestamp) => {
     const limit = httpClient.getRequestingLimit();
     for (let count = 0; count < limit; count++) {
         const response = httpClient.begin()
-            .bearer(token)
+            .authSetting(oauth2)
             .queryParam("fields", "id,type,name,created_at")
             .queryParam('sort', 'date')
             .queryParam('direction', 'ASC')
@@ -93,7 +129,7 @@ const getFiles = (token, folderId, timestamp) => {
         const someFiles = json.entries
             .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
             .map(formatFile) // 必要な項目のみに変更
-            .filter(file => Number(file.timestamp) > Number(timestamp)); // timestamp が新しいもののみに絞り込み
+            .filter(file => file.timestamp >= from && file.timestamp < to); // timestamp が from と to に挟まれる間のもののみに絞り込み
         files = files.concat(someFiles);
         marker = json['next_marker'];
         if (marker === undefined || marker === '' || marker === null) {
@@ -105,6 +141,11 @@ const getFiles = (token, folderId, timestamp) => {
 
 const dateFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
 
+/**
+ * Box のファイルデータから、必要な部分のみ抜き出す
+ * @param file ファイル
+ * @return {{id: *, timestamp: number}}
+ */
 const formatFile = (file) => {
     const {
         id,
@@ -117,10 +158,15 @@ const formatFile = (file) => {
     };
 };
 
-const convertFiles = (files) => {
-    files.forEach(file => file.timestamp = String(file.timestamp)); // String に変換する
+/**
+ * timestamp を String に変換する
+ * @param files
+ * @return {*}
+ */
+const convertTimestamps = (files) => {
+    files.forEach(file => file.timestamp = String(file.timestamp));
     return files;
-};
+}
 ]]></script>
 
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
