@@ -44,69 +44,39 @@ const prepare = () => {
 };
 
 /**
- * 初期化
- * @return {*}
- */
-const init = () => {
-    const files = [{
-        timestamp: Date.now()
-    }];
-    return convertTimestamps(files); // timestamp を String に戻して返す
-};
-
-/**
- * 追加されたファイルの検索
+ * ファイルの検索
  * @param limit
- * @param lastData
  */
-const list = (limit, lastData) => {
-    engine.log(`lastData: ${JSON.stringify(lastData)}`);
+const list = (limit) => {
     const {
         folderId,
         oauth2
     } = prepare();
-    const from = Number(lastData.timestamp); // String から Number に変換する
-    const to = Date.now();
 
-    // timestamp が from - to の間のファイルを検索
-    let files = getFiles(oauth2, folderId, from, to);
-
-    // 検索結果が 0 の場合、to の値のみ返す
-    if (files.length === 0) {
-        return convertTimestamps([{
-            timestamp: to
-        }])
-    }
-
-    // 古い順に並べ替え
-    files.sort((a, b) => a.timestamp - b.timestamp);
-    // 先頭から limit で切って、新しい順に並べ替え
-    files = files.slice(0, limit).reverse();
-    // 検索結果が limit より少ない場合、to の値を追加して返す
-    if (files.length < limit) {
-        files.unshift({
-            timestamp: to
-        });
-    }
+    let files = getFiles(oauth2, folderId);
+    // 新しい順に並べ替え
+    files.sort((a, b) => b.timestamp - a.timestamp);
+    // 先頭から limit で切る
+    files = files.slice(0, limit);
+    files = files.map(file => ({id: file.id})); // id のみ返す
     engine.log(JSON.stringify(files));
-    return convertTimestamps(files); // timestamp を String に戻して返す
+    return files;
 };
 
 /**
- * ファイルの検索
+ * 指定フォルダ内の、ファイルの検索
  * @param oauth2 OAuth2 設定
  * @param folderId 検索対象のフォルダ ID
- * @param from timestamp の下限
- * @param to timestamp の上限
  * @return {*[]} ファイル一覧
  */
-const getFiles = (oauth2, folderId, from, to) => {
+const getFiles = (oauth2, folderId) => {
     const url = `https://api.box.com/2.0/folders/${folderId}/items`;
     let marker = "";
     let files = [];
     let json;
     const limit = httpClient.getRequestingLimit();
     for (let count = 0; count < limit; count++) {
+        // date で sort をするが、これは更新日と思われる。作成日では sort できない。
         const response = httpClient.begin()
             .authSetting(oauth2)
             .queryParam("fields", "id,type,name,created_at")
@@ -118,18 +88,15 @@ const getFiles = (oauth2, folderId, from, to) => {
             .get(url);
         const status = response.getStatusCode();
         const responseTxt = response.getResponseAsString() + "\n";
-        engine.log(`status: ${status}`);
         if (status >= 300) {
-            const error = `Failed to search \n status: ${status}`;
-            engine.log(responseTxt);
-            throw error;
+            const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+            engine.log(accessLog);
+            throw `Failed to get files. status: ${status}`;
         }
         json = JSON.parse(responseTxt);
-        console.log(JSON.stringify(json.entries));
         const someFiles = json.entries
             .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
-            .map(formatFile) // 必要な項目のみに変更
-            .filter(file => file.timestamp >= from && file.timestamp < to); // timestamp が from と to に挟まれる間のもののみに絞り込み
+            .map(formatFile); // 必要な項目のみに変更
         files = files.concat(someFiles);
         marker = json['next_marker'];
         if (marker === undefined || marker === '' || marker === null) {
@@ -157,16 +124,6 @@ const formatFile = (file) => {
         timestamp
     };
 };
-
-/**
- * timestamp を String に変換する
- * @param files
- * @return {*}
- */
-const convertTimestamps = (files) => {
-    files.forEach(file => file.timestamp = String(file.timestamp));
-    return files;
-}
 ]]></script>
 
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
