@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download File</label>
 <label locale="ja">kintone: ファイルダウンロード</label>
-<last-modified>2020-11-19</last-modified>
+<last-modified>2020-11-20</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Download files from an Attachment field of a record in a Kintone App.</summary>
@@ -23,13 +23,13 @@
     <label>C4: App ID</label>
     <label locale="ja">C4: アプリ ID</label>
   </config>
-  <config name="conf_recordId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: Record ID</label>
-    <label locale="ja">C5: レコード ID</label>
-  </config>
   <config name="conf_fieldCode" required="true" form-type="TEXTFIELD">
-    <label>C6: Field Code of Attachment field</label>
-    <label locale="ja">C6: 添付ファイルフィールドのフィールドコード</label>
+    <label>C5: Field Code of Attachment field</label>
+    <label locale="ja">C5: 添付ファイルフィールドのフィールドコード</label>
+  </config>
+  <config name="conf_recordId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C6: Record ID</label>
+    <label locale="ja">C6: レコード ID</label>
   </config>
   <config name="conf_files" required="true" form-type="SELECT" select-data-type="FILE">
     <label>C7: File type data item to add the downloaded files</label>
@@ -48,25 +48,24 @@ function main(){
   const domain = configs.get("conf_domain");
   const guestSpaceId = configs.get("conf_guestSpaceId");
   const appId = configs.get("conf_appId");
-  const recordId = retrieveRecordId();
   const fieldCode = configs.get("conf_fieldCode");
+  const recordId = retrieveRecordId();
   const filesDef = configs.getObject("conf_files");
 
   const apiToken = httpClient.getOAuth2Token( auth );
-  let files = engine.findData( attachmentsDef );
+  let files = engine.findData( filesDef );
   if (files === null) {
     files = new java.util.ArrayList();
   }
 
   //// == 演算 / Calculating ==
   checkDomainAndIds( domain, appId, recordId );
-  const apiUri = determinApiUri( domain, guestSpaceId ); // /v1/ までの URI
+  const apiUri = determineApiUri( domain, guestSpaceId ); // /v1/ までの URI
   const attachments = getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode );
-  
   getAndAddAttachments( apiUri, apiToken, attachments, files ); // 添付ファイルをダウンロードして files に追加
 
   //// == ワークフローデータへの代入 / Data Updating ==
-  engine.setData( attachmentsDef, files );
+  engine.setData( filesDef, files );
 }
 
 /**
@@ -147,7 +146,7 @@ function determineApiUri( domain, guestSpaceId ) {
   * @param {String} appId  アプリ ID
   * @param {String} recordId  レコード ID
   * @param {String} fieldCode  添付ファイルフィールドのフィールドコード
-  * @return {Array<Object>} attachments  添付ファイルの情報の配列
+  * @return {Array<Object>} attachments  添付ファイル情報 {contentType, fileKey, name, size} の配列
   */
 function getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode ) {
   const response = httpClient.begin()
@@ -158,13 +157,13 @@ function getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode ) {
   //when error thrown
   const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  if (status >= 300) {
+  if (status !== 200) {
     const accessLog = `---GET request--- ${status}\n${responseStr}\n`;
     engine.log(accessLog);
     throw `Failed to get record. status: ${status}`;
   }
   const json = JSON.parse(responseStr);
-  if ( json.record[fieldCode] === undefined ) { // レコード情報に一致するフィールドコードがない場合、エラー
+  if ( json.record[fieldCode] === undefined ) { // 一致するフィールドコードがない場合、エラー
     throw `${fieldCode} does not exist in the record.`;
   }
   if ( json.record[fieldCode].type !== "FILE" ) { // 添付ファイルフィールドでない場合、エラー
@@ -173,6 +172,13 @@ function getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode ) {
   return json.record[fieldCode].value;
 }
 
+/**
+  * kintone REST API にファイルダウンロードの GET リクエストを送信し、添付ファイルを配列に追加する
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {Array<Object>} attachments  添付ファイル情報 {contentType, fileKey, name, size} の配列
+  * @param {Array<Qfile>} files  ファイルの配列
+  */
 function getAndAddAttachments( apiUri, apiToken, attachments, files ) {
   const fileNum = attachments.length;
   if ( fileNum + 1 > httpClient.getRequestingLimit() ) { // HTTP リクエストの上限を超える場合はエラー
@@ -189,6 +195,13 @@ function getAndAddAttachments( apiUri, apiToken, attachments, files ) {
   });
 }
 
+/**
+  * kintone REST API にファイルダウンロードの GET リクエストを送信し、レスポンスを返す
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {Object} attachment  添付ファイル情報 {contentType, fileKey, name, size}
+  * @return {HttpResponseWrapper} response  レスポンス
+  */
 function getAttachment( apiUri, apiToken, attachment ) {
   const response = httpClient.begin()
     .header( "X-Cybozu-API-Token", apiToken )
@@ -196,7 +209,7 @@ function getAttachment( apiUri, apiToken, attachment ) {
     .get( `${apiUri}file.json` );
   //when error thrown
   const status = response.getStatusCode();
-  if (status >= 300) {
+  if (status !== 200) {
     engine.log(`attachment: ${JSON.stringify(attachment)}`);
     const responseStr = response.getResponseAsString();
     const accessLog = `---GET request--- ${status}\n${responseStr}\n`;
