@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2020-11-17</last-modified>
+<!--
+<last-modified>2020-11-26</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get an email message in Gmail.</summary>
@@ -65,57 +67,36 @@ function main(){
   //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
   const auth = configs.get("conf_auth");
   const messageId = retrieveMessageId();
-
-  const fromAddressDef = configs.getObject("conf_fromAddress");
-  const fromNameDef = configs.getObject("conf_fromName");
-  const recipientAddressesDef = configs.getObject("conf_recipientAddresses");
-  const recipientNamesDef = configs.getObject("conf_recipientNames");
-  const sentDatetimeDef = configs.getObject("conf_sentDatetime");
-  const subjectDef = configs.getObject("conf_subject");
-  const bodyDef = configs.getObject("conf_body");
-  const attachmentsDef = configs.getObject("conf_attachments");
+  const defs = retrieveDefs();
 
   const apiToken = httpClient.getOAuth2Token( auth );
-  let files = engine.findData( attachmentsDef );
-  if (files === null) {
-    files = new java.util.ArrayList();
-  }
+  const files = retrieveFiles( defs.attachmentsDef );
 
   //// == 演算 / Calculating ==
+  const hasNoDefs = Object.values(defs).every( def => def === null );
+  if ( hasNoDefs ) return; // 保存先データ項目が１つも設定されていなければ何もせず正常終了
   const apiUri = determineApiUri( messageId );
-  const message = {
-    "from": {
-      "email": "",
-      "name": ""
-    },
-    "recipients": {
-      "emails": [],
-      "names": []
-    },
-    "datetime": "",
-    "subject": "",
-    "body": "",
-    "attachments": []
-  };
-  getMessage( apiUri, apiToken, message );
+  const message = getMessage( apiUri, apiToken );
 
-  getAttachments( apiUri, apiToken, message.attachments );
-  convertAndAddAttachments( message.attachments, files );
+  if ( defs.attachmentsDef !== null ) {
+    getAttachments( apiUri, apiToken, message.attachments );
+    convertAndAddAttachments( message.attachments, files );
+  }
 
   //// == ワークフローデータへの代入 / Data Updating ==
-  engine.setData( fromAddressDef, message.from.email );
-  engine.setData( fromNameDef, message.from.name );
-  engine.setData( recipientAddressesDef, message.recipients.emails.join('\n') );
-  engine.setData( recipientNamesDef, message.recipients.names.join('\n') );
-  engine.setData( sentDatetimeDef, new java.sql.Timestamp(Date.parse(message.datetime)) );
-  engine.setData( subjectDef, message.subject );
-  engine.setData( bodyDef, message.body );
-  engine.setData( attachmentsDef, files );
+  setDataIfNotNull( defs.fromAddressDef, message.from.email );
+  setDataIfNotNull( defs.fromNameDef, message.from.name );
+  setDataIfNotNull( defs.recipientAddressesDef, message.recipients.emails.join('\n') );
+  setDataIfNotNull( defs.recipientNamesDef, message.recipients.names.join('\n') );
+  setDataIfNotNull( defs.sentDatetimeDef, new java.sql.Timestamp(Date.parse(message.datetime)) );
+  setDataIfNotNull( defs.subjectDef, message.subject );
+  setDataIfNotNull( defs.bodyDef, message.body );
+  setDataIfNotNull( defs.attachmentsDef, files );
 }
 
 /**
   * config からメール ID を読み出す
-  * @return {Stromg} messageId  メール ID
+  * @return {String} messageId  メール ID
   */
 function retrieveMessageId() {
   const messageIdDef = configs.getObject( "conf_messageId" );
@@ -124,6 +105,32 @@ function retrieveMessageId() {
     messageId = engine.findData( messageIdDef );
   }
   return messageId;
+}
+
+/**
+  * config から保存先データ項目の ProcessDataDefinitionView を読み出す
+  * @return {Object} defs  保存先データ項目の ProcessDataDefinitionView を格納した JSON オブジェクト
+  */
+function retrieveDefs() {
+  const items = ["fromAddress", "fromName", "recipientAddresses", "recipientNames", "sentDatetime", "subject", "body", "attachments"];
+  const defs = {};
+  items.forEach( item => defs[`${item}Def`] = configs.getObject(`conf_${item}`) );
+  return defs;
+}
+
+/**
+  * ワークフローデータからファイル型データ項目の値（ファイルの配列）を読み出す
+  * @return {ListArray<Qfile>} files  ファイルの配列
+  */
+function retrieveFiles( attachmentsDef ) {
+  let files = null;
+  if ( attachmentsDef !== null ) {
+    files = engine.findData( attachmentsDef );
+  }
+  if ( files === null ) {
+    files = new java.util.ArrayList();
+  }
+  return files;
 }
 
 /**
@@ -144,9 +151,9 @@ function determineApiUri( messageId ) {
   * Gmail REST API にメール取得の GET リクエストを送信し、必要な情報を JSON オブジェクトに格納する
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {Object} message  メール情報を格納する JSON オブジェクト
+  * @return {Object} message  メール情報を格納した JSON オブジェクト
   */
-function getMessage( apiUri, apiToken, message ) {
+function getMessage( apiUri, apiToken ) {
   const response = httpClient.begin()
     .bearer( apiToken )
     .get( apiUri );
@@ -163,18 +170,32 @@ function getMessage( apiUri, apiToken, message ) {
 
   // when successful, parse the message content
   const json = JSON.parse(responseJson);
-  // const rawMessage = base64.decodeFromUrlSafeString(json.raw);
-
-  extractFromPayload( json.payload, message );
+  const message = extractFromPayload( json.payload );
+  return message;
 }
 
 /**
   * Gmail REST API のメール取得のレスポンスの payload フィールドから
   * 必要な情報を抜き出し、JSON オブジェクトに格納する
   * @param {Object} payload  Gmail REST API のメール取得のレスポンスの payload フィールド
-  * @param {Object} message  メール情報を格納する JSON オブジェクト
+  * @return {Object} message  メール情報を格納した JSON オブジェクト
   */
-function extractFromPayload( payload, message ) {
+function extractFromPayload( payload ) {
+  const message = {
+    "from": {
+      "email": "",
+      "name": ""
+    },
+    "recipients": {
+      "emails": [],
+      "names": []
+    },
+    "datetime": "",
+    "subject": "",
+    "body": "",
+    "attachments": []
+  };
+
   // ヘッダの処理
   let fromHeader = "";
   let senderHeader = ""; // From ヘッダが無い場合に Sender ヘッダの値を使う
@@ -216,12 +237,12 @@ function extractFromPayload( payload, message ) {
   const mimeType = payload.mimeType;
   if ( mimeType === "text/plain" || mimeType === "text/html" ) { // 本文のみのメール
     message.body = parseTextPart( payload );
-    return;
   }
   if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
     message.body = parseMultiPart( payload, message.attachments );
-    return;
   }
+
+  return message;
 }
 
 /**
@@ -424,6 +445,16 @@ function convertAndAddAttachments( attachments, files ) {
     );
     files.add( qfile );
   });
+}
+
+/**
+  * 保存先データ項目の ProcessDataDefinitionView が null でない場合のみ値を代入する
+  * @param {ProcessDataDefinitionView} def  保存先データ項目の ProcessDataDefinitionView
+  * @param {Object} value  データ項目に代入する値
+  */
+function setDataIfNotNull(def, value) {
+  if ( def === null ) return; // データ項目が設定されていなければ何もしない
+  engine.setData( def, value );
 }
 
   ]]>
