@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-11-26</last-modified>
+<last-modified>2020-11-30</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Collaboration</label>
@@ -41,10 +41,10 @@ function main(){
   	throw "Number of Email address is over the limit."
   }
 
-  const token = configs.get("conf_OAuth2");
+  const oauth2 = configs.get("conf_OAuth2");
 
   // フォルダコラボレーションリストを取得する  
-  const collaborationList = getCollaborationList(token, folderId);
+  const collaborationList = getCollaborationList(oauth2, folderId);
 
   // フォルダが既にコラボレーションされていたらエラーにする
   if(collaborationList["total_count"] !== 0 ){
@@ -53,15 +53,15 @@ function main(){
 
   for (let i = 0; i < numOfLines; i++){
   // コラボレーション作成
-    createCollaboration(token, folderId, emailaddress[i],i+1);
+    createCollaboration(oauth2, folderId, emailaddress[i],i+1);
   }
 
 }
 
 
 /**
-  * 指定するメールアドレスをconfigから読み出して出力する。
-  * @return {String}  メールアドレス
+  * 指定するメールアドレスをconfigから読み出して出力する
+  * @return {Array<String>}  linesArray メールアドレスの配列
   */
 function decideEmailaddress(){
   let emailaddress = "";
@@ -87,9 +87,9 @@ function decideEmailaddress(){
 
 
 /**
-  * コラボレーションするメールアドレスの中に同じメールアドレスが2つ以上あればエラー
-  * @param {emailaddress}  コラボレーションするメールアドレスの配列
-  * @param {numOfLines}  メールアドレス数
+  * コラボレーションするメールアドレスの中に同じメールアドレスが2つ以上あればエラーとする
+  * @param {Array<String>}  emailaddress コラボレーションするメールアドレスの配列
+  * @param {Numeric}  numOfLines メールアドレス数
   */
 function checkEmailaddressOverlap(emailaddress,numOfLines) {
   // Setを使って、配列の要素を一意にする
@@ -101,8 +101,8 @@ function checkEmailaddressOverlap(emailaddress,numOfLines) {
 
 
 /**
-  * コラボレーションするフォルダのIDをconfigから読み出して出力する。
-  * @return {String}  フォルダの ID
+  * コラボレーションするフォルダのIDをconfigから読み出して出力する
+  * @return {String}  folderId フォルダの ID
   */
 function decideFolderId(){
   let folderId = "";
@@ -126,41 +126,47 @@ function decideFolderId(){
 
 /**
   * フォルダコラボレーションリストを取得する
-  *  @return {String}  コラボレーションリストの オブジェクト 
+  * @param {String} oauth2 認証設定
+  * @param {String} folderId  コラボレーションしたいフォルダのID
+  * @return {Object} jsonRes コラボレーションリストの オブジェクト 
   */
-
-function getCollaborationList(token, folderId){
+function getCollaborationList(oauth2, folderId){
 
 const url = `https://api.box.com/2.0/folders/${folderId}/collaborations/`;
 
 
   const response = httpClient.begin()
-    .authSetting(token)
+    .authSetting(oauth2)
     .get(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
 
+  if (status !== 200) {
+    engine.log(`${responseTxt}`);
+    throw `Failed to get folder information and create collaboration. status: ${status}`;
+  }
 
   let jsonRes;
    try {
      jsonRes = JSON.parse(responseTxt);
    } catch(e) {
      engine.log("failed to parse as json");
-     throw `Failed to create collaboration. status: ${status}`;
+     throw `Failed to get folder information and create collaboration. status: ${status}`;
    }
-
-  if (status !== 200) {
-    engine.log(`${responseTxt}`);
-    throw `Failed to get folder information \n status: ${status}`;
-  }
 
 return jsonRes;
 }
 
 
 
-  //create collaboration on box
-function createCollaboration(token, folderId, emailaddress, num) {
+/**
+  * コラボレーションを作成する
+  * @param {String} oauth2 認証設定
+  * @param {String} folderId  コラボレーションしたいフォルダのID
+  * @param {String} emailaddress[i] コラボレーションするメールアドレス
+  * @param {Numeric} i+1  メールアドレスカウント番号
+  */
+function createCollaboration(oauth2, folderId, emailaddress, num) {
   let jsonReq = {};
     jsonReq["item"] = {"id": folderId, "type": "folder"};
     jsonReq["accessible_by"] = {"login": emailaddress };
@@ -168,12 +174,16 @@ function createCollaboration(token, folderId, emailaddress, num) {
   
   const url = 'https://api.box.com/2.0/collaborations';
   const response = httpClient.begin()
-    .authSetting(token)
+    .authSetting(oauth2)
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
 
+  if (status !== 201) {
+  engine.log(`${responseTxt}`);
+  throw `Failed to create collboration. status: ${status}`;
+  }
 
   let jsonRes;
    try {
@@ -183,10 +193,6 @@ function createCollaboration(token, folderId, emailaddress, num) {
      throw `Failed to create collaboration. status: ${status}`;
    }
 
-if (status !== 201) {
-  engine.log(`${responseTxt}`);
-  throw `Failed to create collboration \n status: ${status}`;
-}
 
 if (jsonRes["invite_email"] === null ){
   engine.log(`${num}: ${jsonRes.accessible_by.login} collborated as ${jsonRes.role}`);
