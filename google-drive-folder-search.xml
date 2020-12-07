@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-07-01</last-modified>
+<last-modified>2020-12-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Google Drive: Search Folder</label>
 <label locale="ja">Google ドライブ: フォルダ検索</label>
 <summary>Search for the folder with the specific name, directly under the specified folder on Google Drive.</summary>
@@ -34,85 +34,122 @@
 
 <script><![CDATA[
 main();
-function main(){
+function main() {
   let parentFolderId = configs.get("ParentFolderId");
-  if (parentFolderId == "" ||parentFolderId == null) {
+  if (parentFolderId === "" || parentFolderId === null) {
     parentFolderId = "root";
   }
   const folderName = configs.get("FolderName");
-  if (folderName == "" ||folderName == null) {
+  if (folderName === "" || folderName === null) {
     throw "Folder Name is blank";
   }
   //get C4&C5
   const idData = configs.get("FolderIdItem");
   const urlData = configs.get("WebViewUrlItem");
   //If neither C4 nor C5 are set,throw error
-  if((idData === null || idData === "") && (urlData === null || urlData === "")){
+  if (
+    (idData === null || idData === "") &&
+    (urlData === null || urlData === "")
+  ) {
     throw "Neither of Data Items to save result are set.";
   }
   const oauth = configs.get("OAuth");
 
   // get OAuth token
   let token;
-  token = httpClient.getOAuth2Token( oauth );
-  const folderNameRep = folderName.replace(/['\\]/g,"\\$&");
-  const q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '" + folderNameRep + "' and '" + parentFolderId + "' in parents";
-  const json = searchFolder(token,q);
-  
-  let folderIdList = "";
-  let folderUrlList = "";
+  token = httpClient.getOAuth2Token(oauth);
+  const folderNameRep = folderName.replace(/['\\]/g, "\\$&");
+  const q =
+    "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '" +
+    folderNameRep +
+    "' and '" +
+    parentFolderId +
+    "' in parents";
+  const json = searchFolder(token, q);
+
+  let folderIdList;
+  let folderUrlList;
   const fileNum = json.files.length;
-  if (fileNum == 0){
+  if (fileNum == 0) {
     throw "Folder " + folderName + " doesn't exist.";
   }
-  for(let i = 0; i < fileNum; i++){
-    if (i > 0){
+  for (let i = 0; i < fileNum; i++) {
+    if (i > 0) {
       folderIdList += "\n";
       folderUrlList += "\n";
     }
     folderIdList += json.files[i].id;
     folderUrlList += json.files[i].webViewLink;
   }
+
   //set ID to Data Item
-  if (idData != null && idData != "") {
-    const idDataDef = engine.findDataDefinitionByNumber(idData);
-    //Multiple Judge
-    if(idDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple folders are found.Can't set data to single-line string Data Item."
-    }
-    engine.setDataByNumber(idData,folderIdList);
-  }
+  idtoDataItem(idData, folderIdList, fileNum);
+
   //set URL to Data Item
-  if (urlData != null && urlData != "") {
-    const urlDataDef = engine.findDataDefinitionByNumber(urlData);
-    //Multiple Judge
-    if(urlDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple folders are found.Can't set data to single-line string Data Item."
-    }
-    engine.setDataByNumber(urlData,folderUrlList);
-  }
+  urltoDataItem(urlData, folderUrlList, fileNum);
 }
-//search folder on google drive
+
+/**
+ * Google ドライブのフォルダを検索
+ * @param {String} token OAuth2 Access Token を取得する
+ * @param {String} q MIMEタイプ
+ */
 function searchFolder(token, q) {
-  const url = 'https://www.googleapis.com/drive/v3/files';
-  const response = httpClient.begin()
+  const url = "https://www.googleapis.com/drive/v3/files";
+  const response = httpClient
+    .begin()
     .bearer(token)
-    .queryParam("q",q)
-    .queryParam("pageSize",1000)
+    .queryParam("q", q)
+    .queryParam("pageSize", String(1000))
     .queryParam("fields", "files(id,webViewLink)")
-    .queryParam("includeTeamDriveItems","true")
-    .queryParam("supportsTeamDrives","true")
+    .queryParam("includeTeamDriveItems", "true")
+    .queryParam("supportsAllDrives", "true")
     .get(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
   if (status >= 300) {
-    const error = "Failed to search \n status:" + status + "\n" + responseTxt;
+    const error = `Failed to search\nstatus:${status}`;
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log("status:" + status + "\n" + responseTxt);
-  
+  engine.log("status:" + status);
+
   jsonRes = JSON.parse(responseTxt);
   return jsonRes;
+}
+
+/**
+ * フォルダIDを配列にセットする
+ * @param {String} idData フォルダID
+ * @param {Object} folderIdList フォルダIDを格納する配列
+ * @param {String} fileNum ファイル番号
+ */
+function idtoDataItem(idData, folderIdList, fileNum) {
+  if (idData != null && idData != "") {
+    const idDataDef = engine.findDataDefinitionByNumber(idData);
+    //Multiple Judge
+    if (idDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1) {
+      throw "Multiple folders are found.Can't set data to single-line string Data Item.";
+    }
+    engine.setDataByNumber(idData, folderIdList);
+  }
+}
+
+/**
+ * フォルダURLを配列セットする
+ * @param {String} urlData フォルダURL
+ * @param {Object} folderUrlList フォルダURLを格納する配列
+ * @param {String} fileNum ファイル番号
+ */
+function urltoDataItem(urlData, folderUrlList, fileNum) {
+  if (urlData != null && urlData != "") {
+    const urlDataDef = engine.findDataDefinitionByNumber(urlData);
+    //Multiple Judge
+    if (urlDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1) {
+      throw "Multiple folders are found.Can't set data to single-line string Data Item.";
+    }
+    engine.setDataByNumber(urlData, folderUrlList);
+  }
 }
 
 ]]></script>
