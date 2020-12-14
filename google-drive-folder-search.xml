@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-12-10</last-modified>
+<last-modified>2020-12-14</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Drive: Search Folder</label>
@@ -11,8 +11,8 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googledrive-foldersearch/</help-page-url>
 <configs>
   <config name="OAuth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (When empty, search in My Drive root)</label>
@@ -23,12 +23,12 @@
     <label locale="ja">C3: 検索するフォルダの名称</label>
   </config>
   <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C4: Data Item that will save Folder ID</label>
+    <label>C4: String type data Item that will save Folder ID</label>
     <label locale="ja">C4: 検索したフォルダの ID を保存する文字型データ項目</label>
   </config>
   <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
     <label>C5: String type data Item that will save web view url of Folder</label>
-    <label locale="ja">C5: 検索したフォルダの表示 URL を保存するデータ項目</label>
+    <label locale="ja">C5: 検索したフォルダの表示 URL を保存する文字型データ項目</label>
   </config>
 </configs>
 
@@ -47,10 +47,7 @@ function main() {
   const idData = configs.get("FolderIdItem");
   const urlData = configs.get("WebViewUrlItem");
   //If neither C4 nor C5 are set,throw error
-  if (
-    (idData === null || idData === "") &&
-    (urlData === null || urlData === "")
-  ) {
+  if (idData === null && urlData === null) {
     throw "Neither of Data Items to save result are set.";
   }
   const oauth = configs.get("OAuth");
@@ -59,29 +56,32 @@ function main() {
   const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
   const json = searchFolder(oauth, q);
 
-  const fileNum = json.files.length;
-  if (fileNum === 0) {
+  const folderNum = json.files.length;
+  if (folderNum === 0) {
     throw `Could not found Folder ${folderName} with Parent Folder ID ${parentFolderId}`;
   }
   const folderIdList = [];
   const folderUrlList = [];
-  for (let i = 0; i < fileNum; i++) {
+  for (let i = 0; i < folderNum; i++) {
     folderIdList.push(json.files[i].id);
     folderUrlList.push(json.files[i].webViewLink);
   }
   const folderIdsStr = folderIdList.join("\n");
-  const folderUrlsStr = folderUrlList.join("\n");
+  const folderInfoStr = folderUrlList.join("\n");
+
+  const idDataDef = engine.findDataDefinitionByNumber(idData);
+  const urlDataDef = engine.findDataDefinitionByNumber(urlData);
 
   //set ID to Data Item
-  setIdData(idData, folderIdsStr, fileNum);
+  setIdData(idDataDef, folderIdsStr, folderNum);
 
   //set URL to Data Item
-  setUrlData(urlData, folderUrlsStr, fileNum);
+  setFolderData(urlDataDef, folderInfoStr, folderNum);
 }
 
 /**
  * Google ドライブのフォルダを検索
- * @param {String} oauth OAuth2 Access Token を取得する
+ * @param {String} oauth OAuth2 認証設定
  * @param {String} q 検索クエリ
  * @return {Object} jsonRes レスポンス本文の JSON オブジェクト
  */
@@ -110,36 +110,34 @@ function searchFolder(oauth, q) {
 }
 
 /**
- * フォルダIDを配列にセットする
- * @param {String} idData 検索したフォルダの ID
- * @param {Object} folderIdsStr フォルダ ID を格納する配列のオブジェクト
- * @param {String} fileNum 検索したフォルダの数
+ * フォルダIDをデータ項目にセットする
+ * @param {ProcessDataDefinitionView} idDataDef 保存先データ項目の ProcessDataDefinitionView
+ * @param {String} folderIdsStr 保存するフォルダ ID
+ * @param {Number} folderNum フォルダの数
  */
-function setIdData(idData, folderIdsStr, fileNum) {
-  if (idData != null && idData != "") {
-    const idDataDef = engine.findDataDefinitionByNumber(idData);
+function setIdData(idDataDef, folderIdsStr, folderNum) {
+  if (idDataDef !== null) {
     //Multiple Judge
-    if (idDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1) {
-      throw "Multiple folders are found.Can't set data to single-line string Data Item.";
+    if (idDataDef.matchDataType("STRING_TEXTFIELD") && folderNum > 1) {
+      throw "Multiple folders are found. Can't set data to single-line string type data item.";
     }
-    engine.setDataByNumber(idData, folderIdsStr);
+    engine.setData(idDataDef, folderIdsStr);
   }
 }
 
 /**
- * フォルダURLを配列セットする
- * @param {String} urlData 検索したフォルダの表示 URL
- * @param {Object} folderUrlsStr フォルダ URL を格納する配列のオブジェクト
- * @param {String} fileNum 検索したフォルダの数
+ * フォルダの情報をデータ項目にセットする
+ * @param {ProcessDataDefinitionView} dataDef 保存先データ項目の ProcessDataDefinitionView
+ * @param {Object} folderInfoStr 保存するフォルダ情報
+ * @param {Number} folderNum フォルダの数
  */
-function setUrlData(urlData, folderUrlsStr, fileNum) {
-  if (urlData != null && urlData != "") {
-    const urlDataDef = engine.findDataDefinitionByNumber(urlData);
+function setFolderData(dataDef, folderInfoStr, folderNum) {
+  if (dataDef != null && dataDef != "") {
     //Multiple Judge
-    if (urlDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1) {
+    if (dataDef.matchDataType("STRING_TEXTFIELD") && folderNum > 1) {
       throw "Multiple folders are found.Can't set data to single-line string Data Item.";
     }
-    engine.setDataByNumber(urlData, folderUrlsStr);
+    engine.setData(dataDef, folderInfoStr);
   }
 }
 
