@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<label>kintone: Upload File</label>
+<label locale="ja">kintone: ファイルアップロード</label>
+<last-modified>2020-11-26</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<summary>Upload and add files to an Attachment field of a record in a Kintone App.</summary>
+<summary locale="ja">kintone アプリのレコード（1件）の添付ファイルフィールドにファイルをアップロード（追加）します。</summary>
+<configs>
+  <config name="conf_auth" required="true" form-type="OAUTH2">
+    <label>C1: Authorization Setting in which API Token is set</label>
+    <label locale="ja">C1: API トークンを設定した認証設定</label>
+  </config>
+  <config name="conf_domain" required="true" form-type="TEXTFIELD">
+    <label>C2: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+    <label locale="ja">C2: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+  </config>
+  <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
+    <label>C3: Guest Space ID (required if the App is in a Guest Space)</label>
+    <label locale="ja">C3: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+  </config>
+  <config name="conf_appId" required="true" form-type="TEXTFIELD">
+    <label>C4: App ID</label>
+    <label locale="ja">C4: アプリ ID</label>
+  </config>
+  <config name="conf_recordId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C5: Record ID</label>
+    <label locale="ja">C5: レコード ID</label>
+  </config>
+  <config name="conf_fieldCode" required="true" form-type="TEXTFIELD">
+    <label>C6: Field Code of Attachment field</label>
+    <label locale="ja">C6: 添付ファイルフィールドのフィールドコード</label>
+  </config>
+  <config name="conf_files" required="true" form-type="SELECT" select-data-type="FILE">
+    <label>C7: File type data item whose attached files will be uploaded</label>
+    <label locale="ja">C7: アップロードするファイルが保存されているファイル型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/addons/kintone-file-upload/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/kintone-file-upload/</help-page-url>
+
+<script><![CDATA[
+
+main();
+function main(){
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+  const auth = configs.get("conf_auth");
+  const domain = configs.get("conf_domain");
+  const guestSpaceId = configs.get("conf_guestSpaceId");
+  const appId = configs.get("conf_appId");
+  const recordId = retrieveRecordId();
+  const fieldCode = configs.get("conf_fieldCode");
+  const filesDef = configs.getObject("conf_files");
+
+  const apiToken = httpClient.getOAuth2Token( auth );
+  let files = engine.findData( filesDef );
+  if (files === null) { // 追加するファイルがない場合は何もせず正常終了
+    return;
+  }
+
+  //// == 演算 / Calculating ==
+  checkDomainAndIds( domain, appId, recordId );
+  const apiUri = determineApiUri( domain, guestSpaceId ); // /v1/ までの URI
+  const attachments = getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode );
+  uploadAndAddToAttachments( apiUri, apiToken, files, attachments );
+  updateAttachmentField( apiUri, apiToken, appId, recordId, fieldCode, attachments );
+}
+
+/**
+  * config からレコード ID を読み出す
+  * @return {Stromg} recordId  レコード ID
+  */
+function retrieveRecordId() {
+  const recordIdDef = configs.getObject( "conf_recordId" );
+  let recordId = configs.get( "conf_recordId" );
+  if ( recordIdDef !== null ) {
+    recordId = engine.findData( recordIdDef );
+  }
+  return recordId;
+}
+
+/**
+  * ドメイン、アプリ ID、レコード ID が空または不正な文字列であればエラーとする
+  * @param {String} domain  ドメイン
+  * @param {String} appId  アプリ ID
+  * @param {String} recordId  レコード ID
+  */
+function checkDomainAndIds( domain, appId, recordId ) {
+  if ( domain === "" || domain === null ) {
+    throw "Domain is empty.";
+  }
+  const reg = new RegExp( '^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$' );
+  if ( !reg.test(domain) ) {
+    throw "Invalid Kintone domain.";
+  }
+  if ( appId === "" || appId === null ) {
+    throw "App ID is empty.";
+  }
+  if ( !isValidId(appId) ) {
+    throw "Invalid App ID.";
+  }
+  if ( recordId === "" || recordId === null ) {
+    throw "Record ID is empty.";
+  }
+  if ( !isValidId(recordId) ) {
+    throw "Invalid Record ID.";
+  }
+}
+
+/**
+  * ID が有効か（自然数か）を判定する
+  * @param {String} idString  ID の文字列
+  * @return {Boolean}  有効な ID かどうか
+  */
+function isValidId( idString ) {
+  const idReg = new RegExp( '^[1-9][0-9]*$' );
+  return idReg.test( idString );
+}
+
+/**
+  * kintone REST API の URI を決定する（/v1/ まで）
+  * ドメインが空、または kintone のドメインとして不正な文字列であればエラーとする
+  * @param {String} domain  ドメイン
+  * @param {String} guestSpaceId  ゲストスペース ID
+  * @return {String} apiUri  API の URI（/v1/ まで）
+  */
+function determineApiUri( domain, guestSpaceId ) {
+  let apiUri = "";
+  if ( guestSpaceId === "" || guestSpaceId === null ) {
+    apiUri = `https://${domain}/k/v1/`;
+  } else {
+    if ( !isValidId(guestSpaceId) ) {
+      throw "Invalid Guest Space ID.";
+    }
+    apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
+  }
+  return apiUri;
+}
+
+/**
+  * kintone REST API にレコード取得の GET リクエストを送信し、添付ファイルの情報の配列を返す
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {String} appId  アプリ ID
+  * @param {String} recordId  レコード ID
+  * @param {String} fieldCode  添付ファイルフィールドのフィールドコード
+  * @return {Array<Object>} attachments  添付ファイル情報 {contentType, fileKey, name, size} の配列
+  */
+function getAttachmentsInfo( apiUri, apiToken, appId, recordId, fieldCode ) {
+  const response = httpClient.begin()
+    .header( "X-Cybozu-API-Token", apiToken )
+    .queryParam( "app", appId )
+    .queryParam( "id", recordId )
+    .get( `${apiUri}record.json` );
+  //when error thrown
+  const responseStr = response.getResponseAsString();
+  const status = response.getStatusCode();
+  if (status !== 200) {
+    const accessLog = `---GET request--- ${status}\n${responseStr}\n`;
+    engine.log(accessLog);
+    throw `Failed to get record. status: ${status}`;
+  }
+  const json = JSON.parse(responseStr);
+  if ( json.record[fieldCode] === undefined ) { // 一致するフィールドコードがない場合、エラー
+    throw `${fieldCode} does not exist in the record.`;
+  }
+  if ( json.record[fieldCode].type !== "FILE" ) { // 添付ファイルフィールドでない場合、エラー
+    throw `${fieldCode} is not an Attachment field.`;
+  }
+  return json.record[fieldCode].value;
+}
+
+/**
+  * kintone REST API にファイルアップロードの POST リクエストを送信し、ファイル情報の配列を返す
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {Array<QfileView>} files  アップロードするファイルの配列
+  * @param {Array<Object>} attachments  ファイル情報 {fileKey, etc.} の配列
+  */
+function uploadAndAddToAttachments( apiUri, apiToken, files, attachments ) {
+  const fileNum = files.length;
+  if ( fileNum + 2 > httpClient.getRequestingLimit() ) { // HTTP リクエストの上限を超える場合はエラー
+    throw "Necessary HTTP requests exceeds the limit.";
+  }
+  files.forEach( file => {
+    const response = uploadFile( apiUri, apiToken, file );
+    const responseStr = response.getResponseAsString();
+    const json = JSON.parse(responseStr); // {fileKey}
+    attachments.push( json );
+  });
+}
+
+/**
+  * kintone REST API にファイルアップロードの POST リクエストを送信し、レスポンスを返す
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {QfileView} file  アップロードするファイル
+  * @return {HttpResponseWrapper} response  レスポンス
+  */
+function uploadFile( apiUri, apiToken, file ) {
+  const response = httpClient.begin()
+    .header( "X-Cybozu-API-Token", apiToken )
+    .multipart( "file", file )
+    .post( `${apiUri}file.json` );
+  //when error thrown
+  const status = response.getStatusCode();
+  if (status !== 200) {
+    engine.log(`File Name: ${file.getName()}`);
+    engine.log(`Content Type: ${file.getContentType()}`);
+    const responseStr = response.getResponseAsString();
+    const accessLog = `---POST request--- ${status}\n${responseStr}\n`;
+    engine.log(accessLog);
+    throw `Failed to upload file. status: ${status}`;
+  }
+  return response;
+}
+
+/**
+  * kintone REST API にレコード更新の PUT リクエストを送信し、添付ファイルフィールドを更新する
+  * @param {String} apiUri  API の URI（/v1/ まで）
+  * @param {String} apiToken  API トークン
+  * @param {String} appId  アプリ ID
+  * @param {String} recordId  レコード ID
+  * @param {String} fieldCode  添付ファイルフィールドのフィールドコード
+  * @param {Array<Object>} attachments  添付ファイル情報 {fileKey} の配列
+  */
+function updateAttachmentField( apiUri, apiToken, appId, recordId, fieldCode, attachments ) {
+  const body = {
+    "app": appId,
+    "id": recordId,
+    "record": {}
+  };
+  body.record[fieldCode] = {
+ 	"value": attachments
+  };
+  const response = httpClient.begin()
+    .header( "X-Cybozu-API-Token", apiToken )
+    .body(JSON.stringify(body), "application/json; charset=UTF-8")
+    .put( `${apiUri}record.json` );
+  //when error thrown
+  const status = response.getStatusCode();
+  if (status !== 200) {
+    engine.log(`Request Body: ${JSON.stringify(body)}`);
+    const responseStr = response.getResponseAsString();
+    const accessLog = `---PUT request--- ${status}\n${responseStr}\n`;
+    engine.log(accessLog);
+    throw `Failed to update record. status: ${status}`;
+  }
+}
+
+  ]]>
+</script>
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
+bVbd6nSDglFwKkOrY+zDdAzBB1mHDoZSX/wAqw9WnPRBNzuHMJljsuksbPPBiQ4RpThlMLGNL+Jg
+iiAbaARfrNqa2ObjNuQm9y/n3N7b3JvcNI6OnKfk/L9+9/f/OOcw1HmxWuMPtc1R/I3KWonwAYCl
+AFoBvDRh/wzAAwC3dIaBXFo9P+fvIbUW31MCyLS3zi7qcg8YthHgr9FpDoQ+j1Q4FBp88LiaTVUA
+o+3ztxHRYQYEawns1CEgyxj7LDx4r8/N3hXAWDTyIwFd/yWw04YBx5ti8e2VfFUEMBqddxpg66cj
++KQPOhOO3d9QAZx9azq/vBYmbAzwnIPo+PR+ucMbY12lNWEB4NWukRx3KzhpVguIdFBipCo+z4LF
+KN6946rDC9PLChGzOywAYysj3xFDd5ml1wel52t4P1wjRNqf/VC/2QtoeZuq/NZKKPu+BZsRBiVH
+oH7ZjcLtvyoCYYQjTdfiu7hQAOBDJhhSEs4+967qQGD3V2D+gM0R5cYxfngvtCsXwcLNCB7sg2cR
+n032Vbh5HernO0DZtE3AgFw2o87kw0oASLZHOiXCr6VanshChH7qB5hLpxIhs7UD/p1fQF6y3JXy
+wo0Ysj1byuQ6w8bmwfgp4X00GvkFwKZSrdDR3yBF3gB0HUyxzyFSs4AkgZJPIb36GiidAgs1ij1r
+FYugTEqkJLWmrYwFACfCsfhmE8DNiflu2YeOnbVopfQYmF8RMsqpYI1Nxu/ECNjMlw0bTQONZ4WM
+Uy70ZVmIUuveqVS8t8Kx+DITQLLkYBFGnAHP4jYLEGUzyJ8/iYbOListvNhY8wQAAPrwI2gDl9Hw
+6WYb5elP3oP+9IkzDc/CsXizCYCcUicAXvVULAJkqLKAIpzy9uRpEl8dmgE9MQJp1iu1AEA4Fjcq
+bDQaKQMQ/OGMvbh42/HgvgaD/tQYtIFLkN+OQuIseH3GvoMVvufCgA1AWQrkFe9D6f0eLBiayLHB
+gNmSvBVzR3rh69gAz8I3J1PlAKDF/oDauxMgvWoKyorQ4FlCoHs/fB+tnxw8stegO9gIPcnpboHZ
+FRycWZj6k4dQ921H8d4/zsDmf1sRlrVhqZU0ey58H3dCer0Vctu7FgtWDQjuCXpiGPn+06L98hdO
+uQU29yfbsNIgqmTNB45y6GdrLtgA8E68+jvUA2LCTrlsg8htFFf0InkQ2HMQvtVroQ8PQWqZK7qB
+j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
+mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
+</icon>
+
+</service-task-definition>
