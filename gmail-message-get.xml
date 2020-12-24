@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2020-12-17</last-modified>
+<last-modified>2020-12-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get an email message in Gmail.</summary>
@@ -81,10 +81,10 @@ function main(){
   }
 
   // To, Cc, Bcc の順に連結
-  const recipientEmails = message.recipients.To.emails
-    .concat( message.recipients.Cc.emails, message.recipients.Bcc.emails );
-  const recipientNames = message.recipients.To.names
-    .concat( message.recipients.Cc.names, message.recipients.Bcc.names );
+  const recipientEmails = message.recipients.to.emails
+    .concat( message.recipients.cc.emails, message.recipients.bcc.emails );
+  const recipientNames = message.recipients.to.names
+    .concat( message.recipients.cc.names, message.recipients.bcc.names );
 
   //// == ワークフローデータへの代入 / Data Updating ==
   setDataIfNotNull( defs.fromAddressDef, message.from.email );
@@ -202,15 +202,15 @@ function extractFromPayload( payload ) {
       "name": ""
     },
     "recipients": {
-      "To": {
+      "to": {
         "emails": [],
         "names": []
       },
-      "Cc": {
+      "cc": {
         "emails": [],
         "names": []
       },
-      "Bcc": {
+      "bcc": {
         "emails": [],
         "names": []
       }
@@ -222,41 +222,37 @@ function extractFromPayload( payload ) {
   };
 
   // ヘッダの処理
-  let fromHeader = "";
-  let senderHeader = ""; // From ヘッダが無い場合に Sender ヘッダの値を使う
+  // From ヘッダは Gmail の仕様で必ず 1 件, Date ヘッダも 1 件
+  // To, Cc, Bcc は複数件の可能性があるので配列に追加して処理
+  // Subject が複数件ある場合は最初の Subject ヘッダを採用する
   payload.headers.forEach( header => {
-    if ( header.name === "From" ) {
-      fromHeader = header.value;
+    let headerNameLower = header.name.toLowerCase();
+    if ( headerNameLower === "from" ) {
+      // From ヘッダをメールアドレスと名前に分ける
+      const fromAddresses = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
+      if ( fromAddresses !== null && fromAddresses.length !== 0 ) {
+        message.from.email = fromAddresses[0].getAddress();
+        message.from.name = fromAddresses[0].getPersonal();
+      }
     }
-    if ( header.name === "Sender" ) {
-      senderHeader = header.value;
-    }
-    if ( header.name === "To" || header.name === "Cc" || header.name === "Bcc" ) {
+    if ( headerNameLower === "to" || headerNameLower === "cc" || headerNameLower === "bcc" ) {
       const addresses  = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
       if ( addresses !== null && addresses.length !== 0 ) {
         addresses.forEach( addr => {
-          message.recipients[header.name].emails.push( addr.getAddress() );
-          message.recipients[header.name].names.push( addr.getPersonal() );
+          message.recipients[headerNameLower].emails.push( addr.getAddress() );
+          message.recipients[headerNameLower].names.push( addr.getPersonal() );
         });
       }
     }
-    if ( header.name === "Date" ) {
+    if ( headerNameLower === "date" ) {
       message.datetime = header.value;
     }
-    if ( header.name === "Subject" ) {
-      message.subject = header.value;
+    if ( headerNameLower === "subject" ) {
+      if ( message.subject === "" ) { // 最初の Subject ヘッダを採用する
+        message.subject = header.value;
+      }
     }
   });
-  // From ヘッダが無い、もしくは空文字列の場合は Sender ヘッダの値を使う
-  if ( fromHeader === "" ) {
-    fromHeader = senderHeader;
-  }
-  // From ヘッダをメールアドレスと名前に分ける
-  const fromAddresses = emailService.parseAddressHeader( fromHeader ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
-  if ( fromAddresses !== null && fromAddresses.length !== 0 ) {
-    message.from.email = fromAddresses[0].getAddress();
-    message.from.name = fromAddresses[0].getPersonal();
-  }
 
   // パート（本文、添付ファイル）の処理
   const mimeType = payload.mimeType;
@@ -346,30 +342,26 @@ function attachment( part, index ) {
 
   const disposition = getDisposition( part );
   const contentType = getContentType( part );
-  if ( disposition === null ) { // 添付ファイルとみなさない
-    return null;
-  }
-  if ( disposition === "attachment" ) { // ファイル名がなくても添付ファイルとみなす
+  if ( disposition === "attachment" || part.body.attachmentId !== undefined ) { // ファイル名がなくても添付ファイルとみなす
     let filename = part.filename;
     if ( filename === undefined || filename === null || filename === "" ) {
       filename = "noname"; // Default
     }
     const file = {
-        "filename": filename,
-        "contentType": contentType,
-        "body": part.body
+      "filename": filename,
+      "contentType": contentType,
+      "body": part.body
     }
     return file;
-  }
-  if ( disposition === "inline" ) { // ファイル名がある場合のみ添付ファイルとみなす
+  } else { // ファイル名 があれば添付ファイルとみなす
     const filename = part.filename;
     if ( filename === undefined || filename === null || filename === "" ) {
       return null;
     }
     const file = {
-        "filename": filename,
-        "contentType": contentType,
-        "body": part.body
+      "filename": filename,
+      "contentType": contentType,
+      "body": part.body
     }
     return file;
   }
@@ -385,7 +377,7 @@ function getDisposition( part ) {
     return null;
   }
   const dispositionHeaders = part.headers.filter( header => {
-    if ( header.name === "Content-Disposition" ) {
+    if ( header.name.toLowerCase() === "content-disposition" ) {
           return true;
         } 
   });
@@ -406,7 +398,7 @@ function getContentType( part ) {
     return "application/octet-stream"; // Default
   }
   const contentTypeHeaders = part.headers.filter( header => {
-    if ( header.name === "Content-Type" ) {
+    if ( header.name.toLowerCase() === "content-type" ) {
           return true;
         } 
   });
