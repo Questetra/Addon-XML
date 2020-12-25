@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2020-12-24</last-modified>
+<last-modified>2020-12-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get an email message in Gmail.</summary>
 <summary locale="ja">Gmail のメールを取得します。</summary>
 <configs>
-  <config name="conf_auth" required="true" form-type="OAUTH2">
-    <label>C1: Authorization Setting to connect Gmail</label>
-    <label locale="ja">C1: Gmail に接続するための認証設定</label>
+  <config name="conf_auth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/gmail.readonly">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_messageId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C2: Message ID</label>
@@ -64,7 +64,7 @@ main();
 function main(){
   //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
   const auth = configs.get("conf_auth");
-  const messageId = retrieveMessageId();
+  const messageId = engine.findData( configs.getObject("conf_messageId") );
   const defs = retrieveDefs();
   const files = retrieveFiles( defs.attachmentsDef );
 
@@ -98,19 +98,6 @@ function main(){
 }
 
 /**
-  * config からメール ID を読み出す
-  * @return {String} messageId  メール ID
-  */
-function retrieveMessageId() {
-  const messageIdDef = configs.getObject( "conf_messageId" );
-  let messageId = configs.get( "conf_messageId" );
-  if ( messageIdDef !== null ) {
-    messageId = engine.findData( messageIdDef );
-  }
-  return messageId;
-}
-
-/**
   * config から保存先データ項目の ProcessDataDefinitionView を読み出す
   * 値を保存するデータ項目が重複して設定されている場合はエラーとする
   * @return {Object} defs  保存先データ項目の ProcessDataDefinitionView を格納した JSON オブジェクト
@@ -118,15 +105,15 @@ function retrieveMessageId() {
 function retrieveDefs() {
   const items = ["fromAddress", "fromName", "recipientAddresses", "recipientNames", "sentDatetime", "subject", "body", "attachments"];
   const defs = {};
-  const dataItemNumList = []; // データ項目の重複確認用
+  const dataItemNumSet = new Set(); // データ項目の重複確認用
   items.forEach( item => {
     const dataItemDef = configs.getObject(`conf_${item}`);
     if ( dataItemDef !== null ) { // データ項目が設定されている場合は重複を確認する
       const dataItemNum = dataItemDef.getNumber();
-      if ( dataItemNumList.indexOf( dataItemNum ) !== -1 ) { // データ項目番号が重複していればエラー
+      if ( dataItemNumSet.has( dataItemNum ) ) { // データ項目番号が重複していればエラー
         throw "The same data item is set multiple times.";
       }
-      dataItemNumList.push( dataItemNum ); // データ項目の重複確認用
+      dataItemNumSet.add( dataItemNum ); // データ項目の重複確認用
     }
     defs[`${item}Def`] = dataItemDef;
   });
@@ -226,31 +213,34 @@ function extractFromPayload( payload ) {
   // To, Cc, Bcc は複数件の可能性があるので配列に追加して処理
   // Subject が複数件ある場合は最初の Subject ヘッダを採用する
   payload.headers.forEach( header => {
-    let headerNameLower = header.name.toLowerCase();
-    if ( headerNameLower === "from" ) {
-      // From ヘッダをメールアドレスと名前に分ける
-      const fromAddresses = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
-      if ( fromAddresses !== null && fromAddresses.length !== 0 ) {
-        message.from.email = fromAddresses[0].getAddress();
-        message.from.name = fromAddresses[0].getPersonal();
-      }
-    }
-    if ( headerNameLower === "to" || headerNameLower === "cc" || headerNameLower === "bcc" ) {
-      const addresses  = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
-      if ( addresses !== null && addresses.length !== 0 ) {
-        addresses.forEach( addr => {
-          message.recipients[headerNameLower].emails.push( addr.getAddress() );
-          message.recipients[headerNameLower].names.push( addr.getPersonal() );
-        });
-      }
-    }
-    if ( headerNameLower === "date" ) {
-      message.datetime = header.value;
-    }
-    if ( headerNameLower === "subject" ) {
-      if ( message.subject === "" ) { // 最初の Subject ヘッダを採用する
-        message.subject = header.value;
-      }
+    const headerNameLower = header.name.toLowerCase();
+    switch ( headerNameLower ) {
+      case 'from':
+        const fromAddresses = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
+        if ( fromAddresses !== null && fromAddresses.length !== 0 ) {
+          message.from.email = fromAddresses[0].getAddress();
+          message.from.name = fromAddresses[0].getPersonal();
+        }
+        break;
+      case 'to':
+      case 'cc':
+      case 'bcc':
+        const addresses  = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
+        if ( addresses !== null && addresses.length !== 0 ) {
+          addresses.forEach( addr => {
+            message.recipients[headerNameLower].emails.push( addr.getAddress() );
+            message.recipients[headerNameLower].names.push( addr.getPersonal() );
+          });
+        }
+        break;
+      case 'date':
+        message.datetime = header.value;
+        break;
+      case 'subject':
+        if ( message.subject === "" ) { // 最初の Subject ヘッダを採用する
+          message.subject = header.value;
+        }
+        break;
     }
   });
 
@@ -370,21 +360,14 @@ function attachment( part, index ) {
 /**
   * MIME メールのパートの "Content-Disposition" ヘッダの値を返す
   * @param {Object} part  パート
-  * @return {String} disposition  "Content-Disposition" ヘッダの値（ヘッダが無い場合は null）
+  * @return {String} disposition  "Content-Disposition" ヘッダの値（ヘッダが無い場合は undefined）
   */
 function getDisposition( part ) {
   if ( part.headers === undefined ) { // パートにヘッダが無い場合は null を返す
     return null;
   }
-  const dispositionHeaders = part.headers.filter( header => {
-    if ( header.name.toLowerCase() === "content-disposition" ) {
-          return true;
-        } 
-  });
-  if ( dispositionHeaders.length === 0 ) { // 無い場合は null を返す
-    return null;
-  }
-  return dispositionHeaders[0].value.split(";")[0].toLowerCase();
+  const dispositionHeader = part.headers.find( header => header.name.toLowerCase() === "content-disposition" );
+  return dispositionHeader.value.split(";")[0].toLowerCase();
 }
 
 /**
@@ -394,18 +377,15 @@ function getDisposition( part ) {
   * @return {String} contentType  "Content-Type" ヘッダの値
   */
 function getContentType( part ) {
+  const defaultContentType = "application/octet-stream";
   if ( part.headers === undefined ) { // パートにヘッダが無い場合はデフォルト値を返す
-    return "application/octet-stream"; // Default
+    return defaultContentType;
   }
-  const contentTypeHeaders = part.headers.filter( header => {
-    if ( header.name.toLowerCase() === "content-type" ) {
-          return true;
-        } 
-  });
-  if ( contentTypeHeaders.length === 0 ) { // 無い場合はデフォルト値を返す
-    return "application/octet-stream"; // Default
+  const contentTypeHeader = part.headers.find( header => header.name.toLowerCase() === "content-type" );
+  if ( contentTypeHeader === undefined ) { // 無い場合はデフォルト値を返す
+    return defaultContentType;
   }
-  return contentTypeHeaders[0].value;
+  return contentTypeHeader.value;
 }
 
 /**
@@ -428,29 +408,23 @@ function getAttachments( apiUri, auth, attachments ) {
   const httpLimit = httpClient.getRequestingLimit();
   let httpCount = 1; // HTTP リクエストの上限超えチェック用のカウンタ（メール取得のリクエスト後なので初期値は1）
   attachments.forEach( attachment => {
-    if ( attachment.body.data === undefined ) { // data がなければ、attachmentId から data を取得して格納
-      httpCount++;
-      if ( httpCount > httpLimit ) {
-        throw "Number of HTTP requests is over the limit.";
-      }
-      const response = httpClient.begin()
-        .authSetting( auth )
-        .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
-
-      // when error thrown
-      const responseJson = response.getResponseAsString();
-      const status = response.getStatusCode();
-      if (status >= 300) {
-        engine.log(`API URI: ${apiUri}/attachments/${attachment.body.attachmentId}`);
-        const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
-        engine.log( accessLog );
-        throw `Failed to get attachment. status: ${status}`;
-      }
-
-      // when successful, parse the message content
-      const json = JSON.parse(responseJson);
-      attachment.body["data"] = json.data;
+    if ( attachment.body.data !== undefined ) { return; } // data があれば何もしない
+    httpCount++;
+    if ( httpCount > httpLimit ) { throw "Number of HTTP requests is over the limit."; }
+    const response = httpClient.begin()
+      .authSetting( auth )
+      .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) { // when error thrown
+      engine.log(`API URI: ${apiUri}/attachments/${attachment.body.attachmentId}`);
+      const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+      engine.log( accessLog );
+      throw `Failed to get attachment. status: ${status}`;
     }
+    // when successful, parse the message content
+    const json = JSON.parse(responseJson);
+    attachment.body["data"] = json.data;
   });
 }
 
