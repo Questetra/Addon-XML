@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-12-22</last-modified>
+<last-modified>2020-12-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Download File</label>
@@ -23,8 +23,8 @@
     <label>C3: File Name (named with the file name in Box if blank)</label>
     <label locale="ja">C3: ファイル名 (空白の場合、Boxでのファイル名で保存されます。)</label>
   </config>
-  <config name="conf_File" required="true" form-type="SELECT" select-data-type="FILE">
-    <label>C4: File type data item to add the downloaded files</label>
+  <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+    <label>C4: File type data item to add the downloaded file</label>
     <label locale="ja">C4: ダウンロードファイルを追加保存するファイル型データ項目</label>
   </config>
 </configs>
@@ -35,56 +35,15 @@ function main(){
   let fileId = decideFileId();
   const oauth2 = configs.get("conf_OAuth2");
 
-  let fileName = checkFileName();
+  let fileName = configs.get( "conf_FileName" );
    if(fileName === "" || fileName === null){
    // Boxでのファイル名を取得する
      fileName = getBoxFileName(oauth2, fileId);
   }
 
-  const fileDef = configs.getObject("conf_File");
-  let file = engine.findData( fileDef );
-   if (file === null) {
-     file = new java.util.ArrayList();
-  }
+// ファイル処理  
+  processTheFile( fileName, oauth2, fileId );
 
-  // ファイルをダウンロードする  
-  const response = boxFileDownload(oauth2, fileId);
-  // file に保存する
-  saveFile( fileName, response, file );
-  // == ワークフローデータへ代入する
-  engine.setData( fileDef, file );
-}
-
-/**
-  * 保存するファイル名をconfigから読み出し、チェックする。（サポートされていない文字が使われていないか）
-  * @return {String}  fileName ファイル名
-  */
-function checkFileName(){
-
-let fileName = configs.get( "conf_FileName" );
-
-//ファイル名が255文字を超えていないか
- if(fileName.length > 255){
-    throw"File Name shoule be less than 256 characters";
-  }
-
-//ファイル名に「/」や「\」が含まれていないか
- const reg = new RegExp('[/\\\\]');
- if(fileName.search(reg) !== -1) {
-    throw "Invalid File Name";
-  }
-
-//ファイル名の先頭と末尾に半角スペースが使われていないか
- if(fileName.slice(0,1) === " " || fileName.slice(-1) === " ") {
-    throw "Invalid File Name";
-  }
-
-//ファイル名が「.」や「..」ではないか
- if(fileName === "." || fileName === ".."){
-    throw "Invalid File Name";
-  }
-
-return fileName;
 }
 
 /**
@@ -133,12 +92,36 @@ return jsonRes.name;
 }
 
 /**
+  * ファイル処理
+  * @param {String} fileName  保存する際のファイル名
+  * @param {String} oauth2 認証設定
+  * @param {String} fileId  ダウンロードするファイルのID
+  */
+function processTheFile( fileName, oauth2, fileId ) {
+
+  const filesDef = configs.getObject("conf_Files");
+  let files = engine.findData( filesDef );
+  if (files === null) {
+    files = new java.util.ArrayList();
+  }
+
+  // ファイルをダウンロードする  
+  const response = downloadBoxFile(oauth2, fileId);
+  // file に保存する
+  saveFile( fileName, response, files );
+  // == ワークフローデータへ代入する
+  engine.setData( filesDef, files );
+
+}
+
+
+/**
   * box API にファイルダウンロードの GET リクエストを送信し、レスポンスを返す
   * @param {String} oauth2 認証設定
   * @param {String} folderId  ダウンロードするファイルのID
   * @return {HttpResponseWrapper} response  レスポンス
   */
-function boxFileDownload(oauth2, fileId){
+function downloadBoxFile(oauth2, fileId){
   
   const url = `https://api.box.com/2.0/files/${fileId}/content/`;
   const response = httpClient.begin()
@@ -160,13 +143,13 @@ function boxFileDownload(oauth2, fileId){
   * @param {HttpResponseWrapper} response  レスポンス
   * @param {Qfile} file  ファイル
   */
-function saveFile( fileName, response, file ) {
+function saveFile( fileName, response, files ) {
 
   const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
     fileName, response.getContentType(), response.getResponse()
   );
 
-  file.add( qfile );
+  files.add( qfile );
 
 }
 
