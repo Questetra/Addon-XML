@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <label>Start: kintone: Record Added</label>
+    <label locale="ja">開始: kintone: レコード追加時</label>
+    <last-modified>2020-12-29</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <summary>Start Process when Record has been added on a Kintone App.</summary>
+    <summary locale="ja">kintone アプリにレコードが追加されると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Token is set</label>
+            <label locale="ja">C1: API トークンを設定した認証設定</label>
+        </config>
+        <config name="conf_domain" required="true" form-type="TEXTFIELD">
+            <label>C2: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+            <label locale="ja">C2: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+        </config>
+        <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
+            <label>C3: Guest Space ID (required if the App is in a Guest Space)</label>
+            <label locale="ja">C3: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+        </config>
+        <config name="conf_appId" required="true" form-type="TEXTFIELD">
+            <label>C4: App ID</label>
+            <label locale="ja">C4: アプリ ID</label>
+        </config>
+        <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING">
+            <label>C5: String type data item to save Record ID</label>
+            <label locale="ja">C5: レコード ID を保存する文字型データ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/start-addons/kintone-record-added/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/start-addons/kintone-record-added/</help-page-url>
+
+    <script><![CDATA[
+/**
+ * configs から必要な情報の取り出し
+ * @return {{apiUri: String, apiToken: *, appId: any}}
+ */
+const prepare = () => {
+    const auth = configs.get("conf_auth");
+    const domain = configs.get("conf_domain");
+    const guestSpaceId = configs.get("conf_guestSpaceId");
+    const appId = configs.get("conf_appId");
+
+    checkAppId(appId);
+    const apiUri = determineApiUri(domain, guestSpaceId);
+
+    const apiToken = httpClient.getOAuth2Token(auth);
+
+    return {
+        appId,
+        apiUri,
+        apiToken
+    };
+};
+
+/**
+ * kintone REST API のレコード取得の URI を決定する
+ * ドメインが空、または kintone のドメインとして不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ * @param {String} guestSpaceId  ゲストスペース ID
+ * @return {String} apiUri  API の URI
+ */
+function determineApiUri(domain, guestSpaceId) {
+    checkDomain(domain);
+    let apiUri;
+    if (guestSpaceId === "" || guestSpaceId === null) {
+        apiUri = `https://${domain}/k/v1/`;
+    } else {
+        if (!isValidId(guestSpaceId)) {
+            throw "Invalid Guest Space ID.";
+        }
+        apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
+    }
+    return apiUri;
+}
+
+/**
+ * ドメインが空または不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ */
+function checkDomain(domain) {
+    if (domain === "" || domain === null) {
+        throw "Domain is empty.";
+    }
+    const reg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
+    if (!reg.test(domain)) {
+        throw "Invalid Kintone domain.";
+    }
+}
+
+/**
+ * アプリ ID が空または不正な文字列であればエラーとする
+ * @param {String} appId  アプリ ID
+ */
+function checkAppId(appId) {
+    if (appId === "" || appId === null) {
+        throw "App ID is empty.";
+    }
+    if (!isValidId(appId)) {
+        throw "Invalid App ID.";
+    }
+}
+
+/**
+ * ID が有効か（自然数か）を判定する
+ * @param {String} idString  ID の文字列
+ * @return {Boolean}  有効な ID かどうか
+ */
+function isValidId(idString) {
+    const idReg = new RegExp('^[1-9][0-9]*$');
+    return idReg.test(idString);
+}
+
+/**
+ * 追加されたレコードの検索
+ * @param limit
+ * @param lastData
+ * @return {{id: number}[]|レコード一覧}
+ */
+const list = (limit) => {
+    const {
+        appId,
+        apiUri,
+        apiToken
+    } = prepare();
+
+    // 降順で検索する
+    const params = {
+        appId,
+        direction: 'desc',
+        limit
+    };
+    const records = getRecords(apiUri, apiToken, params);
+    engine.log(JSON.stringify(records));
+    return records;
+};
+
+/**
+ * kintone REST API にレコード取得の GET リクエストを送信する
+ * 未取得のレコードがなくなるまで再帰的に実行される
+ * @param {String} apiUri  API の URI
+ * @param {String} apiToken  API トークン
+ * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
+ *   プロパティ： {String} appId  アプリ ID
+ *              {String} direction asc or desc
+ *              {Number} limit 結果件数の上限
+ */
+function getRecords(apiUri, apiToken, {appId, direction, limit}) {
+    const getRecordsUri = `${apiUri}records.json`;
+    engine.log(`API URI: ${getRecordsUri}`);
+    engine.log(`appId: ${appId}`);
+
+    let request = httpClient.begin()
+        .header("X-Cybozu-API-Token", apiToken)
+        .queryParam('app', appId);
+
+    const queryString = `order by $id ${direction} limit ${limit}`;
+    request = request.queryParam('query', queryString);
+    request = request.queryParam('fields[0]', '$id');
+    const response = request.get(getRecordsUri);
+
+    //when error thrown
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get records. status: ${status}`;
+    }
+    const json = JSON.parse(responseJson);
+    return json.records.map(formatRecord); // レコードオブジェクトを整形して返す
+}
+
+/**
+ * レコードの整形
+ * @param record kintone レコード
+ */
+function formatRecord(record) {
+    return {
+        id: String(record['$id']['value'])
+    };
+}
+  ]]>
+    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
+        bVbd6nSDglFwKkOrY+zDdAzBB1mHDoZSX/wAqw9WnPRBNzuHMJljsuksbPPBiQ4RpThlMLGNL+Jg
+        iiAbaARfrNqa2ObjNuQm9y/n3N7b3JvcNI6OnKfk/L9+9/f/OOcw1HmxWuMPtc1R/I3KWonwAYCl
+        AFoBvDRh/wzAAwC3dIaBXFo9P+fvIbUW31MCyLS3zi7qcg8YthHgr9FpDoQ+j1Q4FBp88LiaTVUA
+        o+3ztxHRYQYEawns1CEgyxj7LDx4r8/N3hXAWDTyIwFd/yWw04YBx5ti8e2VfFUEMBqddxpg66cj
+        +KQPOhOO3d9QAZx9azq/vBYmbAzwnIPo+PR+ucMbY12lNWEB4NWukRx3KzhpVguIdFBipCo+z4LF
+        KN6946rDC9PLChGzOywAYysj3xFDd5ml1wel52t4P1wjRNqf/VC/2QtoeZuq/NZKKPu+BZsRBiVH
+        oH7ZjcLtvyoCYYQjTdfiu7hQAOBDJhhSEs4+967qQGD3V2D+gM0R5cYxfngvtCsXwcLNCB7sg2cR
+        n032Vbh5HernO0DZtE3AgFw2o87kw0oASLZHOiXCr6VanshChH7qB5hLpxIhs7UD/p1fQF6y3JXy
+        wo0Ysj1byuQ6w8bmwfgp4X00GvkFwKZSrdDR3yBF3gB0HUyxzyFSs4AkgZJPIb36GiidAgs1ij1r
+        FYugTEqkJLWmrYwFACfCsfhmE8DNiflu2YeOnbVopfQYmF8RMsqpYI1Nxu/ECNjMlw0bTQONZ4WM
+        Uy70ZVmIUuveqVS8t8Kx+DITQLLkYBFGnAHP4jYLEGUzyJ8/iYbOListvNhY8wQAAPrwI2gDl9Hw
+        6WYb5elP3oP+9IkzDc/CsXizCYCcUicAXvVULAJkqLKAIpzy9uRpEl8dmgE9MQJp1iu1AEA4Fjcq
+        bDQaKQMQ/OGMvbh42/HgvgaD/tQYtIFLkN+OQuIseH3GvoMVvufCgA1AWQrkFe9D6f0eLBiayLHB
+        gNmSvBVzR3rh69gAz8I3J1PlAKDF/oDauxMgvWoKyorQ4FlCoHs/fB+tnxw8stegO9gIPcnpboHZ
+        FRycWZj6k4dQ921H8d4/zsDmf1sRlrVhqZU0ey58H3dCer0Vctu7FgtWDQjuCXpiGPn+06L98hdO
+        uQU29yfbsNIgqmTNB45y6GdrLtgA8E68+jvUA2LCTrlsg8htFFf0InkQ2HMQvtVroQ8PQWqZK7qB
+        j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
+        mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
+    </icon>
+
+</service-task-definition>
