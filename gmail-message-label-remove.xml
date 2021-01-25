@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<label>Gmail: Remove Label</label>
+<label locale="ja">Gmail: ラベル除去</label>
+<last-modified>2021-01-25</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<summary>Remove labels from an email message in Gmail. You can remove multiple labels at once. When you remove multiple ones, you should write one label on each line.</summary>
+<summary locale="ja">Gmail のメールからラベルを除去します。一度に複数のラベルの除去が可能です。複数除去する場合、データ項目では1行につき1つずつラベルを書くようにしてください。</summary>
+<configs>
+  <config name="conf_auth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/gmail.modify">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_messageId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C2: Message ID</label>
+    <label locale="ja">C2: メール ID</label>
+  </config>
+  <config name="conf_label" required="true" form-type="TEXTAREA">
+    <label>C3: Labels to remove</label>
+    <label locale="ja">C3: 除去するラベル</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-gmail-message-label-remove/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-gmail-message-label-remove/</help-page-url>
+
+<script><![CDATA[
+
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
+// - Token Endpoint URL: https://oauth2.googleapis.com/token
+// - Scope: https://www.googleapis.com/auth/gmail.modify
+// - Consumer Key: (Get by Google Developer Console)
+// - Consumer Secret: (Get by Google Developer Console)
+
+main();
+function main(){
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+  const auth = configs.get("conf_auth");
+  const messageId = engine.findData( configs.getObject("conf_messageId") );
+  const labels = retrieveLabels();
+
+  //// == 演算 / Calculating ==
+  const apiUri = determineApiUri( messageId );
+  const labelIds = getLabelIds(auth, labels);
+  removeLabels( apiUri, auth, labelIds );
+
+}
+
+/**
+  * ワークフローデータからラベルを読み出す
+  * ラベルの設定がない場合はエラー
+  * @return {Array<String>} labels ラベル一覧
+  */
+function retrieveLabels() {
+  const labels = configs.get('conf_label').split('\n')
+    .map(label => label.trim())
+    .filter(label => label !== '');
+  // データ項目に改行のみ等、ラベルの設定がない場合はエラー
+  if (labels.length === 0) {
+    throw "No labels to remove are set.";
+  }
+  return labels;
+}
+
+/**
+  * Gmail のメール編集の URI を決定する
+  * メール ID が空であればエラーとする
+  * @param {String} messageId  メール ID
+  * @return {String} apiUri  API の URI
+  */
+function determineApiUri( messageId ) {
+  if ( messageId === "" || messageId === null ) {
+    throw "Message ID is empty.";
+  }
+  const apiUri = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURI(messageId)}/modify`;
+  return apiUri;
+}
+
+/**
+ * ラベルからラベル ID を取得する
+ * @param {String} auth 認証設定
+ * @param {Array<String>} labels ラベル一覧
+ * @return {Array<String>} ラベル ID の一覧
+ */
+function getLabelIds(auth, labels) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get('https://gmail.googleapis.com/gmail/v1/users/me/labels');
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `--- users.labels.list --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get labels. status: ${status}`;
+    }
+
+    const json = JSON.parse(responseJson);
+    let found = json.labels
+        .filter(label => labels.includes(label.name));
+    const foundLabels = found.map(label => label.name);
+    const notFoundLabels = labels.filter(label => !foundLabels.includes(label));
+    if (notFoundLabels.length > 0) {
+        const accessLog = `--- users.labels.list --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        // id が見つからない label がある場合、エラーをスロー
+        throw `label ids of ${notFoundLabels.join(', ')} not found`;
+    }
+    return found.map(label => label.id);
+}
+
+/**
+  * Gmail REST API にメール編集の POST リクエストを送信し、ラベルを除去する
+  * @param {String} apiUri  API の URI
+  * @param {String} auth  認証設定名
+  * @param {Array<String>} labelIds  ラベル ID の一覧
+  */
+function removeLabels( apiUri, auth, labelIds ) {
+  const body = {
+    "removeLabelIds": labelIds
+  };
+  const response = httpClient.begin()
+    .authSetting( auth )
+    .body(JSON.stringify(body), "application/json; charset=UTF-8")
+    .post( apiUri );
+
+  // when error thrown
+  const responseJson = response.getResponseAsString();
+  const status = response.getStatusCode();
+  if (status >= 300) {
+    const accessLog = `---POST request--- ${status}\n${responseJson}\n`;
+    engine.log( accessLog );
+    throw `Failed to remove labels. status: ${status}`;
+  }
+}
+
+  ]]>
+</script>
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPUlEQVRYR8WXX0hTURzHv2dzy5bb
+1HKKRH+gtx7K2izooXI+BVH41F+IglAJmhVICr2kgRG6DFRERXBpGIgkZA/Oeigir+VzIGQE1bTU
+yXYdy90Tu+5u997dea9p3PO2nd+fz/md359zCXReRKv/76cPW4ysoYKAnARoCSj2gCCP16dYAMEM
+QKYo6OuYhRsqHvnIarGtCjB7wlWELNSCohJAthajACIg6MAKmhxvmJ9r6awJECgrrSSEPgKwTaNj
+uViYUnKncHyiI5N+RoC5clcbpaj6R8cSNULQXjDGVCvZUgQIlDn7CSHnN8O5YINSOlA4PnlBbjMN
+YDNPnuZMIRISgMSdt2/myeW2KCVV4pxIAvDZbsS0kHCGAgdsdQ0w2HPBPvchMvpCMxexWmGrb4Sx
+qBiRl8NgB31i3TBi2CdURwqg3NUCCo8gme8b5g0IK8q8R7C+BuC4NUFMJU7YG70gZnNSLnj3JuL6
+yUXgdYwxNfHfPEC8yWSxht/iOi949Q7IMkmcccFFLHquI/ZtRhEip/oWtlacS9tjB/sQ7nwi/j+y
+YuG2x5sVDxBwuy4RoE8soQTA71MOodaHWB4ZSh3IakWetwvG3XsVweJXEO5slexR4HKhn/HxALPu
+0m6AXtUEkBASrsR80AlbQ7Mk5HIKJQCA9Dj8E9cSAK5PAErWA8AHg2VBLBbV5FQGwJTDzxxaBShz
+zScHS8JcxitQdZcuoAhAseAYZ/KFCFC5WhoApQBRnV2AglyGCMDhZ1YtzrpdqgCxwA+w/b2wemoB
+YlCMQ+zrF4Sf9sBWd1+yrw6g4QriAPMXz8C4cxdyH3fxDUq8loeeIdTWDPORY7A3tqgDyK5ANQkF
+AN6ywQD7Ay/MzqOg0SiW7t1GdPIDv6UZAOIk1FCGEoDE+bYcd+PP1CS4pWDyxNoBRGWopREpASgl
+glYASSNSasU7Rt+CmFL9fEMAA70Id7eJeaWtmK8E2TDKqfIg+9TZZOmtTH/m54DaMu0/AHtTqu3S
+UAgLN66A+zWXUpUPIx5ANo7VHG1gX3kcxw3q+iARTqTrk0yA0PVR+j8ise5neSoSOn6YCBC6fpqJ
+S023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg==
+</icon>
+
+</service-task-definition>
