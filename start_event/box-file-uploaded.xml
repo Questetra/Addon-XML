@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <last-modified>2021-01-14</last-modified>
+    <last-modified>2021-01-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Start: Box: File Uploaded</label>
@@ -65,46 +65,43 @@ const list = (limit) => {
 };
 
 /**
- * 指定フォルダ内の、ファイルの検索
+ * 指定フォルダ内の、ファイルの取得
+ * フォルダ内のアイテム (ファイル＋フォルダ） 数が 1000 を超える場合、エラー
  * @param oauth2 OAuth2 設定
  * @param folderId 検索対象のフォルダ ID
  * @return {*[]} ファイル一覧
  */
 const getFiles = (oauth2, folderId) => {
     const url = `https://api.box.com/2.0/folders/${folderId}/items`;
-    let marker = "";
-    let files = [];
-    let json;
-    const limit = httpClient.getRequestingLimit();
-    for (let count = 0; count < limit; count++) {
+
+    const LIMIT = 1000; // Box API で定める LIMIT の最大値が 1000
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam("fields", "id,type,name,created_at")
         // date で sort をするが、これは更新日と思われる。作成日では sort できない。
-        const response = httpClient.begin()
-            .authSetting(oauth2)
-            .queryParam("fields", "id,type,name,created_at")
-            .queryParam('sort', 'date')
-            .queryParam('direction', 'ASC')
-            .queryParam("limit", "1000")
-            .queryParam("usemarker", "true")
-            .queryParam("marker", marker)
-            .get(url);
-        const status = response.getStatusCode();
-        const responseTxt = response.getResponseAsString() + "\n";
-        if (status >= 300) {
-            const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
-            engine.log(accessLog);
-            throw `Failed to get files. status: ${status}`;
-        }
-        json = JSON.parse(responseTxt);
-        const someFiles = json.entries
-            .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
-            .map(formatFile); // 必要な項目のみに変更
-        files = files.concat(someFiles);
-        marker = json['next_marker'];
-        if (marker === undefined || marker === '' || marker === null) {
-            return files;
-        }
+        .queryParam('sort', 'date')
+        .queryParam('direction', 'ASC')
+        .queryParam("limit", String(LIMIT))
+        .queryParam("usemarker", "true")
+        .get(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString() + "\n";
+    if (status >= 300) {
+        const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get files. status: ${status}`;
     }
-    throw "Too many folders and files are in the specified folder";
+    const json = JSON.parse(responseTxt);
+
+    // marker がある場合は、フォルダに まだ ファイルがあるとみなして、エラーとする
+    const marker = json['next_marker'];
+    if (marker !== undefined && marker !== '' && marker !== null) {
+        throw `More than ${LIMIT} items are in the specified folder`;
+    }
+
+    return json.entries
+        .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
+        .map(formatFile); // 必要な項目のみに変更
 }
 
 const dateFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
