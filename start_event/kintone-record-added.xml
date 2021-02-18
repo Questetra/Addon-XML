@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: kintone: Record Added</label>
     <label locale="ja">開始: kintone: レコード追加時</label>
-    <last-modified>2021-01-14</last-modified>
+    <last-modified>2021-02-18</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Start Process when Record has been added on a Kintone App.</summary>
@@ -34,6 +34,11 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-kintone-record-added/</help-page-url>
 
     <script><![CDATA[
+/** 日時フォーマッター */
+const datetimeFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
+/** 日時文字列 -> java.sql.Timestamp */
+const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str).getTime());
+
 /**
  * configs から必要な情報の取り出し
  * @return {{apiUri: String, apiToken: *, appId: any}}
@@ -134,7 +139,8 @@ const list = (limit) => {
         limit
     };
     const records = getRecords(apiUri, apiToken, params);
-    engine.log(JSON.stringify(records));
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
+    engine.log(JSON.stringify(records, replacer));
     return records;
 };
 
@@ -149,6 +155,8 @@ const list = (limit) => {
  *              {Number} limit 結果件数の上限
  */
 function getRecords(apiUri, apiToken, {appId, direction, limit}) {
+    const createdTimeFieldCode = getCreatedTimeFieldCode(apiUri, apiToken, appId);
+
     const getRecordsUri = `${apiUri}records.json`;
     engine.log(`API URI: ${getRecordsUri}`);
     engine.log(`appId: ${appId}`);
@@ -160,6 +168,7 @@ function getRecords(apiUri, apiToken, {appId, direction, limit}) {
     const queryString = `order by $id ${direction} limit ${limit}`;
     request = request.queryParam('query', queryString);
     request = request.queryParam('fields[0]', '$id');
+    request = request.queryParam('fields[1]', createdTimeFieldCode);
     const response = request.get(getRecordsUri);
 
     //when error thrown
@@ -171,17 +180,45 @@ function getRecords(apiUri, apiToken, {appId, direction, limit}) {
         throw `Failed to get records. status: ${status}`;
     }
     const json = JSON.parse(responseJson);
-    return json.records.map(formatRecord); // レコードオブジェクトを整形して返す
+
+    // レコードオブジェクトを整形して返す
+    const formatRecord = (record) => ({
+        id: String(record['$id']['value']),
+        timestamp: parseDatetime(record[createdTimeFieldCode]['value'])
+    });
+
+    return json.records.map(formatRecord);
 }
 
 /**
- * レコードの整形
- * @param record kintone レコード
+ * kintone REST API にフィールド一覧取得の GET リクエストを送信し、レコード作成日時のフィールドコードを調べる
+ * @param {String} apiUri  API の URI
+ * @param {String} apiToken  API トークン
+ * @param {String} appId  アプリ ID
  */
-function formatRecord(record) {
-    return {
-        id: String(record['$id']['value'])
-    };
+function getCreatedTimeFieldCode(apiUri, apiToken, appId) {
+    const getFieldsUri = `${apiUri}app/form/fields.json?app=${appId}`;
+    engine.log(`API URI: ${getFieldsUri}`);
+    const response = httpClient.begin()
+        .header("X-Cybozu-API-Token", apiToken)
+        .get(getFieldsUri);
+    //when error thrown
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get form fields. status: ${status}`;
+    }
+    const json = JSON.parse(responseJson);
+
+    for (const [propName, propObj] of Object.entries(json.properties)) {
+        if (propObj.type === 'CREATED_TIME') {
+            return propName;
+        }
+    }
+    engine.log(responseJson);
+    throw 'CREATED_TIME property not found';
 }
   ]]>
     </script>
