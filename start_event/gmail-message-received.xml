@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: Gmail: Email Message Received</label>
     <label locale="ja">開始: Gmail: メール受信時</label>
-    <last-modified>2021-01-14</last-modified>
+    <last-modified>2021-02-18</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Start Process when Gmail has received a new message.</summary>
@@ -26,6 +26,9 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-gmail-message-received/</help-page-url>
 
     <script><![CDATA[
+/** 日時フォーマッター */
+const dateFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
+
 /**
  * configs から必要な情報の取り出し
  * @return {{auth: String, labels: Array<String>}}
@@ -56,6 +59,9 @@ const list = (limit) => {
     if (labels.length !== 0) {
         labelIds = getLabelIds(auth, labels);
     }
+
+    // HTTP リクエスト数制限を考慮する
+    limit = Math.min(limit, httpClient.getRequestingLimit() - 2);
     return getMessages(auth, labelIds, limit);
 };
 
@@ -114,7 +120,7 @@ function getMessages(auth, labelIds, limit) {
     if (status >= 300) {
         const accessLog = `--- users.messages.list --- ${status}\n${responseJson}\n`;
         engine.log(accessLog);
-        throw `Failed to get message. status: ${status}`;
+        throw `Failed to get messages. status: ${status}`;
     }
 
     const json = JSON.parse(responseJson);
@@ -125,9 +131,36 @@ function getMessages(auth, labelIds, limit) {
     }
 
     // id のみ抜き出し
-    const messages = json.messages.map(msg => ({id: msg.id}));
-    engine.log(JSON.stringify(messages));
+    const messages = json.messages.map(msg => getMessage(auth, msg.id));
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(value) : value;
+    engine.log(JSON.stringify(messages, replacer));
     return messages;
+}
+
+/**
+ * Gmail REST API にメール取得の GET リクエストを送信し、メッセージの id と internalDate を返す
+ * @param auth {String} auth 認証設定
+ * @param id {String} メッセージ ID
+ * @return {{id, timestamp: java.sql.Timestamp}} メッセージ
+ */
+function getMessage(auth, id) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .queryParam('format', 'minimal')
+        .get(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `--- users.messages.get --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get message ${id}. status: ${status}`;
+    }
+
+    const json = JSON.parse(responseJson);
+    return {
+        id: json.id,
+        timestamp: new java.sql.Timestamp(Number(json.internalDate))
+    };
 }
 ]]>
     </script>
