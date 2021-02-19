@@ -31,7 +31,8 @@
         </config>
     </configs>
     <help-page-url>https://support.questetra.com/bpmn-icons/start-event-kintone-record-added/</help-page-url>
-    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-kintone-record-added/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-kintone-record-added/
+    </help-page-url>
 
     <script><![CDATA[
 /** 日時フォーマッター */
@@ -121,27 +122,36 @@ function isValidId(idString) {
 
 /**
  * 追加されたレコードの検索
- * @param limit
- * @param lastData
+ * @param limit レコード数の上限
+ * @param timestampLowerLimit timestamp の下限
  * @return {{id: number}[]|レコード一覧}
  */
-const list = (limit) => {
+const list = (limit, timestampLowerLimit) => {
     const {
         appId,
         apiUri,
         apiToken
     } = prepare();
 
-    // 降順で検索する
     const params = {
         appId,
-        direction: 'desc',
-        limit
+        limit,
+        timestampLowerLimit
     };
     const records = getRecords(apiUri, apiToken, params);
-    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
-    engine.log(JSON.stringify(records, replacer));
+    logRecords(records);
     return records;
+};
+
+/**
+ * レコードのログ出力
+ * @param records
+ */
+const logRecords = (records) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
+    records.forEach(record => {
+        engine.log(JSON.stringify(record, replacer));
+    });
 };
 
 /**
@@ -151,10 +161,10 @@ const list = (limit) => {
  * @param {String} apiToken  API トークン
  * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
  *   プロパティ： {String} appId  アプリ ID
- *              {String} direction asc or desc
  *              {Number} limit 結果件数の上限
+ *              {java.sql.Timetamp} timestampLowerLimit レコード作成日時の下限
  */
-function getRecords(apiUri, apiToken, {appId, direction, limit}) {
+function getRecords(apiUri, apiToken, {appId, limit, timestampLowerLimit}) {
     const createdTimeFieldCode = getCreatedTimeFieldCode(apiUri, apiToken, appId);
 
     const getRecordsUri = `${apiUri}records.json`;
@@ -165,7 +175,8 @@ function getRecords(apiUri, apiToken, {appId, direction, limit}) {
         .header("X-Cybozu-API-Token", apiToken)
         .queryParam('app', appId);
 
-    const queryString = `order by $id ${direction} limit ${limit}`;
+    const queryString = `${createdTimeFieldCode} >= "${datetimeFormatter.format(timestampLowerLimit)}" order by $id desc limit ${limit}`;
+    engine.log(`query: ${queryString}`);
     request = request.queryParam('query', queryString);
     request = request.queryParam('fields[0]', '$id');
     request = request.queryParam('fields[1]', createdTimeFieldCode);
