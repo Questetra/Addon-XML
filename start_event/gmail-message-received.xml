@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: Gmail: Email Message Received</label>
     <label locale="ja">開始: Gmail: メール受信時</label>
-    <last-modified>2021-02-18</last-modified>
+    <last-modified>2021-02-22</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Start Process when Gmail has received a new message.</summary>
@@ -51,9 +51,10 @@ const prepare = () => {
 /**
  * 追加されたメールの検索
  * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
  * @return {{id: String}[]|メッセージ一覧}
  */
-const list = (limit) => {
+const list = (limit, timestampLowerLimit) => {
     const {auth, labels} = prepare();
     let labelIds = ['INBOX'];
     if (labels.length !== 0) {
@@ -62,7 +63,18 @@ const list = (limit) => {
 
     // HTTP リクエスト数制限を考慮する
     limit = Math.min(limit, httpClient.getRequestingLimit() - 2);
-    return getMessages(auth, labelIds, limit);
+    const messages = getMessages(auth, labelIds, limit, timestampLowerLimit);
+    logMessages(messages);
+    return messages;
+};
+
+/**
+ * メッセージ一覧のログ出力
+ * @param messages
+ */
+const logMessages = (messages) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(value) : value;
+    messages.forEach(msg => engine.log(JSON.stringify(msg, replacer)));
 };
 
 /**
@@ -102,15 +114,20 @@ function getLabelIds(auth, labels) {
  * @param {String} auth 認証設定
  * @param {Array<String>} labelIds ラベル ID の一覧
  * @param {Number} limit 取得上限数
- * @return {{id: String}[]|メッセージ一覧}
+ * @param timestampLowerLimit timestamp の下限
+ * @return {{id: String, timestamp: java.sql.Timestamp}[]|メッセージ一覧}
  */
-function getMessages(auth, labelIds, limit) {
+function getMessages(auth, labelIds, limit, timestampLowerLimit) {
     let request = httpClient.begin()
         .authSetting(auth)
         .queryParam('maxResults', `${limit}`);
     labelIds.forEach(labelId => {
         request = request.queryParam('labelIds', labelId);
     });
+    // 時刻は Sent が対象なので、余裕を持たせて、timestampLowerLimit の 1 日前の時刻から
+    // 単位はミリ秒ではなく秒
+    const q = `newer: ${timestampLowerLimit.addDays(-1).getTime() / 1000}`;
+    request = request.queryParam('q', q);
     const response = request
         .get('https://gmail.googleapis.com/gmail/v1/users/me/messages');
 
@@ -130,11 +147,10 @@ function getMessages(auth, labelIds, limit) {
         return [];
     }
 
-    // id のみ抜き出し
-    const messages = json.messages.map(msg => getMessage(auth, msg.id));
-    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(value) : value;
-    engine.log(JSON.stringify(messages, replacer));
-    return messages;
+    return json.messages
+        .filter(msg => !engine.isProcessStarted(msg.id)) // 既にプロセス開始済みのものを除く
+        .map(msg => getMessage(auth, msg.id)) // id 以外の情報を取得
+        .filter(msg => !msg.timestamp.before(timestampLowerLimit)); // timestamp が下限より前のものを除く
 }
 
 /**
