@@ -6,7 +6,7 @@
     <engine-type>2</engine-type>
     <label>Start: Google Calendar: Event Started</label>
     <label locale="ja">開始: Google カレンダー: 予定開始時</label>
-    <summary>Start Process when the start time of the event has passed on Google Calendar.</summary>
+    <summary>Start Process when Event's start time has passed on Google Calendar.</summary>
     <summary locale="ja">Google カレンダーに登録されている、予定の開始時刻を経過すると、プロセスを開始します。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/start-event-google-calendar-event-started/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-google-calendar-event-started/
@@ -14,7 +14,7 @@
 
     <configs>
         <config name="conf_User" required="true" form-type="QUSER">
-            <label>C1: User Who Connects with Google Calendar</label>
+            <label>C1: User who Connects to Google Calendar</label>
             <label locale="ja">C1: Google カレンダー に接続するユーザ</label>
         </config>
         <config name="conf_CalendarId" form-type="TEXTFIELD">
@@ -29,17 +29,21 @@
             <label>C4: Data item to save Event Start Datetime</label>
             <label locale="ja">C4: 予定開始時刻を保存するデータ項目</label>
         </config>
+        <config name="conf_endTimestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C5: Data item to save Event End Datetime</label>
+            <label locale="ja">C5: 予定終了時刻を保存するデータ項目</label>
+        </config>
         <config name="conf_summaryData" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C5: Data item to save Event Title</label>
-            <label locale="ja">C5: 予定タイトルを保存するデータ項目</label>
+            <label>C6: Data item to save Event Title</label>
+            <label locale="ja">C6: 予定タイトルを保存するデータ項目</label>
         </config>
         <config name="conf_descriptionData" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-            <label>C6: Data item to save Description</label>
-            <label locale="ja">C6: 説明を保存するデータ項目</label>
+            <label>C7: Data item to save Description</label>
+            <label locale="ja">C7: 説明を保存するデータ項目</label>
         </config>
         <config name="conf_htmlLinkData" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C7: Data item to save Event URL</label>
-            <label locale="ja">C7: 予定 URL を保存するデータ項目</label>
+            <label>C8: Data item to save Event URL</label>
+            <label locale="ja">C8: 予定 URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -105,11 +109,12 @@ const logEvents = (events) => {
  * @return {Array} events イベント一覧
  * @return {string} events[].id イベント ID
  * @return {timestamp} events[].timestamp 開始日時
+ * @return {timestamp} events[].endTimestamp 終了日時
  * @return {string} events[].summary タイトル
  * @return {string} events[].description 詳細説明
  * @return {string} events[].htmlLink WebLink
  */
-function getEvents(quser, calendarId, limit, timestampLowerLimit) {
+const getEvents = (quser, calendarId, limit, timestampLowerLimit) => {
     const eventsUrl = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`;
     engine.log(`API URI: ${eventsUrl}`);
 
@@ -121,6 +126,7 @@ function getEvents(quser, calendarId, limit, timestampLowerLimit) {
         .queryParam('singleEvents', 'true')
         .queryParam('timeMin', datetimeFormatter.format(timestampLowerLimit))
         .queryParam('timeMax', datetimeFormatter.format(new java.sql.Timestamp(Date.now())))
+        .queryParam('timeZone', engine.getTimeZoneId())
         .get(eventsUrl);
 
     //when error thrown
@@ -129,31 +135,39 @@ function getEvents(quser, calendarId, limit, timestampLowerLimit) {
     if (status >= 300) {
         engine.log(`---GET request--- ${status}`);
         engine.log(responseTxt);
-        throw `Failed to get records. status: ${status}`;
+        throw `Failed to get events. status: ${status}`;
     }
     const json = JSON.parse(responseTxt);
 
-    const parseStart = (start) => {
-        if (start.dateTime !== undefined) {
-            return parseDatetime(start.dateTime);
-        }
-        // いったん GMT ベースでパース
-        let time = datetimeFormatter.parse(`${start.date}T00:00:00Z`).getTime();
-        // offset 分ずらす
-        time += engine.getTimeZoneOffsetInMinutes() * 60 * 1000;
-        return new java.sql.Timestamp(time);
-    };
     // レコードオブジェクトを整形して返す
     const formatItem = (item) => ({
         id: String(item.id),
-        timestamp: parseStart(item.start),
+        timestamp: parseStartEndDatetime(item.start),
+        endTimestamp: parseStartEndDatetime(item.end),
         summary: item.summary,
         description: item.description,
         htmlLink: item.htmlLink
     });
 
     return json.items.map(formatItem).reverse();
-}
+};
+
+/**
+ * start or end のパース
+ * @param start
+ * @returns {timestamp} 日時
+ */
+const parseStartEndDatetime = (start) => {
+    if (start.dateTime !== undefined) {
+        return parseDatetime(start.dateTime);
+    }
+    // 「終日予定」の処理。「終日予定」はタイムゾーンの概念がない。QBPMS タイムゾーンの 00:00:00 開始のイベントと解釈する。
+    // いったん GMT ベースでパース
+    let time = datetimeFormatter.parse(`${start.date}T00:00:00Z`).getTime();
+    // offset 分ずらす
+    time += engine.getTimeZoneOffsetInMinutes() * 60 * 1000;
+    return new java.sql.Timestamp(time);
+};
 ]]></script>
 
 
