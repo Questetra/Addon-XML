@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: kintone: Record Added</label>
     <label locale="ja">開始: kintone: レコード追加時</label>
-    <last-modified>2021-03-04</last-modified>
+    <last-modified>2021-03-15</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Start Process when Record has been added on a Kintone App.</summary>
@@ -25,13 +25,17 @@
             <label>C4: App ID</label>
             <label locale="ja">C4: アプリ ID</label>
         </config>
+        <config name="conf_query" required="false" form-type="TEXTAREA" el-enabled="true">
+            <label>C5: Search Query</label>
+            <label locale="ja">C5: 検索クエリ</label>
+        </config>
         <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C5: Data item to save Record ID</label>
-            <label locale="ja">C5: レコード ID を保存するデータ項目</label>
+            <label>C6: Data item to save Record ID</label>
+            <label locale="ja">C6: レコード ID を保存するデータ項目</label>
         </config>
         <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
-            <label>C6: Data item to save Record Created Datetime</label>
-            <label locale="ja">C6: レコード作成日時を保存するデータ項目</label>
+            <label>C7: Data item to save Record Created Datetime</label>
+            <label locale="ja">C7: レコード作成日時を保存するデータ項目</label>
         </config>
     </configs>
     <help-page-url>https://support.questetra.com/bpmn-icons/start-event-kintone-record-added/</help-page-url>
@@ -39,7 +43,7 @@
     </help-page-url>
 
     <script><![CDATA[
-/**
+    /**
  * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
  */
 
@@ -53,13 +57,18 @@ const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str)
 
 /**
  * configs から必要な情報の取り出し
- * @return {{apiUri: String, apiToken: *, appId: any}}
+ * @return {object} params
+ * @return {string} params.appId アプリ ID
+ * @return {string} params.query 検索クエリ
+ * @return {string} params.apiUrl API の URI
+ * @return {string} params.apiToken API トークン
  */
 const prepare = () => {
     const auth = configs.get("conf_auth");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
+    const query = configs.get("conf_query");
 
     checkAppId(appId);
     const apiUri = determineApiUri(domain, guestSpaceId);
@@ -68,6 +77,7 @@ const prepare = () => {
 
     return {
         appId,
+        query,
         apiUri,
         apiToken
     };
@@ -80,7 +90,7 @@ const prepare = () => {
  * @param {String} guestSpaceId  ゲストスペース ID
  * @return {String} apiUri  API の URI
  */
-function determineApiUri(domain, guestSpaceId) {
+const determineApiUri = (domain, guestSpaceId) => {
     checkDomain(domain);
     let apiUri;
     if (guestSpaceId === "" || guestSpaceId === null) {
@@ -92,13 +102,13 @@ function determineApiUri(domain, guestSpaceId) {
         apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
     }
     return apiUri;
-}
+};
 
 /**
  * ドメインが空または不正な文字列であればエラーとする
  * @param {String} domain  ドメイン
  */
-function checkDomain(domain) {
+const checkDomain = (domain) => {
     if (domain === "" || domain === null) {
         throw "Domain is empty.";
     }
@@ -106,48 +116,48 @@ function checkDomain(domain) {
     if (!reg.test(domain)) {
         throw "Invalid Kintone domain.";
     }
-}
+};
 
 /**
  * アプリ ID が空または不正な文字列であればエラーとする
  * @param {String} appId  アプリ ID
  */
-function checkAppId(appId) {
+const checkAppId = (appId) => {
     if (appId === "" || appId === null) {
         throw "App ID is empty.";
     }
     if (!isValidId(appId)) {
         throw "Invalid App ID.";
     }
-}
+};
 
 /**
  * ID が有効か（自然数か）を判定する
  * @param {String} idString  ID の文字列
  * @return {Boolean}  有効な ID かどうか
  */
-function isValidId(idString) {
+const isValidId = (idString) => {
     const idReg = new RegExp('^[1-9][0-9]*$');
     return idReg.test(idString);
-}
+};
 
 /**
  * 追加されたレコードの検索
  * @param limit レコード数の上限
  * @param timestampLowerLimit timestamp の下限
  * @return {Array} records レコード一覧
- * @return {string} records[].id レコードID
- * @return {timestamp} records[].timestamp レコード作成日時
  */
 const list = (limit, timestampLowerLimit) => {
     const {
         appId,
+        query,
         apiUri,
         apiToken
     } = prepare();
 
     const params = {
         appId,
+        query,
         limit,
         timestampLowerLimit
     };
@@ -174,13 +184,16 @@ const logRecords = (records) => {
  * @param {String} apiToken  API トークン
  * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
  * @param {string} params.appId アプリ ID
+ * @param {string} params.query 検索クエリ
  * @param {number} params.limit 結果件数の上限
  * @param {timestamp} params.timestampLowerLimit レコード作成日時の下限
  * @return {Array} records レコード一覧
  * @return {string} records[].id レコードID
  * @return {timestamp} records[].timestamp レコード作成日時
  */
-function getRecords(apiUri, apiToken, {appId, limit, timestampLowerLimit}) {
+const getRecords = (apiUri, apiToken, {
+    appId, query, limit, timestampLowerLimit
+}) => {
     const createdTimeFieldCode = getCreatedTimeFieldCode(apiUri, apiToken, appId);
 
     const getRecordsUri = `${apiUri}records.json`;
@@ -191,7 +204,10 @@ function getRecords(apiUri, apiToken, {appId, limit, timestampLowerLimit}) {
         .header("X-Cybozu-API-Token", apiToken)
         .queryParam('app', appId);
 
-    const queryString = `${createdTimeFieldCode} >= "${datetimeFormatter.format(timestampLowerLimit)}" order by $id desc limit ${limit}`;
+    let queryString = `${createdTimeFieldCode} >= "${datetimeFormatter.format(timestampLowerLimit)}" order by $id desc limit ${limit}`;
+    if (query !== '') {
+        queryString = `(${query}) and ${queryString}`;
+    }
     engine.log(`query: ${queryString}`);
     request = request.queryParam('query', queryString);
     request = request.queryParam('fields[0]', '$id');
@@ -215,7 +231,7 @@ function getRecords(apiUri, apiToken, {appId, limit, timestampLowerLimit}) {
     });
 
     return json.records.map(formatRecord);
-}
+};
 
 /**
  * kintone REST API にフィールド一覧取得の GET リクエストを送信し、レコード作成日時のフィールドコードを調べる
@@ -224,7 +240,7 @@ function getRecords(apiUri, apiToken, {appId, limit, timestampLowerLimit}) {
  * @param {String} appId  アプリ ID
  * @return {string} レコード作成日時のフィールドコード
  */
-function getCreatedTimeFieldCode(apiUri, apiToken, appId) {
+const getCreatedTimeFieldCode = (apiUri, apiToken, appId) => {
     const getFieldsUri = `${apiUri}app/form/fields.json?app=${appId}`;
     engine.log(`API URI: ${getFieldsUri}`);
     const response = httpClient.begin()
@@ -247,9 +263,8 @@ function getCreatedTimeFieldCode(apiUri, apiToken, appId) {
     }
     engine.log(responseJson);
     throw 'CREATED_TIME property not found';
-}
-  ]]>
-    </script>
+};
+    ]]></script>
 
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
