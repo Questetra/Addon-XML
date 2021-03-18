@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
-<last-modified>2021-02-19</last-modified>
+<last-modified>2021-03-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Calendar: Insert Event</label>
@@ -11,32 +11,44 @@
  
 <configs>
   <config name="conf_User" required="true" form-type="QUSER">
-    <label>C1: User Who Connects with Google Calendar</label>
+    <label>C1: User who connects to Google Calendar</label>
     <label locale="ja">C1: Google カレンダー に接続するユーザ</label>
   </config>
   <config name="conf_DataIdB" form-type="TEXTFIELD">
-    <label>C2: Calendar ID(When empty,inserted to the primary calendar)</label>
-    <label locale="ja">C2: Calendar ID(空白の場合プライマリのカレンダーに追加されます)</label>
+    <label>C2: Calendar ID (When empty, inserted to the primary calendar)</label>
+    <label locale="ja">C2: Calendar ID (空白の場合プライマリのカレンダーに追加されます)</label>
   </config>
   <config name="conf_DataIdC" required="true" el-enabled="true" form-type="TEXTFIELD">
     <label>C3: Event Title</label>
     <label locale="ja">C3: 予定タイトル</label>
   </config>
   <config name="conf_DataIdD" required="true" form-type="SELECT" select-data-type="DATETIME">
-    <label>C4: Select DATETIME DATA for Event Start</label>
-    <label locale="ja">C4: 予定開始時刻が格納されている日時型データを選択してください</label>
+    <label>C4: Data item for Event Start Datetime</label>
+    <label locale="ja">C4: 開始時刻が格納されているデータ項目</label>
   </config>
   <config name="conf_DataIdE" required="false" form-type="SELECT"  select-data-type="DATETIME">
-    <label>C5: Select DATETIME DATA for Event End (Not-selected +1:00)</label>
-    <label locale="ja">C5: 予定終了時刻が格納されている日時型データを選択してください（未設定の場合、+1:00）</label>
+    <label>C5: Data item for Event End Datetime (Not-selected +1:00)</label>
+    <label locale="ja">C5: 終了時刻が格納されているデータ項目 (未設定の場合、+1:00)</label>
   </config>
   <config name="conf_DataIdF" required="false" el-enabled="true" form-type="TEXTFIELD">
     <label>C6: Location</label>
-    <label locale="ja">C6: 場所情報</label>
+    <label locale="ja">C6: 場所</label>
   </config>
-  <config name="conf_DataIdG" required="false" el-enabled="true" form-type="TEXTFIELD">
+  <config name="conf_DataIdG" required="false" el-enabled="true" form-type="TEXTAREA">
     <label>C7: Description</label>
-    <label locale="ja">C7: 説明情報</label>
+    <label locale="ja">C7: 説明</label>
+  </config>
+  <config name="conf_eventId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C8: Data item that will save Event ID</label>
+    <label locale="ja">C8: 予定 ID を保存するデータ項目</label>
+  </config>
+  <config name="conf_eventUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C9: Data item that will save Event URL</label>
+    <label locale="ja">C9: 予定 URL を保存するデータ項目</label>
+  </config>
+  <config name="conf_meetUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C10: Data item that will save Google Meet URL</label>
+    <label locale="ja">C10: Google Meet の URL を保存するデータ項目</label>
   </config>
 </configs>
  
@@ -75,6 +87,10 @@ function main() {
     eventDescription = "";
   }
 
+  const eventIdDataDef = configs.getObject("conf_eventId");
+  const eventUrlDataDef = configs.getObject("conf_eventUrl");
+  const meetUrlDataDef = configs.getObject("conf_meetUrl");
+
   //// == 演算 / Calculating ==
   if (calendarId.search(/[^\w\.@]/) !== -1) {
     throw "Invalid Calendar ID";
@@ -86,11 +102,6 @@ function main() {
   if (endDate.getTime() < startDate.getTime()) {
     throw "Event End Date comes before Event Start Date";
   }
-  const sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
-  const eventStart = sdf.format(startDate);
-  const eventEnd = sdf.format(endDate);
-
-  const eventTimeZone = engine.getTimeZoneId();
 
   //// == 予定を追加する / Insert Event ==
   insertEvent(
@@ -99,9 +110,11 @@ function main() {
     eventSummary,
     eventLocation,
     eventDescription,
-    eventStart,
-    eventTimeZone,
-    eventEnd
+    startDate,
+    endDate,
+    eventIdDataDef,
+    eventUrlDataDef,
+    meetUrlDataDef
   );
 }
 
@@ -112,9 +125,11 @@ function main() {
  * @param {String} eventSummary 予定タイトル
  * @param {String} eventLocation 場所情報
  * @param {String} eventDescription 説明情報
- * @param {String} eventStart 予定開始時刻
- * @param {String} eventTimeZone タイムゾーン
- * @param {String} eventEnd 予定終了時刻
+ * @param {AddableTimestamp} startDate 開始日時
+ * @param {AddableTimestamp} endDate 終了日時
+ * @param {ProcessDataDefinitionView} eventIdDataDef Event ID を保存する文字型データ項目
+ * @param {ProcessDataDefinitionView} eventUrlDataDef Event URL を保存する文字型データ項目
+ * @param {ProcessDataDefinitionView} meetUrlDataDef Meet URL を保存する文字型データ項目
  */
 function insertEvent(
   quser,
@@ -122,35 +137,62 @@ function insertEvent(
   eventSummary,
   eventLocation,
   eventDescription,
-  eventStart,
-  eventTimeZone,
-  eventEnd
+  startDate,
+  endDate,
+  eventIdDataDef,
+  eventUrlDataDef,
+  meetUrlDataDef
 ) {
   const uri = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`;
+
+  const sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
   const myObj = {};
   myObj.summary = eventSummary;
   myObj.location = eventLocation;
   myObj.description = eventDescription;
   myObj.start = {};
-  myObj.start.dateTime = eventStart;
-  myObj.start.timeZone = eventTimeZone;
+  myObj.start.dateTime = sdf.format(startDate);
+  myObj.start.timeZone = engine.getTimeZoneId();
   myObj.end = {};
-  myObj.end.dateTime = eventEnd;
-  myObj.end.timeZone = eventTimeZone;
+  myObj.end.dateTime = sdf.format(endDate);
+  myObj.end.timeZone = engine.getTimeZoneId();
   myObj.source = {};
+  myObj.conferenceData = {};
+  myObj.conferenceData.createRequest = {};
+  myObj.conferenceData.createRequest.requestId = `q-${processInstance.getProcessInstanceId()}`;
+  myObj.conferenceData.createRequest.conferenceSolutionKey = {};
+  myObj.conferenceData.createRequest.conferenceSolutionKey.type =
+    "hangoutsMeet";
 
-  const response = httpClient
-    .begin()
-    .googleOAuth2(quser, "Calendar")
+  let request = httpClient.begin().googleOAuth2(quser, "Calendar");
+  if (meetUrlDataDef !== null) {
+    request = request.queryParam("conferenceDataVersion", "1");
+  }
+  const response = request
     .body(JSON.stringify(myObj), "application/json")
     .post(uri);
 
-  var status = response.getStatusCode();
+  const status = response.getStatusCode();
   if (status >= 300) {
     const accessLog = `---POST request---${status}\n${response.getResponseAsString()}`;
     engine.log(accessLog);
-    throw `Failed to insert event.\nstatus:${status}`;
+    throw `Failed to insert event. status:${status}`;
+  }
+
+  const responseStr = response.getResponseAsString();
+  const eventJson = JSON.parse(responseStr);
+  const eventId = eventJson.id;
+  const eventUrl = eventJson.htmlLink;
+  const meetUrl = eventJson.hangoutLink;
+  if (eventIdDataDef !== null) {
+    engine.setData(eventIdDataDef, eventId);
+  }
+  if (eventUrlDataDef !== null) {
+    engine.setData(eventUrlDataDef, eventUrl);
+  }
+  if (meetUrlDataDef !== null) {
+    engine.setData(meetUrlDataDef, meetUrl);
   }
 }
 ]]></script>
