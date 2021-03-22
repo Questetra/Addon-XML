@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-10-20</last-modified>
+<last-modified>2021-03-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Shared Link to Folder</label>
@@ -11,24 +11,24 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-folder-link-create</help-page-url>
 <configs>
   <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="FolderId" required="true" el-enabled="true">
     <label>C2: Folder ID to share</label>
     <label locale="ja">C2: 共有するフォルダ ID</label>
   </config>
   <config name="unsharedAt" form-type="SELECT" select-data-type="DATETIME">
-    <label>C3: Datetime type data item with Expiration of the Link</label>
-    <label locale="ja">C3: リンクの有効期限が格納されている日時型データ項目</label>
+    <label>C3: Data item with Expiration of the Link</label>
+    <label locale="ja">C3: リンクの有効期限が格納されているデータ項目</label>
   </config>
   <config name="DownloadPass" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data item with Password of the Link</label>
-    <label locale="ja">C4: リンクのパスワードが格納されている文字型データ項目</label>
+    <label>C4: Data item with Password of the Link</label>
+    <label locale="ja">C4: リンクのパスワードが格納されているデータ項目</label>
   </config>
   <config name="DownloadUrlItem" form-type="SELECT" select-data-type="STRING" required="true">
-    <label>C5: String type data item that will save web the Shared Link</label>
-    <label locale="ja">C5: 共有リンクを保存する文字型データ項目</label>
+    <label>C5: Data item that will save web the Shared Link</label>
+    <label locale="ja">C5: 共有リンクを保存するデータ項目</label>
   </config>
 </configs>
 
@@ -37,7 +37,7 @@ main();
 function main(){
   const folderId = configs.get("FolderId");
 
-  if (folderId === "" ||folderId === null) {
+  if (folderId === "" || folderId === null) {
     throw "Folder ID is blank";
   }
   const dateItem = configs.get("unsharedAt");
@@ -53,23 +53,21 @@ function main(){
     password = engine.findDataByNumber(passwordItem);
   }
 
-  // get OAuth token
-  const token = httpClient.getOAuth2Token(configs.get("OAuth2"));
+  // get OAuth2 Setting
+  const oauth2 = configs.get("OAuth2");
 
   // フォルダが既に共有リンク作成されているか調べる
-  const existingUrl = getFolderInformation(token, folderId);
+  const existingUrl = getFolderInformation(oauth2, folderId);
 
-  
   //フォルダに既に共有リンクがある場合はエラーにする  共有リンクが無い場合は作成する
   if (existingUrl !== null){
-    const error = `Failed to Create Shared Link \n The Shared link(${existingUrl.url}) was already created.`;
-    throw error;
-   }
-    const sharedlinkUrl = createSharedLink(token, folderId, unsharedDate, password);
+    throw `Shared link(${existingUrl.url}) was already created.`;
+  }
+  const sharedlinkUrl = createSharedLink(oauth2, folderId, unsharedDate, password);
 
   const UrlData = configs.getObject( "DownloadUrlItem" );
   if (UrlData !== null) {
-      engine.setData(UrlData,sharedlinkUrl );
+    engine.setData(UrlData,sharedlinkUrl);
   }
 }
 
@@ -77,33 +75,29 @@ function main(){
   * Get Folder Information on Box  フォルダが既に共有リンク作成されているか調べる
   * @return {String}  フォルダの共有リンクオブジェクト
   */
-function getFolderInformation(token, folderId) {
-
-  const url = "https://api.box.com/2.0/folders/" + folderId + "?fields=shared_link";
+function getFolderInformation(oauth2, folderId) {
+  const url = `https://api.box.com/2.0/folders/${folderId}?fields=shared_link`;
   const response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .get(url);
+
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
+  engine.log(`status: ${status}`)
+
   if (status !== 200) {
     engine.log(responseTxt);
-    const error = `Failed to get folder information \n status: ${status}`;
-    throw error;
+    throw "Failed to get folder information";
   }
-
   const jsonRes = JSON.parse(responseTxt);
-
   return jsonRes.shared_link;
 }
-
-
 
 /**
   * Create Shared Link to Folder on Box  共有リンク作成
   * @return {String}  フォルダの共有リンクURL
   */
-function createSharedLink(token, folderId, unsharedDate, password) {
-
+function createSharedLink(oauth2, folderId, unsharedDate, password) {
   let timezone = engine.getTimeZoneId();
   if (timezone === "GMT"){
     timezone += "+00:00";
@@ -121,26 +115,23 @@ function createSharedLink(token, folderId, unsharedDate, password) {
   
   jsonBody["shared_link"]["permissions"] = {"can_download": true };
   
-  const url = "https://api.box.com/2.0/folders/" + folderId + "?fields=shared_link";
+  const url = `https://api.box.com/2.0/folders/${folderId}?fields=shared_link`;
   const response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(JSON.stringify(jsonBody), "application/json; charset=UTF-8")
     .put(url);
+
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
+  engine.log(`status: ${status}`)
+
   if (status !== 200) {
     engine.log(responseTxt);
-    const error = `Failed to create Shared Link \n status: ${status}`;
-    throw error;
+    throw "Failed to create Shared Link";
   }
-  
   const jsonRes = JSON.parse(responseTxt);
-
   return jsonRes.shared_link.url;
-  }
-
-
-
+}
 ]]></script>
 
 <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
