@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-03-17</last-modified>
+<last-modified>2021-03-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Search Folder</label>
@@ -53,44 +53,26 @@ function main(){
   }
   const oauth2 = configs.get("conf_OAuth2");
 
-  const json = searchFolder(oauth2,parentFolderId);
+  const item = searchFolder(oauth2,parentFolderId,folderName);
   
-  let folderIdList = "";
-  let folderUrlList = "";
-  let folderCount = 0;
-  const folderNum = json.length;
-  for(let i = 0; i < folderNum; i++){
-    if(json[i].type === "folder" && json[i].name === folderName){
-      folderCount++;
-      if (folderCount > 1){
-        folderIdList += "\n";
-        folderUrlList += "\n";
-      }
-      folderIdList += json[i].id;
-      folderUrlList += "https://app.box.com/folder/" + json[i].id;
-    }
-  }
-
-  if (folderIdList === ""){
-    throw "Folder " + folderName + " doesn't exist.";
-  }
+  let folderId = item.id;
+  let folderUrl = item.url;
 
   //set ID to Data Item
   if (idData !== null) {
-    engine.setData(idData,folderIdList);
+    engine.setData(idData,folderId);
   }
  
   //set URL to Data Item  
   if (urlData !== null) {
-    engine.setData(urlData, folderUrlList);
+    engine.setData(urlData, folderUrl);
   }
 }
 
 //search folder on box
-function searchFolder(oauth2,parentFolderId){
+function searchFolder(oauth2,parentFolderId,folderName){
   const url = `https://api.box.com/2.0/folders/${parentFolderId}/items`;
   let marker = "";
-  let jsonRes = [];
   const limit = httpClient.getRequestingLimit();
   for(let count = 0; count < limit; count++) {
     const response = httpClient.begin()
@@ -101,18 +83,27 @@ function searchFolder(oauth2,parentFolderId){
       .queryParam("marker",marker)
       .get(url);
     const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString() + "\n";
+    const responseTxt = response.getResponseAsString();
     engine.log(`status: ${status}`);
-    engine.log(`${responseTxt}`);
     if (status >= 300) {
+      engine.log(responseTxt);
       throw "Failed to search";
     }
     const json = JSON.parse(responseTxt)
-    jsonRes = jsonRes.concat(json.entries);
-    
-    marker = json['next_marker'];
+    const items = json.entries;
+
+    for(let i = 0; i < items.length; i++){
+      if(items[i].type === "folder" && items[i].name === folderName){
+        const url = `https://app.box.com/folder/${items[i].id}`;
+        return {
+          id : items[i].id,
+          url : url
+        };
+      }
+    }
+    marker = json.next_marker;
     if(marker === undefined || marker === '' || marker === null) {
-      return jsonRes;
+      throw `Folder ${folderName} doesn't exist.`;
     }
   }
   throw "Too many folders and files are in the specified folder";
