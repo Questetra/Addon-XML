@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
-<label>Box: Copy File</label>
-<label locale="ja">Box: ファイルコピー</label>
-<last-modified>2021-03-22</last-modified>
-<summary>Copy the File and save it in the specified Folder</summary>
-<summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します</summary>
+<label>Box: Move File</label>
+<label locale="ja">Box: ファイル移動</label>
+<last-modified>2021-03-29</last-modified>
+<summary>Move the File to the specified Folder.</summary>
+<summary locale="ja">既存ファイルを指定フォルダに移動します。</summary>
 <help-page-url>https://support.questetra.com/addons/box-file-copy/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-file-copy/</help-page-url>
 
@@ -14,25 +14,21 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C2: Source File ID</label>
-    <label locale="ja">C2: コピー元ファイルの ID</label>
+  <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C2: File ID to move</label>
+    <label locale="ja">C2: 移動させるファイルの ID</label>
   </config>
-  <config name="conf_FolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C3: Folder ID to store (The same folder of Source File if blank)</label>
-    <label locale="ja">C3: 保存先フォルダの ID (空白の場合、元ファイルと同じ場所に作成されます)</label>
-  </config>
-  <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
-    <label>C4: New File Name (named automatically if blank)</label>
-    <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合、自動的に設定されます)</label>
+  <config name="conf_FolderId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder ID to move to</label>
+    <label locale="ja">C3: 移動先フォルダの ID</label>
   </config>
   <config name="conf_DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: Data item to save New File ID </label>
-    <label locale="ja">C5: ファイル ID を保存するデータ項目</label>
+    <label>C4: Data item to save New File ID </label>
+    <label locale="ja">C4: ファイル ID を保存するデータ項目</label>
   </config>
   <config name="conf_DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C6: Data item to save New File Viewing URL </label>
-    <label locale="ja">C6: ファイル URL を保存するデータ項目</label>
+    <label>C5: Data item to save New File Viewing URL </label>
+    <label locale="ja">C5: ファイル URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -45,23 +41,20 @@ function main(){
   const fileId = decideFileId();
 
   if(fileId === "" || fileId === null){
-    throw "No Source File ID";
+    throw "No File ID";
   }
 
-  const newFileName = configs.get( "conf_NewFileName" );
-  checkNewFileName(newFileName);
-
-  let folderId = decideFolderId();
+  const folderId = decideFolderId();
 
   if(folderId === "" || folderId === null){
-    //空の場合は"元ファイルが配置されているフォルダ"とする when folder id isn't set, set "same folder"
-    folderId = getFolderID(oauth2, fileId);
+    //空の場合はエラーとする when folder id isn't set, throw error
+    throw "No Folder ID "
   }
 
   const saveIdData = configs.getObject( "conf_DataForId" );
   const saveUrlData = configs.getObject( "conf_DataForUrl" );
 
-  const newFileID = copyFile(oauth2, folderId, fileId, newFileName);
+  const newFileID = moveFile(oauth2, folderId, fileId);
 
   if (saveIdData !== null) {
     engine.setData(saveIdData, newFileID);
@@ -76,42 +69,9 @@ function main(){
   * @return {String}  ファイルの ID
   */
 function decideFileId(){
-  let fileId = "";
   const fileIdDef = configs.getObject("conf_SourceFileId");
-  if(fileIdDef === null){
-    fileId = configs.get( "conf_SourceFileId");
-  }else{
-    fileId = engine.findData(fileIdDef);
-  }
+  const fileId = engine.findData(fileIdDef);
   return fileId;
-}
-
-
-/**
-  * 新しいファイルのファイル名をチェックする。（サポートされていない文字が使われていないか）
-  */
-function checkNewFileName(newFileName){
-
-//ファイル名が255文字を超えていないか
-  if(newFileName.length > 255){
-    throw "File Name should be less than 256 characters";
-  }
-
-//ファイル名に「/」や「\」が含まれていないか
-  const reg = new RegExp('[/\\\\]');
-  if(newFileName.search(reg) !== -1) {
-    throw "Invalid File Name";
-  }
-
-//ファイル名の先頭と末尾に半角スペースが使われていないか
-  if(newFileName.slice(0,1) === " " || newFileName.slice(-1) === " ") {
-    throw "Invalid File Name";
-  }
-
-//ファイル名が「.」や「..」ではないか
-  if(newFileName === "." || newFileName === ".."){
-    throw "Invalid File Name";
-  }
 }
 
 /**
@@ -130,60 +90,28 @@ function decideFolderId(){
 }
 
 /**
-  * get parent folderID of file
-  * ファイルが配置されているフォルダのIDを取得する。
-  * @return {String}  フォルダの ID
+  * Box 上のファイルを指定フォルダに移動する。
+  * @return {String}  移動したファイルの ID
   */
-function getFolderID(oauth2, fileId){
-
+//move file on Box  @return {String}  ファイルの ID
+function moveFile(oauth2, folderId, fileId) {
+  const jsonReq = {};
+  jsonReq["parent"] = {"id": folderId };
   const url = `https://api.box.com/2.0/files/${fileId}`;
 
   const response = httpClient.begin()
     .authSetting(oauth2)
-    .queryParam("fields", "parent")
-    .get(url);
-
-  const status = response.getStatusCode();
-  const responseTxt = response.getResponseAsString();
-
-  engine.log(`status: ${status}`);
-
-  if(status !== 200){
-    engine.log(responseTxt);
-    throw `Failed to get parent folder and Failed to copy.`;
-  }
-  const jsonRes = JSON.parse(responseTxt);
-  return jsonRes.parent.id;
-}
-
-/**
-  * Box 上のファイルを指定フォルダに指定ファイル名でコピーする。
-  * @return {String}  コピーしたファイルの ID
-  */
-//copy file on Box  @return {String}  ファイルの ID
-function copyFile(oauth2, folderId, fileId, newFileName) {
-  let jsonReq = {};
-  jsonReq["parent"] = {"id": folderId };
-
-  if ( newFileName !== "" && newFileName !== null ){ 
-    jsonReq["name"] = newFileName;
-  }  
-  
-  const url = `https://api.box.com/2.0/files/${fileId}/copy`;
-
-  const response = httpClient.begin()
-    .authSetting(oauth2)
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
-    .post(url);
+    .put(url);
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
   
   engine.log(`status: ${status}`);
 
-  if (status !== 201) {
+  if (status >= 300) {
     engine.log(responseTxt);
-    throw "Failed to copy.";
+    throw "Failed to move.";
   }
   const jsonRes = JSON.parse(responseTxt);
   return jsonRes.id;
