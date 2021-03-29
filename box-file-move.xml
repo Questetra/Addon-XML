@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Box: Copy File</label>
+<label locale="ja">Box: ファイルコピー</label>
+<last-modified>2021-03-22</last-modified>
+<summary>Copy the File and save it in the specified Folder</summary>
+<summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します</summary>
+<help-page-url>https://support.questetra.com/addons/box-file-copy/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/box-file-copy/</help-page-url>
+
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Source File ID</label>
+    <label locale="ja">C2: コピー元ファイルの ID</label>
+  </config>
+  <config name="conf_FolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder ID to store (The same folder of Source File if blank)</label>
+    <label locale="ja">C3: 保存先フォルダの ID (空白の場合、元ファイルと同じ場所に作成されます)</label>
+  </config>
+  <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
+    <label>C4: New File Name (named automatically if blank)</label>
+    <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合、自動的に設定されます)</label>
+  </config>
+  <config name="conf_DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C5: Data item to save New File ID </label>
+    <label locale="ja">C5: ファイル ID を保存するデータ項目</label>
+  </config>
+  <config name="conf_DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C6: Data item to save New File Viewing URL </label>
+    <label locale="ja">C6: ファイル URL を保存するデータ項目</label>
+  </config>
+</configs>
+
+
+<script><![CDATA[
+main();
+function main(){
+  //// == Config Retrieving / 工程コンフィグの参照 ==
+  const oauth2 = configs.get( "conf_OAuth2" ) ;
+  const fileId = decideFileId();
+
+  if(fileId === "" || fileId === null){
+    throw "No Source File ID";
+  }
+
+  const newFileName = configs.get( "conf_NewFileName" );
+  checkNewFileName(newFileName);
+
+  let folderId = decideFolderId();
+
+  if(folderId === "" || folderId === null){
+    //空の場合は"元ファイルが配置されているフォルダ"とする when folder id isn't set, set "same folder"
+    folderId = getFolderID(oauth2, fileId);
+  }
+
+  const saveIdData = configs.getObject( "conf_DataForId" );
+  const saveUrlData = configs.getObject( "conf_DataForUrl" );
+
+  const newFileID = copyFile(oauth2, folderId, fileId, newFileName);
+
+  if (saveIdData !== null) {
+    engine.setData(saveIdData, newFileID);
+  }
+  if (saveUrlData !== null) {
+    engine.setData(saveUrlData, `https://app.box.com/file/${newFileID}`);
+  }
+}
+
+/**
+  * ファイルのIDをconfigから読み出して出力する。
+  * @return {String}  ファイルの ID
+  */
+function decideFileId(){
+  let fileId = "";
+  const fileIdDef = configs.getObject("conf_SourceFileId");
+  if(fileIdDef === null){
+    fileId = configs.get( "conf_SourceFileId");
+  }else{
+    fileId = engine.findData(fileIdDef);
+  }
+  return fileId;
+}
+
+
+/**
+  * 新しいファイルのファイル名をチェックする。（サポートされていない文字が使われていないか）
+  */
+function checkNewFileName(newFileName){
+
+//ファイル名が255文字を超えていないか
+  if(newFileName.length > 255){
+    throw "File Name should be less than 256 characters";
+  }
+
+//ファイル名に「/」や「\」が含まれていないか
+  const reg = new RegExp('[/\\\\]');
+  if(newFileName.search(reg) !== -1) {
+    throw "Invalid File Name";
+  }
+
+//ファイル名の先頭と末尾に半角スペースが使われていないか
+  if(newFileName.slice(0,1) === " " || newFileName.slice(-1) === " ") {
+    throw "Invalid File Name";
+  }
+
+//ファイル名が「.」や「..」ではないか
+  if(newFileName === "." || newFileName === ".."){
+    throw "Invalid File Name";
+  }
+}
+
+/**
+  * フォルダのIDをconfigから読み出して出力する。
+  * @return {String}  フォルダの ID
+  */
+function decideFolderId(){
+  let folderId = "";
+  const folderIdDef = configs.getObject("conf_FolderId");
+  if(folderIdDef === null){
+    folderId = configs.get( "conf_FolderId");
+  }else{
+    folderId = engine.findData(folderIdDef);
+  }
+  return folderId;
+}
+
+/**
+  * get parent folderID of file
+  * ファイルが配置されているフォルダのIDを取得する。
+  * @return {String}  フォルダの ID
+  */
+function getFolderID(oauth2, fileId){
+
+  const url = `https://api.box.com/2.0/files/${fileId}`;
+
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .queryParam("fields", "parent")
+    .get(url);
+
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+  engine.log(`status: ${status}`);
+
+  if(status !== 200){
+    engine.log(responseTxt);
+    throw `Failed to get parent folder and Failed to copy.`;
+  }
+  const jsonRes = JSON.parse(responseTxt);
+  return jsonRes.parent.id;
+}
+
+/**
+  * Box 上のファイルを指定フォルダに指定ファイル名でコピーする。
+  * @return {String}  コピーしたファイルの ID
+  */
+//copy file on Box  @return {String}  ファイルの ID
+function copyFile(oauth2, folderId, fileId, newFileName) {
+  let jsonReq = {};
+  jsonReq["parent"] = {"id": folderId };
+
+  if ( newFileName !== "" && newFileName !== null ){ 
+    jsonReq["name"] = newFileName;
+  }  
+  
+  const url = `https://api.box.com/2.0/files/${fileId}/copy`;
+
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+    .post(url);
+
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  
+  engine.log(`status: ${status}`);
+
+  if (status !== 201) {
+    engine.log(responseTxt);
+    throw "Failed to copy.";
+  }
+  const jsonRes = JSON.parse(responseTxt);
+  return jsonRes.id;
+}
+
+]]></script>
+
+<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
+aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
+9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
+mLcfmY9gfgB/dxBBU14rXsxIyiCmr8XKzBog0GWCeG6xeQv6X2JiegPZY3IBVnLlOVtCG6a3ObN7
+LoDacyFCBa2sUGMpGjI1kQbQao/0Lllw+YJoYTqrk9mRAdC9G8Eb+c6zLDvJHkzvbjVHGiDQpXLX
+nZw4tOMGyp02Hjn457J8WQ5WUTB9ZWkAdcIJ+XWm8XCwFkexwLWrZ+UB9OmZ0EIiAhbKH2lLAKzZ
+eaUAEhmRAAh0dYBQZ3yqKQDnaoPDp8PUVZXo/pM9EV75Ylh/77q/jO2bSlmz2mBgLErjoUHad95I
+Z/80re0Jmw+e3UD1dcU8uP+8RRTlSUK++ssA3X3ATdkA61y2nIE/9k7Rd2GWx+4uxWZkAP8bo9Ru
+YAho+XyIUruNNxsqiMzE8bxgEUV1gZneO5MAMtuTioACUM7e+W4Uj8Pg5W1rdV9cwvSsxPx+nNPn
+LvLStnI2VdsZi8TwOGyMTsY0nNth493j/9DSPmSto5BXLAigsmDLW7388MeUnuDVh9ay74n1+vvI
+zxM0vJfOkNGDtdiLDH7pn+beW+3a5kRPhK37rMJ/mScDIGcLBvfXsM61isrWs4xMxPSIpza7+ayx
+Un8rbTz94UBqZX8fqNFp+82vkzTc5dL9n54K88xHaZu5YZBnCPnq5hXhqdequecWO2rPH3j7PBvc
+qzjWVEXN9cV6HhVmJbwvf5rgcGMlT2526y1wldiYiUl9wKhtUHp4/8TYIiK0SMP6WgdfvbiRMqeN
+yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
+2bu9QqdSNC7pHrjEjo8H+GssyifPV3JfjQNHscFQOMqeoyPsfXw9vw/P8HBbv3b4bWsVG8uL8L5+
+zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
+0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
+Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
+YII=</icon>
+
+</service-task-definition>
