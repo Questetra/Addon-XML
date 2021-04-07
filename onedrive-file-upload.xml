@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Upload File</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-<last-modified>2020-07-02</last-modified>
+<last-modified>2021-04-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -47,7 +47,6 @@ function main(){
   const folderUrl = retrieveFolderUrl();
   const urlDataDef = configs.getObject("conf_fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const token = httpClient.getOAuth2Token( oauth2 );
   const files = engine.findData( configs.getObject("conf_uploadedFile") );
   if (files === null) {
     setData(urlDataDef,[""]);
@@ -57,17 +56,17 @@ function main(){
   //// == 演算 / Calculating ==
 
   fileCheck(files, urlDataDef, folderUrl);
-  const folderInfo = getFolderInfoByUrl( folderUrl, token );
+  const folderInfo = getFolderInfoByUrl( folderUrl, oauth2 );
   let uploadedFileUrl = [];
 
   for(let i = 0; i< files.size(); i++){
     engine.log(files.get(i).getName());
     if(files.get(i).getLength() > LIMIT_SIZE){
       //over 4MB
-      processLargeFile(token,files.get(i),folderInfo,uploadedFileUrl);
+      processLargeFile(oauth2,files.get(i),folderInfo,uploadedFileUrl);
     }else{
       //under 4MB
-      upload(token,files.get(i),folderInfo,uploadedFileUrl);
+      upload(oauth2,files.get(i),folderInfo,uploadedFileUrl);
     }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
@@ -88,9 +87,10 @@ function retrieveFolderUrl() {
 }
 
 /**
-  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
+  * アップロードしようとするファイルの名前・数・サイズが適切かどうかチェックする
   * ファイル数、通信制限をチェック
   * 通信数=4MB以下のファイルの数 + <4MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 1)
+  * その後ファイル名をチェック
   * @param {Array<File>} files  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   * @param {String} folderUrl  アップロード先フォルダの URL
@@ -98,10 +98,9 @@ function retrieveFolderUrl() {
 function fileCheck(files,urlDataDef,folderUrl){
   const fileNum = files.size(); //number of files
   fileNumCheck(urlDataDef,fileNum);
-
   let requestNum = 0;
   for (let i = 0; i < fileNum; i++){
-    let size = files.get(i).getLength();
+    const size = files.get(i).getLength();
     if(size > LIMIT_SIZE){
       requestNum += (Math.ceil(size / PACKET_MAX_SIZE) + 1);
     }else{
@@ -114,6 +113,7 @@ function fileCheck(files,urlDataDef,folderUrl){
   if(requestNum > httpClient.getRequestingLimit()){
     throw "Necessary HTTP requests exceeds the limit.";
   }
+  checkFileNameOverlap(files)
 }
 
 /**
@@ -131,13 +131,28 @@ function fileNumCheck(dataDef,fileNum){
 }
 
 /**
+ * アップロードするファイルの中に同じファイル名のものが2つ以上あればエラー
+ * @param {Array<File>}  アップロードしようとするファイルの配列
+ */
+function checkFileNameOverlap(files) {
+  const fileNames = [];
+  const fileNum = files.size();
+  for (let i = 0; i < fileNum; i++) {
+    if (fileNames.includes(files[i].getName())) {
+      throw "Two or more files to upload have the same name.";
+    }
+    fileNames[i] = files[i].getName();
+  }
+}
+
+/**
   * フォルダのURLからフォルダ情報（ドライブIDとフォルダID）を取得し、
   * オブジェクトで返す（URLが空の場合はドライブIDをme/drive、フォルダIDをrootにする）
   * @param {String} folderUrl  フォルダのURL
   * @param {String} token  OAuth2 トークン
   * @return {Object} folderInfo  フォルダ情報 {driveId, folderId}
   */
-function getFolderInfoByUrl( folderUrl, token ) {
+function getFolderInfoByUrl( folderUrl, oauth2 ) {
   let folderInfo = {driveId: "me/drive", folderId: "root"};
   if ( folderUrl !== "" && folderUrl !== null ) {
     // 分割代入
@@ -146,7 +161,7 @@ function getFolderInfoByUrl( folderUrl, token ) {
       parentReference: {
         driveId
       }
-    } = getObjBySharingUrl( folderUrl, token );
+    } = getObjBySharingUrl( folderUrl, oauth2 );
     folderInfo = {driveId: `drives/${driveId}`, folderId: id};
   }
   return folderInfo;
@@ -159,7 +174,7 @@ function getFolderInfoByUrl( folderUrl, token ) {
   * @param {String} token  OAuth2 トークン
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
-function getObjBySharingUrl( sharingUrl, token ) {
+function getObjBySharingUrl( sharingUrl, oauth2 ) {
   if (sharingUrl === "" || sharingUrl === null) {
     throw `Sharing URL is empty.`;
   }
@@ -168,18 +183,15 @@ function getObjBySharingUrl( sharingUrl, token ) {
   const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
   // preparing for API Request
-  let apiRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-  apiRequest = apiRequest.bearer( token );
-  // Access to the API (POST, GET, PUT, etc)
-  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+  const response = httpClient.begin();
+    .authSetting(oauth2)
+    .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` );
   const httpStatus = response.getStatusCode();
-  const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-  engine.log(accessLog);
+  engine.log("---GET request---");
+  engine.log(`status: ${httpStatus}`)
   if (httpStatus >= 300) {
-    const error = `Failed to get drive item. status: ${httpStatus}`;
-    throw error;
+    engine.log( .getResponseAsString());
+    throw "Failed to get drive item. ";
   }
   const responseObj = JSON.parse( response.getResponseAsString() );
   return responseObj;
@@ -206,13 +218,13 @@ function encodeSharingUrl( sharingUrl ) {
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
-function upload(token,file,{
+function upload(oauth2,file,{
   driveId,
   folderId
 },uploadedFileUrl){
   const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
   let response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(file)
     .put(url);
   //when error thrown
