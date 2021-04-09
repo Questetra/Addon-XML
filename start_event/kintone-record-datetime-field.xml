@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: kintone: Record's Datetime Field</label>
     <label locale="ja">開始: kintone: レコード 日時フィールド</label>
-    <last-modified>2021-03-19</last-modified>
+    <last-modified>2021-04-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Start Process when time in Record's datetime field has passed, on a kintone App. It is able to specify
@@ -15,34 +15,38 @@
             <label>C1: Authorization Setting in which API Token is set</label>
             <label locale="ja">C1: API トークンを設定した認証設定</label>
         </config>
+        <config name="conf_basic" required="false" form-type="OAUTH2">
+            <label>C2: Basic Auth Setting (required if enabled on Kintone)</label>
+            <label locale="ja">C2: Basic 認証設定（kintone で設定されている場合のみ）</label>
+        </config>
         <config name="conf_domain" required="true" form-type="TEXTFIELD">
-            <label>C2: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
-            <label locale="ja">C2: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+            <label>C3: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+            <label locale="ja">C3: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
         </config>
         <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
-            <label>C3: Guest Space ID (required if the App is in a Guest Space)</label>
-            <label locale="ja">C3: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+            <label>C4: Guest Space ID (required if the App is in a Guest Space)</label>
+            <label locale="ja">C4: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
         </config>
         <config name="conf_appId" required="true" form-type="TEXTFIELD">
-            <label>C4: App ID</label>
-            <label locale="ja">C4: アプリ ID</label>
+            <label>C5: App ID</label>
+            <label locale="ja">C5: アプリ ID</label>
         </config>
         <config name="conf_datetimeField" required="true" form-type="TEXTFIELD">
-            <label>C5: Field Code of Datetime Field to be checked</label>
-            <label locale="ja">C5: チェック対象とする日時フィールドのフィールドコード</label>
+            <label>C6: Field Code of Datetime Field to be checked</label>
+            <label locale="ja">C6: チェック対象とする日時フィールドのフィールドコード</label>
         </config>
         <config name="conf_query" required="false" form-type="TEXTAREA">
-            <label>C6: Search Query</label>
-            <label locale="ja">C6: 検索クエリ</label>
+            <label>C7: Search Query</label>
+            <label locale="ja">C7: 検索クエリ</label>
         </config>
         <config name="conf_recordIdData" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTFIELD">
-            <label>C7: Data item to save Record ID</label>
-            <label locale="ja">C7: レコード ID を保存するデータ項目</label>
+            <label>C8: Data item to save Record ID</label>
+            <label locale="ja">C8: レコード ID を保存するデータ項目</label>
         </config>
         <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
-            <label>C8: Data item to save Datetime data</label>
-            <label locale="ja">C8: 日時データを保存するデータ項目</label>
+            <label>C9: Data item to save Datetime data</label>
+            <label locale="ja">C9: 日時データを保存するデータ項目</label>
         </config>
     </configs>
     <help-page-url>
@@ -73,9 +77,11 @@ const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str)
  * @return {string} result.datetimeField チェック対象の日時データのフィールドコード
  * @return {string} result.query 検索条件
  * @return {string} result.apiToken API トークン
+ * @return {string} result.basic Basic 認証設定
  */
 const prepare = () => {
     const auth = configs.get("conf_auth");
+    const basic = configs.get("conf_basic");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
@@ -92,7 +98,8 @@ const prepare = () => {
         apiUri,
         datetimeField,
         query,
-        apiToken
+        apiToken,
+        basic
     };
 };
 
@@ -166,10 +173,11 @@ const list = (limit, timestampLowerLimit) => {
         apiUri,
         datetimeField,
         query,
-        apiToken
+        apiToken,
+        basic
     } = prepare();
 
-    const records = getRecords(apiUri, apiToken, {
+    const records = getRecords(apiUri, apiToken, basic, {
         appId,
         datetimeField,
         query,
@@ -195,6 +203,7 @@ const logRecords = (records) => {
  * kintone REST API にレコード取得の GET リクエストを送信する
  * @param {String} apiUri  API の URI
  * @param {String} apiToken  API トークン
+ * @param {String} basic  Basic 認証設定
  * @param {Object} params API リクエストのパラメータに使用する情報が格納されたオブジェクト
  * @param {string} params.appId アプリ ID
  * @param {string} params.datetimeField 日時データのフィールドコード
@@ -206,7 +215,7 @@ const logRecords = (records) => {
  * @return {string} records[].recordId レコードID
  * @return {timestamp} records[].timestamp レコードの日時データ
  */
-const getRecords = (apiUri, apiToken, {
+const getRecords = (apiUri, apiToken, basic, {
     appId,
     datetimeField,
     query,
@@ -220,6 +229,9 @@ const getRecords = (apiUri, apiToken, {
     let request = httpClient.begin()
         .header("X-Cybozu-API-Token", apiToken)
         .queryParam('app', appId);
+    if (basic !== "" && basic !== null) {
+        request = request.authSetting(basic);
+    }
 
     let queryString = `${datetimeField} >= "${datetimeFormatter.format(timestampLowerLimit)}" and ${datetimeField} <= NOW()`;
     if (query !== '') {
