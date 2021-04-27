@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-01-18</last-modified>
+<last-modified>2021-02-15</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Google Drive: Create Folder</label>
 <label locale="ja">Google ドライブ: フォルダ作成</label>
 <summary>Create a new folder in the specified folder on Google Drive</summary>
@@ -15,86 +15,101 @@
     <label locale="ja">C1: Google ドライブ に接続するユーザ</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
-    <label>I1: Parent Folder ID(When empty,create in My Drive root)</label>
-    <label locale="ja">I1: 作成するフォルダの親フォルダの ID (空白の場合マイドライブのルートに作成されます)</label>
+    <label>C2: Parent Folder ID(When empty,create in My Drive root)</label>
+    <label locale="ja">C2: 作成するフォルダの親フォルダの ID (空白の場合マイドライブのルートに作成されます)</label>
   </config>
   <config name="FolderName" required="true" el-enabled="true">
-    <label>I2: Folder Name to create</label>
-    <label locale="ja">I2: 作成するフォルダの名称</label>
+    <label>C3: Folder Name to create</label>
+    <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
   <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>O1: Data Item that will save Folder ID</label>
-    <label locale="ja">O1: 作成したフォルダの ID を保存するデータ項目</label>
+    <label>C4: Data Item that will save Folder ID</label>
+    <label locale="ja">C4: 作成したフォルダの ID を保存するデータ項目</label>
   </config>
   <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>O2: Data Item that will save web view url of Folder</label>
-    <label locale="ja">O2: 作成したフォルダの表示 URL を保存するデータ項目</label>
+    <label>C5: Data Item that will save web view url of Folder</label>
+    <label locale="ja">C5: 作成したフォルダの表示 URL を保存するデータ項目</label>
   </config>
 </configs>
 
 <script><![CDATA[
 main();
-function main(){
+function main() {
   let parentFolderId = configs.get("ParentFolderId");
   const folderName = configs.get("FolderName");
-  if (folderName == "" ||folderName == null) {
+  if (folderName === "" || folderName === null) {
     throw "Folder Name is blank";
   }
-  
-  const userId = configs.get("UserID");
-  const quser = quserDao.findById(parseInt(userId));
-  if (quser == null) {
-    throw "User not found:" + userId;
-  }
-  engine.log("User Name:" + quser.getName());
-  // get OAuth token
-  let token;
-  try{
-    token = httpClient.getGoogleOAuth2Token(quser, "Drive");
-  }catch(e){
-    throw "This User has not connected with Google Drive."
-  }
-  const json = createFolder(token, parentFolderId, folderName);
+
+  const quser = configs.getObject("UserID");
+  checkUser(quser);
+
+  const json = createFolder(quser, parentFolderId, folderName);
 
   setData("FolderIdItem", json, "id");
   setData("WebViewUrlItem", json, "webViewLink");
 }
-  //save Data to process data
+
+/**
+ * ユーザーIDをチェックする
+ * @param {QuserView} quser ユーザ
+ */
+function checkUser(quser) {
+  if (quser === null) {
+    throw "User not found";
+  }
+}
+
+/**
+ * プロセスにデータを保存する
+ * @param {String} configName 保存先データ項目の config 名
+ * @param {Object} json 保存するデータをメンバに持つ JSON オブジェクト
+ * @param {String} property 保存するデータのプロパティ名
+ */
 function setData(configName, json, property) {
   const item = configs.get(configName);
-  if (item == null || item == "") {
+  if (item === null || item === "") {
     return;
   }
   const data = json[property];
   engine.setDataByNumber(item, data);
 }
-  //create folder on google drive
-function createFolder(token, parentFolderId, name) {
-  let jsonRes = {};
+
+/**
+ * Google ドライブにフォルダを作成する
+ * @param {QuserView} quser ユーザ
+ * @param {String} parentFolderId 親フォルダのID
+ * @param {String} name フォルダ名
+ * @return {Object} jsonRes レスポンス本文の JSON オブジェクト
+ */
+function createFolder(quser, parentFolderId, name) {
+  let reqBody = {};
   //mime type of google drive folder
-  jsonRes["mimeType"] = "application/vnd.google-apps.folder";
-  if (parentFolderId !== "" && parentFolderId !== null){
-    jsonRes["parents"] = [ parentFolderId + '' ];
+  reqBody["mimeType"] = "application/vnd.google-apps.folder";
+  if (parentFolderId !== "" && parentFolderId !== null) {
+    reqBody["parents"] = [parentFolderId];
   }
-  jsonRes["name"] = name + '';
-  
-  const url = 'https://www.googleapis.com/drive/v3/files/';
-  const response = httpClient.begin()
-    .bearer(token)
+  reqBody["name"] = name;
+
+  const url = "https://www.googleapis.com/drive/v3/files/";
+
+  const response = httpClient
+    .begin()
+    .googleOAuth2(quser, "Drive")
     .queryParam("fields", "id, webViewLink")
-    .queryParam("supportsTeamDrives","true")
-    .body(JSON.stringify(jsonRes), "application/json; charset=UTF-8")
+    .queryParam("supportsAllDrives", "true")
+    .body(JSON.stringify(reqBody), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
   if (status >= 300) {
-    const error = "Failed to create \n status:" + status + "\n" + responseTxt
+    const error = `Failed to create\nstatus:${status}`;
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log("status:" + status);
-  engine.log(responseTxt);
-  
-  jsonRes = JSON.parse(responseTxt);
+  engine.log(`status:${status}`);
+
+  const jsonRes = JSON.parse(responseTxt);
   return jsonRes;
 }
 

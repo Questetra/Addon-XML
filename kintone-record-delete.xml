@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<label>kintone: Delete Record</label>
+<label locale="ja">kintone: レコード削除</label>
+<last-modified>2021-04-23</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<summary>Delete records in a Kintone App. You can delete multiple records at once. When you delete multiple ones, you should write one record ID on each line.</summary>
+<summary locale="ja">kintone アプリのレコードを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつレコード ID を書くようにしてください。</summary>
+<configs>
+  <config name="conf_auth" required="true" form-type="OAUTH2">
+    <label>C1: Authorization Setting in which API Token is set</label>
+    <label locale="ja">C1: API トークンを設定した認証設定</label>
+  </config>
+  <config name="conf_basic" required="false" form-type="OAUTH2">
+    <label>C2: Basic Auth Setting (required if enabled on Kintone)</label>
+    <label locale="ja">C2: Basic 認証設定（kintone で設定されている場合のみ）</label>
+  </config>
+  <config name="conf_domain" required="true" form-type="TEXTFIELD">
+    <label>C3: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+    <label locale="ja">C3: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+  </config>
+  <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
+    <label>C4: Guest Space ID (required if the App is in a Guest Space)</label>
+    <label locale="ja">C4: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+  </config>
+  <config name="conf_appId" required="true" form-type="TEXTFIELD">
+    <label>C5: App ID</label>
+    <label locale="ja">C5: アプリ ID</label>
+  </config>
+  <config name="conf_recordId" required="true" form-type="SELECT" select-data-type="STRING">
+    <label>C6: String type data item with record IDs to delete</label>
+    <label locale="ja">C6: 削除するレコードの ID が保存されている文字型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/addons/kintone-record-delete/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/kintone-record-delete/</help-page-url>
+
+<script><![CDATA[
+
+main();
+function main(){
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+  const auth = configs.get("conf_auth");
+  const basic = configs.get("conf_basic");
+  const domain = configs.get("conf_domain");
+  const guestSpaceId = configs.get("conf_guestSpaceId");
+  const appId = configs.get("conf_appId");
+  const recordIds = retrieveRecordIds();
+
+  const apiToken = httpClient.getOAuth2Token( auth );
+
+  //// == 演算 / Calculating ==
+  const apiUri = determineApiUri( domain, guestSpaceId );
+  deleteRecords( apiUri, apiToken, basic, appId, recordIds );
+}
+
+/**
+  * config からレコード ID の配列を読み出す
+  * レコード ID が空または不正な文字列を含む場合はエラーとする
+  * @return {Array<String>} idStrArray  レコード ID の配列
+  */
+function retrieveRecordIds() {
+  const recordIdDef = configs.getObject( "conf_recordId" );
+  let recordIds = configs.get( "conf_recordId" );
+  if ( recordIdDef !== null ) {
+    recordIds = engine.findData( recordIdDef );
+  }
+  if ( recordIds === "" || recordIds === null ) {
+    throw "Record IDs aren't set.";
+  }
+  const idStrArray = recordIds.split("\n").filter( id => id !== "" ); // 空文字列を削除
+  if ( idStrArray.length === 0 ) {
+    throw "Record IDs aren't set.";
+  }
+  const isValid = idStrArray.every( id => isValidId(id) ); // すべての ID をチェック
+  if ( !isValid ) {
+    throw "Includes invalid Record ID.";
+  }
+  return idStrArray;
+}
+
+/**
+  * ID が有効か（自然数か）を判定する
+  * @param {String} idString  ID の文字列
+  * @return {Boolean}  有効な ID かどうか
+  */
+function isValidId( idString ) {
+  const idReg = new RegExp( '^[1-9][0-9]*$' );
+  return idReg.test( idString );
+}
+
+/**
+  * kintone REST API のレコード削除の URI を決定する
+  * ドメインが空、または kintone のドメインとして不正な文字列であればエラーとする
+  * ゲストスペース ID が不正な文字列であればエラーとする
+  * @param {String} domain  ドメイン
+  * @param {String} guestSpaceId  ゲストスペース ID
+  * @return {String} apiUri  API の URI
+  */
+function determineApiUri( domain, guestSpaceId ) {
+  if ( domain === "" || domain === null ) {
+    throw "Domain is empty.";
+  }
+  const domainReg = new RegExp( '^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$' );
+  if ( !domainReg.test(domain) ) {
+    throw "Invalid Kintone domain.";
+  }
+  let apiUri = "";
+  if ( guestSpaceId === "" || guestSpaceId === null ) {
+    apiUri = `https://${domain}/k/v1/records.json`;
+  } else {
+    if ( !isValidId(guestSpaceId) ) {
+      throw "Invalid Guest Space ID.";
+    }
+    apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json`;
+  }
+  return apiUri;
+}
+
+/**
+  * kintone REST API にレコード削除の DELETE リクエストを送信する
+  * アプリ ID が空または不正な文字列であればエラーとする
+  * @param {String} apiUri  API の URI
+  * @param {String} apiToken  API トークン
+  * @param {String} basic  Basic 認証設定
+  * @param {String} appId  アプリ ID
+  * @param {Array<String>} recordIds  レコード ID の配列
+  */
+function deleteRecords( apiUri, apiToken, basic, appId, recordIds ) {
+  if ( appId === "" || appId === null ) {
+    throw "App ID is empty.";
+  }
+  if ( !isValidId(appId) ) {
+    throw "Invalid App ID.";
+  }
+  let request = httpClient.begin()
+    .header( "X-Cybozu-API-Token", apiToken )
+    .queryParam( "app", appId );
+  if ( basic !== "" && basic !== null ) {
+    request = request.authSetting(basic);
+  }
+  recordIds.forEach( (id, index) => request = request.queryParam( `ids[${index}]`, id ) );
+  const response = request.delete( apiUri );
+  // when error thrown
+  const status = response.getStatusCode();
+  if ( status !== 200 ) {
+    engine.log(`API URI: ${apiUri}`);
+    engine.log(`Record IDs: ${recordIds}`);
+    const responseStr = response.getResponseAsString();
+    const accessLog = `---DELETE request--- ${status}\n${responseStr}\n`;
+    engine.log(accessLog);
+    throw `Failed to delete records. status: ${status}`;
+  }
+}
+
+  ]]>
+</script>
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
+bVbd6nSDglFwKkOrY+zDdAzBB1mHDoZSX/wAqw9WnPRBNzuHMJljsuksbPPBiQ4RpThlMLGNL+Jg
+iiAbaARfrNqa2ObjNuQm9y/n3N7b3JvcNI6OnKfk/L9+9/f/OOcw1HmxWuMPtc1R/I3KWonwAYCl
+AFoBvDRh/wzAAwC3dIaBXFo9P+fvIbUW31MCyLS3zi7qcg8YthHgr9FpDoQ+j1Q4FBp88LiaTVUA
+o+3ztxHRYQYEawns1CEgyxj7LDx4r8/N3hXAWDTyIwFd/yWw04YBx5ti8e2VfFUEMBqddxpg66cj
++KQPOhOO3d9QAZx9azq/vBYmbAzwnIPo+PR+ucMbY12lNWEB4NWukRx3KzhpVguIdFBipCo+z4LF
+KN6946rDC9PLChGzOywAYysj3xFDd5ml1wel52t4P1wjRNqf/VC/2QtoeZuq/NZKKPu+BZsRBiVH
+oH7ZjcLtvyoCYYQjTdfiu7hQAOBDJhhSEs4+967qQGD3V2D+gM0R5cYxfngvtCsXwcLNCB7sg2cR
+n032Vbh5HernO0DZtE3AgFw2o87kw0oASLZHOiXCr6VanshChH7qB5hLpxIhs7UD/p1fQF6y3JXy
+wo0Ysj1byuQ6w8bmwfgp4X00GvkFwKZSrdDR3yBF3gB0HUyxzyFSs4AkgZJPIb36GiidAgs1ij1r
+FYugTEqkJLWmrYwFACfCsfhmE8DNiflu2YeOnbVopfQYmF8RMsqpYI1Nxu/ECNjMlw0bTQONZ4WM
+Uy70ZVmIUuveqVS8t8Kx+DITQLLkYBFGnAHP4jYLEGUzyJ8/iYbOListvNhY8wQAAPrwI2gDl9Hw
+6WYb5elP3oP+9IkzDc/CsXizCYCcUicAXvVULAJkqLKAIpzy9uRpEl8dmgE9MQJp1iu1AEA4Fjcq
+bDQaKQMQ/OGMvbh42/HgvgaD/tQYtIFLkN+OQuIseH3GvoMVvufCgA1AWQrkFe9D6f0eLBiayLHB
+gNmSvBVzR3rh69gAz8I3J1PlAKDF/oDauxMgvWoKyorQ4FlCoHs/fB+tnxw8stegO9gIPcnpboHZ
+FRycWZj6k4dQ921H8d4/zsDmf1sRlrVhqZU0ey58H3dCer0Vctu7FgtWDQjuCXpiGPn+06L98hdO
+uQU29yfbsNIgqmTNB45y6GdrLtgA8E68+jvUA2LCTrlsg8htFFf0InkQ2HMQvtVroQ8PQWqZK7qB
+j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
+mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
+</icon>
+
+</service-task-definition>

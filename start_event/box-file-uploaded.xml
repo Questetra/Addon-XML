@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <last-modified>2021-03-04</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Start: Box: File Uploaded</label>
+    <label locale="ja">開始: Box: ファイルアップロード時</label>
+    <summary>Start Process when File has been uploaded on a Box specified folder.</summary>
+    <summary locale="ja">Box の指定フォルダにファイルがアップロードされると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+                oauth2-setting-name="https://app.box.com/api/oauth2/root_readonly">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_FolderId" form-type="TEXTFIELD">
+            <label>C2: Parent Folder ID (Root Folder if blank)</label>
+            <label locale="ja">C2: 監視するフォルダの ID (空白の場合、ルートフォルダ)</label>
+        </config>
+        <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save File ID</label>
+            <label locale="ja">C3: ファイル ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Data item to save File Uploaded Datetime</label>
+            <label locale="ja">C4: ファイルがアップロードされた日時を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-box-file-uploaded/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-box-file-uploaded/</help-page-url>
+
+    <script><![CDATA[
+/**
+ * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
+ */
+
+/** 日時フォーマッター */
+const datetimeFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
+
+/**
+ * @param {string} str 日時文字列
+ * @return {timestamp} java.sql.Timestamp オブジェクト
+ */
+const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str).getTime());
+
+/**
+ * configs から必要な情報を取り出す
+ * @returns {Object} setting 設定
+ * @returns {string} setting.folderId 検索対象の フォルダ ID
+ * @returns {string} setting.oauth2 OAuth2 設定名
+ */
+const prepare = () => {
+    const oauth2 = configs.get("conf_OAuth2");
+    let folderId = configs.get("conf_FolderId");
+    if (folderId === "" || folderId === null) {
+        folderId = "0";
+    }
+
+    return {
+        folderId,
+        oauth2
+    };
+};
+
+/**
+ * ファイルの検索
+ * @param {number} limit ファイル数の上限
+ * @param {timestamp} timestampLowerLimit timestamp の下限
+ * @returns {Array} files ファイル一覧
+ * @returns {string} files[].id ファイル ID
+ * @returns {timestamp} files[].timestamp ファイルアップロード時刻
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {
+        folderId,
+        oauth2
+    } = prepare();
+
+    let files = getFiles(oauth2, folderId, timestampLowerLimit);
+    // 新しい順に並べ替え
+    files.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    // 先頭から limit で切る
+    files = files.slice(0, limit);
+    logFiles(files);
+    return files;
+};
+
+/**
+ * ファイルのログ出力
+ * @param {Array} files ファイル一覧
+ */
+const logFiles = (files) => {
+    if (files.length === 0) {
+        engine.log("no files");
+        return;
+    }
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
+    files.forEach(file => engine.log(JSON.stringify(file, replacer)));
+};
+
+/**
+ * 指定フォルダ内の、ファイルの取得
+ * フォルダ内のアイテム (ファイル＋フォルダ） 数が 1000 を超える場合、エラー
+ * @param {String} oauth2 OAuth2 設定
+ * @param {String} folderId 検索対象のフォルダ ID
+ * @param {timestamp} timestampLowerLimit timestamp の下限
+ * @returns {Array} files ファイル一覧
+ * @returns {string} files[].id ファイル ID
+ * @returns {timestamp} files[].timestamp ファイルアップロード時刻
+ */
+const getFiles = (oauth2, folderId, timestampLowerLimit) => {
+    const url = `https://api.box.com/2.0/folders/${folderId}/items`;
+
+    const LIMIT = 1000; // Box API で定める LIMIT の最大値が 1000
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam("fields", "id,type,name,created_at")
+        // date で sort をするが、これは更新日と思われる。作成日では sort できない。
+        .queryParam('sort', 'date')
+        .queryParam('direction', 'DESC')
+        .queryParam("limit", String(LIMIT))
+        .queryParam("usemarker", "true")
+        .get(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString() + "\n";
+    if (status >= 300) {
+        const accessLog = `---GET request--- ${status}\n${responseTxt}\n`;
+        engine.log(accessLog);
+        throw `Failed to get files. status: ${status}`;
+    }
+    const json = JSON.parse(responseTxt);
+
+    // marker がある場合は、フォルダに まだ ファイルがあるとみなして、エラーとする
+    const marker = json['next_marker'];
+    if (marker !== undefined && marker !== '' && marker !== null) {
+        throw `More than ${LIMIT} items are in the specified folder`;
+    }
+
+    return json.entries
+        .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
+        .map(formatFile)
+        .filter(entry => !entry.timestamp.before(timestampLowerLimit)); // timestampLowerLimit 以降のデータのみに絞り込み
+}
+
+/**
+ * Box のファイルデータから、必要な部分のみ抜き出す
+ * @param file ファイルデータ
+ * @returns {Object} file ファイル
+ * @returns {string} file.id ファイル ID
+ * @returns {timestamp} file.timestamp ファイルアップロード時刻
+ */
+const formatFile = (file) => {
+    const {
+        id,
+        created_at
+    } = file;
+    return {
+        id,
+        timestamp: parseDatetime(created_at)
+    };
+};
+]]></script>
+
+    <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
+        2qSd65x11aC0YgJWZUwEWZ0D/SJaHYKKmgykbL70Bf2k4IYwZOKWOhFRMM9QZxHUjSEo+7AOlA1E
+        7WSRThzdqq1tWWxjm7Zrk1y5N+SlydM2XdvN50sebs5z7u+e8z/n3iu4xo9Y1Pz+3x6F5BagAYQb
+        oX4BSTfIUaAbIboIeY8W63dhAH+vGyZaQLYihLsox1LBiCA4OjA9CmzOZ34Af9gP8kDRE+dPo0GM
+        AObtR+YimBvAfzaIEC1FrXghIymDmL42KzNrgMBZE8RzC/ld1P8SE9MbyP+mEGA5V16Ykg5MX2vu
+        8GwAlXNBaFErW6yxFE25msgCaLXHeq9YcMWCaGE6PenqyAEI70bwRrF+lmQn2YPp3a18ZAECYVWv
+        rrTj0I4bqHLaeOTgn0uay/JjFQXTV5kFUB1OyK9zjYeC9ThKBeW7epYfQHfPlBZSEbBQ/nBHCmDN
+        zpUCkLoiUgCBcBegenzmUQDO1QaHT0dpqC3T4yd7YrzyxZB+33V/Jds3VbBmtUH/SJzmQwN07ryR
+        7r4p2jtTNh88uwHPdaU8uP+iVRRPEvI2pgEuADflA6wrtxV8+GPvJBcuzfDY3RXYjBzgfxNU2A0M
+        AW2fD1Jht/FmUzWx6STuFyyiqDYw03tnGkDmz6QioADUZO98F8HtMHh521o9lpQwNSMxvx/l9PkJ
+        XtpWxSaPnZFYArfDRmQ8oeFcDhvvHv+Hts5Bax2FvGJeAFUFW97q5Yc/JrWDVx9ay74n1uv3Iz+P
+        0fRetkIiB+uxlxj80jfFvbfatc2Jnhhb91mGPwWUA1CQgoH9dawrX0VN+zmGxxLa/qnNLj5rrtHv
+        ShtPf9ifWdnfB+p02X7z6zhNd5Xr8U9PRXnmo6zN7DDIM4R8DXOK8NRrHu65xY7K+QNvX2SDaxXH
+        Wmqpu75U+1FhVsL78qcxDjfX8ORml05BeZmN6YTUDUalQenh/RMjC4jQogwb6x189eJGKp02YpeT
+        2AxBWYmgLzLDwGhcw8UTaJG57AaT0xIlJGXTcTyi09HcWMml8QTVLecKAWRuGVo0IvXF1tuc7N1e
+        rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
+        24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
+        vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
+        l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==
+    </icon>
+</service-task-definition>

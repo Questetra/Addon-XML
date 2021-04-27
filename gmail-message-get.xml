@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<label>Gmail: Get Email Message</label>
+<label locale="ja">Gmail: メール取得</label>
+<last-modified>2021-01-19</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<summary>Get an email message in Gmail.</summary>
+<summary locale="ja">Gmail のメールを取得します。</summary>
+<configs>
+  <config name="conf_auth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/gmail.readonly">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_messageId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C2: Message ID</label>
+    <label locale="ja">C2: メール ID</label>
+  </config>
+  <config name="conf_fromAddress" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C3: String type data item that will save From Address</label>
+    <label locale="ja">C3: From メールアドレスを保存する文字型データ項目</label>
+  </config>
+  <config name="conf_fromName" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C4: String type data item that will save From Name</label>
+    <label locale="ja">C4: From 表示名を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_recipientAddresses" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+    <label>C5: String type data item that will save To/Cc/Bcc Addresses</label>
+    <label locale="ja">C5: To/Cc/Bcc メールアドレス一覧を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_recipientNames" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+    <label>C6: String type data item that will save To/Cc/Bcc Names</label>
+    <label locale="ja">C6: To/Cc/Bcc 表示名一覧を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_sentDatetime" required="false" form-type="SELECT" select-data-type="DATETIME">
+    <label>C7: Datetime type data item that will save Sent Date and Time</label>
+    <label locale="ja">C7: 送信日時を保存する日時型データ項目</label>
+  </config>
+  <config name="conf_subject" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C8: String type data item that will save Subject</label>
+    <label locale="ja">C8: 件名を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_body" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+    <label>C9: String type data item that will save Body</label>
+    <label locale="ja">C9: 本文を保存する文字型データ項目</label>
+  </config>
+  <config name="conf_attachments" required="false" form-type="SELECT" select-data-type="FILE">
+    <label>C10: File type data item that will save Attachments</label>
+    <label locale="ja">C10: 添付ファイルを保存するファイル型データ項目</label>
+  </config>
+</configs>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-gmail-message-get/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-gmail-message-get/</help-page-url>
+
+<script><![CDATA[
+
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
+// - Token Endpoint URL: https://oauth2.googleapis.com/token
+// - Scope: https://www.googleapis.com/auth/gmail.readonly
+// - Consumer Key: (Get by Google Developer Console)
+// - Consumer Secret: (Get by Google Developer Console)
+
+main();
+function main(){
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+  const auth = configs.get("conf_auth");
+  const messageId = engine.findData( configs.getObject("conf_messageId") );
+  const defs = retrieveDefs();
+  const files = retrieveFiles( defs.attachmentsDef );
+
+  //// == 演算 / Calculating ==
+  const hasNoDefs = Object.values(defs).every( def => def === null );
+  if ( hasNoDefs ) return; // 保存先データ項目が１つも設定されていなければ何もせず正常終了
+
+  const apiUri = determineApiUri( messageId );
+  const message = getMessage( apiUri, auth );
+
+  if ( defs.attachmentsDef !== null ) {
+    getAttachments( apiUri, auth, message.attachments );
+    convertAndAddAttachments( message.attachments, files );
+  }
+
+  // To, Cc, Bcc の順に連結
+  const recipientEmails = message.recipients.to.emails
+    .concat( message.recipients.cc.emails, message.recipients.bcc.emails );
+  const recipientNames = message.recipients.to.names
+    .concat( message.recipients.cc.names, message.recipients.bcc.names );
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  setDataIfNotNull( defs.fromAddressDef, message.from.email );
+  setDataIfNotNull( defs.fromNameDef, message.from.name );
+  setDataIfNotNull( defs.recipientAddressesDef, recipientEmails.join('\n') );
+  setDataIfNotNull( defs.recipientNamesDef, recipientNames.join('\n') );
+  setDataIfNotNull( defs.sentDatetimeDef, new java.sql.Timestamp(Date.parse(message.datetime)) );
+  setDataIfNotNull( defs.subjectDef, message.subject );
+  setDataIfNotNull( defs.bodyDef, message.body );
+  setDataIfNotNull( defs.attachmentsDef, files );
+}
+
+/**
+  * config から保存先データ項目の ProcessDataDefinitionView を読み出す
+  * 値を保存するデータ項目が重複して設定されている場合はエラーとする
+  * @return {Object} defs  保存先データ項目の ProcessDataDefinitionView を格納した JSON オブジェクト
+  */
+function retrieveDefs() {
+  const items = ["fromAddress", "fromName", "recipientAddresses", "recipientNames", "sentDatetime", "subject", "body", "attachments"];
+  const defs = {};
+  const dataItemNumSet = new Set(); // データ項目の重複確認用
+  items.forEach( item => {
+    const dataItemDef = configs.getObject(`conf_${item}`);
+    if ( dataItemDef !== null ) { // データ項目が設定されている場合は重複を確認する
+      const dataItemNum = dataItemDef.getNumber();
+      if ( dataItemNumSet.has( dataItemNum ) ) { // データ項目番号が重複していればエラー
+        throw "The same data item is set multiple times.";
+      }
+      dataItemNumSet.add( dataItemNum ); // データ項目の重複確認用
+    }
+    defs[`${item}Def`] = dataItemDef;
+  });
+  return defs;
+}
+
+/**
+  * ワークフローデータからファイル型データ項目の値（ファイルの配列）を読み出す
+  * @return {ListArray<Qfile>} files  ファイルの配列
+  */
+function retrieveFiles( attachmentsDef ) {
+  let files = null;
+  if ( attachmentsDef !== null ) {
+    files = engine.findData( attachmentsDef );
+  }
+  if ( files === null ) {
+    files = new java.util.ArrayList();
+  }
+  return files;
+}
+
+/**
+  * Gmail のメール取得の URI を決定する
+  * メール ID が空であればエラーとする
+  * @param {String} messageId  メール ID
+  * @return {String} apiUri  API の URI
+  */
+function determineApiUri( messageId ) {
+  if ( messageId === "" || messageId === null ) {
+    throw "Message ID is empty.";
+  }
+  const apiUri = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURI(messageId)}`;
+  return apiUri;
+}
+
+/**
+  * Gmail REST API にメール取得の GET リクエストを送信し、必要な情報を JSON オブジェクトに格納する
+  * @param {String} apiUri  API の URI
+  * @param {String} auth  認証設定名
+  * @return {Object} message  メール情報を格納した JSON オブジェクト
+  */
+function getMessage( apiUri, auth ) {
+  const response = httpClient.begin()
+    .authSetting( auth )
+    .get( apiUri );
+
+  // when error thrown
+  const responseJson = response.getResponseAsString();
+  const status = response.getStatusCode();
+  if (status >= 300) {
+    engine.log(`API URI: ${apiUri}`);
+    const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+    engine.log( accessLog );
+    throw `Failed to get message. status: ${status}`;
+  }
+
+  // when successful, parse the message content
+  const json = JSON.parse(responseJson);
+  const message = extractFromPayload( json.payload );
+  return message;
+}
+
+/**
+  * Gmail REST API のメール取得のレスポンスの payload フィールドから
+  * 必要な情報を抜き出し、JSON オブジェクトに格納する
+  * @param {Object} payload  Gmail REST API のメール取得のレスポンスの payload フィールド
+  * @return {Object} message  メール情報を格納した JSON オブジェクト
+  */
+function extractFromPayload( payload ) {
+  const message = {
+    "from": {
+      "email": "",
+      "name": ""
+    },
+    "recipients": {
+      "to": {
+        "emails": [],
+        "names": []
+      },
+      "cc": {
+        "emails": [],
+        "names": []
+      },
+      "bcc": {
+        "emails": [],
+        "names": []
+      }
+    },
+    "datetime": "",
+    "subject": "",
+    "body": "",
+    "attachments": []
+  };
+
+  // ヘッダの処理
+  // From ヘッダは Gmail の仕様で必ず 1 件, Date ヘッダも 1 件
+  // To, Cc, Bcc は複数件の可能性があるので配列に追加して処理
+  // Subject が複数件ある場合は最初の Subject ヘッダを採用する
+  payload.headers.forEach( header => {
+    const headerNameLower = header.name.toLowerCase();
+    switch ( headerNameLower ) {
+      case 'from':
+        const fromAddresses = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
+        if ( fromAddresses !== null && fromAddresses.length !== 0 ) {
+          message.from.email = fromAddresses[0].getAddress();
+          message.from.name = fromAddresses[0].getPersonal();
+        }
+        break;
+      case 'to':
+      case 'cc':
+      case 'bcc':
+        const addresses  = emailService.parseAddressHeader( header.value ); // java.util.List<EmailServiceWrapper.InternetAddressWrapper>
+        if ( addresses !== null && addresses.length !== 0 ) {
+          addresses.forEach( addr => {
+            message.recipients[headerNameLower].emails.push( addr.getAddress() );
+            message.recipients[headerNameLower].names.push( addr.getPersonal() );
+          });
+        }
+        break;
+      case 'date':
+        message.datetime = header.value;
+        break;
+      case 'subject':
+        if ( message.subject === "" ) { // 最初の Subject ヘッダを採用する
+          message.subject = header.value;
+        }
+        break;
+    }
+  });
+
+  // パート（本文、添付ファイル）の処理
+  const mimeType = payload.mimeType;
+  if ( mimeType === "text/plain" || mimeType === "text/html" ) { // 本文のみのメール
+    message.body = parseTextPart( payload );
+  }
+  if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
+    message.body = parseMultiPart( payload, message.attachments );
+  }
+
+  return message;
+}
+
+/**
+  * MIME タイプが text/plain, text/html のパートのデータをデコードして文字列として返す
+  * @param {Object} part  MIME メールのパート（text/plain または text/html）
+  * @return {String} body  パートのデータ（メール本文として保存する文字列の候補）
+  */
+function parseTextPart( part ) {
+  return base64.decodeFromUrlSafeString( part.body.data ); // UTF-8 としてデコード
+}
+
+/**
+  * MIME タイプが multipart/* のパートを再帰的に解析する
+  * 添付ファイルのパートがあればその情報を配列に格納したうえで、本文として保存する文字列の候補を返す
+  * @param {Object} part  MIME メールのパート（multipart/*）
+  * @param attachments {Array<Object>} attachments  添付ファイルの情報（オブジェクト）を格納する配列
+  * @return {String} body  メール本文として保存する文字列の候補
+  */
+function parseMultiPart( part, attachments ) {
+  // 本文の候補
+  let textPart = null; // 第一候補のパート
+  let htmlPart = null; // 第二候補のパート
+  let nestedBody = ""; // 第三候補の文字列（下の階層から取得した本文候補、または空文字列）
+
+  part.parts.forEach( ( part, index ) => {
+    // マルチパートの場合
+    if ( part.mimeType.startsWith("multipart/") ) {
+      nestedBody = parseMultiPart( part, attachments );
+      return;
+    }
+
+    // 添付ファイルの場合
+    const file = attachment( part, index );
+    if ( file !== null ) {
+      attachments.push( file );
+      return;
+    }
+
+    // マルチパートでも添付ファイルでも無い場合は、本文パートの可能性がある
+    if ( part.mimeType === "text/plain" ) {
+      if ( textPart === null ) { // １つ目の "text/plain" パートを本文パートの第一候補とする
+        textPart = part;
+      }
+      return;
+    }
+    if ( part.mimeType === "text/html" ) {
+      if ( htmlPart === null ) { // １つ目の "text/html" パートを本文パートの第二候補とする
+        htmlPart = part;
+      }
+      return;
+    }
+  });
+
+  if ( textPart !== null ) {
+    return parseTextPart( textPart );
+  }
+  if ( htmlPart !== null ) {
+    return parseTextPart( htmlPart );
+  }
+  // "text/plain" パートも "text/html" パートも無い場合は、下の階層から取得した本文、または空文字列
+  return nestedBody;
+}
+
+/**
+  * MIME メールのマルチパート内のパートが添付ファイルかどうかを調べ、添付ファイルであれば
+  * その情報をオブジェクトとして返す
+  * @param {Object} part  マルチパート内のパート
+  * @param index {Number} index  マルチパート内で何番目のパートか
+  * @return {Object} file  添付ファイルの情報（添付ファイルのパートでない場合は null）
+  */
+function attachment( part, index ) {
+  // マルチパート内の先頭パートは添付ファイルとみなさない
+  if ( index === 0 ) {
+    return null;
+  }
+
+  const disposition = getDisposition( part );
+  const contentType = getContentType( part );
+  if ( disposition === "attachment" || part.body.attachmentId !== undefined ) { // ファイル名がなくても添付ファイルとみなす
+    let filename = part.filename;
+    if ( filename === undefined || filename === null || filename === "" ) {
+      filename = "noname"; // Default
+    }
+    const file = {
+      "filename": filename,
+      "contentType": contentType,
+      "body": part.body
+    }
+    return file;
+  } else { // ファイル名 があれば添付ファイルとみなす
+    const filename = part.filename;
+    if ( filename === undefined || filename === null || filename === "" ) {
+      return null;
+    }
+    const file = {
+      "filename": filename,
+      "contentType": contentType,
+      "body": part.body
+    }
+    return file;
+  }
+}
+
+/**
+  * MIME メールのパートの "Content-Disposition" ヘッダの値を返す
+  * @param {Object} part  パート
+  * @return {String} disposition  "Content-Disposition" ヘッダの値（ヘッダが無い場合は null）
+  */
+function getDisposition( part ) {
+  if ( part.headers === undefined ) { // パートにヘッダが無い場合は null を返す
+    return null;
+  }
+  const dispositionHeader = part.headers.find( header => header.name.toLowerCase() === "content-disposition" );
+  if ( dispositionHeader === undefined ) { // 無い場合は null を返す
+    return null;
+  }
+  return dispositionHeader.value.split(";")[0].toLowerCase();
+}
+
+/**
+  * MIME メールのパートの "Content-Type" ヘッダの値を返す
+  * ヘッダが無い場合はデフォルト値として "application/octet-stream" を返す
+  * @param {Object} part  パート
+  * @return {String} contentType  "Content-Type" ヘッダの値
+  */
+function getContentType( part ) {
+  const defaultContentType = "application/octet-stream";
+  if ( part.headers === undefined ) { // パートにヘッダが無い場合はデフォルト値を返す
+    return defaultContentType;
+  }
+  const contentTypeHeader = part.headers.find( header => header.name.toLowerCase() === "content-type" );
+  if ( contentTypeHeader === undefined ) { // 無い場合はデフォルト値を返す
+    return defaultContentType;
+  }
+  return contentTypeHeader.value;
+}
+
+/**
+  * 添付ファイルの情報に本体データが含まれているかどうかを調べ、
+  * ない場合は Gmail REST API に添付ファイル取得の GET リクエストを送信し、
+  * 本体データを追加する
+  * @param {String} apiUri  API の URI（/messages/{messageId} まで）
+  * @param {String} auth  認証設定名
+  * @param {Array<Object>} attachments  添付ファイルの情報（オブジェクト）が格納された配列
+  *  配列内の添付ファイルの情報の形式は：
+  *   {
+  *     "filename": String,
+  *     "contentType": String,
+  *     "body": {
+  *       "data": String(Base64) or "attachmentId": String
+  *     }
+  *   }
+  */
+function getAttachments( apiUri, auth, attachments ) {
+  const httpLimit = httpClient.getRequestingLimit();
+  let httpCount = 1; // HTTP リクエストの上限超えチェック用のカウンタ（メール取得のリクエスト後なので初期値は1）
+  attachments.forEach( attachment => {
+    if ( attachment.body.data !== undefined ) { return; } // data があれば何もしない
+    httpCount++;
+    if ( httpCount > httpLimit ) { throw "Number of HTTP requests is over the limit."; }
+    const response = httpClient.begin()
+      .authSetting( auth )
+      .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) { // when error thrown
+      engine.log(`API URI: ${apiUri}/attachments/${attachment.body.attachmentId}`);
+      const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+      engine.log( accessLog );
+      throw `Failed to get attachment. status: ${status}`;
+    }
+    // when successful, parse the message content
+    const json = JSON.parse(responseJson);
+    attachment.body["data"] = json.data;
+  });
+}
+
+/**
+  * 添付ファイルを Qfile に変換し、ファイルの配列に追加する
+  * @param {Array<Object>} attachments  添付ファイルの情報（オブジェクト）が格納された配列
+  * @param {ListArray<Qfile>} files  ファイルの配列
+  */
+function convertAndAddAttachments( attachments, files ) {
+  attachments.forEach( attachment => {  
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+      attachment.filename,
+      attachment.contentType,
+      base64.decodeFromUrlSafeStringToByteArray( attachment.body.data ) // ByteArrayWrapper
+    );
+    files.add( qfile );
+  });
+}
+
+/**
+  * 保存先データ項目の ProcessDataDefinitionView が null でない場合のみ値を代入する
+  * @param {ProcessDataDefinitionView} def  保存先データ項目の ProcessDataDefinitionView
+  * @param {Object} value  データ項目に代入する値
+  */
+function setDataIfNotNull( def, value ) {
+  if ( def === null ) return; // データ項目が設定されていなければ何もしない
+  engine.setData( def, value );
+}
+
+  ]]>
+</script>
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPUlEQVRYR8WXX0hTURzHv2dzy5bb
+1HKKRH+gtx7K2izooXI+BVH41F+IglAJmhVICr2kgRG6DFRERXBpGIgkZA/Oeigir+VzIGQE1bTU
+yXYdy90Tu+5u997dea9p3PO2nd+fz/md359zCXReRKv/76cPW4ysoYKAnARoCSj2gCCP16dYAMEM
+QKYo6OuYhRsqHvnIarGtCjB7wlWELNSCohJAthajACIg6MAKmhxvmJ9r6awJECgrrSSEPgKwTaNj
+uViYUnKncHyiI5N+RoC5clcbpaj6R8cSNULQXjDGVCvZUgQIlDn7CSHnN8O5YINSOlA4PnlBbjMN
+YDNPnuZMIRISgMSdt2/myeW2KCVV4pxIAvDZbsS0kHCGAgdsdQ0w2HPBPvchMvpCMxexWmGrb4Sx
+qBiRl8NgB31i3TBi2CdURwqg3NUCCo8gme8b5g0IK8q8R7C+BuC4NUFMJU7YG70gZnNSLnj3JuL6
+yUXgdYwxNfHfPEC8yWSxht/iOi949Q7IMkmcccFFLHquI/ZtRhEip/oWtlacS9tjB/sQ7nwi/j+y
+YuG2x5sVDxBwuy4RoE8soQTA71MOodaHWB4ZSh3IakWetwvG3XsVweJXEO5slexR4HKhn/HxALPu
+0m6AXtUEkBASrsR80AlbQ7Mk5HIKJQCA9Dj8E9cSAK5PAErWA8AHg2VBLBbV5FQGwJTDzxxaBShz
+zScHS8JcxitQdZcuoAhAseAYZ/KFCFC5WhoApQBRnV2AglyGCMDhZ1YtzrpdqgCxwA+w/b2wemoB
+YlCMQ+zrF4Sf9sBWd1+yrw6g4QriAPMXz8C4cxdyH3fxDUq8loeeIdTWDPORY7A3tqgDyK5ANQkF
+AN6ywQD7Ay/MzqOg0SiW7t1GdPIDv6UZAOIk1FCGEoDE+bYcd+PP1CS4pWDyxNoBRGWopREpASgl
+glYASSNSasU7Rt+CmFL9fEMAA70Id7eJeaWtmK8E2TDKqfIg+9TZZOmtTH/m54DaMu0/AHtTqu3S
+UAgLN66A+zWXUpUPIx5ANo7VHG1gX3kcxw3q+iARTqTrk0yA0PVR+j8ise5neSoSOn6YCBC6fpqJ
+S023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg==
+</icon>
+
+</service-task-definition>

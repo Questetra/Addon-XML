@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-07-19</last-modified>
+<last-modified>2021-03-10</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Google Sheets: Download Choice Data</label>
 <label locale="ja">Google スプレッドシート: 選択肢データの一括取得</label>
 <summary>Download Choice Data in specified 2 columns from Google Sheet.</summary>
@@ -12,8 +12,8 @@
 
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets.readonly">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_DataIdB" required="true" form-type="TEXTFIELD">
     <label>C2: Source Spreadsheet ID</label>
@@ -25,120 +25,138 @@
   </config>
   <config name="conf_DataIdD" required="true" form-type="TEXTFIELD">
     <label>C4: Range of Choice IDs (e.g. "A1:A")</label>
-    <label locale="ja">C4: 選択肢IDの領域情報 (例 "A2:A", "A:A")</label>
+    <label locale="ja">C4: 選択肢 ID の領域情報 (例 "A2:A", "A:A")</label>
   </config>
   <config name="conf_DataIdE" required="true" form-type="TEXTFIELD">
     <label>C5: Range of Choice Labels (e.g. "D2:D")</label>
     <label locale="ja">C5: 選択肢ラベルの領域情報 (例 "B2:B", "B:B")</label>
   </config>
   <config name="conf_DataIdF" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C6: STRING Data item that will save Choise IDs</label>
-    <label locale="ja">C6: 選択肢IDの一覧を保存する文字型データ項目</label>
+    <label>C6: Data item that will save Choice IDs</label>
+    <label locale="ja">C6: 選択肢 ID の一覧を保存するデータ項目</label>
   </config>
   <config name="conf_DataIdG" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C7: STRING Data item that will save Choice Labels</label>
-    <label locale="ja">C7: 選択肢ラベルの一覧を保存する文字型データ項目</label>
+    <label>C7: Data item that will save Choice Labels</label>
+    <label locale="ja">C7: 選択肢ラベルの一覧を保存するデータ項目</label>
   </config>
 </configs>
 
 <script><![CDATA[
-// Batch to Get Data via Google Sheets API (ver. 20160921)
-// (c) 2016, Questetra, Inc. (the MIT License)
 
 // OAuth2 config
 // Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
 // Token Endpoint URL: https://accounts.google.com/o/oauth2/token
-// Scope: https://www.googleapis.com/auth/spreadsheets
+// Scope: https://www.googleapis.com/auth/spreadsheets.readonly
 // Consumer Key: (Get by Google Developers Console)
 // Consumer Secret: (Get by Google Developers Console)
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get( "conf_OAuth2" );
-  const docId = configs.get( "conf_DataIdB" ) + "";
-  const sheet= configs.get( "conf_DataIdC" ) + "";
-  const rangeI = configs.get( "conf_DataIdD" ) + ""; // (returns Number)
-  const rangeL = configs.get( "conf_DataIdE" ) + ""; // (returns Number)
-  const dataIdF = configs.get( "conf_DataIdF" ); // (returns Number)
-  const dataIdG = configs.get( "conf_DataIdG" ); // (returns Number)
-
-  //// == ワークフローデータの参照 / Data Retrieving ==
+  const oauth = configs.get( "conf_OAuth2" );
+  const docId = configs.get( "conf_DataIdB" );
+  const sheet = configs.get( "conf_DataIdC" );
+  const rangeI = configs.get( "conf_DataIdD" );
+  const rangeL = configs.get( "conf_DataIdE" );
+  const idDataDef = configs.getObject( "conf_DataIdF" );
+  const labelDataDef = configs.getObject( "conf_DataIdG" );
   
   //// == 演算 / Calculating ==
-  let accessLog = "";
-  let responseJson = "";
-  const token = httpClient.getOAuth2Token( oauth2 );
-
-  let choiseIds = "";
-  let choiseLabels = "";
-
-  try{
-    // Method: spreadsheets.values.batchGet
-    const uri = "https://sheets.googleapis.com/v4/spreadsheets/" + docId + "/values/:batchGet" ;
-
-    let response = httpClient.begin()
-      .bearer(token)
-      .queryParam( "ranges", sheet + "!" + rangeI )
-      .queryParam( "ranges", sheet + "!" + rangeL )
-      .queryParam( "valueRenderOption", "UNFORMATTED_VALUE" )
-      .queryParam( "majorDimension", "COLUMNS" )
-      .get( uri );
-    accessLog += "---GET request--- " + response.getStatusCode() + "\n";
-    responseJson = response.getResponseAsString();
-    accessLog += responseJson;
-    if( response.getStatusCode() != 200 ){
-      throw accessLog;
-    }
-  }catch(e){
-    accessLog += e.message + "\n";
-    throw accessLog;
-  }
-  const jsonObj = JSON.parse( responseJson );
-  //error for all cells empty
-  if(jsonObj.valueRanges[0].values == null ){
-    throw "All Cells in Choice-IDs range are empty.";
-  }else if(jsonObj.valueRanges[1].values == null){
-    throw "All Cells in Labels range are empty.";
-  }
-  //error for different number of cells 
-  if(jsonObj.valueRanges[0].values[0].length != jsonObj.valueRanges[1].values[0].length){
-    throw "Number of cells in two ranges is different.";
-  }
-  if(jsonObj.valueRanges[0].values[0].length > 150000){
-    throw"Number of Choice Data is over 150,000."
-  }
-  //error for an empty cells,over 1000 characters and add to list
-  for( let i = 0; i < jsonObj.valueRanges[0].values[0].length; i++ ){
-    if ( jsonObj.valueRanges[0].values[0][i] == ""){
-      throw "Empty Cell is in Choice-IDs range.";
-    }else if ( jsonObj.valueRanges[0].values[0][i].length > 1000){
-      throw "Over 1000-character Choice-ID is in range.";
-    }
-    choiseIds += jsonObj.valueRanges[0].values[0][i] + "\n";
-    if ( jsonObj.valueRanges[1].values[0][i] == ""){
-      throw "Empty Cell is in Labels range.";
-    }else if ( jsonObj.valueRanges[1].values[0][i].length > 1000){
-      throw "Over 1000-character Label is in range.";
-    }
-    choiseLabels += jsonObj.valueRanges[1].values[0][i] + "\n";
-  }
-  //error for same ids
-  for(let j = 0;j < jsonObj.valueRanges[0].values[0].length;j++){
-    for( let k = jsonObj.valueRanges[0].values[0].length -1 ; k > j;k--){
-      if (jsonObj.valueRanges[0].values[0][j] === jsonObj.valueRanges[0].values[0][k] ){
-        throw "Same Choice-IDs are in range.";
-      }
-    }
-  }
-  
-  // for Debug
-  // accessLog += responseJson + "\n";
+  const {idList, labelList} = getChoice( oauth, docId, sheet, rangeI, rangeL );
 
   //// == ワークフローデータへの代入 / Data Updating ==
-  engine.setDataByNumber( dataIdF, choiseIds );
-  engine.setDataByNumber( dataIdG, choiseLabels );
-  engine.log(accessLog );
+  engine.setData( idDataDef, idList.join("\n") );
+  engine.setData( labelDataDef, labelList.join("\n") );
 }
+
+/**
+ * Google スプレッドシートの選択肢データを取得
+ * @param {String} oauth OAuth2 認証設定
+ * @param {String} docId スプレッドシートの ID
+ * @param {String} sheet シート名
+ * @param {String} rangeI 選択肢 ID の領域
+ * @param {String} rangeL 選択肢 ラベル の領域
+ * @return {Object} obj 選択肢データを格納したオブジェクト
+ * @return {Array<String>} obj.idList 選択肢 ID を格納した配列
+ * @return {Array<String>} obj.labelList 選択肢ラベルを格納した配列
+ */
+function getChoice( oauth, docId, sheet, rangeI, rangeL ) {
+  // Method: spreadsheets.values.batchGet
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${docId}/values/:batchGet`;
+  const response = httpClient.begin()
+    .authSetting( oauth )
+    .queryParam( "ranges", `${sheet}!${rangeI}` )
+    .queryParam( "ranges", `${sheet}!${rangeL}` )
+    .queryParam( "valueRenderOption", "UNFORMATTED_VALUE" )
+    .queryParam( "majorDimension", "COLUMNS" )
+    .get( uri );
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status !== 200) {
+    const accessLog = `---GET request--- ${status}\n${responseStr}`;
+    engine.log( accessLog );
+    throw `Failed to get. status:${status}`;
+  }
+  const jsonObj = JSON.parse( responseStr );
+
+  const I_LABEL = "Choice-ID";
+  const L_LABEL = "Label";
+  const idCols = jsonObj.valueRanges[0].values;
+  const labelCols = jsonObj.valueRanges[1].values;
+  // error for empty column, multiple columns
+  checkCols(idCols, I_LABEL);
+  checkCols(labelCols, L_LABEL);
+
+  const idList = idCols[0];
+  const labelList = labelCols[0];
+  // error for different number of cells
+  if (idList.length !== labelList.length) {
+    throw "Number of cells in two ranges is different.";
+  }
+  if (idList.length > 150000) {
+    throw "Number of Choice Data is over 150,000.";
+  }
+  // error for an empty cells, over 1000 characters
+  checkData(idList, I_LABEL);
+  checkData(labelList, L_LABEL);
+  // error for same ids
+  const idSet = new Set( idList ); // idList の重複確認用の Set
+  if ( idSet.size !== idList.length ) {
+    throw `Same ${I_LABEL}s are in range.`;
+  }
+
+  return {idList, labelList};
+}
+
+/**
+ * 列を確認し、空(undefined)や複数列ある場合はエラー
+ * @param {Array} cols 列データの配列
+ * @param {String} label エラー用のラベル
+ */
+function checkCols(cols, label) {
+  if (cols === undefined) {
+    throw `No Data in ${label}s range.`;
+  }
+  if (cols.length > 1) {
+    throw `Multiple Columns in ${label}s range.`;
+  }
+}
+
+/**
+ * 配列の要素を確認し、空文字や1000字以上のデータがあればエラー
+ * @param {Array<String>} list データが格納された配列
+ * @param {String} label エラー用のラベル
+ */
+function checkData(list, label) {
+  list.forEach(str => {
+    if (str === "") {
+      throw `Empty Cell is in ${label}s range.`;
+    }
+    if (str.length > 1000) {
+      throw `Over 1000-character ${label} is in range.`;
+    }
+  });
+}
+
 ]]></script>
 
 

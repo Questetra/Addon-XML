@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-07-01</last-modified>
+<last-modified>2021-03-11</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Google Drive: Search Folder</label>
 <label locale="ja">Google ドライブ: フォルダ検索</label>
 <summary>Search for the folder with the specific name, directly under the specified folder on Google Drive.</summary>
@@ -11,8 +11,8 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googledrive-foldersearch/</help-page-url>
 <configs>
   <config name="OAuth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (When empty, search in My Drive root)</label>
@@ -23,101 +23,144 @@
     <label locale="ja">C3: 検索するフォルダの名称</label>
   </config>
   <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C4: Data Item that will save Folder ID</label>
+    <label>C4: Data item that will save Folder ID</label>
     <label locale="ja">C4: 検索したフォルダの ID を保存するデータ項目</label>
   </config>
   <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>C5: Data Item that will save web view url of Folder</label>
+    <label>C5: Data item that will save web view URL of Folder</label>
     <label locale="ja">C5: 検索したフォルダの表示 URL を保存するデータ項目</label>
   </config>
 </configs>
 
 <script><![CDATA[
 main();
-function main(){
+function main() {
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
   let parentFolderId = configs.get("ParentFolderId");
-  if (parentFolderId == "" ||parentFolderId == null) {
+  if (parentFolderId === "" || parentFolderId === null) {
     parentFolderId = "root";
   }
   const folderName = configs.get("FolderName");
-  if (folderName == "" ||folderName == null) {
+  if (folderName === "" || folderName === null) {
     throw "Folder Name is blank";
   }
-  //get C4&C5
-  const idData = configs.get("FolderIdItem");
-  const urlData = configs.get("WebViewUrlItem");
-  //If neither C4 nor C5 are set,throw error
-  if((idData === null || idData === "") && (urlData === null || urlData === "")){
+  const idDataDef = configs.getObject("FolderIdItem");
+  const urlDataDef = configs.getObject("WebViewUrlItem");
+  // If neither C4 nor C5 are set, throw error
+  if (idDataDef === null && urlDataDef === null) {
     throw "Neither of Data Items to save result are set.";
   }
   const oauth = configs.get("OAuth");
 
-  // get OAuth token
-  let token;
-  token = httpClient.getOAuth2Token( oauth );
-  const folderNameRep = folderName.replace(/['\\]/g,"\\$&");
-  const q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '" + folderNameRep + "' and '" + parentFolderId + "' in parents";
-  const json = searchFolder(token,q);
-  
-  let folderIdList = "";
-  let folderUrlList = "";
-  const fileNum = json.files.length;
-  if (fileNum == 0){
-    throw "Folder " + folderName + " doesn't exist.";
+  //// == 演算 / Calculating ==
+  const driveId = getDriveId(oauth, parentFolderId);
+  const folders = searchFolder(oauth, driveId, parentFolderId, folderName);
+  const folderNum = folders.length;
+  if (folderNum === 0) {
+    throw `Could not find Folder ${folderName} with Parent Folder ID ${parentFolderId}`;
   }
-  for(let i = 0; i < fileNum; i++){
-    if (i > 0){
-      folderIdList += "\n";
-      folderUrlList += "\n";
-    }
-    folderIdList += json.files[i].id;
-    folderUrlList += json.files[i].webViewLink;
+  const folderIdList = [];
+  const folderUrlList = [];
+  for (let i = 0; i < folderNum; i++) {
+    folderIdList.push(folders[i].id);
+    folderUrlList.push(folders[i].webViewLink);
   }
-  //set ID to Data Item
-  if (idData != null && idData != "") {
-    const idDataDef = engine.findDataDefinitionByNumber(idData);
-    //Multiple Judge
-    if(idDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple folders are found.Can't set data to single-line string Data Item."
-    }
-    engine.setDataByNumber(idData,folderIdList);
-  }
-  //set URL to Data Item
-  if (urlData != null && urlData != "") {
-    const urlDataDef = engine.findDataDefinitionByNumber(urlData);
-    //Multiple Judge
-    if(urlDataDef.matchDataType("STRING_TEXTFIELD") && fileNum > 1){
-      throw "Multiple folders are found.Can't set data to single-line string Data Item."
-    }
-    engine.setDataByNumber(urlData,folderUrlList);
-  }
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  setFolderData(idDataDef, folderIdList);
+  setFolderData(urlDataDef, folderUrlList);
 }
-//search folder on google drive
-function searchFolder(token, q) {
-  const url = 'https://www.googleapis.com/drive/v3/files';
-  const response = httpClient.begin()
-    .bearer(token)
-    .queryParam("q",q)
-    .queryParam("pageSize",1000)
-    .queryParam("fields", "files(id,webViewLink)")
-    .queryParam("includeTeamDriveItems","true")
-    .queryParam("supportsTeamDrives","true")
+
+/**
+ * 親フォルダのドライブ ID を取得する
+ * @param {String} oauth OAuth2 認証設定
+ * @param {String} parentFolderId 親フォルダの ID
+ * @return {String} driveId ドライブ ID (共有ドライブになければ null)
+ */
+function getDriveId(oauth, parentFolderId) {
+  if (parentFolderId === "root") {
+    return null;
+  }
+  const url = `https://www.googleapis.com/drive/v3/files/${parentFolderId}`;
+  const response = httpClient
+    .begin()
+    .authSetting(oauth)
+    .queryParam("fields", "driveId")
+    .queryParam("supportsAllDrives", "true")
     .get(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
   if (status >= 300) {
-    const error = "Failed to search \n status:" + status + "\n" + responseTxt;
+    const error = `Failed to get parent folder with parent folder ID ${parentFolderId}. status:${status}`;
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log("status:" + status + "\n" + responseTxt);
-  
-  jsonRes = JSON.parse(responseTxt);
-  return jsonRes;
+  const driveId = JSON.parse(responseTxt).driveId;
+  if (driveId === undefined) {
+    return null;
+  }
+  return driveId;
+}
+
+/**
+ * Google ドライブのフォルダを検索
+ * @param {String} oauth OAuth2 認証設定
+ * @param {String} driveId 親フォルダのドライブ ID (共有ドライブになければ null)
+ * @param {String} parentFolderId 親フォルダの ID
+ * @param {String} folderName 検索するフォルダの名前
+ * @return {Array} folders 検索結果一覧
+ * @return {String} folders[].id フォルダの ID
+ * @return {String} folders[].webViewLink フォルダの表示 URL
+ */
+function searchFolder(oauth, driveId, parentFolderId, folderName) {
+  const folderNameRep = folderName.replace(/['\\]/g, "\\$&"); // ' と \ をエスケープ
+  const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
+  const url = "https://www.googleapis.com/drive/v3/files";
+  let request = httpClient
+    .begin()
+    .authSetting(oauth)
+    .queryParam("q", q)
+    .queryParam("pageSize", "1000")
+    .queryParam("fields", "files(id,webViewLink)");
+  if (driveId !== null) { // 親フォルダが共有ドライブにある場合
+    request = request
+      .queryParam("includeItemsFromAllDrives", "true")
+      .queryParam("supportsAllDrives", "true")
+      .queryParam("corpora", "drive")
+      .queryParam("driveId", driveId);
+  }
+  const response = request.get(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  if (status >= 300) {
+    const error = `Failed to search. status:${status}`;
+    engine.log(responseTxt);
+    throw error;
+  }
+  const folders = JSON.parse(responseTxt).files;
+  return folders;
+}
+
+/**
+ * フォルダの情報をデータ項目にセットする
+ * @param {ProcessDataDefinitionView} dataDef 保存先データ項目の ProcessDataDefinitionView
+ * @param {Array<String>} folderInfoList 保存するフォルダ情報の配列
+ */
+function setFolderData(dataDef, folderInfoList) {
+  if (dataDef !== null) {
+    //Multiple Judge
+    if (dataDef.matchDataType("STRING_TEXTFIELD") && folderInfoList.length > 1) {
+      throw "Multiple folders are found. Can't set data to single-line string Data Item.";
+    }
+    const folderInfoStr = folderInfoList.join("\n");
+    engine.setData(dataDef, folderInfoStr);
+  }
 }
 
 ]]></script>
 
-<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
 hUBmYabNj19/dglzM7ERirGerpkshNTA5ImOgvTClGu/fjEq5AfeYdeX+YrT0cv2S3y69kjgVGv7
 IjdiHEGUAzKK0nKf8X9peyz5ntv5jty/7qTzTPgML51n+O/rbyaH6f3TjxByBFEOSMxO/XZB/wnH
 d6k/DGpnRb82WT/nwhcKF59w/5++VfnmzP45WhQ7IL0wdfZzga8Rt4xfc4MM43zGwkBMKICi4vBt
@@ -132,5 +175,6 @@ K/y48ywQnNXY9S0ZePlx1zGfP37D60aZN33fONheVoJyETwN4MsBIN+/vxADrngIWU4odDjeH/vP
 93kpvK0AdwCszXfc8wFKgQKyXOi1MuPdp5ZclFoOchz/3ZZvnKxvPGC5CK0cwGx8gEo8UNBTw3KI
 75fNQ85FGEUxLDvCajtqWQ5KF8ofSzEKMAwHwBIkyAGgoH8iUsSFL8ERinOYPCjoYQkPZ12AKFBS
 rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
-6/Q2AAAAAElFTkSuQmCC</icon>
+6/Q2AAAAAElFTkSuQmCC
+</icon>
 </service-task-definition>

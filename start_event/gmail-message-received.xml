@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <label>Start: Gmail: Email Message Received</label>
+    <label locale="ja">開始: Gmail: メール受信時</label>
+    <last-modified>2021-03-04</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <summary>Start Process when Gmail has received a new message.</summary>
+    <summary locale="ja">Gmail が新しいメールを受信すると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_auth" required="true" form-type="OAUTH2"
+                oauth2-setting-name="https://www.googleapis.com/auth/gmail.readonly">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_label" form-type="TEXTAREA">
+            <label>C2: Label (Inbox if blank)</label>
+            <label locale="ja">C2: ラベル (空白の場合、受信トレイ)</label>
+        </config>
+        <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save Message ID</label>
+            <label locale="ja">C3: メール ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Data item to save received time</label>
+            <label locale="ja">C4: 受信時刻を保存するデータ項目</label>
+        </config>
+        <config name="conf_rfc822msgIdData" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save RFC 822 Message-ID header</label>
+            <label locale="ja">C5: RFC 822 Message-ID ヘッダを保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-gmail-message-received/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-gmail-message-received/
+    </help-page-url>
+
+    <script><![CDATA[
+/**
+ * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
+ */
+
+/** 日時フォーマッター */
+const dateFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
+
+/**
+ * configs から必要な情報の取り出し
+ * @returns {Object} setting 設定
+ * @returns {string} setting.auth HTTP 認証設定
+ * @returns {Array} setting.labels ラベル一覧
+ */
+const prepare = () => {
+    const auth = configs.get('conf_auth');
+    let label = configs.get('conf_label');
+    let labels = [];
+    if (label !== null && label !== '') {
+        labels = label.split('\n')
+            .map(label => label.trim())
+            .filter(label => label !== '');
+    }
+    return {
+        auth,
+        labels
+    };
+};
+
+/**
+ * 追加されたメールの検索
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id Gmail Message ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {auth, labels} = prepare();
+    let labelIds = ['INBOX'];
+    if (labels.length !== 0) {
+        labelIds = getLabelIds(auth, labels);
+    }
+
+    // HTTP リクエスト数制限を考慮する
+    limit = Math.min(limit, httpClient.getRequestingLimit() - 2);
+    const messages = getMessages(auth, labelIds, limit, timestampLowerLimit);
+    logMessages(messages);
+    return messages;
+};
+
+/**
+ * メッセージ一覧のログ出力
+ * @param {Array} messages メッセージ一覧
+ */
+const logMessages = (messages) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(value) : value;
+    messages.forEach(msg => engine.log(JSON.stringify(msg, replacer)));
+};
+
+/**
+ * ラベルからラベル ID を取得する
+ * @param {String} auth 認証設定
+ * @param {Array<String>} labels ラベル一覧
+ * @return {Array<String>} ラベル ID の一覧
+ */
+function getLabelIds(auth, labels) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get('https://gmail.googleapis.com/gmail/v1/users/me/labels');
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `--- users.labels.list --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get labels. status: ${status}`;
+    }
+
+    const json = JSON.parse(responseJson);
+    let found = json.labels
+        .filter(label => labels.includes(label.name));
+    const foundLabels = found.map(label => label.name);
+    const notFoundLabels = labels.filter(label => !foundLabels.includes(label));
+    if (notFoundLabels.length > 0) {
+        const accessLog = `--- users.labels.list --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        // id が見つからない label がある場合、エラーをスロー
+        throw `label ids of ${notFoundLabels.join(', ')} not found`;
+    }
+    return found.map(label => label.id);
+}
+
+/**
+ * Gmail REST API にメール取得の GET リクエストを送信し、メッセージ一覧を返す
+ * @param {String} auth 認証設定
+ * @param {Array<String>} labelIds ラベル ID の一覧
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id Gmail Message ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+function getMessages(auth, labelIds, limit, timestampLowerLimit) {
+    let request = httpClient.begin()
+        .authSetting(auth)
+        .queryParam('maxResults', `${limit}`);
+    engine.log(`lavelIds: ${labelIds}`);
+    labelIds.forEach(labelId => {
+        request = request.queryParam('labelIds', labelId);
+    });
+    // 時刻は Sent が対象なので、余裕を持たせて、timestampLowerLimit の 1 日前の時刻から
+    // 単位はミリ秒ではなく秒
+    const q = `newer: ${Math.floor(timestampLowerLimit.addDays(-1).getTime() / 1000)}`;
+    engine.log(`q: ${q}`);
+    request = request.queryParam('q', q);
+    const response = request
+        .get('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+
+    // when error thrown
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `--- users.messages.list --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get messages. status: ${status}`;
+    }
+
+    const json = JSON.parse(responseJson);
+    if (json.messages === undefined || json.messages === null) {
+        // 該当メッセージが無い
+        engine.log("no messages");
+        return [];
+    }
+
+    return json.messages
+        .filter(msg => !engine.isProcessStarted(msg.id)) // 既にプロセス開始済みのものを除く
+        .map(msg => getMessage(auth, msg.id)) // id 以外の情報を取得
+        .filter(msg => !msg.timestamp.before(timestampLowerLimit)); // timestamp が下限より前のものを除く
+}
+
+/**
+ * Gmail REST API にメール取得の GET リクエストを送信し、internalDate 等を取得する
+ * @param auth {String} auth 認証設定
+ * @param id {String} メッセージ ID
+ * @return {Object} message メッセージ
+ * @returns {string} message.id Gmail Message ID
+ * @returns {timestamp} message.timestamp メール受信時刻
+ * @returns {string} message.rfc822msgId RFC 822 Message-ID
+ */
+function getMessage(auth, id) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .queryParam('format', 'metadata')
+        .get(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `--- users.messages.get --- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get message ${id}. status: ${status}`;
+    }
+
+    const json = JSON.parse(responseJson);
+    const msgIdHeader = json.payload.headers.find(h => h.name.toLowerCase() === 'message-id');
+    const rfc822msgId = msgIdHeader !== undefined ? msgIdHeader.value : '';
+    return {
+        id: json.id,
+        timestamp: new java.sql.Timestamp(Number(json.internalDate)),
+        rfc822msgId
+    };
+}
+]]>
+    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPUlEQVRYR8WXX0hTURzHv2dzy5bb
+        1HKKRH+gtx7K2izooXI+BVH41F+IglAJmhVICr2kgRG6DFRERXBpGIgkZA/Oeigir+VzIGQE1bTU
+        yXYdy90Tu+5u997dea9p3PO2nd+fz/md359zCXReRKv/76cPW4ysoYKAnARoCSj2gCCP16dYAMEM
+        QKYo6OuYhRsqHvnIarGtCjB7wlWELNSCohJAthajACIg6MAKmhxvmJ9r6awJECgrrSSEPgKwTaNj
+        uViYUnKncHyiI5N+RoC5clcbpaj6R8cSNULQXjDGVCvZUgQIlDn7CSHnN8O5YINSOlA4PnlBbjMN
+        YDNPnuZMIRISgMSdt2/myeW2KCVV4pxIAvDZbsS0kHCGAgdsdQ0w2HPBPvchMvpCMxexWmGrb4Sx
+        qBiRl8NgB31i3TBi2CdURwqg3NUCCo8gme8b5g0IK8q8R7C+BuC4NUFMJU7YG70gZnNSLnj3JuL6
+        yUXgdYwxNfHfPEC8yWSxht/iOi949Q7IMkmcccFFLHquI/ZtRhEip/oWtlacS9tjB/sQ7nwi/j+y
+        YuG2x5sVDxBwuy4RoE8soQTA71MOodaHWB4ZSh3IakWetwvG3XsVweJXEO5slexR4HKhn/HxALPu
+        0m6AXtUEkBASrsR80AlbQ7Mk5HIKJQCA9Dj8E9cSAK5PAErWA8AHg2VBLBbV5FQGwJTDzxxaBShz
+        zScHS8JcxitQdZcuoAhAseAYZ/KFCFC5WhoApQBRnV2AglyGCMDhZ1YtzrpdqgCxwA+w/b2wemoB
+        YlCMQ+zrF4Sf9sBWd1+yrw6g4QriAPMXz8C4cxdyH3fxDUq8loeeIdTWDPORY7A3tqgDyK5ANQkF
+        AN6ywQD7Ay/MzqOg0SiW7t1GdPIDv6UZAOIk1FCGEoDE+bYcd+PP1CS4pWDyxNoBRGWopREpASgl
+        glYASSNSasU7Rt+CmFL9fEMAA70Id7eJeaWtmK8E2TDKqfIg+9TZZOmtTH/m54DaMu0/AHtTqu3S
+        UAgLN66A+zWXUpUPIx5ANo7VHG1gX3kcxw3q+iARTqTrk0yA0PVR+j8ise5neSoSOn6YCBC6fpqJ
+        S023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg==
+    </icon>
+
+</service-task-definition>

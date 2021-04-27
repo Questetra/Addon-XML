@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-08-17</last-modified>
+<last-modified>2021-03-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Search Folder</label>
@@ -11,8 +11,8 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-folder-search/</help-page-url>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readonly">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (Root Folder if blank)</label>
@@ -23,12 +23,12 @@
     <label locale="ja">C3: 検索するフォルダの名称</label>
   </config>
   <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data Item that will save Folder ID</label>
-    <label locale="ja">C4: フォルダの ID を保存する文字型データ項目</label>
+    <label>C4: Data Item that will save Folder ID</label>
+    <label locale="ja">C4: フォルダの ID を保存するデータ項目</label>
   </config>
   <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>C5: String type data Item that will save Folder URL</label>
-    <label locale="ja">C5: フォルダの URL を保存する文字型データ項目</label>
+    <label>C5: Data Item that will save Folder URL</label>
+    <label locale="ja">C5: フォルダの URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -51,72 +51,57 @@ function main(){
   if((idData === null || idData === "") && (urlData === null || urlData === "")){
     throw "Neither of Data Items to save result are set.";
   }
-  const oauth = configs.get("conf_OAuth2");
+  const oauth2 = configs.get("conf_OAuth2");
 
-  // get OAuth token
-  let token;
-  token = httpClient.getOAuth2Token( oauth );
-  //const folderNameRep = folderName.replace(/['\\]/g,"\\$&");
-  //const q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '" + folderNameRep + "' and '" + parentFolderId + "' in parents";
-  const json = searchFolder(token,parentFolderId);
-  
-  let folderIdList = "";
-  let folderUrlList = "";
-  let folderCount = 0;
-  const folderNum = json.length;
-  for(let i = 0; i < folderNum; i++){
-    if(json[i].type === "folder" && json[i].name === folderName){
-      folderCount++;
-      if (folderCount > 1){
-        folderIdList += "\n";
-        folderUrlList += "\n";
-      }
-      folderIdList += json[i].id;
-      folderUrlList += "https://app.box.com/folder/" + json[i].id;
-    }
-  }
-  if (folderIdList === ""){
-    throw "Folder " + folderName + " doesn't exist.";
-  }
+  const {folderId, folderUrl} = searchFolder(oauth2,parentFolderId,folderName);
+
   //set ID to Data Item
   if (idData !== null) {
-        engine.setData(idData,folderIdList);
-     }
+    engine.setData(idData,folderId);
+  }
  
   //set URL to Data Item  
   if (urlData !== null) {
-        engine.setData(urlData, folderUrlList);
+    engine.setData(urlData, folderUrl);
   }
 }
+
 //search folder on box
-function searchFolder(token,parentFolderId){
+function searchFolder(oauth2,parentFolderId,folderName){
   const url = `https://api.box.com/2.0/folders/${parentFolderId}/items`;
   let marker = "";
-  let jsonRes = [];
-  let json;
   const limit = httpClient.getRequestingLimit();
   for(let count = 0; count < limit; count++) {
     const response = httpClient.begin()
-      .bearer(token)
+      .authSetting(oauth2)
       .queryParam("fields", "id,type,name")
       .queryParam("limit", "1000")
       .queryParam("usemarker","true")
       .queryParam("marker",marker)
       .get(url);
     const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString() + "\n";
+    const responseTxt = response.getResponseAsString();
+    engine.log(`status: ${status}`);
     if (status >= 300) {
-      const error = `Failed to search \n status: ${status}\n${responseTxt}`;
-      throw error;
+      engine.log(responseTxt);
+      throw "Failed to search";
     }
-    json = JSON.parse(responseTxt)
-    jsonRes = jsonRes.concat(json.entries);
-    engine.log(`status: ${status} \n ${responseTxt}`);
-    marker = json['next_marker'];
+    const json = JSON.parse(responseTxt)
+    const items = json.entries;
+
+    for(let i = 0; i < items.length; i++){
+      if(items[i].type === "folder" && items[i].name === folderName){
+        const url = `https://app.box.com/folder/${items[i].id}`;
+        return {
+          folderId : items[i].id,
+          folderUrl : url
+        };
+      }
+    }
+    marker = json.next_marker;
     if(marker === undefined || marker === '' || marker === null) {
-      return jsonRes;
+      throw `Folder ${folderName} doesn't exist.`;
     }
-    
   }
   throw "Too many folders and files are in the specified folder";
 }

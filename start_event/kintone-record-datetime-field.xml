@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <label>Start: kintone: Record's Datetime Field</label>
+    <label locale="ja">開始: kintone: レコード 日時フィールド</label>
+    <last-modified>2021-04-09</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <summary>Start Process when time in Record's datetime field has passed, on a kintone App. It is able to specify
+        record "Created datetime" "Updated datetime" as datetime field.
+    </summary>
+    <summary locale="ja">kintone アプリで、レコードの日時フィールドの時刻を経過すると、プロセスが開始します。日時フィールドとして、「作成日時」「更新日時」を指定することも可能です。</summary>
+    <configs>
+        <config name="conf_auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Token is set</label>
+            <label locale="ja">C1: API トークンを設定した認証設定</label>
+        </config>
+        <config name="conf_basic" required="false" form-type="OAUTH2">
+            <label>C2: Basic Auth Setting (required if enabled on Kintone)</label>
+            <label locale="ja">C2: Basic 認証設定（kintone で設定されている場合のみ）</label>
+        </config>
+        <config name="conf_domain" required="true" form-type="TEXTFIELD">
+            <label>C3: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+            <label locale="ja">C3: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+        </config>
+        <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
+            <label>C4: Guest Space ID (required if the App is in a Guest Space)</label>
+            <label locale="ja">C4: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+        </config>
+        <config name="conf_appId" required="true" form-type="TEXTFIELD">
+            <label>C5: App ID</label>
+            <label locale="ja">C5: アプリ ID</label>
+        </config>
+        <config name="conf_datetimeField" required="true" form-type="TEXTFIELD">
+            <label>C6: Field Code of Datetime Field to be checked</label>
+            <label locale="ja">C6: チェック対象とする日時フィールドのフィールドコード</label>
+        </config>
+        <config name="conf_query" required="false" form-type="TEXTAREA">
+            <label>C7: Search Query</label>
+            <label locale="ja">C7: 検索クエリ</label>
+        </config>
+        <config name="conf_recordIdData" required="true" form-type="SELECT"
+                select-data-type="STRING_TEXTFIELD">
+            <label>C8: Data item to save Record ID</label>
+            <label locale="ja">C8: レコード ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C9: Data item to save Datetime data</label>
+            <label locale="ja">C9: 日時データを保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>
+        https://support.questetra.com/bpmn-icons/start-event-kintone-record-datetime-field/
+    </help-page-url>
+    <help-page-url locale="ja">
+        https://support.questetra.com/ja/bpmn-icons/start-event-kintone-record-datetime-field/
+    </help-page-url>
+
+    <script><![CDATA[
+/**
+ * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
+ */
+
+/** 日時フォーマッター */
+const datetimeFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
+/**
+ * @param {string} str 日時文字列
+ * @return {timestamp} java.sql.Timestamp オブジェクト
+ */
+const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str).getTime());
+
+/**
+ * configs から必要な情報の取り出し
+ * @return {object} result 設定情報
+ * @return {string} result.appId アプリ ID
+ * @return {string} result.apiUrl API の URL
+ * @return {string} result.datetimeField チェック対象の日時データのフィールドコード
+ * @return {string} result.query 検索条件
+ * @return {string} result.apiToken API トークン
+ * @return {string} result.basic Basic 認証設定
+ */
+const prepare = () => {
+    const auth = configs.get("conf_auth");
+    const basic = configs.get("conf_basic");
+    const domain = configs.get("conf_domain");
+    const guestSpaceId = configs.get("conf_guestSpaceId");
+    const appId = configs.get("conf_appId");
+    const datetimeField = configs.get("conf_datetimeField");
+    const query = configs.get("conf_query");
+
+    checkAppId(appId);
+    const apiUri = determineApiUri(domain, guestSpaceId);
+
+    const apiToken = httpClient.getOAuth2Token(auth);
+
+    return {
+        appId,
+        apiUri,
+        datetimeField,
+        query,
+        apiToken,
+        basic
+    };
+};
+
+/**
+ * kintone REST API のレコード取得の URI を決定する
+ * ドメインが空、または kintone のドメインとして不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ * @param {String} guestSpaceId  ゲストスペース ID
+ * @return {String} apiUri  API の URI
+ */
+const determineApiUri = (domain, guestSpaceId) => {
+    checkDomain(domain);
+    let apiUri;
+    if (guestSpaceId === "" || guestSpaceId === null) {
+        apiUri = `https://${domain}/k/v1/`;
+    } else {
+        if (!isValidId(guestSpaceId)) {
+            throw "Invalid Guest Space ID.";
+        }
+        apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
+    }
+    return apiUri;
+};
+
+/**
+ * ドメインが空または不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ */
+const checkDomain = (domain) => {
+    if (domain === "" || domain === null) {
+        throw "Domain is empty.";
+    }
+    const reg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
+    if (!reg.test(domain)) {
+        throw "Invalid Kintone domain.";
+    }
+};
+
+/**
+ * アプリ ID が空または不正な文字列であればエラーとする
+ * @param {String} appId  アプリ ID
+ */
+const checkAppId = (appId) => {
+    if (appId === "" || appId === null) {
+        throw "App ID is empty.";
+    }
+    if (!isValidId(appId)) {
+        throw "Invalid App ID.";
+    }
+};
+
+/**
+ * ID が有効か（自然数か）を判定する
+ * @param {String} idString  ID の文字列
+ * @return {Boolean}  有効な ID かどうか
+ */
+const isValidId = (idString) => {
+    const idReg = new RegExp('^[1-9][0-9]*$');
+    return idReg.test(idString);
+};
+
+/**
+ * レコードの検索
+ * @param limit レコード数の上限
+ * @param timestampLowerLimit timestamp の下限
+ * @return {Array} records レコード一覧
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {
+        appId,
+        apiUri,
+        datetimeField,
+        query,
+        apiToken,
+        basic
+    } = prepare();
+
+    const records = getRecords(apiUri, apiToken, basic, {
+        appId,
+        datetimeField,
+        query,
+        limit,
+        timestampLowerLimit
+    });
+    logRecords(records);
+    return records;
+};
+
+/**
+ * レコードのログ出力
+ * @param {Array} records レコード一覧
+ */
+const logRecords = (records) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
+    records.forEach(record => {
+        engine.log(JSON.stringify(record, replacer));
+    });
+};
+
+/**
+ * kintone REST API にレコード取得の GET リクエストを送信する
+ * @param {String} apiUri  API の URI
+ * @param {String} apiToken  API トークン
+ * @param {String} basic  Basic 認証設定
+ * @param {Object} params API リクエストのパラメータに使用する情報が格納されたオブジェクト
+ * @param {string} params.appId アプリ ID
+ * @param {string} params.datetimeField 日時データのフィールドコード
+ * @param {string} params.query 検索条件
+ * @param {number} params.limit 結果件数の上限
+ * @param {timestamp} params.timestampLowerLimit timestamp の下限
+ * @return {Array} records レコード一覧
+ * @return {string} records[].id レコードID + 日時データ
+ * @return {string} records[].recordId レコードID
+ * @return {timestamp} records[].timestamp レコードの日時データ
+ */
+const getRecords = (apiUri, apiToken, basic, {
+    appId,
+    datetimeField,
+    query,
+    limit,
+    timestampLowerLimit
+}) => {
+    const getRecordsUri = `${apiUri}records.json`;
+    engine.log(`API URI: ${getRecordsUri}`);
+    engine.log(`appId: ${appId}`);
+
+    let request = httpClient.begin()
+        .header("X-Cybozu-API-Token", apiToken)
+        .queryParam('app', appId);
+    if (basic !== "" && basic !== null) {
+        request = request.authSetting(basic);
+    }
+
+    let queryString = `${datetimeField} >= "${datetimeFormatter.format(timestampLowerLimit)}" and ${datetimeField} <= NOW()`;
+    if (query !== '') {
+        queryString = `(${query}) and ${queryString}`;
+    }
+    queryString = `${queryString} order by ${datetimeField} desc, $id desc limit ${limit}`;
+    engine.log(`query: ${queryString}`);
+    request = request.queryParam('query', queryString);
+    request = request.queryParam('fields[0]', '$id');
+    request = request.queryParam('fields[1]', datetimeField);
+    const response = request.get(getRecordsUri);
+
+    //when error thrown
+    const responseJson = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
+        engine.log(accessLog);
+        throw `Failed to get records. status: ${status}`;
+    }
+    const json = JSON.parse(responseJson);
+
+    // レコードオブジェクトを整形して返す
+    const formatRecord = (record) => {
+        const recordId = String(record['$id']['value']);
+        const timestamp = parseDatetime(record[datetimeField]['value']);
+        // recordId と timestamp の組み合わせを id に。日時データの変更に対応するため。
+        const id = `${recordId}_${timestamp.getTime()}`;
+        return {
+            id,
+            recordId,
+            timestamp
+        };
+    };
+
+    return json.records.map(formatRecord);
+};
+]]>
+    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
+        bVbd6nSDglFwKkOrY+zDdAzBB1mHDoZSX/wAqw9WnPRBNzuHMJljsuksbPPBiQ4RpThlMLGNL+Jg
+        iiAbaARfrNqa2ObjNuQm9y/n3N7b3JvcNI6OnKfk/L9+9/f/OOcw1HmxWuMPtc1R/I3KWonwAYCl
+        AFoBvDRh/wzAAwC3dIaBXFo9P+fvIbUW31MCyLS3zi7qcg8YthHgr9FpDoQ+j1Q4FBp88LiaTVUA
+        o+3ztxHRYQYEawns1CEgyxj7LDx4r8/N3hXAWDTyIwFd/yWw04YBx5ti8e2VfFUEMBqddxpg66cj
+        +KQPOhOO3d9QAZx9azq/vBYmbAzwnIPo+PR+ucMbY12lNWEB4NWukRx3KzhpVguIdFBipCo+z4LF
+        KN6946rDC9PLChGzOywAYysj3xFDd5ml1wel52t4P1wjRNqf/VC/2QtoeZuq/NZKKPu+BZsRBiVH
+        oH7ZjcLtvyoCYYQjTdfiu7hQAOBDJhhSEs4+967qQGD3V2D+gM0R5cYxfngvtCsXwcLNCB7sg2cR
+        n032Vbh5HernO0DZtE3AgFw2o87kw0oASLZHOiXCr6VanshChH7qB5hLpxIhs7UD/p1fQF6y3JXy
+        wo0Ysj1byuQ6w8bmwfgp4X00GvkFwKZSrdDR3yBF3gB0HUyxzyFSs4AkgZJPIb36GiidAgs1ij1r
+        FYugTEqkJLWmrYwFACfCsfhmE8DNiflu2YeOnbVopfQYmF8RMsqpYI1Nxu/ECNjMlw0bTQONZ4WM
+        Uy70ZVmIUuveqVS8t8Kx+DITQLLkYBFGnAHP4jYLEGUzyJ8/iYbOListvNhY8wQAAPrwI2gDl9Hw
+        6WYb5elP3oP+9IkzDc/CsXizCYCcUicAXvVULAJkqLKAIpzy9uRpEl8dmgE9MQJp1iu1AEA4Fjcq
+        bDQaKQMQ/OGMvbh42/HgvgaD/tQYtIFLkN+OQuIseH3GvoMVvufCgA1AWQrkFe9D6f0eLBiayLHB
+        gNmSvBVzR3rh69gAz8I3J1PlAKDF/oDauxMgvWoKyorQ4FlCoHs/fB+tnxw8stegO9gIPcnpboHZ
+        FRycWZj6k4dQ921H8d4/zsDmf1sRlrVhqZU0ey58H3dCer0Vctu7FgtWDQjuCXpiGPn+06L98hdO
+        uQU29yfbsNIgqmTNB45y6GdrLtgA8E68+jvUA2LCTrlsg8htFFf0InkQ2HMQvtVroQ8PQWqZK7qB
+        j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
+        mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
+    </icon>
+
+</service-task-definition>

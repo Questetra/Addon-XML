@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Upload File</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-<last-modified>2020-07-02</last-modified>
+<last-modified>2021-04-19</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDrive の指定フォルダにファイルをアップロードします。</summary>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_uploadedFile" required="true" form-type="SELECT" select-data-type="FILE">
-    <label>C2: File type data item whose attached files will be uploaded</label>
-    <label locale="ja">C2: アップロードするファイルが保存されているファイル型データ項目</label>
+    <label>C2: Data item whose attached files will be uploaded</label>
+    <label locale="ja">C2: アップロードするファイルが保存されているデータ項目</label>
   </config>
   <config name="conf_folderUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Folder URL files will be uploaded (Root folder if blank)</label>
     <label locale="ja">C3: ファイルをアップロードするフォルダの URL (指定がない場合は、ルートフォルダ)</label>
   </config>
   <config name="conf_fileUrl" required="false" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data item to save uploaded file URLs</label>
-    <label locale="ja">C4: ファイル URL を保存する文字型データ項目</label>
+    <label>C4: Data item to save uploaded file URLs</label>
+    <label locale="ja">C4: ファイル URL を保存するデータ項目</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/onedrive-file-upload/</help-page-url>
@@ -47,7 +47,6 @@ function main(){
   const folderUrl = retrieveFolderUrl();
   const urlDataDef = configs.getObject("conf_fileUrl");
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const token = httpClient.getOAuth2Token( oauth2 );
   const files = engine.findData( configs.getObject("conf_uploadedFile") );
   if (files === null) {
     setData(urlDataDef,[""]);
@@ -57,17 +56,17 @@ function main(){
   //// == 演算 / Calculating ==
 
   fileCheck(files, urlDataDef, folderUrl);
-  const folderInfo = getFolderInfoByUrl( folderUrl, token );
+  const folderInfo = getFolderInfoByUrl( folderUrl, oauth2 );
   let uploadedFileUrl = [];
 
   for(let i = 0; i< files.size(); i++){
-    engine.log(files.get(i).getName());
+    engine.log(`Uploading: ${files.get(i).getName()}`);
     if(files.get(i).getLength() > LIMIT_SIZE){
       //over 4MB
-      processLargeFile(token,files.get(i),folderInfo,uploadedFileUrl);
+      processLargeFile(oauth2,files.get(i),folderInfo,uploadedFileUrl);
     }else{
       //under 4MB
-      upload(token,files.get(i),folderInfo,uploadedFileUrl);
+      upload(oauth2,files.get(i),folderInfo,uploadedFileUrl);
     }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
@@ -80,17 +79,20 @@ function main(){
   */
 function retrieveFolderUrl() {
   const folderUrlDef = configs.getObject( "conf_folderUrl" );
-  let folderUrl = configs.get( "conf_folderUrl" );
-  if ( folderUrlDef !== null ) {
+  let folderUrl = "";
+  if ( folderUrlDef === null ) {
+    folderUrl = configs.get( "conf_folderUrl" );
+  }else{
     folderUrl = engine.findData( folderUrlDef );
   }
   return folderUrl;
 }
 
 /**
-  * アップロードしようとするファイルの数・サイズが適切かどうかチェックする
+  * アップロードしようとするファイルの名前・数・サイズが適切かどうかチェックする
   * ファイル数、通信制限をチェック
   * 通信数=4MB以下のファイルの数 + <4MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 1)
+  * その後ファイル名をチェック
   * @param {Array<File>} files  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
   * @param {String} folderUrl  アップロード先フォルダの URL
@@ -98,10 +100,9 @@ function retrieveFolderUrl() {
 function fileCheck(files,urlDataDef,folderUrl){
   const fileNum = files.size(); //number of files
   fileNumCheck(urlDataDef,fileNum);
-
   let requestNum = 0;
   for (let i = 0; i < fileNum; i++){
-    let size = files.get(i).getLength();
+    const size = files.get(i).getLength();
     if(size > LIMIT_SIZE){
       requestNum += (Math.ceil(size / PACKET_MAX_SIZE) + 1);
     }else{
@@ -114,6 +115,7 @@ function fileCheck(files,urlDataDef,folderUrl){
   if(requestNum > httpClient.getRequestingLimit()){
     throw "Necessary HTTP requests exceeds the limit.";
   }
+  checkFileNameOverlap(files);
 }
 
 /**
@@ -131,13 +133,28 @@ function fileNumCheck(dataDef,fileNum){
 }
 
 /**
+ * アップロードするファイルの中に同じファイル名のものが2つ以上あればエラー
+ * @param {Array<File>}  アップロードしようとするファイルの配列
+ */
+function checkFileNameOverlap(files) {
+  const fileNames = [];
+  const fileNum = files.size();
+  for (let i = 0; i < fileNum; i++) {
+    if (fileNames.includes(files[i].getName())) {
+      throw "Two or more files to upload have the same name.";
+    }
+    fileNames[i] = files[i].getName();
+  }
+}
+
+/**
   * フォルダのURLからフォルダ情報（ドライブIDとフォルダID）を取得し、
   * オブジェクトで返す（URLが空の場合はドライブIDをme/drive、フォルダIDをrootにする）
   * @param {String} folderUrl  フォルダのURL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定情報
   * @return {Object} folderInfo  フォルダ情報 {driveId, folderId}
   */
-function getFolderInfoByUrl( folderUrl, token ) {
+function getFolderInfoByUrl( folderUrl, oauth2 ) {
   let folderInfo = {driveId: "me/drive", folderId: "root"};
   if ( folderUrl !== "" && folderUrl !== null ) {
     // 分割代入
@@ -146,7 +163,7 @@ function getFolderInfoByUrl( folderUrl, token ) {
       parentReference: {
         driveId
       }
-    } = getObjBySharingUrl( folderUrl, token );
+    } = getObjBySharingUrl( folderUrl, oauth2 );
     folderInfo = {driveId: `drives/${driveId}`, folderId: id};
   }
   return folderInfo;
@@ -156,32 +173,29 @@ function getFolderInfoByUrl( folderUrl, token ) {
   * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
   * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定情報
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
-function getObjBySharingUrl( sharingUrl, token ) {
+function getObjBySharingUrl( sharingUrl, oauth2 ) {
   if (sharingUrl === "" || sharingUrl === null) {
-    throw `Sharing URL is empty.`;
+    throw "Sharing URL is empty.";
   }
 
   // encoding sharing URL
   const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
   // preparing for API Request
-  let apiRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-  apiRequest = apiRequest.bearer( token );
-  // Access to the API (POST, GET, PUT, etc)
-  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
-  const httpStatus = response.getStatusCode();
-  const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-  engine.log(accessLog);
-  if (httpStatus >= 300) {
-    const error = `Failed to get drive item. status: ${httpStatus}`;
-    throw error;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status >= 300) {
+    engine.log(`status: ${status}`);
+    engine.log(responseStr);
+    throw "Failed to get drive item.";
   }
-  const responseObj = JSON.parse( response.getResponseAsString() );
+  const responseObj = JSON.parse(responseStr);
   return responseObj;
 }
 
@@ -201,43 +215,46 @@ function encodeSharingUrl( sharingUrl ) {
 
 /**
   * ファイルをアップロードする。一回につき一つのみ。
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定情報
   * @param {File} file  アップロードするファイル
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
-function upload(token,file,{
+function upload(oauth2,file,{
   driveId,
   folderId
 },uploadedFileUrl){
-  const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
+  const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content?@microsoft.graph.conflictBehavior=fail`;
   let response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(file)
     .put(url);
-  //when error thrown
+
   const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  const accessLog = `---PUT request--- ${status}\n${responseStr}\n`;
+  
   if (status >= 300) {
-    engine.log(accessLog);
-    throw `Failed to upload. status: ${status}`;
+    //when error thrown
+    engine.log(`Status: ${status}`);
+    engine.log(responseStr);
+    throw "Failed to upload";
   }
-  outputDataSet(status,responseStr,uploadedFileUrl);
+  engine.log("Succeeded to upload.");
+  outputDataSet(responseStr,uploadedFileUrl);
 }
 
 /**
   * 4MBを超えるファイルのアップロード処理を行う
-  * @param {String} token  OAuth2 のトークン
+  * @param {String} oauth2  OAuth2 設定情報
   * @param {File} file  アップロードするファイル
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
-function processLargeFile(token,file,{
+function processLargeFile(oauth2,file,{
   driveId,
   folderId
 },uploadedFileUrl){
-  const upUrl = createSession(token,file.getName(),{
+  const upUrl = createSession(oauth2,file.getName(),{
     driveId,
     folderId
   });
@@ -252,40 +269,41 @@ function processLargeFile(token,file,{
 
 /**
   * アップロード用のセッションを作成する
-  * @param {String} token  OAuth2 のトークン
+  * @param {String} oauth2  OAuth2 設定情報
   * @param {String} fileName  アップロードするファイルのファイル名
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
   * @return {String}  アップロード先 URL
   */
-function createSession(token,fileName,{
+function createSession(oauth2,fileName,{
   driveId,
   folderId
 }){
   const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(fileName)}:/createUploadSession`;
   const body = {
     "item": {
-      "@microsoft.graph.conflictBehavior": "replace",
+      "@microsoft.graph.conflictBehavior": "fail",
       "name" : fileName
     }
   };
   let response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(JSON.stringify(body), "application/json; charset=UTF-8")
     .post(url);
 
   const status = response.getStatusCode();
-  const jsonStr = response.getResponseAsString();
-  const accessLog = `---POST request--- ${status}\n${jsonStr}\n`;
-  engine.log(accessLog);
+  const responseStr = response.getResponseAsString();
+  
   if(status >= 300){
-    throw `Failed to create upload session. status: ${status}`;
+    engine.log(`Status: ${status}`);
+    engine.log(responseStr);
+    throw "Failed to create upload session";
   }
-  return JSON.parse(jsonStr).uploadUrl;
+  return JSON.parse(responseStr).uploadUrl;
 }
 
 /**
   * 4MBを超えるファイルについて、各部分のアップロードを実行する
-  * @param {String} upUrl  アップロードするファイルのファイル名
+  * @param {String} upUrl  アップロード先 URL
   * @param {Number} range  これまでにアップロードしたサイズ
   * @param {ByteArrayWrapper} packet  アップロードするバイナリ
   * @param {Number} fileSize  アップロードするファイルのサイズ
@@ -302,28 +320,27 @@ function uploadLarge(upUrl,range,packet,fileSize,uploadedFileUrl){
 
   const status = sending.getStatusCode();
   const responseStr = sending.getResponseAsString();
-  const accessLog = `---PUT request--- ${status}\n${responseStr}\n`;
+  
   if(status >= 300){
-    engine.log(accessLog);
-    throw `Failed to upload. status: ${status}`;
+    engine.log(`Status: ${status}`);
+    engine.log(responseStr);
+    throw "Failed to upload";
   }else if(status === 202){
     range += packetSize;
     return range;
   }else{
-    outputDataSet(status,responseStr,uploadedFileUrl);
+    engine.log("Succeeded to upload.");
+    outputDataSet(responseStr,uploadedFileUrl);
     return range;
   }
 }
 
 /**
-  * ログを出力し、アップロードしたデータのURLを配列にセットする。
-  * @param {Number} status  送信時のステータスコード
+  * アップロードしたデータのURLを配列にセットする。
   * @param {String} responseStr  送信時のレスポンスをテキスト出力したもの
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
-function outputDataSet(status,responseStr,uploadedFileUrl){
-  const accessLog = `---PUT request--- ${status}\n${responseStr}\n`;
-  engine.log(accessLog);
+function outputDataSet(responseStr,uploadedFileUrl){
   const json = JSON.parse(responseStr);
   uploadedFileUrl.push(json.webUrl);
 }

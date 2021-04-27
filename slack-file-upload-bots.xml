@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2019-03-22</last-modified>
+<last-modified>2021-04-26</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>1</engine-type>
+<engine-type>2</engine-type>
 <label>Slack: Upload File (Bots)</label>
 <label locale="ja">Slack: ファイルアップロード (Bots)</label>
 <summary>Upload files to Slack with Bots.</summary>
 <summary locale="ja">Bots 機能を使って Slack にファイルをアップロードします。</summary>
 <configs>
-  <config name="Token" required="true">
-    <label>C1: Slack Bot Token</label>
-    <label locale="ja">C1: Slack Bot のトークン</label>
+  <config name="Token" deprecated="true">
+    <label>C1-deprecated: Slack Bot Token</label>
+    <label locale="ja">C1-deprecated: Slack Bot のトークン</label>
+  </config>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://slack.com/oauth2/chat:write,fiels:write">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="ChannelName" required="true">
     <label>C2: Slack Channel Name</label>
@@ -27,41 +31,63 @@
 main();
 function main() {
   const token = configs.get("Token");
+  const oauth2 = configs.get("conf_OAuth2");
   const channel = configs.get("ChannelName");
-  const file = engine.findDataByNumber(configs.get("File"));
-//  const comment = configs.get("Comment");
+  const filesDef = configs.getObject("File");
 //check whether files exist or not
-  if (file == null){
+
+
+  const files = engine.findData( filesDef );
+  if (files === null){
     engine.log ("No File to upload");
     return;
   }
   //check whether number of files is under the limit
-  const numOfFiles = file.length;
+  const numOfFiles = files.length;
   if (numOfFiles > httpClient.getRequestingLimit()){
     throw "Number of Files is over the limit.";
   }
   for (let i = 0; i < numOfFiles; i++){
-    upload(token,file[i],channel);
+    upload(token,oauth2,files[i],channel);
   }
 }
-//Upload and output log process
-function upload (token,file,channel){ 
-  let response = httpClient.begin()
-    .bearer(token)
-    .multipart('file',file)
-    .multipart('channels',channel)
-    .post("https://slack.com/api/files.upload");
-    
+/**
+  * Upload File
+  * @param {String} oauth2
+  * @param {String} token 
+  * @param {QfileView} file
+  * @param {String} channel
+  */  
+function upload (token,oauth2,file,channel){ 
+  let request = httpClient.begin()
+  if ( oauth2 !== "" && oauth2 !== null ){
+    request = request.authSetting(oauth2);
+  }else{
+    request = request.bearer(token);
+  } 
+  request = request.multipart('file',file);
+  request = request.multipart('channels',channel);  
+  const response = request.post("https://slack.com/api/files.upload"); 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  const responseJson = JSON.parse(responseTxt);
-  if (responseJson.ok == false ) {
-    const error = file.getName() + "\nFailed to upload \n" + responseTxt;
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw `Failed to upload. status: ${status}`;
+  }
+  if (responseJson.ok !== true) {
+    const filename = file.getName();
+    const error = `Failed to upload\n filename: ${filename}`;
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log(file.getName());
-  engine.log("status:" + status);
-  engine.log(responseTxt);
+
 }
 ]]></script>
 <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAE7UlEQVRYR8VXbUybVRR+bgsFSvka

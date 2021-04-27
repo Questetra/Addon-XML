@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-10-03</last-modified>
+<last-modified>2020-10-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Create File</label>
@@ -10,13 +10,13 @@
 <help-page-url>https://support.questetra.com/addons/google-sheets-file-create/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/google-sheets-file-create/</help-page-url>
 <configs>
-  <config name="Conf_UserID" required="true" form-type="QUSER">
+  <config name="Conf_User" required="true" form-type="QUSER">
     <label>C1: User who connects to Google Drive</label>
     <label locale="ja">C1: Google ドライブ に接続するユーザ</label>
   </config>
-  <config name="Conf_ParentFolderId" el-enabled="true">
-    <label>C2: Parent Folder ID(When empty,create in My Drive root)</label>
-    <label locale="ja">C2: 作成するファイルの親フォルダの ID (空白の場合マイドライブのルートに作成されます)</label>
+  <config name="Conf_ParentFolderId" form-type="SELECT" editable="true" select-data-type="STRING_TEXTFIELD">
+    <label>C2: Parent Folder ID (My Drive root if blank)</label>
+    <label locale="ja">C2: 親フォルダの ID (指定がない場合、マイドライブのルートフォルダ)</label>
   </config>
   <config name="Conf_FileName" required="true" el-enabled="true">
     <label>C3: File Name</label>
@@ -27,36 +27,39 @@
     <label locale="ja">C4: 最初のシートのタイトル</label>
   </config>
   <config name="Conf_FileIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C5: STRING Data Item that will save Spreadsheet ID</label>
-    <label locale="ja">C5: 作成したスプレッドシートの ID を保存する文字型データ項目</label>
+    <label>C5: String type data item to save file ID of Spreadsheet</label>
+    <label locale="ja">C5: スプレッドシートのファイル ID を保存する文字型データ項目</label>
   </config>
   <config name="Conf_WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>C6: STRING Data Item that will save web view url of Spreadsheet</label>
-    <label locale="ja">C6: 作成したスプレッドシートの表示 URL を保存する文字型データ項目</label>
+    <label>C6: String type data item to save web view url of Spreadsheet</label>
+    <label locale="ja">C6: スプレッドシートの表示 URL を保存する文字型データ項目</label>
   </config>
 </configs>
 
 <script><![CDATA[
 main();
 function main() {
-  const parentFolderId = configs.get("Conf_ParentFolderId");
+  const parentFolderIdDef = configs.getObject("Conf_ParentFolderId");
+  let parentFolderId = configs.get("Conf_ParentFolderId");
+  if (parentFolderIdDef !== null) {
+    parentFolderId = engine.findData(parentFolderIdDef);
+  }
   const fileName = configs.get("Conf_FileName");
-  if (fileName == "" || fileName == null) {
+  if (fileName === "" || fileName === null) {
     throw "File Name is blank";
   }
   const sheetTitle = configs.get("Conf_SheetTitle");
-  if (sheetTitle == "" || sheetTitle == null) {
+  if (sheetTitle === "" || sheetTitle === null) {
     throw "Sheet Title is blank";
   }
   if (sheetTitle.length > 100) {
     throw "Sheet Title should be 100 characters or less";
   }
-  const userId = configs.get("Conf_UserID");
-  const quser = quserDao.findById(parseInt(userId));
-  if (quser == null) {
-    throw "User not found:" + userId;
+  const quser = configs.getObject('Conf_User');
+  if (quser === null) {
+    throw "User not found";
   }
-  engine.log("User Name:" + quser.getName());
+  engine.log(`User Name: ${quser.getName()}`);
   
   // get OAuth token
   let token;
@@ -66,83 +69,104 @@ function main() {
     throw "This User has not connected with Google Drive."
   }
   
-  const json = createFile(token, parentFolderId, fileName);
+  const {id, webViewLink} = createFile(token, parentFolderId, fileName);
   
-  // get spreadsheetId
-  const fileId = json["id"];
- 
-  updateSheetTitle(token, fileId, sheetTitle);
+  updateSheetTitle(token, id, sheetTitle);
   
-  setData("Conf_FileIdItem", json, "id");
-  setData("Conf_WebViewUrlItem", json, "webViewLink");
+  setData("Conf_FileIdItem", id);
+  setData("Conf_WebViewUrlItem", webViewLink);
 }
 
-// save Data to process data
-function setData(configName, json, property) {
-  const item = configs.get(configName);
-  if (item == null || item == "") {
+/**
+  * データ項目に出力する
+  * @param {ProcessDataDefinitionView} configName  データ項目の ProcessDataDefinitionView
+  * @param {String} data  出力する文字列
+  */
+function setData(configName, data) {
+  const def = configs.getObject(configName);
+  if (def === null) {
     return;
   }
-  const data = json[property];
-  engine.setDataByNumber(item, data);
+  engine.setData(def,  data);
 }
 
-// create spreadsheet on google drive
+/**
+  * google スプレッドシートを親フォルダに作成する
+  * @param {String} token  OAuth2 のトークン
+  * @param {String} parentFolderId  親フォルダ
+  * @param {String} fileName  ファイル名
+  * @return {Object} createFile  スプレッドシートのファイル IDと表示 URLを格納した JSON オブジェクト
+  *   プロパティ： {String} id スプレッドシートのファイル ID
+  *                {String} webViewLink スプレッドシートの表示 URL
+  */
 function createFile(token, parentFolderId, fileName) {
-  let jsonRes = {};
-  jsonRes["mimeType"] = "application/vnd.google-apps.spreadsheet";
+  let jsonReq = {};
+  jsonReq["mimeType"] = "application/vnd.google-apps.spreadsheet";
   if (parentFolderId !== "" && parentFolderId !== null){
-    jsonRes["parents"] = [ parentFolderId + '' ];
+    jsonReq["parents"] = [ String(parentFolderId) ];
   }
-  jsonRes["name"] = fileName + '';
+  jsonReq["name"] = String(fileName);
   
   const url = 'https://www.googleapis.com/drive/v3/files/';
   const response = httpClient.begin()
     .bearer(token)
     .queryParam("fields", "id, webViewLink")
     .queryParam("supportsAllDrives", "true")
-    .body(JSON.stringify(jsonRes), "application/json; charset=UTF-8")
+    .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  if (status >= 300) {
-    const error = "Failed to create \n status:" + status + "\n" + responseTxt
+  
+  engine.log(`status of file create: ${status}`);
+  if (status !== 200) {
+    const error = `Failed to create \n status: ${status}`;
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log("status of file create:" + status);
-  engine.log(responseTxt);
   
-  jsonRes = JSON.parse(responseTxt);
-  return jsonRes;
+  const jsonRes = JSON.parse(responseTxt);
+  const res = {
+    id : jsonRes["id"], 
+    webViewLink : jsonRes["webViewLink"]
+    }
+  return res;
 }
 
-// update sheet title on google drive
+/**
+  * google スプレッドシートのシート名を更新する
+  * @param {String} token  OAuth2 のトークン
+  * @param {String} fileId  ファイルID
+  * @param {String} sheetTitle  シート名
+  */
 function updateSheetTitle(token, fileId, sheetTitle) {
   
-  let jsonRes = {};
-  jsonRes.requests = [];
-  jsonRes.requests[0] = {};
-  jsonRes.requests[0].updateSheetProperties = {};
-  jsonRes.requests[0].updateSheetProperties.fields = "title";
-  jsonRes.requests[0].updateSheetProperties.properties = {};
-  jsonRes.requests[0].updateSheetProperties.properties.sheetId = 0;
-  jsonRes.requests[0].updateSheetProperties.properties.title = sheetTitle;
+  let jsonReq = {
+    requests: []
+  };
   
-  const url = "https://sheets.googleapis.com/v4/spreadsheets/"+ fileId + ":batchUpdate";
+  jsonReq.requests[0] = {
+    updateSheetProperties: {
+      fields: 'title',
+      properties: {
+        sheetId: 0,
+        title: sheetTitle
+      }
+    }
+  };
+  
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}:batchUpdate`;
   const response = httpClient.begin()
     .bearer(token)
-    .body(JSON.stringify(jsonRes), "application/json")
+    .body(JSON.stringify(jsonReq), "application/json")
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  if (status >= 300) {
-    const error = "Failed to update sheet title \n status:" + status + "\n" + responseTxt
+  engine.log(`status of sheet title update: ${status}`);
+  if (status !== 200) {
+    const error = `Failed to update sheet title \n status: ${status}`;
+    engine.log(responseTxt);
     throw error;
   }
-  engine.log("status of sheet title update:" + status);
-  engine.log(responseTxt);
-  
-  jsonRes = JSON.parse(responseTxt);
 }
 
 ]]></script>

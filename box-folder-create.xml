@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-07-27</last-modified>
+<last-modified>2021-03-19</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Folder</label>
@@ -13,8 +13,8 @@
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2"
    oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (Root Folder if blank)</label>
@@ -25,12 +25,12 @@
     <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
   <config name="FolderIdItem" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data Item that will save Folder ID</label>
-    <label locale="ja">C4: フォルダ ID を保存する文字型データ項目</label>
+    <label>C4: Data Item that will save Folder ID</label>
+    <label locale="ja">C4: フォルダ ID を保存するデータ項目</label>
   </config>
   <config name="WebViewUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>C5: String type data Item that will save Folder URL</label>
-    <label locale="ja">C5: フォルダ URL を保存する文字型データ項目</label>
+    <label>C5: Data Item that will save Folder URL</label>
+    <label locale="ja">C5: フォルダ URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -42,10 +42,10 @@ function main(){
 
   const parentFolderId = configs.get("ParentFolderId");
   
-  // get OAuth token
-  const token = httpClient.getOAuth2Token(configs.get("conf_OAuth2"));
+  // get OAuth2 Setting
+  const oauth2 = configs.get("conf_OAuth2");
 
-  const newFolderId = createFolder(token, parentFolderId, newFolderName);
+  const newFolderId = createFolder(oauth2, parentFolderId, newFolderName);
 
   const IdData = configs.get("FolderIdItem");
   const UrlData = configs.get("WebViewUrlItem");
@@ -57,43 +57,40 @@ function main(){
   }
 }
 
-
-
 /**
   * 新しいフォルダのフォルダ名をチェックする。（サポートされていない文字が使われていないか）
   */
 function checkNewFolderName(newFolderName){
 
-//空ではないか
- if(newFolderName === "" ||newFolderName === null) {
+  //空ではないか
+  if(newFolderName === "" ||newFolderName === null) {
     throw "Folder Name is blank";
   }
 
-//255文字を超えていないか
- if(newFolderName.length > 255){
+  //255文字を超えていないか
+  if(newFolderName.length > 255){
     throw"Folder Name shoule be less than 256 characters";
   }
 
-//「/」や「\」が含まれていないか
- const reg = new RegExp('[/\\\\]');
- if(newFolderName.search(reg) !== -1) {
+  //「/」や「\」が含まれていないか
+  const reg = new RegExp('[/\\\\]');
+  if(newFolderName.search(reg) !== -1) {
     throw "Invalid Folder Name";
   }
 
-//先頭と末尾に半角スペースが使われていないか
- if(newFolderName.slice(0,1) === " " || newFolderName.slice(-1) === " ") {
+  //先頭と末尾に半角スペースが使われていないか
+  if(newFolderName.slice(0,1) === " " || newFolderName.slice(-1) === " ") {
     throw "Invalid Folder Name";
   }
 
-//「.」や「..」ではないか
- if(newFolderName === "." || newFolderName === ".."){
+  //「.」や「..」ではないか
+  if(newFolderName === "." || newFolderName === ".."){
     throw "Invalid Folder Name";
   }
 }
 
-
-  //create folder on box
-function createFolder(token, parentFolderId, name) {
+//create folder on box
+function createFolder(oauth2, parentFolderId, name) {
   let jsonReq = {};
   //mime type of google drive folder
   if (parentFolderId !== "" && parentFolderId !== null){
@@ -105,7 +102,7 @@ function createFolder(token, parentFolderId, name) {
   
   const url = 'https://api.box.com/2.0/folders';
   const response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
@@ -115,33 +112,26 @@ function createFolder(token, parentFolderId, name) {
   engine.log(responseTxt);
 
   let jsonRes;
-   try {
-     jsonRes = JSON.parse(responseTxt);
-   } catch(e) {
-     engine.log("failed to parse as json");
-     throw `Failed to creat. status: ${status}`;
-   }
+  try {
+    jsonRes = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    throw `Failed to create. status: ${status}`;
+  }
 
-  
-
-
-  try{
-    if (status === 409){
-      if(jsonRes["context_info"]["conflicts"][0]["type"] === "folder"){
-        jsonRes = jsonRes["context_info"]["conflicts"][0];
-      }else{
-        throw "Failed to create";
-      }
-    }else if (status >= 300) {
-      throw "Failed to create";
+  // フォルダ作成成功
+  if (status === 201) {
+    return jsonRes.id;
+  }
+  try {
+    // 同名のフォルダがすでにある
+    if(status === 409 && jsonRes.context_info.conflicts[0].type === "folder"){
+      return jsonRes.context_info.conflicts[0].id;
     }
-  }catch(e){
-      const error = `Failed to create \n status: ${status}\n${responseTxt}`;
-      throw error;
-    }
-  
-  
-  return jsonRes.id;
+  } catch (e) {
+    // 何もしない（上記2つのケース以外はすべてエラーにする）
+  }
+  throw `Failed to create. status: ${status}`;
 }
 
 ]]></script>

@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="UTF-8"?><service-task-definition>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Google Sheets: Append New Rows (Table type data)</label>
+<label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
+<summary>Appends values of table data item after the last row in a sheet. Inserts new rows if necessary.</summary>
+<summary locale="ja">シート末尾にテーブル型データの値を入力します。必要あれば行領域を拡大します。</summary>
+<last-modified>2020-12-18</last-modified>
+<help-page-url>https://support.questetra.com/addons/googlesheets-appendtable/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/addons/googlesheets-appendtable/</help-page-url>
+
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+          oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
+    <label>C1: OAuth2 Config</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_DataIdW" required="true" form-type="TEXTFIELD">
+    <label>C2: Target Spreadsheet ID</label>
+    <label locale="ja">C2: 入力先のスプレッドシートの ID</label>
+  </config>
+  <config name="conf_DataIdX" required="true" form-type="TEXTFIELD">
+    <label>C3: Target Sheet Title</label>
+    <label locale="ja">C3: 入力先のシートのタイトル</label>
+  </config>
+  <config name="conf_DataIdT" required="true" form-type="SELECT" select-data-type="LIST">
+    <label>C4: Table type data item</label>
+    <label locale="ja">C4: テーブル型データ項目</label>
+  </config>
+  <config name="conf_DataIdA" required="false" form-type="TEXTFIELD">
+    <label>C-A: Field Name of Sub Data Item for Column-A</label>
+    <label locale="ja">C-A: A 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdB" required="false" form-type="TEXTFIELD">
+    <label>C-B: Field Name of Sub Data Item for Column-B</label>
+    <label locale="ja">C-B: B 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdC" required="false" form-type="TEXTFIELD">
+    <label>C-C: Field Name of Sub Data Item for Column-C</label>
+    <label locale="ja">C-C: C 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdD" required="false" form-type="TEXTFIELD">
+    <label>C-D: Field Name of Sub Data Item for Column-D</label>
+    <label locale="ja">C-D: D 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdE" required="false" form-type="TEXTFIELD">
+    <label>C-E: Field Name of Sub Data Item for Column-E</label>
+    <label locale="ja">C-E: E 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdF" required="false" form-type="TEXTFIELD">
+    <label>C-F: Field Name of Sub Data Item for Column-F</label>
+    <label locale="ja">C-F: F 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdG" required="false" form-type="TEXTFIELD">
+    <label>C-G: Field Name of Sub Data Item for Column-G</label>
+    <label locale="ja">C-G: G 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdH" required="false" form-type="TEXTFIELD">
+    <label>C-H: Field Name of Sub Data Item for Column-H</label>
+    <label locale="ja">C-H: H 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdI" required="false" form-type="TEXTFIELD">
+    <label>C-I: Field Name of Sub Data Item for Column-I</label>
+    <label locale="ja">C-I: I 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+  <config name="conf_DataIdJ" required="false" form-type="TEXTFIELD">
+    <label>C-J: Field Name of Sub Data Item for Column-J</label>
+    <label locale="ja">C-J: J 列に追加するサブデータ項目のフィールド名</label>
+  </config>
+</configs>
+
+<script><![CDATA[
+// OAuth2 config
+// Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
+// Token Endpoint URL: https://accounts.google.com/o/oauth2/token
+// Scope: https://www.googleapis.com/auth/spreadsheets
+// Consumer Key: (Get by Google Developers Console)
+// Consumer Secret: (Get by Google Developers Console)
+
+main();
+
+function main() {
+    const tableDataDef = configs.getObject("conf_DataIdT");
+    if (tableDataDef === null) {
+        throw "Table Data is not specified.";
+    }
+    const oauth2 = getConfigValue("conf_OAuth2", 'OAuth2 Setting');
+    const spreadsheetId = getConfigValue("conf_DataIdW", 'Spreadsheet ID');
+    const sheetName = getConfigValue("conf_DataIdX", 'Sheet Name');
+    const fieldNames = getFieldNames();
+
+    // テーブル型データおよびサブデータ項目の定義を取得
+    const tableData = engine.findData(tableDataDef);
+    if (tableData === null) {
+        throw "the table data is empty.";
+    }
+    const subDataDefs = tableDataDef.getSubDataDefinitions();
+
+    // シート名からシート ID の取得
+    const sheetId = getSheetId(oauth2, spreadsheetId, sheetName);
+
+    // 追加するデータの追加
+    const appendCells = makeAppendCells(tableData, sheetId, subDataDefs, fieldNames);
+    //engine.log(JSON.stringify(appendCells));
+
+    // データの追加
+    appendData(oauth2, spreadsheetId, appendCells);
+}
+
+/**
+ * 設定値の取得。空ならエラー。
+ * @param name
+ * @param label エラーメッセージ用のラベル
+ */
+function getConfigValue(name, label) {
+    const value = configs.get(name);
+    if (value === '' || value === null) {
+        throw `${label} is not specified.`;
+    }
+    return value;
+}
+
+/**
+ * スプレッドシートの各列に追加するサブデータ項目の取得
+ * @return {*[]}
+ */
+function getFieldNames() {
+    const CONF_FIELD_NAMES = [
+        'conf_DataIdA',
+        'conf_DataIdB',
+        'conf_DataIdC',
+        'conf_DataIdD',
+        'conf_DataIdE',
+        'conf_DataIdF',
+        'conf_DataIdG',
+        'conf_DataIdH',
+        'conf_DataIdI',
+        'conf_DataIdJ',
+    ];
+
+    const fieldNames = CONF_FIELD_NAMES.map(conf => configs.get(conf));
+
+    if (fieldNames.every(fieldName => fieldName === null || fieldName === '')) {
+        // 全項目、設定値が空なら、エラー
+        throw "No Data to add is selected.";
+    }
+    return fieldNames;
+}
+
+/**
+ * シート名からシート ID の取得
+ * @param {String} oauth2
+ * @param {String} spreadsheetId
+ * @param {String} sheetName
+ * @return {Number}
+ */
+function getSheetId(oauth2, spreadsheetId, sheetName) {
+    const uri = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=false`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .get(uri);
+    const status = response.getStatusCode();
+    const responseJson = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseJson);
+        throw `Can't get sheet information. status: ${status}`;
+    }
+    const jsonObj = JSON.parse(responseJson);
+    engine.log(`SPREADSHEET (TITLE: ${jsonObj.properties.title}) has ${jsonObj.sheets.length} sheets`);
+    for (let i = 0; i < jsonObj.sheets.length; i++) {
+        if (jsonObj.sheets[i].properties.title === sheetName) {
+            const sheetId = parseInt(jsonObj.sheets[i].properties.sheetId, 10);
+            engine.log(`SHEET TITLE: ${sheetName} exists (id: ${sheetId})`);
+            return sheetId;
+        }
+    }
+    // error (not exist)
+    throw `Sheet ${sheetName} does not exist`;
+}
+
+/**
+ * 追加用のデータ作成
+ * @param {ScriptListArray} tableData
+ * @param {Number} sheetId
+ * @param {Array<SubDataDefinitionView>} subDataDefs
+ * @param {Array<String>} fieldNames
+ * @return {Object}
+ */
+function makeAppendCells(tableData, sheetId, subDataDefs, fieldNames) {
+    // subDataDef のマップを作成。キーはフィールド名。
+    const subDataDefMap = makeSubDataDefMap(subDataDefs);
+
+    //行データの作成
+    const rowCount = tableData.size();
+    const rows = [rowCount];
+    for (let i = 0; i < rowCount; i++) {
+        const values = makeRowValues(i, tableData, subDataDefMap, fieldNames);
+        rows[i] = {values};
+        //engine.log(`${i}: ${JSON.stringify(rows[i])}`);
+    }
+
+    return {
+        requests: [{
+            appendCells: {
+                rows,
+                sheetId,
+                fields: "*"
+            }
+        }]
+    };
+}
+
+/**
+ * SubDataDefinitionView の Map を作成
+ * @param {Array<SubDataDefinitionView>} subDataDefs
+ * @return {Map<string, SubDataDefinitionView>}
+ */
+function makeSubDataDefMap(subDataDefs) {
+    const subDataDefMap = new Map();
+    for (let i = 0; i < subDataDefs.length; i++) {
+        const def = subDataDefs[i];
+        const varName = def.getVarName();
+        if (varName !== null) {
+            subDataDefMap.set(varName, def);
+        }
+    }
+    return subDataDefMap;
+}
+
+/**
+ * AppendData 用、各行の値を作成する
+ * @param rowNumber
+ * @param {ScriptListArray} tableData
+ * @param {Map<String, SubDataDefinitionView>>} subDataDefMap
+ * @param {Array<String>} fieldName
+ * @return {[*]}
+ */
+function makeRowValues(rowNumber, tableData, subDataDefMap, fieldNames) {
+    const values = [fieldNames.length];
+    let flag = true;
+    // 後ろの列から前の列へ
+    for (let j = fieldNames.length - 1; j >= 0; j--) {
+        const fieldName = fieldNames[j];
+        const cellValue = getCellValue(rowNumber, tableData, subDataDefMap, fieldName);
+        if (flag && cellValue === '') {
+            // 後ろの列は、空である限り null を指定
+            values[j] = null;
+        } else {
+            // 基本、stringValue
+            let valueType = 'stringValue';
+            if (cellValue !== '') {
+                if (subDataDefMap.get(fieldName).matchDataType('DECIMAL')) {
+                    //空ではなく、数値型データの場合のみ、numberValue
+                    valueType = 'numberValue';
+                }
+            }
+            values[j] = {
+                "userEnteredValue": {
+                    [valueType]: cellValue
+                }
+            };
+            flag = false;
+        }
+    }
+    if (flag) {
+        throw "There is an empty row in data to append.";
+    }
+    return values;
+}
+
+/**
+ * セルの値の取得
+ * @param {Number} rowNumber
+ * @param {ScriptListArray} tableData
+ * @param {Map<String, SubDataDefinitionView>} subDataDefMap
+ * @param {String} fieldName
+ * @return {Object}
+ */
+function getCellValue(rowNumber, tableData, subDataDefMap, fieldName) {
+    if (fieldName === "" || fieldName === null) {
+        // サブデータ項目の指定が無い場合
+        return '';
+    }
+    if (!subDataDefMap.has(fieldName)) {
+        //when selected column doesn't exist
+        throw `Field Name ${fieldName} does not exist`;
+    }
+    const cellValue = tableData.get(rowNumber, fieldName);
+    if (cellValue.length > 50000) {
+        //when the number of letters in text is over 50000
+        throw "Can't set text over 50,000 character.";
+    }
+    return cellValue;
+}
+
+/**
+ * データを Google Sheets に送信する
+ * @param {String} oauth2
+ * @param {String} spreadsheetId
+ * @param {Object} obj
+ */
+function appendData(oauth2, spreadsheetId, obj) {
+    const uri = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`;
+
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .body(JSON.stringify(obj), "application/json")
+        .post(uri);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to append data. status: ${status}`;
+    }
+}
+]]></script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADbElEQVRYR8WXS0hUURjH/2dGJFDz
+lqNimmORhAU5hRVFojgTQSTarl3azN5x1aboQdAqGoVc2AyOFoGCpQuN7E6MRIVW4BBZUqJkbYTw
++H7M48Sdx3Ve986d0crFuDjfd8/v+5/vcQ7Bf/4jyezPWfX1IKQKDDoAHIj/P8AwBoCCYAwETnqF
+71f63YQAXEc1B19aE8DMAOGUfZhRgFig8rTQRieV85EF4Gw1DQC5r3zj6K0YBUMjNTn6pCAkATir
+3gJCmpRFnNDKQo18czyruACcVW8HIZcTfjYpA2anRkdjtEsMQHjkvefuoqawQvTxMV8w54S8Y2DM
+/4uhmRGUZhfj9gcbBn+8lcZirIWaHOZwgwiAwJmrOkIGzro2lOeUJozzxcwITuYf8ts1v2lB39Sw
+HMTF8JwQAQLZrp4KT7hkAbj0LMxvLOHquwfonuQlIBiFyrsvVB2bADbDTQA3wr1SARD8F9zLuD7a
+jq6JQSklblEjL+yHTQCrQWgk2akC7FCnY2d6hug+uzqHSy+vSapAjY5dIkCwwz2LtlaqwNz6Ihbd
+yxHuK551nHpqSpgLfgWkal4pQLxdlj1rKOqqTVgRAQCbwQmgKlUFUgIAhqmRrw4pMA1CtHIAK541
+LGxEyhxtr1apkbsjMC4SK4AxauKPhhRg8aIIPwLX7294NPEch3fvR/d3HpUFOuzJ0IhuHuYF//M9
+us/eUQYgjE8jT5ICGJoZhU5TivbxPpwvPo2izLxNAJ8X9omBFAGs+oRHICjw6tdHHNMcRNvnXtRq
+z2BvZr4I4PZ58PBLfxIAzEWNDp3iJBQAeiYdOJJzAJ1fB2AoOoHCzFwRwOvzon/6dRIAkUkYd/RG
+58Do7DgqcsvQ+qkHdSWV0GYVRChwz/VEOUBwMIWqQLhqyTaibU9CxvxDSXErFspwyb0q3VgAqAiB
+RkkZMsxTE++v120ZRik0ojjDSBjH3rTp8IH0V1oxwzzUnpKYcRxoyZEXkqELrTieVyYru9Si0DW1
+j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
+kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
+AEwJzTC2ALrNAAAAAElFTkSuQmCC
+</icon>
+
+</service-task-definition>

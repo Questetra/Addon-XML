@@ -3,19 +3,16 @@
 <engine-type>2</engine-type>
 <label>Box: Copy File</label>
 <label locale="ja">Box: ファイルコピー</label>
-
-<last-modified>2020-09-01</last-modified>
-
+<last-modified>2021-03-22</last-modified>
 <summary>Copy the File and save it in the specified Folder</summary>
 <summary locale="ja">既存ファイルを複製し、指定フォルダに新規保存します</summary>
-
 <help-page-url>https://support.questetra.com/addons/box-file-copy/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/box-file-copy/</help-page-url>
 
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
-    <label>C1: OAuth2 Config Name</label>
-    <label locale="ja">C1: OAuth2設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Source File ID</label>
@@ -30,12 +27,12 @@
     <label locale="ja">C4: 新しいファイルのファイル名 (空白の場合、自動的に設定されます)</label>
   </config>
   <config name="conf_DataForId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: STRING DATA for New File ID </label>
-    <label locale="ja">C5: ファイル ID を保存する文字型データ項目</label>
+    <label>C5: Data item to save New File ID </label>
+    <label locale="ja">C5: ファイル ID を保存するデータ項目</label>
   </config>
   <config name="conf_DataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C6: STRING DATA for New File Viewing URL </label>
-    <label locale="ja">C6: ファイル URL を保存する文字型データ項目</label>
+    <label>C6: Data item to save New File Viewing URL </label>
+    <label locale="ja">C6: ファイル URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -49,34 +46,30 @@ function main(){
 
   if(fileId === "" || fileId === null){
     throw "No Source File ID";
-    }
+  }
 
   const newFileName = configs.get( "conf_NewFileName" );
   checkNewFileName(newFileName);
 
-  const token  = httpClient.getOAuth2Token( oauth2 );
   let folderId = decideFolderId();
 
   if(folderId === "" || folderId === null){
     //空の場合は"元ファイルが配置されているフォルダ"とする when folder id isn't set, set "same folder"
-    folderId = getFolderID(token, fileId);
-    }
+    folderId = getFolderID(oauth2, fileId);
+  }
 
   const saveIdData = configs.getObject( "conf_DataForId" );
   const saveUrlData = configs.getObject( "conf_DataForUrl" );
 
-
-  const newFileID = copyFile(token, folderId, fileId, newFileName);
+  const newFileID = copyFile(oauth2, folderId, fileId, newFileName);
 
   if (saveIdData !== null) {
-        engine.setData(saveIdData, newFileID);
+    engine.setData(saveIdData, newFileID);
   }
   if (saveUrlData !== null) {
-        engine.setData(saveUrlData, `https://app.box.com/file/${newFileID}`);
+    engine.setData(saveUrlData, `https://app.box.com/file/${newFileID}`);
   }
 }
-
-
 
 /**
   * ファイルのIDをconfigから読み出して出力する。
@@ -100,27 +93,26 @@ function decideFileId(){
 function checkNewFileName(newFileName){
 
 //ファイル名が255文字を超えていないか
- if(newFileName.length > 255){
-    throw"File Name shoule be less than 256 characters";
+  if(newFileName.length > 255){
+    throw "File Name should be less than 256 characters";
   }
 
 //ファイル名に「/」や「\」が含まれていないか
- const reg = new RegExp('[/\\\\]');
- if(newFileName.search(reg) !== -1) {
+  const reg = new RegExp('[/\\\\]');
+  if(newFileName.search(reg) !== -1) {
     throw "Invalid File Name";
   }
 
 //ファイル名の先頭と末尾に半角スペースが使われていないか
- if(newFileName.slice(0,1) === " " || newFileName.slice(-1) === " ") {
+  if(newFileName.slice(0,1) === " " || newFileName.slice(-1) === " ") {
     throw "Invalid File Name";
   }
 
 //ファイル名が「.」や「..」ではないか
- if(newFileName === "." || newFileName === ".."){
+  if(newFileName === "." || newFileName === ".."){
     throw "Invalid File Name";
   }
 }
-
 
 /**
   * フォルダのIDをconfigから読み出して出力する。
@@ -137,53 +129,50 @@ function decideFolderId(){
   return folderId;
 }
 
-
-
 /**
   * get parent folderID of file
   * ファイルが配置されているフォルダのIDを取得する。
   * @return {String}  フォルダの ID
   */
-function getFolderID(token, fileId){
+function getFolderID(oauth2, fileId){
 
-    const url = `https://api.box.com/2.0/files/${fileId}`;
+  const url = `https://api.box.com/2.0/files/${fileId}`;
 
-    const response = httpClient.begin()
-      .bearer(token)
-      .get(url);
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .queryParam("fields", "parent")
+    .get(url);
 
-    const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString();
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
 
-    engine.log(`status: ${status}`);
+  engine.log(`status: ${status}`);
+
+  if(status !== 200){
     engine.log(responseTxt);
-
-  let jsonRes;
-   try {
-     jsonRes = JSON.parse(responseTxt);
-   } catch(e) {
-     engine.log("failed to parse as json");
-     throw `Failed to get parent folder and Failed to copy. status: ${status}`;
-   }
-
-    return jsonRes.parent.id;      
+    throw `Failed to get parent folder and Failed to copy.`;
+  }
+  const jsonRes = JSON.parse(responseTxt);
+  return jsonRes.parent.id;
 }
 
-
-  //copy file on Box  @return {String}  ファイルの ID
-function copyFile(token, folderId, fileId, newFileName) {
+/**
+  * Box 上のファイルを指定フォルダに指定ファイル名でコピーする。
+  * @return {String}  コピーしたファイルの ID
+  */
+//copy file on Box  @return {String}  ファイルの ID
+function copyFile(oauth2, folderId, fileId, newFileName) {
   let jsonReq = {};
-
-    jsonReq["parent"] = {"id": folderId };
+  jsonReq["parent"] = {"id": folderId };
 
   if ( newFileName !== "" && newFileName !== null ){ 
     jsonReq["name"] = newFileName;
   }  
   
-    const url = `https://api.box.com/2.0/files/${fileId}/copy`;
+  const url = `https://api.box.com/2.0/files/${fileId}/copy`;
 
   const response = httpClient.begin()
-    .bearer(token)
+    .authSetting(oauth2)
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .post(url);
 
@@ -191,35 +180,16 @@ function copyFile(token, folderId, fileId, newFileName) {
   const responseTxt = response.getResponseAsString();
   
   engine.log(`status: ${status}`);
-  engine.log(responseTxt);
 
- let jsonRes;
- try {
-   jsonRes = JSON.parse(responseTxt);
- } catch(e) {
-   engine.log("failed to parse as json");
-   throw `Failed to copy. status: ${status}`;
- }
-
-
-
-if (status !== 201) {
-
-    if (status === 409 && jsonRes["code"] === "item_name_in_use"){
-         throw `Failed to copy . status: ${status}\n A file or folder with the same name already exists.`;
-            }
-
-    throw `Failed to copy. status: ${status}`;
-
-   }
-
-
+  if (status !== 201) {
+    engine.log(responseTxt);
+    throw "Failed to copy.";
+  }
+  const jsonRes = JSON.parse(responseTxt);
   return jsonRes.id;
 }
 
-
 ]]></script>
-
 
 <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
 0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
