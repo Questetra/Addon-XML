@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-02-16</last-modified>
+<last-modified>2021-05-10</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Bots)</label>
@@ -8,9 +8,13 @@
 <summary>Send a message to Slack with Bots.</summary>
 <summary locale="ja">Bots 機能を使って Slack にメッセージを投稿します。</summary>
 <configs>
-  <config name="Token" required="true">
-    <label>C1: Slack Bot Token</label>
-    <label locale="ja">C1: Slack Bot のトークン</label>
+  <config name="Token" deprecated="true">
+    <label>C1-deprecated: Slack Bot Token</label>
+    <label locale="ja">C1-deprecated: Slack Bot のトークン</label>
+  </config>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://slack.com/oauth2/chat:write,fiels:write">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="ChannelName" required="true">
     <label>C2: Slack Channel Name</label>
@@ -47,6 +51,7 @@
 main();
 function main() {
   const token = configs.get("Token");
+  const oauth2 = configs.get("conf_OAuth2");
   let text = "";
   if (configs.get("Text") !== "" && configs.get("Text") !== null){
     text = configs.get("Text");
@@ -67,17 +72,18 @@ function main() {
     throw "Message to send isn't set.";
   }
 
-  sendMessage(token, channel, text, attachment);
+  sendMessage(token, oauth2, channel, text, attachment);
 }
 
 /**
   * Send Message with Bots  チャット投稿
-  * @param {String} token 
+  * @param {String} token
+  * @param {String} oauth2 
   * @param {String} channel
   * @param {String} text 
   * @param {String} attachment
   */  
-function sendMessage(token, channel, text, attachment) {  
+function sendMessage(token, oauth2, channel, text, attachment) {
   let jsonReq = {};
   jsonReq["text"] = text;
   jsonReq["channel"] = channel;
@@ -89,16 +95,33 @@ function sendMessage(token, channel, text, attachment) {
   }
 
   jsonReq["attachments"] = attachArray;
-  let response = httpClient.begin()
-    .bearer(token)
-    .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
-    .post("https://slack.com/api/chat.postMessage");
+
+ 
+  let request = httpClient.begin()
+  if (oauth2 !== "" && oauth2 !== null || token === "" || token === null){
+    request = request.authSetting(oauth2);
+  }else {
+    request = request.bearer(token);
+  } 
+    request = request.body(JSON.stringify(jsonReq), "application/json; charset=UTF-8");
+    const response = request.post("https://slack.com/api/chat.postMessage");
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  const responseJson = JSON.parse(responseTxt);
-  if (responseJson.ok == false ) {
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw `Failed to send. status: ${status}`;
+  }
+
+  if (responseJson.ok !== true ) {
     const error = `Failed to send`;
+    engine.log(`status: ${status}`);
     engine.log(responseTxt);
     throw error;
   }
