@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2020-09-09</last-modified>
+<last-modified>2021-05-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Microsoft 365 Excel: Insert New Row</label>
@@ -12,8 +12,8 @@
 
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_Url" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Target Book URL</label>
@@ -101,18 +101,15 @@ function main(){
   values[8] = configs.get( "conf_ValueI" );
   values[9] = configs.get( "conf_ValueJ" );
 
-  //// == ワークフローデータの参照 / Data Retrieving ==
-  const token  = httpClient.getOAuth2Token( oauth2 );
-
   //// == Calculating / 演算 ==
   // Access to the API 1st(Get Book Info)
-  const bookInfo = getFileInfoByUrl( bookUrl, token );
+  const bookInfo = getFileInfoByUrl( bookUrl, oauth2 );
   
   // Access to the API 2nd(Insert Row)
-  insertRow( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, token);
+  insertRow( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, oauth2);
 
   // Access to the API 3rd(PATCH)
-  patchData( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, values, token);
+  patchData( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, values, oauth2);
 }
 
 /**
@@ -165,10 +162,10 @@ function retrieveRowNumber() {
   * フォルダの URL からファイル情報（ドライブ ID とファイル ID）を取得し、
   * オブジェクトで返す（URL が空の場合はエラーとする）
   * @param {String} fileUrl  フォルダの URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定
   * @return {Object} fileInfo  ファイル情報 {driveId, fileId}
   */
-function getFileInfoByUrl( fileUrl, token ) {
+function getFileInfoByUrl( fileUrl, oauth2 ) {
   let fileInfo;
   if ( fileUrl !== "" && fileUrl !== null ) {
     // 分割代入
@@ -177,7 +174,7 @@ function getFileInfoByUrl( fileUrl, token ) {
       parentReference: {
         driveId
       }
-    } = getObjBySharingUrl( fileUrl, token );
+    } = getObjBySharingUrl( fileUrl, oauth2 );
     fileInfo = {driveId: `drives/${driveId}`, fileId: id};
   }
   return fileInfo;
@@ -187,10 +184,10 @@ function getFileInfoByUrl( fileUrl, token ) {
   * OneDrive のドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSON オブジェクトを返す
   * API の仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有 URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定
   * @return {Object} responseObj  ドライブアイテムのメタデータの JSON オブジェクト
   */
-function getObjBySharingUrl( sharingUrl, token ) {
+function getObjBySharingUrl( sharingUrl, oauth2 ) {
   if (sharingUrl === "" || sharingUrl === null) {
     throw `Sharing URL is empty.`;
   }
@@ -198,22 +195,14 @@ function getObjBySharingUrl( sharingUrl, token ) {
   // encoding sharing URL
   const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
-  // preparing for API Request
-  let apiRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-  apiRequest = apiRequest.bearer( token );
-  // Access to the API (POST, GET, PUT, etc)
-  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
-  const httpStatus = response.getStatusCode();
-  const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-  engine.log(accessLog);
-  if (httpStatus >= 300) {
-    const error = `Failed to get drive item. status: ${httpStatus}`;
-    throw error;
-  }
-  const responseObj = JSON.parse( response.getResponseAsString() );
-  return responseObj;
+  // API Request
+  const response = httpClient.begin()
+    .authSetting( oauth2 )
+    .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` );
+
+  const responseStr = logAndJudgeError(response, "GET");
+
+  return JSON.parse( responseStr );
 }
 
 /**
@@ -226,8 +215,7 @@ function encodeSharingUrl( sharingUrl ) {
   while ( encodedSharingUrl.slice(-1) === '=' ) {
     encodedSharingUrl = encodedSharingUrl.slice(0,-1);
   }
-  encodedSharingUrl = "u!" + encodedSharingUrl;
-  return encodedSharingUrl;
+  return `u!${encodedSharingUrl}`;
 }
 
 /**
@@ -235,20 +223,20 @@ function encodeSharingUrl( sharingUrl ) {
   * @param {String,String} driveId, bookId  挿入先ファイルのドライブ ID、ファイル ID
   * @param {String} sheetName  挿入先シートの名前
   * @param {Number} rowNumber  挿入箇所の行番号
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定
   */
-function insertRow( driveId, bookId, sheetName, rowNumber, token){
+function insertRow( driveId, bookId, sheetName, rowNumber, oauth2 ){
   const insertUrl = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${sheetName}/range(address='${sheetName}!${rowNumber}:${rowNumber}')/insert`;
-  const postRequest = {
+  const requestBody = {
     "Shift" : "Down"
   };
 
-  let insertNewRow = httpClient.begin()
-    .bearer(token)
-    .body(JSON.stringify( postRequest ), "application/json")
-    .post (insertUrl);
+  const response = httpClient.begin()
+    .authSetting( oauth2 )
+    .body( JSON.stringify(requestBody), "application/json" )
+    .post( insertUrl );
     
-  logAndJudgeError(insertNewRow, "POST");
+  logAndJudgeError(response, "POST");
 }
 
 /**
@@ -257,18 +245,18 @@ function insertRow( driveId, bookId, sheetName, rowNumber, token){
   * @param {String} sheetName  挿入先シートの名前
   * @param {Number} rowNumber  挿入箇所の行番号
   * @param {Array} values  入力するデータの配列
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定
   */
-function patchData( driveId, bookId, sheetName, rowNumber, values, token){
+function patchData( driveId, bookId, sheetName, rowNumber, values, oauth2 ){
   const patchUri = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${sheetName}/range(address='${sheetName}!A${rowNumber}:J${rowNumber}')/`;
-  const patchRequest = makeRequestToAdd(values);
+  const requestBody = makeRequestToAdd(values);
 
-  let patchToSheet = httpClient.begin()
-    .bearer(token)
-    .body(JSON.stringify( patchRequest ), "application/json")
-    .patch(patchUri); 
+  const response = httpClient.begin()
+    .authSetting( oauth2 )
+    .body( JSON.stringify(requestBody), "application/json" )
+    .patch( patchUri );
   
-  logAndJudgeError(patchToSheet, "PATCH");
+  logAndJudgeError(response, "PATCH");
 }
 
 /**
@@ -295,19 +283,19 @@ function makeRequestToAdd(values){
 
 /**
   * ログの出力と、エラー発生時のスローを行う
-  * @param {Object} request  リクエストの応答
+  * @param {HttpResponseWrapper} response  リクエストの応答
   * @param {String} requestType リクエストをどの形式で行ったか("GET" or "POST" or "PATCH")
+  * @return {String} responseStr レスポンスの文字列
   */
-function logAndJudgeError(request, requestType){
-  const response = request.getResponseAsString();
-  const status = request.getStatusCode();
-  const accessLog = `---${requestType} request--- ${status}
-  ${response}
-  `;
-  engine.log(accessLog);
+function logAndJudgeError(response, requestType){
+  const responseStr = response.getResponseAsString();
+  const status = response.getStatusCode();
   if(status >= 300){
-    throw `status: ${status}`;
+    const accessLog = `---${requestType} request--- ${status}\n${responseStr}\n`;
+    engine.log(accessLog);
+    throw `Failed in ${requestType} request. status: ${status}`;
   }
+  return responseStr;
 }
 ]]></script>
 
