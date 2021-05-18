@@ -3,7 +3,7 @@
 <engine-type>2</engine-type>
 <label>Microsoft 365 OneDrive for Business: Copy File / Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダコピー</label>
-<last-modified>2020-07-28</last-modified>
+<last-modified>2021-05-18</last-modified>
 <summary>Creates a copy of a file/folder into the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDrive 上のファイル / フォルダを複製し、指定フォルダに新規保存します。</summary>
 <help-page-url>https://support.questetra.com/addons/onedrive-file-copy/</help-page-url>
@@ -11,8 +11,8 @@
 
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_sourceUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Source File / Folder URL</label>
@@ -27,8 +27,8 @@
     <label locale="ja">C4: 新しいファイル / フォルダの名前</label>
   </config>
   <config name="conf_dataForUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-    <label>C5: String type data item to save new file / folder URL </label>
-    <label locale="ja">C5: 新しいファイル / フォルダの URL を保存する文字型データ項目</label>
+    <label>C5: Data item to save new file / folder URL </label>
+    <label locale="ja">C5: 新しいファイル / フォルダの URL を保存するデータ項目</label>
   </config>
 </configs>
 
@@ -56,19 +56,17 @@
     //// == Calculating / 演算 ==
     // checking the HTTP requesting limit
     checkHttpRequestingLimit( destUrl );
-    // preparing token for API Requests
-    const token  = httpClient.getOAuth2Token( oauth2 );
     // getting itemInfo for Requesting Copy and Updating Data
-    const sourceInfo = getItemInfoByUrl( sourceUrl, token );
-    const destInfo = getItemInfoByUrl( destUrl, token );
+    const sourceInfo = getItemInfoByUrl( sourceUrl, oauth2 );
+    const destInfo = getItemInfoByUrl( destUrl, oauth2 );
     // sending Copy Request
-    const copyResponse = sendCopyRequest( sourceInfo, destInfo, newName, token );
+    const copyResponse = sendCopyRequest( sourceInfo, destInfo, newName, oauth2 );
 
     // コピー状況を確認し、ドライブアイテム ID を取得
     const newItemId = getNewItemId( copyResponse );
 
     // ワークフローデータへの代入データの作成
-    const newItemUrl = getNewItemUrl( sourceInfo.driveId, destInfo.driveId, newItemId, token );
+    const newItemUrl = getNewItemUrl( sourceInfo.driveId, destInfo.driveId, newItemId, oauth2 );
 
     //// == Data Updating / ワークフローデータへの代入 ==
     if ( saveUrlDataDef !== null ){
@@ -128,10 +126,10 @@
     * ドライブアイテムのURLからアイテム情報（ドライブIDとアイテムID）を取得し、
     * オブジェクトで返す（URLが空の場合はドライブIDもアイテムIDも空文字列）
     * @param {String} driveItemUrl  ドライブアイテム（ファイル、フォルダ）のURL
-    * @param {String} token  OAuth2 トークン
+    * @param {String} oauth2  OAuth2 認証設定
     * @return {Object} itemInfo  ドライブアイテム情報 {driveId, id}
     */
-  function getItemInfoByUrl( driveItemUrl, token ) {
+  function getItemInfoByUrl( driveItemUrl, oauth2 ) {
     let itemInfo = {driveId: "", id: ""};
     if ( driveItemUrl !== "" && driveItemUrl !== null ) {
       // 分割代入
@@ -140,7 +138,7 @@
         parentReference: {
           driveId: driveId
         }
-      } = getObjBySharingUrl( driveItemUrl, token );
+      } = getObjBySharingUrl( driveItemUrl, oauth2 );
       itemInfo = {driveId: driveId, id: id};
     }
     return itemInfo;
@@ -150,10 +148,10 @@
     * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
     * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
     * @param {String} sharingUrl  ドライブアイテムの共有URL
-    * @param {String} token  OAuth2 トークン
+    * @param {String} oauth2  OAuth2 認証設定
     * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
     */
-  function getObjBySharingUrl( sharingUrl, token ) {
+  function getObjBySharingUrl( sharingUrl, oauth2 ) {
     if (sharingUrl === "" || sharingUrl === null) {
       throw `Sharing URL is empty.`;
     }
@@ -161,22 +159,18 @@
     // encoding sharing URL
     const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+    // API Request
+    const response = httpClient.begin() // HttpRequestWrapper
+      .authSetting( oauth2 ) // Request HEADER (OAuth2 Token)
+      .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
     const httpStatus = response.getStatusCode();
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    engine.log(accessLog);
+    const responseStr = response.getResponseAsString();
     if (httpStatus >= 300) {
-      const error = `Failed to get drive item. status: ${httpStatus}`;
-      throw error;
+      const accessLog = `---GET request--- ${httpStatus}\n${responseStr}\n`;
+      engine.log(accessLog);
+      throw `Failed to get drive item. status: ${httpStatus}`;
     }
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    return responseObj;
+    return JSON.parse( response.getResponseAsString() );
   }
 
   /**
@@ -189,8 +183,7 @@
     while ( encodedSharingUrl.slice(-1) === '=' ) {
       encodedSharingUrl = encodedSharingUrl.slice(0,-1);
     }
-    encodedSharingUrl = "u!" + encodedSharingUrl;
-    return encodedSharingUrl;
+    return `u!${encodedSharingUrl}`;
   }
 
   /**
@@ -198,28 +191,24 @@
     * @param {String} sourceInfo  コピー元アイテム情報 {driveId, id}
     * @param {String} destInfo  コピー先フォルダ情報 {driveId, id}
     * @param {String} newName  新しいファイル / フォルダの名前
-    * @param {String} token  OAuth2 トークン
+    * @param {String} oauth2  OAuth2 認証設定
     * @return {HttpResponseWrapper} response  レスポンス
     */
-  function sendCopyRequest( sourceInfo, destInfo, newName, token ) {
-    // preparing token for API Requests
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
+  function sendCopyRequest( sourceInfo, destInfo, newName, oauth2 ) {
     // Request PATH
     const apiUri = `${GRAPH_URI}drives/${sourceInfo.driveId}/items/${sourceInfo.id}/copy`;
     // Request BODY (JSON, Form Parameters, etc)
     const requestBody = generateCopyRequestBody( destInfo, newName );
-    apiRequest = apiRequest.body( requestBody, "application/json" );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.post( apiUri ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---POST request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    engine.log(accessLog);
+    // API Request
+    const response = httpClient.begin() // HttpRequestWrapper
+      .authSetting( oauth2 ) // Request HEADER (OAuth2 Token)
+      .body( requestBody, "application/json" )
+      .post( apiUri ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode();
     if (httpStatus >= 300) {
-      const error = `Failed to copy. status: ${httpStatus}`;
-      throw error;
+      const accessLog = `---POST request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+      engine.log(accessLog);
+      throw `Failed to copy. status: ${httpStatus}`;
     }
     return response;
   }
@@ -241,8 +230,7 @@
     if ( newName !== "" && newName !== null ) {
       requestBodyObj.name = newName;
     }
-    const requestBody = JSON.stringify( requestBodyObj );
-    return requestBody;
+    return JSON.stringify( requestBodyObj );
   }
 
   /**
@@ -252,8 +240,8 @@
     */
   function getNewItemId( copyResponse ) {
     const location = copyResponse.getHeaderValues("Location").get(0);
-    let monitorResponseObj = getMonitorResponseObj( location );
-    let copyStatus = monitorResponseObj.status;
+    const monitorResponseObj = getMonitorResponseObj( location );
+    const copyStatus = monitorResponseObj.status;
     let newItemId = "";
     if ( copyStatus === "notStarted" || copyStatus === "inProgress" ) {
       // 未開始または進行中の場合、newItemId は空文字列のまま
@@ -264,9 +252,8 @@
       newItemId = monitorResponseObj.resourceId;
     } else {
       // 不明なステータスの場合はエラー
-      const error = `Copy is not in progress nor completed.\n status: ${copyStatus}`;
       engine.log(`error: ${JSON.stringify( monitorResponseObj.error )}\n`);
-      throw error;
+      throw `Copy is not in progress nor completed. status: ${copyStatus}`;
     }
     return newItemId;
   }
@@ -277,19 +264,17 @@
     * @return {Object} responseObj  copy完了状態レポートのJSONオブジェクト
     */
   function getMonitorResponseObj( location ) {
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( location ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    engine.log(accessLog);
+    // API Request
+    const response = httpClient.begin() // HttpRequestWrapper
+      .get( location ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
     if (httpStatus >= 300) {
-      const error = `Failed to get monitor. status: ${httpStatus}`;
-      throw error;
+      const accessLog = `---GET request--- ${httpStatus}\n${responseStr}\n`;
+      engine.log(accessLog);
+      throw `Failed to get monitor. status: ${httpStatus}`;
     }
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    return responseObj;
+    return JSON.parse( responseStr );
   }
 
   /**
@@ -297,10 +282,10 @@
     * @param {String} driveIdOfSource  コピー元アイテムのドライブのID（フォルダのドライブIDが空文字列の場合に使用）
     * @param {String} driveIdOfDest  コピー先フォルダのドライブID
     * @param {String} newItemId  新しいファイル/ フォルダのID
-    * @param {String} token  OAuth2 トークン
+    * @param {String} oauth2  OAuth2 認証設定
     * @return {String} newItemUrl  新しいファイル / フォルダのURL
     */
-  function getNewItemUrl( driveIdOfSource, driveIdOfDest, newItemId, token ) {
+  function getNewItemUrl( driveIdOfSource, driveIdOfDest, newItemId, oauth2 ) {
     let newItemUrl = "";
     // ドライブIDを決める（コピー先フォルダのドライブIDが空文字列でなければフォルダのドライブID）
     let driveId = driveIdOfSource;
@@ -308,7 +293,7 @@
       driveId = driveIdOfDest;
     }
     if ( newItemId !== "" ) {
-      newItemUrl = getItemUrlById( driveId, newItemId, token );
+      newItemUrl = getItemUrlById( driveId, newItemId, oauth2 );
     }
     return newItemUrl;
   }
@@ -317,10 +302,10 @@
     * OneDriveのドライブアイテムのメタデータを取得し、URLを返す
     * @param {String} driveId  ドライブID
     * @param {String} itemId  アイテムID
-    * @param {String} token  OAuth2 トークン
-    * @return {String} itemUrl  ドライブアイテムのURL
+    * @param {String} oauth2  OAuth2 認証設定
+    * @return {String} webUrl  ドライブアイテムのURL
     */
-  function getItemUrlById( driveId, itemId, token ) {
+  function getItemUrlById( driveId, itemId, oauth2 ) {
     if (itemId === "" || itemId === null) {
       throw `DriveItem ID is empty.`;
     }
@@ -328,23 +313,19 @@
       throw `Drive ID is empty.`;
     }
 
-    // preparing for API Request
-    let apiRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-    apiRequest = apiRequest.bearer( token );
-    // Access to the API (POST, GET, PUT, etc)
-    let response = apiRequest.get( `${GRAPH_URI}drives/${driveId}/items/${itemId}` ); // HttpResponseWrapper
-    const httpStatus = response.getStatusCode() + "";
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-    engine.log(accessLog);
+    // API Request
+    const response = httpClient.begin() // HttpRequestWrapper
+      .authSetting( oauth2 ) // Request HEADER (OAuth2 Token)
+      .get( `${GRAPH_URI}drives/${driveId}/items/${itemId}` ); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
     if (httpStatus >= 300) {
-      const error = `Failed to get file. status: ${httpStatus}`;
-      throw error;
+      const accessLog = `---GET request--- ${httpStatus}\n${responseStr}\n`;
+      engine.log(accessLog);
+      throw `Failed to get file. status: ${httpStatus}`;
     }
-    const responseObj = JSON.parse( response.getResponseAsString() );
-    const itemUrl = responseObj.webUrl;
-    return itemUrl;
+    const responseObj = JSON.parse( responseStr );
+    return responseObj.webUrl;
   }
 
 ]]></script>
