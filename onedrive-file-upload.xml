@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Upload File</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-<last-modified>2021-04-19</last-modified>
+<last-modified>2021-05-27</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -19,9 +19,13 @@
     <label>C3: Folder URL files will be uploaded (Root folder if blank)</label>
     <label locale="ja">C3: ファイルをアップロードするフォルダの URL (指定がない場合は、ルートフォルダ)</label>
   </config>
+  <config name="conf_shouldReplace" form-type="TOGGLE">
+    <label>C4: Replace if the file with the same name already exists</label>
+    <label locale="ja">C4: 同名のファイルがある場合、上書きする</label>
+  </config>
   <config name="conf_fileUrl" required="false" form-type="SELECT" select-data-type="STRING">
-    <label>C4: Data item to save uploaded file URLs</label>
-    <label locale="ja">C4: ファイル URL を保存するデータ項目</label>
+    <label>C5: Data item to save uploaded file URLs</label>
+    <label locale="ja">C5: ファイル URL を保存するデータ項目</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/onedrive-file-upload/</help-page-url>
@@ -46,6 +50,8 @@ function main(){
   const oauth2 = configs.get("conf_OAuth2");
   const folderUrl = retrieveFolderUrl();
   const urlDataDef = configs.getObject("conf_fileUrl");
+  const shouldReplace = configs.getObject("conf_shouldReplace");
+
   //// == ワークフローデータの参照 / Data Retrieving ==
   const files = engine.findData( configs.getObject("conf_uploadedFile") );
   if (files === null) {
@@ -63,10 +69,10 @@ function main(){
     engine.log(`Uploading: ${files.get(i).getName()}`);
     if(files.get(i).getLength() > LIMIT_SIZE){
       //over 4MB
-      processLargeFile(oauth2,files.get(i),folderInfo,uploadedFileUrl);
+      processLargeFile(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
     }else{
       //under 4MB
-      upload(oauth2,files.get(i),folderInfo,uploadedFileUrl);
+      upload(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
     }
   }
   //// == ワークフローデータへの代入 / Data Updating ==
@@ -218,17 +224,21 @@ function encodeSharingUrl( sharingUrl ) {
   * @param {String} oauth2  OAuth2 設定情報
   * @param {File} file  アップロードするファイル
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
+  * @param {boolean} shouldReplace  上書きするかどうか
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
 function upload(oauth2,file,{
   driveId,
   folderId
-},uploadedFileUrl){
-  const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content?@microsoft.graph.conflictBehavior=fail`;
-  let response = httpClient.begin()
+},shouldReplace,uploadedFileUrl){
+  const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
+  let request = httpClient.begin()
     .authSetting(oauth2)
-    .body(file)
-    .put(url);
+    .body(file);
+  if (!shouldReplace) { // デフォルトは replace
+    request = request.queryParam("@microsoft.graph.conflictBehavior", "fail");
+  }
+  const response = request.put(url);
 
   const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
@@ -248,16 +258,17 @@ function upload(oauth2,file,{
   * @param {String} oauth2  OAuth2 設定情報
   * @param {File} file  アップロードするファイル
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
+  * @param {boolean} shouldReplace  上書きするかどうか
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
 function processLargeFile(oauth2,file,{
   driveId,
   folderId
-},uploadedFileUrl){
+},shouldReplace,uploadedFileUrl){
   const upUrl = createSession(oauth2,file.getName(),{
     driveId,
     folderId
-  });
+  },shouldReplace);
   let range = 0;
   const fileSize = file.getLength();
 
@@ -272,23 +283,25 @@ function processLargeFile(oauth2,file,{
   * @param {String} oauth2  OAuth2 設定情報
   * @param {String} fileName  アップロードするファイルのファイル名
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
+  * @param {boolean} shouldReplace  上書きするかどうか
   * @return {String}  アップロード先 URL
   */
 function createSession(oauth2,fileName,{
   driveId,
   folderId
-}){
+},shouldReplace){
   const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(fileName)}:/createUploadSession`;
-  const body = {
-    "item": {
-      "@microsoft.graph.conflictBehavior": "fail",
-      "name" : fileName
+  let request = httpClient.begin()
+    .authSetting(oauth2);
+  if (!shouldReplace) { // デフォルトは replace
+    const body = {
+      "item": {
+        "@microsoft.graph.conflictBehavior": "fail"
+      }
     }
-  };
-  let response = httpClient.begin()
-    .authSetting(oauth2)
-    .body(JSON.stringify(body), "application/json; charset=UTF-8")
-    .post(url);
+    request = request.body(JSON.stringify(body), "application/json; charset=UTF-8");
+  }
+  const response = request.post(url);
 
   const status = response.getStatusCode();
   const responseStr = response.getResponseAsString();
