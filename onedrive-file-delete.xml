@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Delete File / Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダ削除</label>
-<last-modified>2020-07-02</last-modified>
+<last-modified>2021-05-27</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Delete files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one URL on each line.</summary>
 <summary locale="ja">OneDrive 上のファイル / フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつ URL を書くようにしてください。</summary>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_urls" required="true" form-type="SELECT" select-data-type="STRING">
     <label>C2: Data Item with File / Folder URLs to delete</label>
@@ -40,8 +40,7 @@ function main(){
 
   //// == 演算 / Calculating ==
   checkHttpRequestingLimit(urlArray);
-  const token = httpClient.getOAuth2Token(oauth2);
-  deleteItems( urlArray, token );
+  deleteItems( urlArray, oauth2 );
 }
 
 /**
@@ -75,34 +74,31 @@ function checkHttpRequestingLimit( urlArray ) {
 /**
   * ドライブアイテム（ファイル/フォルダ）を削除する。
   * @param {Array<String>} urlArray  ドライブアイテムの URL の配列
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 認証設定
   */
-function deleteItems( urlArray, token ) {
+function deleteItems( urlArray, oauth2 ) {
   const itemNum = urlArray.length;
-  engine.log(`Deleting ${itemNum} items.\n======\n`);
   for (let i = 0; i < itemNum; i++){
-    engine.log(`${i+1}: ${urlArray[i]}`);
-    const itemInfo = getItemInfoByUrl(urlArray[i],token);
-    deleteItem(itemInfo,token);
+    const itemInfo = getItemInfoByUrl(urlArray[i],oauth2);
+    deleteItem(itemInfo,oauth2,urlArray[i]);
   }
-  engine.log(`======\nSuccessfully deleted ${itemNum} items.\n`);
 }
 
 /**
   * ドライブアイテム（ファイル/フォルダ）の URL からアイテム情報（ドライブIDとアイテムID）を取得し、
   * オブジェクトで返す
   * @param {String} driveItemUrl  ドライブアイテムの URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 認証設定
   * @return {Object} itemInfo  ドライブアイテム情報 {driveId, id}
   */
-function getItemInfoByUrl( driveItemUrl, token ) {
+function getItemInfoByUrl( driveItemUrl, oauth2 ) {
   // 分割代入
   const {
     id,
     parentReference: {
       driveId
     }
-  } = getObjBySharingUrl( driveItemUrl, token ); // driveItemUrlが不正ならここでエラー
+  } = getObjBySharingUrl( driveItemUrl, oauth2 ); // driveItemUrlが不正ならここでエラー
   const itemInfo = {driveId, id};
   return itemInfo;
 }
@@ -111,10 +107,10 @@ function getItemInfoByUrl( driveItemUrl, token ) {
   * OneDriveのドライブアイテム（ファイル/フォルダ）のメタデータを取得し、JSONオブジェクトを返す
   * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 認証設定
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
-function getObjBySharingUrl( sharingUrl, token ) {
+function getObjBySharingUrl( sharingUrl, oauth2 ) {
   if (sharingUrl === "" || sharingUrl === null) {
     throw `Sharing URL is empty.`;
   }
@@ -122,22 +118,18 @@ function getObjBySharingUrl( sharingUrl, token ) {
   // encoding sharing URL
   const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
-  // preparing for API Request
-  let apiRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-  apiRequest = apiRequest.bearer( token );
-  // Access to the API (POST, GET, PUT, etc)
-  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+  // API Request
+  const response = httpClient.begin() // HttpRequestWrapper
+    .authSetting( oauth2 ) // Request HEADER (OAuth2 Token)
+    .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
   const httpStatus = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
   if (httpStatus >= 300) {
-    const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
+    const accessLog = `Deleting item: ${sharingUrl}\n---GET request--- ${httpStatus}\n${responseStr}\n`;
     engine.log(accessLog);
-    const error = `Failed to get drive item. status: ${httpStatus}`;
-    throw error;
+    throw `Failed to get drive item. status: ${httpStatus}`;
   }
-  const responseObj = JSON.parse( response.getResponseAsString() );
-  return responseObj;
+  return JSON.parse( response.getResponseAsString() );
 }
 
 /**
@@ -150,33 +142,32 @@ function encodeSharingUrl( sharingUrl ) {
   while ( encodedSharingUrl.slice(-1) === '=' ) {
     encodedSharingUrl = encodedSharingUrl.slice(0,-1);
   }
-  encodedSharingUrl = "u!" + encodedSharingUrl;
-  return encodedSharingUrl;
+  return `u!${encodedSharingUrl}`;
 }
 
 /**
   * ドライブアイテム（ファイル/フォルダ）を削除する。
   * @param {String,String} driveId,id  ドライブアイテムのドライブID、アイテムID
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 認証設定
+  * @param {String} driveItemUrl  ドライブアイテムの URL
   */
 function deleteItem( {
   driveId,
   id
-}, token ){
+}, oauth2, driveItemUrl){
   const apiUrl = `${GRAPH_URI}drives/${driveId}/items/${id}`;
   let response = httpClient.begin()
-    .bearer(token)
+    .authSetting( oauth2 )
     .delete(apiUrl);
 
   const responseJson = response.getResponseAsString();
   const status = response.getStatusCode();
   if (status >= 300) {
     //when error thrown
-    const accessLog = `---DELETE request--- ${status}\n${responseJson}\n`;
+    const accessLog = `Deleting item: ${driveItemUrl}\n---DELETE request--- ${status}\n${responseJson}\n`;
     engine.log(accessLog);
     throw `Failed to delete. status: ${status}`;
   }
-  engine.log("Deleted.\n");
 }
   ]]>
 </script>
