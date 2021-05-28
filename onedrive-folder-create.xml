@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Create Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: フォルダ作成</label>
-<last-modified>2020-07-02</last-modified>
+<last-modified>2021-05-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Create a folder in the specified folder on OneDrive.</summary>
 <summary locale="ja">OneDrive の指定フォルダ内にフォルダを作成します。</summary>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
     <config name="conf_parentFolderUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Parent Folder URL (Root Folder if blank)</label>
@@ -20,8 +20,8 @@
     <label locale="ja">C3: 作成するフォルダの名称</label>
   </config>
   <config name="conf_folderUrl" required="false" form-type="SELECT" select-data-type="STRING">
-    <label>C4: String type data Item that will save Folder URL</label>
-    <label locale="ja">C4: フォルダ URL を保存する文字型データ項目</label>
+    <label>C4: Data item to save Folder URL</label>
+    <label locale="ja">C4: フォルダ URL を保存するデータ項目</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/onedrive-folder-create/</help-page-url>
@@ -45,12 +45,10 @@ function main(){
   const parentFolderUrl = retrieveParentFolderUrl();
   const folderName = retrieveFolderName();
   const urlDataDef = configs.getObject("conf_folderUrl");
-  //// == ワークフローデータの参照 / Data Retrieving ==
-  const token = httpClient.getOAuth2Token( oauth2 );
 
   //// == 演算 / Calculating ==
-  const parentFolderInfo = getFolderInfoByUrl( parentFolderUrl, token );
-  const createdFolderUrl = createFolder( parentFolderInfo, folderName, token );
+  const parentFolderInfo = getFolderInfoByUrl( parentFolderUrl, oauth2 );
+  const createdFolderUrl = createFolder( parentFolderInfo, folderName, oauth2 );
 
   //// == ワークフローデータへの代入 / Data Updating ==
   setData( urlDataDef, createdFolderUrl );
@@ -81,10 +79,10 @@ function retrieveFolderName() {
   * フォルダのURLからフォルダ情報（ドライブIDとフォルダID）を取得し、
   * オブジェクトで返す（URLが空の場合はドライブIDをme/drive、フォルダIDをrootにする）
   * @param {String} folderUrl  フォルダのURL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定名
   * @return {Object} folderInfo  フォルダ情報 {driveId, folderId}
   */
-function getFolderInfoByUrl( folderUrl, token ) {
+function getFolderInfoByUrl( folderUrl, oauth2 ) {
   let folderInfo = {driveId: "me/drive", folderId: "root"};
   if ( folderUrl !== "" && folderUrl !== null ) {
     // 分割代入
@@ -93,7 +91,7 @@ function getFolderInfoByUrl( folderUrl, token ) {
       parentReference: {
         driveId
       }
-    } = getObjBySharingUrl( folderUrl, token );
+    } = getObjBySharingUrl( folderUrl, oauth2 );
     folderInfo = {driveId: `drives/${driveId}`, folderId: id};
   }
   return folderInfo;
@@ -103,10 +101,10 @@ function getFolderInfoByUrl( folderUrl, token ) {
   * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
   * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有URL
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定名
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
-function getObjBySharingUrl( sharingUrl, token ) {
+function getObjBySharingUrl( sharingUrl, oauth2 ) {
   if (sharingUrl === "" || sharingUrl === null) {
     throw `Sharing URL is empty.`;
   }
@@ -114,22 +112,17 @@ function getObjBySharingUrl( sharingUrl, token ) {
   // encoding sharing URL
   const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
-  // preparing for API Request
-  let apiRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-  // Request HEADER (OAuth2 Token, HTTP Basic Auth, etc)
-  apiRequest = apiRequest.bearer( token );
-  // Access to the API (POST, GET, PUT, etc)
-  let response = apiRequest.get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
+  // API Request
+  const response = httpClient.begin() // HttpRequestWrapper
+    .authSetting(oauth2)
+    .get( `${GRAPH_URI}shares/${encodedSharingUrl}/driveItem` ); // HttpResponseWrapper
   const httpStatus = response.getStatusCode();
-  const accessLog = `---GET request--- ${httpStatus}\n${response.getResponseAsString()}\n`;
-  engine.log(accessLog);
+  const responseStr = response.getResponseAsString();
   if (httpStatus >= 300) {
-    const error = `Failed to get drive item. status: ${httpStatus}`;
-    throw error;
+    engine.log(`---GET request--- ${httpStatus}\n${responseStr}\n`);
+    throw `Failed to get drive item. status: ${httpStatus}`;
   }
-  const responseObj = JSON.parse( response.getResponseAsString() );
-  return responseObj;
+  return JSON.parse( responseStr );
 }
 
 /**
@@ -142,41 +135,38 @@ function encodeSharingUrl( sharingUrl ) {
   while ( encodedSharingUrl.slice(-1) === '=' ) {
     encodedSharingUrl = encodedSharingUrl.slice(0,-1);
   }
-  encodedSharingUrl = "u!" + encodedSharingUrl;
-  return encodedSharingUrl;
+  return `u!${encodedSharingUrl}`;
 }
 
 /**
   * フォルダを作成する
   * @param {String,String} driveId,folderId  親フォルダのドライブID、フォルダID
   * @param {String} folderName  作成するフォルダの名前
-  * @param {String} token  OAuth2 トークン
+  * @param {String} oauth2  OAuth2 設定名
   * @return {String}  作成したフォルダの URL
   */
 function createFolder( {
   driveId,
   folderId
-}, folderName, token ){
+}, folderName, oauth2 ){
   const url = `${GRAPH_URI}${driveId}/items/${folderId}/children`;
   const body = {
     "name": folderName,
     "folder":{},
-    "@microsoft.graph.conflictBehavior": "fail"
-    //重複時の振る舞いを決めること
+    "@microsoft.graph.conflictBehavior": "fail" // 重複時はエラーになるように
   }
-  let response = httpClient.begin()
-    .bearer(token)
+  const response = httpClient.begin()
+    .authSetting(oauth2)
     .body(JSON.stringify(body), "application/json; charset=UTF-8")
     .post(url);
   //when error thrown
-  const responseJson = response.getResponseAsString();
+  const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  const accessLog = `---POST request--- ${status}\n${responseJson}\n`;
-  engine.log(accessLog);
   if (status >= 300) {
+    engine.log(`---POST request--- ${status}\n${responseStr}\n`);
     throw `Failed to create: ${folderName}. status: ${status}`;
   }
-  const json = JSON.parse(responseJson);
+  const json = JSON.parse(responseStr);
   return json.webUrl;
 }
 
