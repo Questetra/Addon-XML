@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download Choice Data</label>
 <label locale="ja">kintone: 選択肢データの一括取得</label>
-<last-modified>2020-10-15</last-modified>
+<last-modified>2021-05-31</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Download Choice Data in specified two fields from a Kintone App.</summary>
@@ -11,37 +11,41 @@
     <label>C1: Authorization Setting in which API Token is set</label>
     <label locale="ja">C1: API トークンを設定した認証設定</label>
   </config>
+  <config name="conf_basic" required="false" form-type="OAUTH2">
+    <label>C2: Basic Auth Setting (required if enabled on Kintone)</label>
+    <label locale="ja">C2: Basic 認証設定（kintone で設定されている場合のみ）</label>
+  </config>
   <config name="conf_domain" required="true" form-type="TEXTFIELD">
-    <label>C2: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
-    <label locale="ja">C2: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+    <label>C3: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+    <label locale="ja">C3: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
   </config>
   <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
-    <label>C3: Guest Space ID (required if the App is in a Guest Space)</label>
-    <label locale="ja">C3: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+    <label>C4: Guest Space ID (required if the App is in a Guest Space)</label>
+    <label locale="ja">C4: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
   </config>
   <config name="conf_appId" required="true" form-type="TEXTFIELD">
-    <label>C4: App ID</label>
-    <label locale="ja">C4: アプリ ID</label>
+    <label>C5: App ID</label>
+    <label locale="ja">C5: アプリ ID</label>
   </config>
   <config name="conf_idField" required="true" form-type="TEXTFIELD">
-    <label>C5: Field Code of Choice IDs</label>
-    <label locale="ja">C5: 選択肢 ID のフィールドコード</label>
+    <label>C6: Field Code of Choice IDs</label>
+    <label locale="ja">C6: 選択肢 ID のフィールドコード</label>
   </config>
   <config name="conf_labelField" required="true" form-type="TEXTFIELD">
-    <label>C6: Field Code of Choice Labels</label>
-    <label locale="ja">C6: 選択肢ラベルのフィールドコード</label>
+    <label>C7: Field Code of Choice Labels</label>
+    <label locale="ja">C7: 選択肢ラベルのフィールドコード</label>
   </config>
   <config name="conf_query" required="false" form-type="TEXTAREA" el-enabled="true">
-    <label>C7: Search Query</label>
-    <label locale="ja">C7: 検索クエリ</label>
+    <label>C8: Search Query</label>
+    <label locale="ja">C8: 検索クエリ</label>
   </config>
   <config name="conf_ids" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C8: String type data item that will save Choise IDs</label>
-    <label locale="ja">C8: 選択肢 ID の一覧を保存する文字型データ項目</label>
+    <label>C9: String type data item that will save Choise IDs</label>
+    <label locale="ja">C9: 選択肢 ID の一覧を保存する文字型データ項目</label>
   </config>
   <config name="conf_labels" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-    <label>C9: String type data item that will save Choice Labels</label>
-    <label locale="ja">C9: 選択肢ラベルの一覧を保存する文字型データ項目</label>
+    <label>C10: String type data item that will save Choice Labels</label>
+    <label locale="ja">C10: 選択肢ラベルの一覧を保存する文字型データ項目</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/kintone-choice-download/</help-page-url>
@@ -53,6 +57,7 @@ main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const auth = configs.get("conf_auth");
+  const basic = configs.get("conf_basic");
   const domain = configs.get("conf_domain");
   const guestSpaceId = configs.get("conf_guestSpaceId");
   const appId = configs.get("conf_appId");
@@ -69,12 +74,12 @@ function main(){
   const apiUri = determineApiUri( domain, guestSpaceId );
   checkAppId( appId );
 
-  checkFields( apiUri, apiToken, appId, idField, labelField );
+  checkFields( apiUri, apiToken, basic, appId, idField, labelField );
 
   const initialParams = prepareInitialParams( appId, idField, labelField, query );
   const records = []; // レコードオブジェクトを格納する配列
   const requestNum = 1; // 現時点での HTTP リクエスト回数
-  getRecords( apiUri, apiToken, initialParams, records, requestNum );
+  getRecords( apiUri, apiToken, basic, initialParams, records, requestNum );
 
   const idList = records.map( record => record[idField].value );
   const labelList = records.map( record => record[labelField].value );
@@ -149,25 +154,28 @@ function isValidId( idString ) {
   *  サポートするフィールド型： レコードID, レコード番号, 文字列（１行）, リンク, 数値, 日付, 時刻, 日時, 計算
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
+  * @param {String} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {String} idField  選択肢 ID のフィールドコード
   * @param {String} labelField  選択肢ラベルのフィールドコード
   */
-function checkFields( apiUri, apiToken, appId, idField, labelField ) {
-  const getFieldsUri = `${apiUri}app/form/fields.json?app=${appId}`;
-  engine.log(`API URI: ${getFieldsUri}`);
-  const response = httpClient.begin()
-    .header( "X-Cybozu-API-Token", apiToken )
-    .get( getFieldsUri );
+function checkFields( apiUri, apiToken, basic, appId, idField, labelField ) {
+  const getFieldsUri = `${apiUri}app/form/fields.json`;
+  let request = httpClient.begin()
+    .queryParam("app", appId)
+    .header( "X-Cybozu-API-Token", apiToken );
+  if ( basic !== "" && basic !== null ) {
+    request = request.authSetting(basic);
+  }
+  const response = request.get( getFieldsUri );
   //when error thrown
-  const responseJson = response.getResponseAsString();
+  const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
-  engine.log(accessLog);
   if (status >= 300) {
+    engine.log(`---GET request--- ${status}\n${responseStr}\n`);
     throw `Failed to get form fields. status: ${status}`;
   }
-  const json = JSON.parse(responseJson);
+  const json = JSON.parse(responseStr);
 
   // フィールドコードの存在とフィールド型をチェック（フィールドコードが'$id'であればチェック不要）
   const supportedFieldTypes = new Set( [ "RECORD_NUMBER", "SINGLE_LINE_TEXT", "LINK", "NUMBER", "DATE", "TIME", "DATETIME", "CALC" ] );
@@ -218,6 +226,7 @@ function prepareInitialParams( appId, idField, labelField, query ) {
   * 未取得のレコードがなくなるまで再帰的に実行される
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
+  * @param {String} basic  Basic 認証設定
   * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
   *   プロパティ： {String} app  アプリ ID
   *              {Set<String>} fields  フィールドコードの集合
@@ -226,7 +235,7 @@ function prepareInitialParams( appId, idField, labelField, query ) {
   * @param {Array<Object>} records  レコードオブジェクトを格納する配列
   * @param {Number} requestNum  HTTP リクエスト回数
   */
-function getRecords( apiUri, apiToken, { app, fields, query, lastRecordId }, records, requestNum ) {
+function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId }, records, requestNum ) {
   // リクエスト回数の上限チェック
   if ( requestNum + 1 > httpClient.getRequestingLimit() ) {
     throw "HTTP requests exceed the limit.";
@@ -234,30 +243,31 @@ function getRecords( apiUri, apiToken, { app, fields, query, lastRecordId }, rec
 
   const LIMIT = 500; // 1回の GET リクエストで取得できるレコードの上限件数
   const getRecordsUri = `${apiUri}records.json`;
-  let queryString;
-  if ( query === "" || query === null ) {
-    queryString = `query=$id > ${lastRecordId} order by $id asc limit ${LIMIT}`;
-  } else {
-    queryString = `query=( ${query} ) and $id > ${lastRecordId} order by $id asc limit ${LIMIT}`;
+  let request = httpClient.begin()
+    .queryParam("app", app)
+    .header( "X-Cybozu-API-Token", apiToken );
+  if ( basic !== "" && basic !== null ) {
+    request = request.authSetting(basic);
   }
-  const fieldsString = Array.from( fields, (fieldCode, i) => `fields[${i}]=${fieldCode}` ).join('&');
-  const paramsString = `app=${app}&${queryString}&${fieldsString}`;
-  engine.log(`API URI: ${getRecordsUri}`);
-  engine.log(`Params: ${paramsString}`);
-  const uriWithParams = encodeURI( `${getRecordsUri}?${paramsString}` );
-  const response = httpClient.begin()
-    .header( "X-Cybozu-API-Token", apiToken )
-    .get( uriWithParams );
+  // query パラメータの設定
+  if ( query === "" || query === null ) {
+    request = request.queryParam("query", `$id > ${lastRecordId} order by $id asc limit ${LIMIT}`);
+  } else {
+    request = request.queryParam("query", `( ${query} ) and $id > ${lastRecordId} order by $id asc limit ${LIMIT}`);
+  }
+  // fields パラメータの設定
+  Array.from(fields.values()).forEach((fieldCode, i) => {
+    request = request.queryParam(`fields[${i}]`, fieldCode);
+  });
+  const response = request.get( getRecordsUri );
   //when error thrown
-  const responseJson = response.getResponseAsString();
+  const responseStr = response.getResponseAsString();
   const status = response.getStatusCode();
-  const accessLog = `---GET request--- ${status}`;
-  engine.log(accessLog);
   if (status >= 300) {
-    engine.log(responseJson);
+    engine.log(`---GET request--- ${status}\n${responseStr}\n`);
     throw `Failed to get records. status: ${status}`;
   }
-  const json = JSON.parse(responseJson);
+  const json = JSON.parse(responseStr);
   Array.prototype.push.apply(records, json.records); // レコードオブジェクトを配列に追加
   requestNum++; // リクエスト回数を加算
 
