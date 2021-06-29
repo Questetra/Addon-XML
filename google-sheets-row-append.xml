@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-02-03</last-modified>
+<last-modified>2021-06-29</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Append New Row</label>
@@ -12,8 +12,8 @@
 
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
-    <label>C1: OAuth2 Setting Name</label>
-    <label locale="ja">C1: OAuth2 設定名</label>
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_DataIdW" required="true" form-type="TEXTFIELD">
     <label>C2: Target Spreadsheet ID</label>
@@ -22,6 +22,10 @@
   <config name="conf_DataIdX" required="true" form-type="TEXTFIELD">
     <label>C3: Target Sheet Title</label>
     <label locale="ja">C3: 入力先のシートのタイトル</label>
+  </config>
+  <config name="conf_RowNum" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C4: Data item to save the appended row number</label>
+    <label locale="ja">C4: 追加した行の行番号を保存するデータ項目</label>
   </config>
   <config name="conf_DataIdA" required="false" form-type="TEXTAREA" el-enabled="true">
     <label>C-A: Column-A Value of New Row</label>
@@ -74,118 +78,171 @@
 // - Consumer Key: (Get by Google Developers Console)
 // - Consumer Secret: (Get by Google Developers Console)
 
-
-//// == Config Retrieving / 工程コンフィグの参照 ==
 main();
 function main(){
+  //// == Config Retrieving / 工程コンフィグの参照 ==
   const oauth2 = configs.get( "conf_OAuth2" );
   const spreadsheetId = configs.get( "conf_DataIdW" );
   const sheetName = configs.get( "conf_DataIdX" );
-  const dataIdA = configs.get( "conf_DataIdA" );
-  const dataIdB = configs.get( "conf_DataIdB" );
-  const dataIdC = configs.get( "conf_DataIdC" );
-  const dataIdD = configs.get( "conf_DataIdD" );
-  const dataIdE = configs.get( "conf_DataIdE" );
-  const dataIdF = configs.get( "conf_DataIdF" );
-  const dataIdG = configs.get( "conf_DataIdG" );
-  const dataIdH = configs.get( "conf_DataIdH" );
-  const dataIdI = configs.get( "conf_DataIdI" );
-  const dataIdJ = configs.get( "conf_DataIdJ" );
-  // convert 'java.lang.String' to 'javascript string'
+  const rowNumDef = configs.getObject( "conf_RowNum" );
+
+  const columns = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+  const dataArray = columns.map( i => configs.get( `conf_DataId${i}` ) );
 
   //// == Calculating / 演算 ==
-  // Request QUERY (?a=b)
-  // (no set)
-  let requestObj = {};
+  const row = buildRowObj(dataArray);
+  const sheetId = getSheetId(oauth2, spreadsheetId, sheetName); // Access to the API 1st(Get GID)
+  appendRow(oauth2, spreadsheetId, sheetId, row); // Access to the API 2nd(POST)
+  if(rowNumDef === null) return;
+
+  // only when rowNumDef is not null
+  const rowNum = getLastRowNum(oauth2, spreadsheetId, sheetName); // Access to the API 3rd(GET)
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  engine.setData(rowNumDef, rowNum);
+}
+
+/**
+ * 文字列データを所定の形式のセルオブジェクトに変換する。
+ * @param  {String} data 文字列データ
+ * @return {Object} cellObj 文字列データが格納されたセルオブジェクト
+ */
+function buildCellObj( data ){
+  const cellObj = {};
+  cellObj.userEnteredValue = {};
+  if( data === "" || data === null){
+    cellObj.userEnteredValue.stringValue = "";
+    return cellObj;
+  }else{ // for "STRING"
+    if(data.length > 50000){
+      throw "Can't set text over 50,000 characters.";
+    }
+    cellObj.userEnteredValue.stringValue = data;
+    return cellObj;
+  }
+}
+
+/**
+ * 文字列データを所定の形式の行オブジェクトに変換する。
+ * @param  {Array<String>} dataArray 文字列データの配列
+ * @return {Object} rowObj 文字列データが格納された行オブジェクト
+ */
+function buildRowObj( dataArray ){
+  const rowObj = {};
+  rowObj.values = dataArray.map( data => buildCellObj( data ) );
+
+  // 逆順にし、空白の要素数を数える
+  let count = 0;
+  rowObj.values.reverse().forEach( value => {
+    if(value.userEnteredValue.stringValue === ""){
+      count++;
+    }else{ // 空白でなければ、ループから抜ける
+      return;
+    }
+  });
+  // 空白部分を削除
+  rowObj.values = rowObj.values.slice(count);
+  // 逆順を元に戻す
+  rowObj.values.reverse();
+
+  if(rowObj.values.length === 0){ // すべてが空白ならエラー
+    throw "No Data to add is set.";
+  }
+
+  return rowObj;
+}
+
+/**
+ * GET リクエストを送信し、シート ID (GID) を取得する。
+ * @param {String} oauth2 OAuth2 設定名
+ * @param {String} spreadsheetId スプレッドシート ID
+ * @param {String} sheetName シート名
+ * @return {Number} sheetId シート ID (GID)
+ */
+function getSheetId(oauth2, spreadsheetId, sheetName){
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?includeGridData=false`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .get(uri);
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status !== 200) {
+    engine.log(responseStr);
+    throw `Failed to get sheet information. status: ${status}`;
+  }
+  const jsonObj = JSON.parse(responseStr);
+  engine.log(`SPREADSHEET (TITLE: ${jsonObj.properties.title}) has ${jsonObj.sheets.length} sheets`);
+  for (let i = 0; i < jsonObj.sheets.length; i++) {
+    if (jsonObj.sheets[i].properties.title === sheetName) {
+      const sheetId = parseInt(jsonObj.sheets[i].properties.sheetId, 10);
+      engine.log(`SHEET TITLE: ${sheetName} exists (id: ${sheetId})`);
+      return sheetId;
+    }
+  }
+  // error (not exist)
+  throw `Sheet ${sheetName} does not exist`;
+}
+
+/**
+ * 行追加のリクエストボディを生成する。
+ * @param  {Number} sheetId シート ID (GID)
+ * @return {Object} row 行オブジェクト
+ */
+function buildRequestObj(sheetId, row){
+  const requestObj = {};
   requestObj.requests = [];
   requestObj.requests[0] = {};
   requestObj.requests[0].appendCells = {};
-  requestObj.requests[0].appendCells.sheetId = -1;
+  requestObj.requests[0].appendCells.sheetId = sheetId;
   requestObj.requests[0].appendCells.fields = "*";
   requestObj.requests[0].appendCells.rows = [];
-  requestObj.requests[0].appendCells.rows[0] = {};
-  requestObj.requests[0].appendCells.rows[0].values = [];
+  requestObj.requests[0].appendCells.rows[0] = row;
+  return requestObj;
+}
 
-  requestObj.requests[0].appendCells.rows[0].values[0] = cellDataObject( dataIdA );
-  requestObj.requests[0].appendCells.rows[0].values[1] = cellDataObject( dataIdB );
-  requestObj.requests[0].appendCells.rows[0].values[2] = cellDataObject( dataIdC );
-  requestObj.requests[0].appendCells.rows[0].values[3] = cellDataObject( dataIdD );
-  requestObj.requests[0].appendCells.rows[0].values[4] = cellDataObject( dataIdE );
-  requestObj.requests[0].appendCells.rows[0].values[5] = cellDataObject( dataIdF );
-  requestObj.requests[0].appendCells.rows[0].values[6] = cellDataObject( dataIdG );
-  requestObj.requests[0].appendCells.rows[0].values[7] = cellDataObject( dataIdH );
-  requestObj.requests[0].appendCells.rows[0].values[8] = cellDataObject( dataIdI );
-  requestObj.requests[0].appendCells.rows[0].values[9] = cellDataObject( dataIdJ );
-  
-  let count = 0;
-  let flag = 1;
-  for(let i = 9; i > -1; i--){
-    if(requestObj.requests[0].appendCells.rows[0].values[i].userEnteredValue.stringValue === ""){
-      count++;
-      if(flag){
-        requestObj.requests[0].appendCells.rows[0].values[i] = null;
-      }
-    }else{
-      flag = 0;
-    }
-  }
-  if(count === 10){
-    throw "No Data to add is set.";
-  }
-  
-  // Access to the API 1st(Get GID)
-  const getgid = httpClient.begin().authSetting( oauth2 )
-    .get (`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`);
-  const status = getgid.getStatusCode();
-  if (status !== 200) {
-    engine.log(getgid.getResponseAsString());
-    throw `Can't get sheet information. status: ${status}`;
-  }
-  const getRes = JSON.parse(getgid.getResponseAsString());
-  const sheetArray = getRes.sheets;
-  for (var i = 0;i < sheetArray.length;i++){
-    if(sheetArray[i].properties.title === sheetName){
-      requestObj.requests[0].appendCells.sheetId = sheetArray[i].properties.sheetId;
-    }
-  }
-  if (requestObj.requests[0].appendCells.sheetId === -1){
-    throw `Sheet '${sheetName}' doesn't exist`;
-  }
-  
-  const apiUri = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`;
-  // Access to the API 2nd(POST)
-  const response = httpClient.begin().authSetting( oauth2 )
+/**
+ * 行追加の POST リクエストを送信する。
+ * @param {String} oauth2 OAuth2 設定名
+ * @param {String} spreadsheetId スプレッドシート ID
+ * @param {Number} sheetId シート ID (GID)
+ * @param {Object} row 行オブジェクト
+ */
+function appendRow(oauth2, spreadsheetId, sheetId, row){
+  const apiUri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const requestObj = buildRequestObj(sheetId, row);
+  const response = httpClient.begin()
+    .authSetting( oauth2 )
     .body( JSON.stringify( requestObj ), "application/json" )
     .post( apiUri ); // HttpResponseWrapper
-  
   const httpStatus = response.getStatusCode();
   if( httpStatus !== 200 ){
     engine.log(response.getResponseAsString());
     throw `Failed to append data. status: ${httpStatus}`;
   }
-  
-}
-// Request BODY (JSON, Form Parameters, etc)
-/**
- * 文字列データを所定の形式のオブジェクトに変換する。
- * @param  {String} data 文字列データ
- * @return {Object} dataObj 文字列データが格納されたオブジェクト
- */
-function cellDataObject( data ){
-  let dataObj = {};
-  dataObj.userEnteredValue = {};
-  if( data === "" || data === null){
-    dataObj.userEnteredValue.stringValue = "";
-    return dataObj;
-  }else{ // for "STRING" 
-    if(data.length > 50000){
-      throw "Can't set text over 50,000 character.";
-    }
-    dataObj.userEnteredValue.stringValue = data;
-    return dataObj;
-  }
 }
 
+/**
+ * GET リクエストを送信し、データが入力されている最終行の行番号を返す。
+ * @param {String} oauth2 OAuth2 設定名
+ * @param {String} spreadsheetId スプレッドシート ID
+ * @param {String} sheetName シート名
+ * @return {String} データが入力されている最終行の行番号
+ */
+function getLastRowNum(oauth2, spreadsheetId, sheetName){
+  const apiUri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(sheetName)}`;
+  const response = httpClient.begin()
+    .authSetting( oauth2 )
+    .queryParam( "majorDimension", "ROWS" )
+    .get( apiUri ); // HttpResponseWrapper
+  const httpStatus = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if( httpStatus !== 200 ){
+    engine.log(responseStr);
+    throw `Failed to get rows in the sheet. status: ${httpStatus}`;
+  }
+  const jsonObj = JSON.parse(responseStr);
+  return jsonObj.values.length.toString();
+}
 
 ]]></script>
 
