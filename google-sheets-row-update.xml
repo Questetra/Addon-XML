@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-07-26</last-modified>
+<last-modified>2021-07-29</last-modified>
 <license>(C) Questetra, In. (MIT License)</license>
 <engine-type>2</engine-type>
-<label>Google Sheets: Get Row </label>
+<label>Google Sheets: Update Row </label>
 <label locale="ja">Google スプレッドシート: 行更新</label>
 <summary>Update data in a specified row of a Google Sheet.</summary>
 <summary locale="ja">Google スプレッドシートの指定した行のデータを更新します。</summary>
@@ -16,20 +16,20 @@
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
   <config name="conf_SheetId" required="true" form-type="TEXTFIELD">
-    <label>C2: Source Spreadsheet ID</label>
+    <label>C2: Target Spreadsheet ID</label>
     <label locale="ja">C2: 入力先のスプレッドシート ID</label>
   </config>
   <config name="conf_SheetTitle" required="true" form-type="TEXTFIELD">
-    <label>C3: Source Sheet Title</label>
+    <label>C3: Target Sheet Title</label>
     <label locale="ja">C3: 入力先のシートタイトル</label>
   </config>
   <config name="conf_RowNo" required="true" form-type="SELECT"  select-data-type="STRING_TEXTFIELD">
-    <label>C4: Row to Get (e.g. "1", "11")</label>
+    <label>C4: Row to Update (e.g. "1", "11")</label>
     <label locale="ja">C4: 更新する行 (例 "1", "11")</label>
   </config>
   <config name="conf_Range" required="true" form-type="TEXTFIELD">
     <label>C5: Column Range to Update (e.g. "A:J")(Up to 10 columns)</label>
-    <label locale="ja">C5: 更新する列範囲 (例 "A:J""K:L") (最大 10 列)</label>
+    <label locale="ja">C5: 更新する列範囲 (例 "A:J","K:L") (最大 10 列)</label>
   </config>
   <config name="conf_Column1" required="false" form-type="TEXTAREA" el-enabled="true">
     <label>C6_1: Value that is updated in the 1st column </label>
@@ -82,21 +82,22 @@
 // Consumer Key: (Get by Google Developers Console)
 // Consumer Secret: (Get by Google Developers Console)
 
-const COLUMN_NUM = 10;
+let COLUMN_NUM = 10;
 
 main();
 function main(){
+
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth = configs.get( "conf_OAuth2" );
   const sheetId = configs.get( "conf_SheetId" );
   const sheetTitle = configs.get( "conf_SheetTitle" );
   const rowNo = retrieveRowNo();
   const range = configs.get( "conf_Range" );
-
+  const dataArray = retrieveRowValues(range);
   checkRowNoAndRange( rowNo, range );  
   
   //// == 演算 / Calculating ==
-  updateRowData( oauth, sheetId, sheetTitle, rowNo, range );
+  updateRowData( oauth, sheetId, sheetTitle, rowNo, range, dataArray  );
 
 }
 
@@ -106,11 +107,26 @@ function main(){
   */
 function retrieveRowNo() {
   const rowNoDef = configs.getObject( "conf_RowNo" );
-  let rowNo = configs.get( "conf_RowNo" );
-  if ( rowNoDef !== null ) {
-    rowNo = engine.findData( rowNoDef );
+  return engine.findData( rowNoDef );
+}
+
+
+
+function retrieveRowValues(range) {
+  const dataArray = [];
+  const rangeArr = range.split(':');
+
+  if ( (lettersToNumber(rangeArr[1]) - lettersToNumber(rangeArr[0]) + 1) < 10) {
+    COLUMN_NUM = lettersToNumber(rangeArr[1]) - lettersToNumber(rangeArr[0]) + 1;
+ } 
+  for (let i = 0; i < COLUMN_NUM; i++) {    
+    const value = configs.get(`conf_Column${i+1}`);
+    if(value.length > 50000){
+      throw "Can't set text over 50,000 characters.";
+    }
+    dataArray.push(value);
   }
-  return rowNo;
+return dataArray;
 }
 
 
@@ -153,6 +169,7 @@ function isValidRange( rangeString ) {
   return idReg.test( rangeString );
 }
 
+
 /**
  * Google スプレッドシートの行データを更新
  * @param {String} oauth OAuth2 認証設定
@@ -160,21 +177,21 @@ function isValidRange( rangeString ) {
  * @param {String} sheetTitle シート名
  * @param {String} rowNo 更新する行
  * @param {String} range 更新する列範囲
+ * @param {Array<String>} dataArray 更新後の値の配列
  */
-function updateRowData( oauth, sheetId, sheetTitle, rowNo, range ) {
+function updateRowData( oauth, sheetId, sheetTitle, rowNo, range, dataArray  ) {
 
-  const rangeArr = range.split(':');
+  const rangeArr2 = range.split(':');
   const enSheetId = encodeURIComponent(sheetId);
   const enSheetTitle = encodeURIComponent(sheetTitle);
   
-  const requestObj = retrieveContent();
+  const requestObj = buildRequestObj(dataArray);
   
   // Method: spreadsheets.values.update
-  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}`;
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr2[0]}${rowNo}:${rangeArr2[1]}${rowNo}`;
   const response = httpClient.begin()
     .authSetting( oauth )
     .queryParam( "valueInputOption", "USER_ENTERED" )
-    .queryParam( "includeValuesInResponse", "true" )
     .body( JSON.stringify( requestObj ), "application/json" )
     .put( uri );
   const status = response.getStatusCode();
@@ -186,35 +203,31 @@ function updateRowData( oauth, sheetId, sheetTitle, rowNo, range ) {
   }
 }
 
+
   /**
   * configから更新情報を読み出し、JSON オブジェクトを返す
-  * @return {Object} recordObj  JSON オブジェクト
+  * @param {Array<String>} dataArray 更新後の値の配列
+  * @return {Object} requestObj  JSON オブジェクト
   */
-function retrieveContent() {
-  let requestObj = {};
+function buildRequestObj( dataArray ) {
+  const requestObj = {};
   requestObj.majorDimension = "ROWS";
   requestObj.values = [];
-  requestObj.values[0] = [];
-  
-//  let count = 0;
-  for (let i = 0; i < COLUMN_NUM; i++) {    
-    const ConfigValue = configs.get(`conf_Column${i+1}`);
-    requestObj.values[0][i] = ConfigValue;
-/*
-	if(requestObj.values[0][i] === "" || requestObj.values[0][i] === null){
-      count++;
-    }
-    if(count === COLUMN_NUM){
-    throw "No Data to update is set.";
-    }
-*/
-    if(requestObj.values[0][i].length > 50000){
-      throw "Can't set text over 50,000 character.";
-    }
-  }
+  requestObj.values.push(dataArray);
   return requestObj;
 }
 
+
+// convert A to 1, Z to 26, AA to 27
+function lettersToNumber(letters){
+    const chrs = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const mode = chrs.length - 1;
+    let number = 0;
+    for(let p = 0; p < letters.length; p++){
+        number = number * mode + chrs.indexOf(letters[p]);
+    }
+    return number;
+}
 
 ]]></script>
 
