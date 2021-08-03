@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+<last-modified>2021-08-03</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Box: Create Shared Link to File</label>
+<label locale="ja">Box: ファイル共有リンク作成</label>
+<summary>Create a URL to access the specified file on Box. Created indefinitely if blank, Created without a password request if blank.</summary>
+<summary locale="ja">Box 上のファイルにアクセスできる URL を作成します。有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します。</summary>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-link-create/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-link-create/</help-page-url>
+<configs>
+  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="FileId" required="true" el-enabled="true">
+    <label>C2: File ID to share</label>
+    <label locale="ja">C2: 共有するファイル ID</label>
+  </config>
+  <config name="unsharedAt" form-type="SELECT" select-data-type="DATETIME">
+    <label>C3: Data item with Expiration of the Link</label>
+    <label locale="ja">C3: リンクの有効期限が格納されているデータ項目</label>
+  </config>
+  <config name="DownloadPass" form-type="SELECT" select-data-type="STRING">
+    <label>C4: Data item with Password of the Link</label>
+    <label locale="ja">C4: リンクのパスワードが格納されているデータ項目</label>
+  </config>
+  <config name="DownloadUrlItem" form-type="SELECT" select-data-type="STRING" required="true">
+    <label>C5: Data item that will save web the Shared Link</label>
+    <label locale="ja">C5: 共有リンクを保存するデータ項目</label>
+  </config>
+</configs>
+
+<script><![CDATA[
+main();
+function main(){
+  const fileId = configs.get("FileId");
+
+  if (fileId === "" || fileId === null) {
+    throw "File ID is blank";
+  }
+  const dateItem = configs.get("unsharedAt");
+  const passwordItem = configs.get("DownloadPass");
+  
+  let unsharedDate = null;
+  if (dateItem !== "" && dateItem !== null){
+    unsharedDate = engine.findDataByNumber(dateItem);
+  }
+
+  let password = "";
+  if (passwordItem !== "" && passwordItem !== null){
+    password = engine.findDataByNumber(passwordItem);
+  }
+
+  // get OAuth2 Setting
+  const oauth2 = configs.get("OAuth2");
+
+  // ファイルが既に共有リンク作成されているか調べる
+  const existingUrl = getFileInformation(oauth2, fileId);
+
+  //ファイルに既に共有リンクがある場合はエラーにする  共有リンクが無い場合は作成する
+  if (existingUrl !== null){
+    throw `Shared link(${existingUrl.url}) was already created.`;
+  }
+  const sharedlinkUrl = createSharedLink(oauth2, fileId, unsharedDate, password);
+
+  const UrlData = configs.getObject( "DownloadUrlItem" );
+  if (UrlData !== null) {
+    engine.setData(UrlData,sharedlinkUrl);
+  }
+}
+
+/**
+  * Get File Information on Box  ファイルが既に共有リンク作成されているか調べる
+  * @return {String}  ファイルの共有リンクオブジェクト
+  */
+function getFileInformation(oauth2, fileId) {
+  const url = `https://api.box.com/2.0/files/${fileId}?fields=shared_link`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .get(url);
+
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  engine.log(`status: ${status}`)
+
+  if (status !== 200) {
+    engine.log(responseTxt);
+    throw "Failed to get file information";
+  }
+  const jsonRes = JSON.parse(responseTxt);
+  return jsonRes.shared_link;
+}
+
+/**
+  * Create Shared Link to File on Box  共有リンク作成
+  * @return {String}  ファイルの共有リンクURL
+  */
+function createSharedLink(oauth2, fileId, unsharedDate, password) {
+  let timezone = engine.getTimeZoneId();
+  if (timezone === "GMT"){
+    timezone += "+00:00";
+  }
+
+  let jsonBody = {};
+
+  jsonBody["shared_link"] = {"access": "open"};
+  if(unsharedDate !== null){
+    jsonBody["shared_link"]["unshared_at"] = unsharedDate.toString() + timezone.slice(3);
+  }
+  if(password !== "" && password !== null){
+    jsonBody["shared_link"]["password"] = password;
+  }
+  
+  jsonBody["shared_link"]["permissions"] = {"can_download": true };
+  
+  const url = `https://api.box.com/2.0/files/${fileId}?fields=shared_link`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(jsonBody), "application/json; charset=UTF-8")
+    .put(url);
+
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  engine.log(`status: ${status}`)
+
+  if (status !== 200) {
+    engine.log(responseTxt);
+    throw "Failed to create Shared Link";
+  }
+  const jsonRes = JSON.parse(responseTxt);
+  return jsonRes.shared_link.url;
+}
+]]></script>
+
+<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
+aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
+9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
+mLcfmY9gfgB/dxBBU14rXsxIyiCmr8XKzBog0GWCeG6xeQv6X2JiegPZY3IBVnLlOVtCG6a3ObN7
+LoDacyFCBa2sUGMpGjI1kQbQao/0Lllw+YJoYTqrk9mRAdC9G8Eb+c6zLDvJHkzvbjVHGiDQpXLX
+nZw4tOMGyp02Hjn457J8WQ5WUTB9ZWkAdcIJ+XWm8XCwFkexwLWrZ+UB9OmZ0EIiAhbKH2lLAKzZ
+eaUAEhmRAAh0dYBQZ3yqKQDnaoPDp8PUVZXo/pM9EV75Ylh/77q/jO2bSlmz2mBgLErjoUHad95I
+Z/80re0Jmw+e3UD1dcU8uP+8RRTlSUK++ssA3X3ATdkA61y2nIE/9k7Rd2GWx+4uxWZkAP8bo9Ru
+YAho+XyIUruNNxsqiMzE8bxgEUV1gZneO5MAMtuTioACUM7e+W4Uj8Pg5W1rdV9cwvSsxPx+nNPn
+LvLStnI2VdsZi8TwOGyMTsY0nNth493j/9DSPmSto5BXLAigsmDLW7388MeUnuDVh9ay74n1+vvI
+zxM0vJfOkNGDtdiLDH7pn+beW+3a5kRPhK37rMJ/mScDIGcLBvfXsM61isrWs4xMxPSIpza7+ayx
+Un8rbTz94UBqZX8fqNFp+82vkzTc5dL9n54K88xHaZu5YZBnCPnq5hXhqdequecWO2rPH3j7PBvc
+qzjWVEXN9cV6HhVmJbwvf5rgcGMlT2526y1wldiYiUl9wKhtUHp4/8TYIiK0SMP6WgdfvbiRMqeN
+yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
+2bu9QqdSNC7pHrjEjo8H+GssyifPV3JfjQNHscFQOMqeoyPsfXw9vw/P8HBbv3b4bWsVG8uL8L5+
+zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
+0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
+Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
+YII=</icon>
+</service-task-definition>
