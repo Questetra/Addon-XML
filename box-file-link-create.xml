@@ -1,33 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-03</last-modified>
+<last-modified>2021-08-05</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Shared Link to File</label>
 <label locale="ja">Box: ファイル共有リンク作成</label>
-<summary>Create a URL to access the specified file on Box. Created indefinitely if blank, Created without a password request if blank.</summary>
+<summary>Create a URL to access the specified file on Box. Created with no expiration and/or no password requests if you leave them blank.</summary>
 <summary locale="ja">Box 上のファイルにアクセスできる URL を作成します。有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-link-create/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-link-create/</help-page-url>
 <configs>
-  <config name="OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="FileId" required="true" el-enabled="true">
+  <config name="conf_FileId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: File ID to share</label>
-    <label locale="ja">C2: 共有するファイル ID</label>
+    <label locale="ja">C2: 共有するファイル ID </label>
   </config>
-  <config name="unsharedAt" form-type="SELECT" select-data-type="DATETIME">
+  <config name="conf_UnsharedAt" form-type="SELECT" select-data-type="DATETIME">
     <label>C3: Data item with Expiration of the Link</label>
     <label locale="ja">C3: リンクの有効期限が格納されているデータ項目</label>
   </config>
-  <config name="DownloadPass" form-type="SELECT" select-data-type="STRING">
+  <config name="conf_Password" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
     <label>C4: Data item with Password of the Link</label>
     <label locale="ja">C4: リンクのパスワードが格納されているデータ項目</label>
   </config>
-  <config name="DownloadUrlItem" form-type="SELECT" select-data-type="STRING" required="true">
-    <label>C5: Data item that will save web the Shared Link</label>
+  <config name="conf_SharedLink" form-type="SELECT" select-data-type="STRING_TEXTFIELD" required="true">
+    <label>C5: Data item that will save the Shared Link</label>
     <label locale="ja">C5: 共有リンクを保存するデータ項目</label>
   </config>
 </configs>
@@ -35,47 +35,57 @@
 <script><![CDATA[
 main();
 function main(){
-  const fileId = configs.get("FileId");
-
-  if (fileId === "" || fileId === null) {
-    throw "File ID is blank";
-  }
-  const dateItem = configs.get("unsharedAt");
-  const passwordItem = configs.get("DownloadPass");
+  // get OAuth2 Setting
+  const oauth2 = configs.get("conf_OAuth2");
+  const fileId = decideFileId();
+  const unsharedDateDef = configs.getObject("conf_UnsharedAt");
+  const passwordDef = configs.getObject("conf_Password");
   
   let unsharedDate = null;
-  if (dateItem !== "" && dateItem !== null){
-    unsharedDate = engine.findDataByNumber(dateItem);
+  if (unsharedDateDef !== null){
+    unsharedDate = engine.findData(unsharedDateDef);
   }
 
   let password = "";
-  if (passwordItem !== "" && passwordItem !== null){
-    password = engine.findDataByNumber(passwordItem);
+  if (passwordDef !== null){
+    password = engine.findData(passwordDef);
   }
 
-  // get OAuth2 Setting
-  const oauth2 = configs.get("OAuth2");
-
-  // ファイルが既に共有リンク作成されているか調べる
-  const existingUrl = getFileInformation(oauth2, fileId);
-
-  //ファイルに既に共有リンクがある場合はエラーにする  共有リンクが無い場合は作成する
-  if (existingUrl !== null){
-    throw `Shared link(${existingUrl.url}) was already created.`;
-  }
+  checkExistingSharedLink(oauth2, fileId);
   const sharedlinkUrl = createSharedLink(oauth2, fileId, unsharedDate, password);
 
-  const UrlData = configs.getObject( "DownloadUrlItem" );
-  if (UrlData !== null) {
-    engine.setData(UrlData,sharedlinkUrl);
+  const UrlDef = configs.getObject( "conf_SharedLink" );
+  if (UrlDef !== null) {
+    engine.setData(UrlDef,sharedlinkUrl);
   }
 }
 
+
 /**
-  * Get File Information on Box  ファイルが既に共有リンク作成されているか調べる
-  * @return {String}  ファイルの共有リンクオブジェクト
+  * ファイルのIDをconfigから読み出して出力する。
+  * @return {String} fileId ファイルの ID
   */
-function getFileInformation(oauth2, fileId) {
+function decideFileId(){
+  let fileId = "";
+  const fileIdDef = configs.getObject("conf_FileId");
+  if(fileIdDef === null){
+    fileId = configs.get( "conf_FileId");
+  }else{
+    fileId = engine.findData(fileIdDef);
+  }
+  if (fileId === "" ||fileId === null) {
+    throw "File ID is blank";
+  }
+  return fileId;
+}
+
+
+/**
+  * ファイルが既に共有リンク作成されているか調べ、既に共有リンクがある場合はエラーにする
+  * @param {String} oauth OAuth2 認証設定
+  * @param {String} fileId ファイルの ID
+  */
+  function checkExistingSharedLink(oauth2, fileId) {
   const url = `https://api.box.com/2.0/files/${fileId}?fields=shared_link`;
   const response = httpClient.begin()
     .authSetting(oauth2)
@@ -83,18 +93,25 @@ function getFileInformation(oauth2, fileId) {
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  engine.log(`status: ${status}`)
 
   if (status !== 200) {
     engine.log(responseTxt);
-    throw "Failed to get file information";
+    throw `Failed to get file information. status:${status}`;
   }
   const jsonRes = JSON.parse(responseTxt);
-  return jsonRes.shared_link;
+
+  if (jsonRes.shared_link !== null){
+    throw `Shared link(${jsonRes.shared_link.url}) was already created.`;
+  }
 }
+
 
 /**
   * Create Shared Link to File on Box  共有リンク作成
+  * @param {String} oauth OAuth2 認証設定
+  * @param {String} fileId ファイルの ID
+  * @param {AddableTimestamp} unsharedDate 有効期限
+  * @param {String} password パスワード
   * @return {String}  ファイルの共有リンクURL
   */
 function createSharedLink(oauth2, fileId, unsharedDate, password) {
@@ -103,7 +120,7 @@ function createSharedLink(oauth2, fileId, unsharedDate, password) {
     timezone += "+00:00";
   }
 
-  let jsonBody = {};
+  const jsonBody = {};
 
   jsonBody["shared_link"] = {"access": "open"};
   if(unsharedDate !== null){
@@ -123,11 +140,10 @@ function createSharedLink(oauth2, fileId, unsharedDate, password) {
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  engine.log(`status: ${status}`)
 
   if (status !== 200) {
     engine.log(responseTxt);
-    throw "Failed to create Shared Link";
+    throw `Failed to create Shared Link. status:${status}`;
   }
   const jsonRes = JSON.parse(responseTxt);
   return jsonRes.shared_link.url;
