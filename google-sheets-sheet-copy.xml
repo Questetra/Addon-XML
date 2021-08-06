@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+<last-modified>2021-08-06</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Google Sheets: Copy Sheet</label>
+<label locale="ja">Google スプレッドシート: シートコピー</label>
+<summary>Copy the sheet in Google Sheet.</summary>
+<summary locale="ja">Google スプレッドシートのシートをコピーします。</summary>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-sheets-sheet-copy/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-sheets-sheet-copy/</help-page-url>
+
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_spreadSheetId" required="true" form-type="TEXTFIELD">
+    <label>C2: Copy Source Spreadsheet ID</label>
+    <label locale="ja">C2: コピー元スプレッドシートの ID</label>
+  </config>
+  <config name="conf_sheetId" required="true" form-type="TEXTFIELD">
+    <label>C3: Copy Source Sheet ID</label>
+    <label locale="ja">C3: コピーするシート ID</label>
+  </config>
+  <config name="conf_Destination" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C4: Destination Spreadsheet ID (if blank, set automatically)</label>
+    <label locale="ja">C4: コピー先スプレッドシートの ID（空白の場合、同じスプレッドシート）</label>
+  </config>
+  <config name="conf_New_SheetTitle" required="false" form-type="TEXTFIELD" el-enabled="true">
+    <label>C5: New Sheet Title (if blank, set automatically)</label>
+    <label locale="ja">C5: 新しいシートのタイトル (空白の場合、自動設定されます)</label>
+  </config>
+</configs>
+
+
+<script><![CDATA[
+// OAuth2 config
+// Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
+// Token Endpoint URL: https://accounts.google.com/o/oauth2/token
+// Scope: https://www.googleapis.com/auth/spreadsheets
+// Consumer Key: (Get by Google Developers Console)
+// Consumer Secret: (Get by Google Developers Console)
+
+main();
+function main(){
+  //// == 工程コンフィグの参照 / Config Retrieving ==
+  const oauth2 = configs.get("conf_OAuth2");
+
+  const spreadSheetId = getSheetId("conf_spreadSheetId");
+
+  const SheetId = getSheetId("conf_sheetId");
+
+  const destination = engine.findData(configs.getObject("conf_Destination"));
+  if (destination === "" || destination === null) {
+    destination = spreadSheetId
+  }
+
+  const sheetTitle = configs.get("conf_New_SheetTitle");
+
+  //// == Calculating / 演算 ==
+  const destinationSheetId = copySheet(oauth2, spreadSheetId, SheetId, destination);
+
+  if (destinationSheetId !== null) {
+    setTitle(oauth2, destination, destinationSheetId, sheetTitle);
+  }
+}
+
+
+/**
+ * configs から スプレッドシート ID を取得する
+ * @param confName 設定名
+ * @returns {string} スプレッドシート ID
+ */
+function getSheetId(confName) {
+  let SheetConfig = configs.get(confName);
+  if (SheetConfig === "" || SheetConfig === null) {
+    throw "Source Sheet ID isn't set";
+  }
+  return SheetConfig;
+}
+
+
+/**
+ * Google スプレッドシートに新しいシートを追加
+ * @param {String} oauth2 OAuth2 認証設定
+ * @param {String} spreadSheetId スプレッドシートの ID
+ * @param {String} sheetId シートの ID
+ * @param {String} destination コピー先スプレッドシート
+ */
+function copySheet(oauth2, spreadSheetId, SheetId, destination) {
+  // Method: spreadsheets.copyTo
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${spreadSheetId}/sheets/${SheetId}:copyTo`;
+
+  const requestObj = {};
+  requestObj.destinationSpreadsheetId = destination;
+  
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(requestObj), "application/json")
+    .post(uri);
+  
+  
+  
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status >= 300) {
+        engine.log(`Status: ${status}`);
+        engine.log(responseStr);
+        throw `Failed to copy sheet.`;
+  }
+
+  engine.log("Succeeded to copy sheet");
+  const destinationSheetId = JSON.parse(responseStr).sheetId;
+  return destinationSheetId;
+}
+
+
+/**
+ * Google スプレッドシートに新しいシートを追加
+ * @param {String} oauth2 OAuth2 認証設定
+ * @param {String} destination 宛先スプレッドシートの ID
+ * @param {String} destinationSheetId 宛先シートの ID
+ * @param {String} sheetTitle シートのタイトル
+ */
+function setTitle(oauth2, destination, destinationSheetId, sheetTitle) {
+  // Method: spreadsheets.batchUpdate
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(destination)}:batchUpdate`;
+  
+  const requestObj = {
+    requests: []
+  };
+
+  requestObj.requests[0] = {
+      updateSheetProperties: {
+      fields: 'title',
+      properties: {
+        "title": sheetTitle,
+        "sheetId": destinationSheetId
+      }
+    }
+  }
+  
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(requestObj), "application/json")
+    .post(uri);
+  
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status >= 300) {
+        engine.log(`Status: ${status}`);
+        engine.log(responseStr);
+        throw `Failed to set sheet title.`;
+  }
+  engine.log("Succeeded to set sheet title");
+}
+]]></script>
+
+
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADbElEQVRYR8WXS0hUURjH/2dGJFDz
+lqNimmORhAU5hRVFojgTQSTarl3azN5x1aboQdAqGoVc2AyOFoGCpQuN7E6MRIVW4BBZUqJkbYTw
++H7M48Sdx3Ve986d0crFuDjfd8/v+5/vcQ7Bf/4jyezPWfX1IKQKDDoAHIj/P8AwBoCCYAwETnqF
+71f63YQAXEc1B19aE8DMAOGUfZhRgFig8rTQRieV85EF4Gw1DQC5r3zj6K0YBUMjNTn6pCAkATir
+3gJCmpRFnNDKQo18czyruACcVW8HIZcTfjYpA2anRkdjtEsMQHjkvefuoqawQvTxMV8w54S8Y2DM
+/4uhmRGUZhfj9gcbBn+8lcZirIWaHOZwgwiAwJmrOkIGzro2lOeUJozzxcwITuYf8ts1v2lB39Sw
+HMTF8JwQAQLZrp4KT7hkAbj0LMxvLOHquwfonuQlIBiFyrsvVB2bADbDTQA3wr1SARD8F9zLuD7a
+jq6JQSklblEjL+yHTQCrQWgk2akC7FCnY2d6hug+uzqHSy+vSapAjY5dIkCwwz2LtlaqwNz6Ihbd
+yxHuK551nHpqSpgLfgWkal4pQLxdlj1rKOqqTVgRAQCbwQmgKlUFUgIAhqmRrw4pMA1CtHIAK541
+LGxEyhxtr1apkbsjMC4SK4AxauKPhhRg8aIIPwLX7294NPEch3fvR/d3HpUFOuzJ0IhuHuYF//M9
+us/eUQYgjE8jT5ICGJoZhU5TivbxPpwvPo2izLxNAJ8X9omBFAGs+oRHICjw6tdHHNMcRNvnXtRq
+z2BvZr4I4PZ58PBLfxIAzEWNDp3iJBQAeiYdOJJzAJ1fB2AoOoHCzFwRwOvzon/6dRIAkUkYd/RG
+58Do7DgqcsvQ+qkHdSWV0GYVRChwz/VEOUBwMIWqQLhqyTaibU9CxvxDSXErFspwyb0q3VgAqAiB
+RkkZMsxTE++v120ZRik0ojjDSBjH3rTp8IH0V1oxwzzUnpKYcRxoyZEXkqELrTieVyYru9Si0DW1
+j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
+kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
+AEwJzTC2ALrNAAAAAElFTkSuQmCC
+</icon>
+
+</service-task-definition>
