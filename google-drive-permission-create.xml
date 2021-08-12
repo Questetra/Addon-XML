@@ -12,7 +12,7 @@
     <label>C1: User who connects to Google Drive</label>
     <label locale="ja">C1: Google ドライブ に接続するユーザ</label>
   </config>
-  <config name="conf_FileIdItem" form-type="SELECT" select-data-type="STRING" required="true">
+  <config name="conf_FileIdsItem" form-type="SELECT" select-data-type="STRING" required="true">
     <label>C2: File / Folder IDs to share</label>
     <label locale="ja">C2: 共有するファイル・フォルダの ID</label>
   </config>
@@ -47,38 +47,54 @@
 main();
 
 function main() {
-  const fileIds = engine.findDataByNumber(configs.get("conf_FileIdItem"));
-  if (fileIds === null) {
-    throw "ID isn't set.";
-  }
-  
-  const userId = configs.get("conf_UserID");
-  const quser = quserDao.findById(parseInt(userId));
-  if (quser === null) {
-    throw `User not found: ${userId}`;
-  }
-  
+  const filesIdArray = getFileIds();
+  const quser = getQuser();
   const sharedRange = configs.get("conf_SharedRange");
   const domain = configs.get("conf_Domain");
   if (sharedRange === "domain" && domain === ""){
     throw "Domain to share isn't set.";
   }
   const allowFileDiscovery = configs.get("conf_AllowFileDiscovery");
-  const editable = configs.get("conf_Editable");
-  
-  // get OAuth token
-  let token;
-  try{
-    token = httpClient.getGoogleOAuth2Token(quser, "Drive");
-  }catch(e){
-    throw "This User has not connected with Google Drive.";
+  const editable = configs.getObject("conf_Editable");
+  for (let i = 0; i < filesIdArray.length; i++) {
+    createPermission(quser, filesIdArray[i], sharedRange, domain, allowFileDiscovery, editable);
   }
-  
-  fileIds.split("\n").forEach(function(fileId){
-    createPermission(token, fileId, sharedRange, domain, allowFileDiscovery, editable);
-  });
 }
 
+/**
+ * データ項目からファイル / フォルダ ID を取得し、配列に入れて返す
+ * ID の数が通信制限を超えていればエラー
+ * @return {Array<String>}  ファイル / フォルダ ID の配列
+ */
+function getFileIds() {
+    const fileIds = engine.findDataByNumber(configs.get("conf_FileIdsItem"));
+    if (fileIds === null) {
+        throw "File / Folder IDs aren't set.";
+    }
+    let fileIdsArray = fileIds.split("\n");
+    fileIdsArray = fileIdsArray.filter(lines => lines !== ""); // 空文字列を削除
+    if (fileIdsArray.length === 0) {
+        throw "File / Folder IDs aren't set.";
+    }
+    if (fileIdsArray.length > httpClient.getRequestingLimit()) {
+        //check number of files
+        throw "Number of File IDs is over the limit.";
+    }
+    return fileIdsArray;
+}
+
+/**
+ * 実行ユーザを取得する
+ * @return {QuserView} 実行ユーザ
+ */
+function getQuser() {
+    const quser = configs.getObject("conf_UserID");
+    if (quser === null) {
+        throw "User not found";
+    }
+    engine.log(`User Name: ${quser.getName()}`);
+    return quser;
+}
 /**
   * Google Drive 上で共有設定をする
   * create permission on Google Drive
@@ -89,24 +105,24 @@ function main() {
   * @param {String} allowFileDiscovery  検索可能にするかどうか
   * @param {String} editable  編集可能にするかどうか
   */
-function createPermission(token, fileId, shareRange, domain, allowFileDiscovery, editable) {
+function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery, editable) {
   const json = {};
-  json["role"] = editable == "true" ? "writer" : "reader";
-  json["type"] = shareRange == "public" ? "anyone" : "domain";
-  if(shareRange !== "public"){
+  json["role"] = editable ? "writer" : "reader";
+  json["type"] = sharedRange === "public" ? "anyone" : "domain";
+  if(sharedRange === "domain"){
     json["domain"] = domain;
   }
   json["allowFileDiscovery"] = allowFileDiscovery;
-  
   const url = `https://www.googleapis.com/drive/v3/files/${fileId}/permissions`;
   const response = httpClient.begin()
-    .bearer(token)
-    .queryParam("supportsAllDrives","true")
+    .googleOAuth2(quser, "Drive")
+    .queryParam("supportsAllDrives", "true")
     .body(JSON.stringify(json), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
+  engine.log(response.getResponseAsString());
   if (status >= 300) {
-    const error = `Failed to create permission:${fileId}\n${status}\n${response.getResponseAsString()}`;
+    const error = `Failed to create permission:${fileId}\nStatus:${status}\n${response.getResponseAsString()}`;
     throw error;
   }
 }
