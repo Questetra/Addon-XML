@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-06</last-modified>
+<last-modified>2021-08-12</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Copy Sheet</label>
 <label locale="ja">Google スプレッドシート: シートコピー</label>
-<summary>Copy the sheet in Google Sheet.</summary>
-<summary locale="ja">Google スプレッドシートのシートをコピーします。</summary>
+<summary>Copy a single Google Sheet to the same or another spreadsheet.</summary>
+<summary locale="ja">Google スプレッドシートのシートを同じ、または別のスプレッドシートにコピーします。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-sheets-sheet-copy/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-sheets-sheet-copy/</help-page-url>
 
@@ -15,21 +15,21 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_spreadSheetId" required="true" form-type="TEXTFIELD">
-    <label>C2: Copy Source Spreadsheet ID</label>
+  <config name="conf_SpreadSheetId" required="true" form-type="TEXTFIELD">
+    <label>C2: Source Spreadsheet ID</label>
     <label locale="ja">C2: コピー元スプレッドシートの ID</label>
   </config>
-  <config name="conf_sheetId" required="true" form-type="TEXTFIELD">
-    <label>C3: Copy Source Sheet ID</label>
-    <label locale="ja">C3: コピーするシート ID</label>
+  <config name="conf_SheetTitle" required="true" form-type="TEXTFIELD">
+    <label>C3: Source Sheet Title</label>
+    <label locale="ja">C3: コピーするシートのタイトル</label>
   </config>
   <config name="conf_Destination" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C4: Destination Spreadsheet ID (if blank, set automatically)</label>
+    <label>C4: Destination Spreadsheet ID (if blank, the same spreadsheet)</label>
     <label locale="ja">C4: コピー先スプレッドシートの ID（空白の場合、同じスプレッドシート）</label>
   </config>
-  <config name="conf_New_SheetTitle" required="false" form-type="TEXTFIELD" el-enabled="true">
+  <config name="conf_NewSheetTitle" required="false" form-type="TEXTFIELD" el-enabled="true">
     <label>C5: New Sheet Title (if blank, set automatically)</label>
-    <label locale="ja">C5: 新しいシートのタイトル (空白の場合、自動設定されます)</label>
+    <label locale="ja">C5: 新しいシートのタイトル（空白の場合、自動設定されます）</label>
   </config>
 </configs>
 
@@ -47,42 +47,63 @@ function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("conf_OAuth2");
 
-  const spreadSheetId = getSheetId("conf_spreadSheetId");
+  const spreadSheetId = configs.get("conf_SpreadSheetId");
+  if (spreadSheetId === "" || spreadSheetId === null) {
+    throw "Source SpreadSheet ID isn't set";
+  }
 
-  const SheetId = getSheetId("conf_sheetId");
+  const sheetTitle = configs.get("conf_SheetTitle");
+  if (sheetTitle === "" || sheetTitle === null) {
+    throw "Source SpreadSheet Title isn't set";
+  }
 
   const destinationDef = configs.getObject("conf_Destination");
-  if (destinationDef === "" || destinationDef === null) {
-    throw "destination is Blank"
+  let destination = "";
+  if (destinationDef === null) {
+    destination = configs.get("conf_Destination");
+  } else {
+    destination = engine.findData(destinationDef);
   }
 
-  let destination = engine.findData(destinationDef);
   if (destination === "" || destination === null) {
-    destination = spreadSheetId
+    destination = spreadSheetId;
   }
 
-  const sheetTitle = configs.get("conf_New_SheetTitle");
+  const destinationSheetTitle = configs.get("conf_NewSheetTitle");
 
   //// == Calculating / 演算 ==
-  const destinationSheetId = copySheet(oauth2, spreadSheetId, SheetId, destination);
+  const sheetId = getSheetId(oauth2, spreadSheetId, sheetTitle);
 
-  if (destinationSheetId !== null) {
-    setTitle(oauth2, destination, destinationSheetId, sheetTitle);
+  const destinationSheetId = copySheet(oauth2, spreadSheetId, sheetId, destination);
+
+  if (destinationSheetTitle !== null) {
+    setTitle(oauth2, destination, destinationSheetId, destinationSheetTitle);
   }
 }
 
 
-/**
- * configs から スプレッドシート ID を取得する
- * @param confName 設定名
- * @returns {string} スプレッドシート ID
- */
-function getSheetId(confName) {
-  let SheetConfig = configs.get(confName);
-  if (SheetConfig === "" || SheetConfig === null) {
-    throw "Source Sheet ID isn't set";
+function getSheetId(oauth2, spreadSheetId, sheetTitle){
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadSheetId)}?includeGridData=false`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .get(uri);
+  const status = response.getStatusCode();
+  const responseStr = response.getResponseAsString();
+  if (status !== 200) {
+    engine.log(responseStr);
+    throw `Failed to get sheet information. status: ${status}`;
   }
-  return SheetConfig;
+  const jsonObj = JSON.parse(responseStr);
+  engine.log(`SPREADSHEET (TITLE: ${jsonObj.properties.title}) has ${jsonObj.sheets.length} sheets`);
+  for (let i = 0; i < jsonObj.sheets.length; i++) {
+    if (jsonObj.sheets[i].properties.title === sheetTitle) {
+      const sheetId = parseInt(jsonObj.sheets[i].properties.sheetId, 10);
+      engine.log(`SHEET TITLE: ${sheetTitle} exists (id: ${sheetId})`);
+      return sheetId;
+    }
+  }
+  // error (not exist)
+  throw `Sheet ${sheetTitle} does not exist`;
 }
 
 
@@ -124,9 +145,9 @@ function copySheet(oauth2, spreadSheetId, SheetId, destination) {
  * @param {String} oauth2 OAuth2 認証設定
  * @param {String} destination コピー先スプレッドシートの ID
  * @param {String} destinationSheetId コピー先シートの ID
- * @param {String} sheetTitle シートのタイトル
+ * @param {String} destinationSheetTitle コピー先シートのタイトル
  */
-function setTitle(oauth2, destination, destinationSheetId, sheetTitle) {
+function setTitle(oauth2, destination, destinationSheetId, destinationSheetTitle) {
   // Method: spreadsheets.batchUpdate
   const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(destination)}:batchUpdate`;
   
@@ -138,7 +159,7 @@ function setTitle(oauth2, destination, destinationSheetId, sheetTitle) {
       updateSheetProperties: {
       fields: 'title',
       properties: {
-        "title": sheetTitle,
+        "title": destinationSheetTitle,
         "sheetId": destinationSheetId
       }
     }
