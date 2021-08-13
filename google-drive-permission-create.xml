@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-12</last-modified>
+<last-modified>2021-08-13</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Drive: Create Permission</label>
@@ -40,6 +40,10 @@
     <label>C6: Allow the file to be edited</label>
     <label locale="ja">C6: 編集可能にする</label>
   </config>
+  <config name="SheredUrlItem" form-type="SELECT" select-data-type="STRING">
+    <label>C7: Data Item that will save URLs of shered Files / Folders</label>
+    <label locale="ja">C7: 共有したファイル/フォルダの表示 URL を保存するデータ項目</label>
+  </config>
 </configs>
 <help-page-url>https://support.questetra.com/addons/googledrive-permissioncreate/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/addons/googledrive-permissioncreate/</help-page-url>
@@ -56,8 +60,13 @@ function main() {
   }
   const allowFileDiscovery = configs.get("conf_AllowFileDiscovery");
   const editable = configs.getObject("conf_Editable");
+  let sheredUrls = "";
   for (let i = 0; i < filesIdArray.length; i++) {
-    createPermission(quser, filesIdArray[i], sharedRange, domain, allowFileDiscovery, editable);
+    sheredUrls += createPermission(quser, filesIdArray[i], sharedRange, domain, allowFileDiscovery, editable);
+  }
+  const urlsItem = configs.get("SheredUrlItem");
+  if (urlsItem !== null && urlsItem !== "") {
+    engine.setDataByNumber(urlsItem, sheredUrls);
   }
 }
 
@@ -104,6 +113,7 @@ function getQuser() {
   * @param {String} domain  共有先ドメイン
   * @param {String} allowFileDiscovery  検索可能にするかどうか
   * @param {String} editable  編集可能にするかどうか
+  * @return {String} 共有リンク
   */
 function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery, editable) {
   const json = {};
@@ -113,18 +123,35 @@ function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery
     json["domain"] = domain;
   }
   json["allowFileDiscovery"] = allowFileDiscovery;
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}/permissions`;
-  const response = httpClient.begin()
+  const permissionUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/permissions`;
+  const responsePermission = httpClient.begin()
     .googleOAuth2(quser, "Drive")
     .queryParam("supportsAllDrives", "true")
     .body(JSON.stringify(json), "application/json; charset=UTF-8")
-    .post(url);
-  const status = response.getStatusCode();
-  engine.log(response.getResponseAsString());
+    .post(permissionUrl);
+  const status = responsePermission.getStatusCode();
   if (status >= 300) {
     const error = `Failed to create permission:${fileId}\nStatus:${status}\n${response.getResponseAsString()}`;
     throw error;
   }
+  //URL 取得
+  const getUrl = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+  const responseGet = httpClient.begin()
+    .googleOAuth2(quser, "Drive")
+    .queryParam("fields", "*")
+    .get(getUrl);
+  const resJson = JSON.parse(responseGet.getResponseAsString());
+  let sharedlink = resJson["webViewLink"];
+  if (resJson["resourceKey"] !== null && resJson["resourceKey"] !== undefined){
+    //ファイルかフォルダかでURLが変わる
+    if (resJson["mimeType"] === "application/vnd.google-apps.folder"){
+      sharedlink += `?resourcekey=${resJson["resourceKey"]}`;
+    }else{
+      //ファイルは WebViewLink の時点でパラメータが既にある
+      sharedlink += `&resourcekey=${resJson["resourceKey"]}`;
+    }
+  }
+  return(sharedlink + "\n");
 }
   ]]></script>
 
