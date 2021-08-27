@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-26</last-modified>
+<last-modified>2021-08-27</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Copy Sheet</label>
@@ -33,7 +33,6 @@
   </config>
 </configs>
 
-
 <script><![CDATA[
 // OAuth2 config
 // Authorization Endpoint URL: https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force
@@ -43,7 +42,7 @@
 // Consumer Secret: (Get by Google Developers Console)
 
 main();
-function main(){
+function main() {
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("conf_OAuth2");
 
@@ -58,15 +57,15 @@ function main(){
   }
 
   const destinationDef = configs.getObject("conf_Destination");
-  let destination = "";
+  let destinationSpreadsheetId = "";
   if (destinationDef === null) {
-    destination = configs.get("conf_Destination");
+    destinationSpreadsheetId = configs.get("conf_Destination");
   } else {
-    destination = engine.findData(destinationDef);
+    destinationSpreadsheetId = engine.findData(destinationDef);
   }
 
-  if (destination === "" || destination === null) {
-    destination = spreadSheetId;
+  if (destinationSpreadsheetId === "" || destinationSpreadsheetId === null) {
+    destinationSpreadsheetId = spreadSheetId;
   }
 
   const newSheetTitle = configs.get("conf_NewSheetTitle");
@@ -77,10 +76,20 @@ function main(){
   //// == Calculating / 演算 ==
   const sheetId = getSheetId(oauth2, spreadSheetId, sheetTitle);
 
-  const destinationSheetId = copySheet(oauth2, spreadSheetId, sheetId, destination);
+  const destinationSheetId = copySheet(
+    oauth2,
+    spreadSheetId,
+    sheetId,
+    destinationSpreadsheetId
+  );
 
   if (newSheetTitle !== "" && newSheetTitle !== null) {
-    setTitle(oauth2, destination, destinationSheetId, newSheetTitle);
+    setTitle(
+      oauth2,
+      destinationSpreadsheetId,
+      destinationSheetId,
+      newSheetTitle
+    );
   }
 }
 
@@ -91,22 +100,24 @@ function main(){
  * @param {String} sheetTitle シートタイトル
  * @return {Number} sheetId シート ID
  */
-function getSheetId(oauth2, spreadSheetId, sheetTitle){
-  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadSheetId)}?includeGridData=false`;
-  const response = httpClient.begin()
-    .authSetting(oauth2)
-    .get(uri);
+function getSheetId(oauth2, spreadSheetId, sheetTitle) {
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+    spreadSheetId
+  )}?includeGridData=false`;
+  const response = httpClient.begin().authSetting(oauth2).get(uri);
   const status = response.getStatusCode();
   const responseStr = response.getResponseAsString();
   if (status !== 200) {
     engine.log(responseStr);
     throw `Failed to get sheet information. status: ${status}`;
   }
-  const jsonObj = JSON.parse(responseStr);
-  engine.log(`SPREADSHEET (TITLE: ${jsonObj.properties.title}) has ${jsonObj.sheets.length} sheets`);
-  for (let i = 0; i < jsonObj.sheets.length; i++) {
-    if (jsonObj.sheets[i].properties.title === sheetTitle) {
-      const sheetId = parseInt(jsonObj.sheets[i].properties.sheetId, 10);
+  const { properties, sheets } = JSON.parse(responseStr);
+  engine.log(
+    `SPREADSHEET (TITLE: ${properties.title}) has ${sheets.length} sheets`
+  );
+  for (let i = 0; i < sheets.length; i++) {
+    if (sheets[i].properties.title === sheetTitle) {
+      const sheetId = parseInt(sheets[i].properties.sheetId, 10);
       engine.log(`SHEET TITLE: ${sheetTitle} exists (id: ${sheetId})`);
       return sheetId;
     }
@@ -115,26 +126,26 @@ function getSheetId(oauth2, spreadSheetId, sheetTitle){
   throw `Sheet ${sheetTitle} does not exist`;
 }
 
-
 /**
  * Google スプレッドシートに新しいシートを追加
  * @param {String} oauth2 OAuth2 認証設定
  * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetId シートの ID
- * @param {String} destination コピー先スプレッドシート
+ * @param {String} destinationSpreadsheetId コピー先スプレッドシート ID
+ * @return {String} destinationSheetId コピー先シートの ID
  */
-function copySheet(oauth2, spreadSheetId, sheetId, destination) {
+function copySheet(oauth2, spreadSheetId, sheetId, destinationSpreadsheetId) {
   // Method: spreadsheets.copyTo
-  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${spreadSheetId}/sheets/${sheetId}:copyTo`;
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+    spreadSheetId
+  )}/sheets/${encodeURIComponent(sheetId)}:copyTo`;
 
-  const requestObj = {};
-  requestObj.destinationSpreadsheetId = destination;
-  
-  const response = httpClient.begin()
+  const response = httpClient
+    .begin()
     .authSetting(oauth2)
-    .body(JSON.stringify(requestObj), "application/json")
+    .body(JSON.stringify({ destinationSpreadsheetId }), "application/json")
     .post(uri);
-  
+
   const status = response.getStatusCode();
   const responseStr = response.getResponseAsString();
   if (status >= 300) {
@@ -142,42 +153,44 @@ function copySheet(oauth2, spreadSheetId, sheetId, destination) {
     engine.log(responseStr);
     throw `Failed to copy sheet.`;
   }
-  engine.log("Succeeded to copy sheet");
-  const destinationSheetId = JSON.parse(responseStr).sheetId;
-  return destinationSheetId;
-}
 
+  engine.log("Succeeded to copy sheet");
+  return JSON.parse(responseStr).sheetId;
+}
 
 /**
  * Google スプレッドシートのシート名を変更する
  * @param {String} oauth2 OAuth2 認証設定
- * @param {String} spreadSheetId コピー先スプレッドシートの ID
- * @param {String} sheetId コピー先シートの ID
+ * @param {String} spreadSheetId スプレッドシートの ID
+ * @param {String} sheetId シートの ID
  * @param {String} newSheetTitle シートの新しいタイトル
  */
-function setTitle(oauth2, destination, destinationSheetId, newSheetTitle) {
+function setTitle(oauth2, spreadSheetId, sheetId, newSheetTitle) {
   // Method: spreadsheets.batchUpdate
-  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(destination)}:batchUpdate`;
-  
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+    spreadSheetId
+  )}:batchUpdate`;
+
   const requestObj = {
-    requests: []
+    requests: [
+      {
+        updateSheetProperties: {
+          fields: "title",
+          properties: {
+            title: newSheetTitle,
+            sheetId: sheetId,
+          },
+        },
+      },
+    ],
   };
 
-  requestObj.requests[0] = {
-    updateSheetProperties: {
-      fields: 'title',
-      properties: {
-        "title": newSheetTitle,
-        "sheetId": destinationSheetId
-      }
-    }
-  }
-  
-  const response = httpClient.begin()
+  const response = httpClient
+    .begin()
     .authSetting(oauth2)
     .body(JSON.stringify(requestObj), "application/json")
     .post(uri);
-  
+
   const status = response.getStatusCode();
   const responseStr = response.getResponseAsString();
   if (status >= 300) {
@@ -187,6 +200,7 @@ function setTitle(oauth2, destination, destinationSheetId, newSheetTitle) {
   }
   engine.log("Succeeded to set sheet title");
 }
+
 ]]></script>
 
 
