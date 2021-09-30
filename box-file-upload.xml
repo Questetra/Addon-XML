@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Box: Upload File</label>
     <label locale="ja">Box: ファイルアップロード</label>
-    <last-modified>2021-09-29</last-modified>
+    <last-modified>2021-09-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Upload files to the specified folder on Box.</summary>
@@ -554,8 +554,138 @@ const createQfile = (name, size) => {
     return engine.createQfile(name, 'text/plain; charset=US-ASCII', text);
 };
 
+
+test('Fail to multipart upload', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('fail.txt', 8));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/content');
+        expect(method).toEqual('POST');
+        expect(contentType).startsWith('multipart/form-data');
+        return httpClient.createHttpResponse(409, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to upload\nstatus: 409\nfile: fail.txt');
+    }
+});
+
+test('Failed to create upload session', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/upload_sessions');
+        expect(method).toEqual('POST');
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to create upload session \nstatus: 403\nfile: large.txt');
+    }
+});
+
+test('Failed to partial upload', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "id": "S0",
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0': {
+                expect(method).toEqual('PUT');
+                return httpClient.createHttpResponse(412, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to upload\nstatus: 412\nfile: large.txt');
+    }
+});
+
+test('Failed to commit upload session', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('大きい.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "id": "S0",
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0': {
+                expect(method).toEqual('PUT');
+                const responseObj = {
+                    "part": {
+                        "size": PART_SIZE
+                    }
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0/commit':{
+                expect(method).toEqual('POST');
+                return httpClient.createHttpResponse(416, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to commit upload session \nstatus: 416\nfile: 大きい.txt');
+    }
+});
+
 test('Success', () => {
     const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
     const files = new java.util.ArrayList();
     files.add(createQfile('...', 8));
     files.add(createQfile('large.txt', FILE_SIZE));
@@ -567,7 +697,6 @@ test('Success', () => {
         urlDef
     } = prepareConfigs(configs, files, '');
 
-    const partSize = FILE_SIZE / 2;
     let fileCount = 0;
     const fileIds = [10, 20, 30, 40];
     let sessionCount = 0;
@@ -594,7 +723,7 @@ test('Success', () => {
                 const responseObj = {
                     "id": `S${sessionCount++}`,
                     "type": "upload_session",
-                    "part_size": partSize
+                    "part_size": PART_SIZE
                 };
                 return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
             }
@@ -603,7 +732,7 @@ test('Success', () => {
                 expect(method).toEqual('PUT');
                 const responseObj = {
                     "part": {
-                        "size": partSize
+                        "size": PART_SIZE
                     }
                 };
                 return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
