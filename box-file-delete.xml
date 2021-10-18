@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-03-29</last-modified>
+<last-modified>2021-10-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Delete File</label>
@@ -28,13 +28,11 @@ function main(){
   if (fileIds === "" ||fileIds === null){
     throw "File IDs aren't set.";
   }
-
   let linesArray = fileIds.split("\n");
   linesArray = linesArray.filter(lines => lines !== ""); // 空文字列を削除
   if (linesArray.length === 0) {
     throw "File IDs aren't set.";
   }
-
   const numOfLines = linesArray.length;
   if (numOfLines > httpClient.getRequestingLimit()){
   	throw "Number of File IDs is over the limit."
@@ -44,10 +42,8 @@ function main(){
     deleteFile(oauth2, linesArray[i])
   }
 }
-
 function deleteFile(oauth2, fileId) {
   const url = `https://api.box.com/2.0/files/${fileId}`;
-
   const response = httpClient.begin()
     .authSetting(oauth2)
     .delete(url);
@@ -62,7 +58,6 @@ function deleteFile(oauth2, fileId) {
     engine.log(`Succeeded to delete File ID:${fileId}`);
   }
 }
-
 ]]></script>
   
   <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
@@ -84,4 +79,153 @@ rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
 24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
 vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
 l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==</icon>
+
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * FileId は、文字型データ項目で指定
+ * @param configs
+ * @param fileId
+ * @return {Object}
+ */
+const prepareConfigs = (configs, fileId) => {
+    configs.put('conf_OAuth2', 'Box');
+    const fileIdDef = engine.createDataDefinition('ファイル ID', 3, 'q_fileId', 'STRING_TEXTAREA');
+    configs.putObject('conf_FileIds', fileIdDef);
+    engine.setData(fileIdDef, fileId);
+
+    return fileIdDef;
+};
+
+/**
+ * リクエストのテスト
+ * @param url
+ * @param method
+ * @param id
+ */
+const assertRequest = ({url, method}, fileId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/files/${fileId}`);
+    expect(method).toEqual('DELETE');
+};
+
+test('IDs is null', () => {
+    prepareConfigs(configs, null);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("File IDs aren't set.");
+    }
+});
+
+test('IDs is blank', () => {
+    prepareConfigs(configs, '\n\n\n'); //空行が複数行あるだけ
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("File IDs aren't set.");
+    }
+});
+
+test('Number of File IDs is over the limit', () => {
+    let ids = '';
+    for (let i = 0; i <= httpClient.getRequestingLimit(); i++) {
+        ids += `f${i}\n`;
+    }
+    prepareConfigs(configs, ids);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Number of File IDs is over the limit.');
+    }
+});
+
+
+/**
+ * 削除するファイルが複数の場合（この場合、最大リクエスト数）
+ */
+test('Succeed to delete multiple files', () => {
+    let ids = '';
+    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+        ids += `f${i}\n`;
+    }
+    const fileIdDef = prepareConfigs(configs, ids);
+
+    let requestCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, `f${requestCount++}`);
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileIdDef)).toEqual(ids);
+
+    // リクエスト数をチェック
+    expect(requestCount).toEqual(httpClient.getRequestingLimit());
+});
+
+
+/**
+ * 削除するファイルが１つの場合
+ */
+test('Succeed to delete 1 file', () => {
+    const fileIdDef = prepareConfigs(configs, '12345');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, '12345');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileIdDef)).toEqual('12345');
+});
+
+
+/**
+ * ファイル削除失敗の場合（400レスポンスが返ってくる）
+ */
+test('Failed to delete file', () => {
+    let ids = '';
+    for (let i = 0; i < 2; i++) {
+        ids += `000${i}\n`;
+    }
+    prepareConfigs(configs, ids);
+
+    let requestCount = 0;
+    httpClient.setRequestHandler((request) => {
+        try {
+            assertRequest(request, `000${requestCount}`);
+            if (requestCount === 1) {
+                return httpClient.createHttpResponse(400, 'application/json', '{}');
+            } else {
+                return httpClient.createHttpResponse(204, 'application/json', '{}');
+            }
+        } finally {
+            requestCount++;
+        }
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to delete File ID:0001');
+    }
+});
+]]></test>
+
+
 </service-task-definition>
