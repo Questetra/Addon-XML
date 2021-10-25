@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-31</last-modified>
+<last-modified>2021-10-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Add Collaboration</label>
@@ -126,6 +126,7 @@ function addCollaboration(oauth2, emailAddress, role, itemType, fileOrFolderId) 
   const url = 'https://api.box.com/2.0/collaborations';
   const response = httpClient.begin()
     .authSetting(oauth2)
+    .queryParam("fields", "invite_email,role,accessible_by")
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .post(url);
   const status = response.getStatusCode();
@@ -177,4 +178,253 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * emailAddress id は、文字型データ項目で指定
+ * @param configs
+ * @param itemType
+ * @param emailAddress
+ * @param id
+ * @param role
+ * @return {{
+ *     emailAddressDef: {Object},
+ *     idDef: {Object}
+ * }}
+ */
+const prepareConfigs = (configs, itemType, emailAddress, id, role) => {
+    configs.put('conf_OAuth2', 'Box');
+    configs.put('conf_ItemType', itemType);
+
+    // 文字型データ項目を準備して、config に指定
+    const emailAddressDef = engine.createDataDefinition('メールアドレス', 3, 'q_emailAddress', 'STRING_TEXTFIELD');
+    configs.putObject('conf_EmailAddress', emailAddressDef);
+    // 文字型データ項目の値（メールアドレス）を指定
+    engine.setData(emailAddressDef, emailAddress);
+
+    // 文字型データ項目を準備して、config に指定
+    const idDef = engine.createDataDefinition('ID', 5, 'q_itemId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ItemId', idDef);
+    // 文字型データ項目の値（file/folder ID）を指定
+    engine.setData(idDef, id);
+
+    configs.put('conf_Role', role);
+
+    return {
+        emailAddressDef,
+        idDef
+    };
+};
+
+
+/**
+ * リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param emailAddress
+ * @param id
+ * @param itemType
+ * @param role
+ */
+const assertRequest = ({url, method, contentType,body}, emailAddress, id, itemType, role) => {
+    expect(url).toEqual(`https://api.box.com/2.0/collaborations?fields=invite_email%2Crole%2Caccessible_by`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.item.id).toEqual(id);
+    expect(bodyObj.item.type).toEqual(itemType);
+    expect(bodyObj.accessible_by.login).toEqual(emailAddress);
+    expect(bodyObj.role).toEqual(role);
+};
+
+/**
+ * conf_EmailAddress にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test('Email address is null', () => {
+    prepareConfigs(configs, 'folder', null, '12345', 'editor');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Email address is blank');
+    }
+});
+
+/**
+ * conf_EmailAddress に固定値を指定しているが、その固定値が空でエラーになる場合
+ */
+test('Email address is blank', () => {
+    configs.put('OAuth2', 'Box');
+    configs.put('conf_ItemType', 'folder');
+    configs.put('conf_EmailAddress', '');
+    configs.put('conf_ItemId', '12345');
+    configs.put('conf_Role', 'viewer');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Email address is blank');
+    }
+});
+
+/**
+ * conf_ItemId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test('File ID or Folder ID is null', () => {
+    prepareConfigs(configs, 'file', 'testuser@questetra.com', null, 'viewer');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File ID or Folder ID is blank');
+    }
+});
+
+/**
+ * conf_ItemId に固定値を指定しているが、その固定値が空でエラーになる場合
+ */
+test('File ID or Folder ID is blank', () => {
+    configs.put('OAuth2', 'Box');
+    configs.put('conf_ItemType', 'file');
+    configs.put('conf_EmailAddress', 'testuser@questetra.com');
+    configs.put('conf_ItemId', '');
+    configs.put('conf_Role', 'editor');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File ID or Folder ID is blank');
+    }
+});
+
+/**
+ * conf_ItemType が 'folder' で、 conf_ItemId がルートフォルダ（"0"）でエラーになる場合
+ */
+test('Root folder cannot be collaborated', () => {
+    prepareConfigs(configs, 'folder', 'testuser@questetra.com', '0', 'viewer');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Root folder cannot be collaborated');
+    }
+});
+
+/**
+ * コラボレーション追加成功の場合
+ */
+test('201 Success', () => {
+    const {
+        emailAddressDef,
+        idDef
+    } = prepareConfigs(configs, 'file', 'testuser@questetra.com', '12345', 'editor');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'testuser@questetra.com', '12345','file', 'editor');
+        // レスポンスは、簡易版レプリゼンテーション＋ field で指定した属性
+        const responseObj = {
+            "type": "collaboration",
+            "id": 12345678,
+            "invite_email": null,
+            "role": "editor",
+            "accessible_by": {
+                "type": "user",
+                "id": 12345678,
+                "name": "Test User",
+                "login": "testuser@questetra.com"
+            }
+        };
+        
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('12345');
+    expect(engine.findData(emailAddressDef)).toEqual('testuser@questetra.com');
+});
+
+/**
+ * Box への API リクエストでエラー　code が user_already_collaborator の場合
+ */
+test('Failed - user already collaborator', () => {
+    const {
+        emailAddressDef,
+        idDef
+    } = prepareConfigs(configs, 'file', 'testuser2@questetra.com', '54321', 'editor');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'testuser2@questetra.com', '54321','file', 'editor');
+        const responseObj = {
+            "type": "error",
+            "status":400,
+            "code":"user_already_collaborator",
+            "help_url":"http:\/\/developers.box.com\/docs\/#errors",
+            "message":"User is already a collaborator",
+            "request_id":"1234567890"
+        };
+        
+        return httpClient.createHttpResponse(400, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('This request is not needed, testuser2@questetra.com already collaborator. status: 400');
+    }	
+});
+
+/**
+ * Box への API リクエストでエラー　code が user_already_collaborator 以外の場合
+ */
+test('Failed - Failures other than "user already collaborator"', () => {
+    const {
+        emailAddressDef,
+        idDef
+    } = prepareConfigs(configs, 'folder', 'testuser3@questetra.com', '67890', 'viewer');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'testuser3@questetra.com', '67890','folder', 'viewer');
+        const responseObj = {
+            "type": "error",
+            "status":400,
+            "code":"method_not_allowed",
+            "help_url":"http:\/\/developers.box.com\/docs\/#errors",
+            "message":"Method Not Allowed",
+            "request_id":"1234567890"
+        };
+        
+        return httpClient.createHttpResponse(400, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to add collaboration. status: 400');
+    }	
+});
+
+]]></test>
 </service-task-definition>
