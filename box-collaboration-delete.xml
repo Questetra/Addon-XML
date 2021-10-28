@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+<last-modified>2021-10-25</last-modified>
+<license>(C) Questetra, Inc. (MIT License)</license>
+<engine-type>2</engine-type>
+<label>Box: Delete Collaboration</label>
+<label locale="ja">Box: コラボレーション削除</label>
+<summary>Delete a collaboration with the specified user from the specified file or folder on Box. The user is specified by the email address. If all the information does not match, it cannot be deleted.</summary>
+<summary locale="ja">Box の指定ファイルもしくはフォルダから、指定ユーザとのコラボレーションを削除します。ユーザはメールアドレスで指定します。全ての情報が一致しない場合は削除できません。</summary>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-collaboration-delete/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-collaboration-delete/</help-page-url>
+<configs>
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+    <label>C1: OAuth2 Setting</label>
+    <label locale="ja">C1: OAuth2 設定</label>
+  </config>
+  <config name="conf_EmailAddress" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Email address of the Box user to delete a collaboration with</label>
+    <label locale="ja">C2: コラボレーションを削除する Box ユーザのメールアドレス</label>
+  </config>
+  <config name="conf_Role" required="true" form-type="SELECT_ITEM">
+    <label>C3: Role</label>
+    <label locale="ja">C3: ロール</label>
+      <item value="editor">
+        <label>Editor</label>
+        <label locale="ja">編集者</label>
+        </item>
+      <item value="viewer">
+        <label>Viewer</label>
+        <label locale="ja">ビューア</label>
+        </item>
+  </config>
+  <config name="conf_ItemType" required="true" form-type="SELECT_ITEM">
+    <label>C4: Item type (file or folder)</label>
+    <label locale="ja">C4: 項目の種類（ファイルまたはフォルダ）</label>
+      <item value="files">
+        <label>File</label>
+        <label locale="ja">ファイル</label>
+      </item>
+      <item value="folders">
+        <label>Folder</label>
+        <label locale="ja">フォルダ</label>
+      </item>
+  </config>
+  <config name="conf_ItemId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C5: File/Folder ID to delete a collaboration from</label>
+    <label locale="ja">C5: コラボレーションを削除するファイル/フォルダの ID</label>
+  </config>
+</configs>
+
+<script><![CDATA[
+main();
+function main(){
+
+  const oauth2 = configs.get("conf_OAuth2");
+  const itemType = configs.get("conf_ItemType");
+  const fileOrFolderId = decideFileOrFolderId(itemType);
+  const emailAddress = decideEmailAddress();
+  const role = configs.get("conf_Role");
+  
+  // コラボレーションのリストを取得
+  const collaborationList = getCollaborationList(oauth2, itemType, fileOrFolderId);
+  // コラボレーションIDを探す
+  const collaborationId = findCollaborationId(collaborationList, emailAddress, role);
+  // コラボレーション削除
+  deleteCollaboration(oauth2, collaborationId);
+}
+
+/**
+  * 指定するメールアドレスをconfigから読み出して出力する
+  * @return {String}  emailAddress メールアドレス
+  */
+function decideEmailAddress(){
+  let emailAddress = "";
+  const emailAddressDef = configs.getObject("conf_EmailAddress");
+  if(emailAddressDef === null){
+    emailAddress = configs.get("conf_EmailAddress");
+  }else{
+    emailAddress = engine.findData(emailAddressDef);
+  }
+  
+  if(emailAddress === "" || emailAddress === null) {
+    throw "Email address is blank";
+  }
+  return emailAddress;
+}
+
+/**
+  * コラボレーションを削除するファイルもしくはフォルダのIDをconfigから読み出して出力する
+  * @param {String}  itemType アクセス権限が付与される項目の種類 ファイル/フォルダ
+  * @return {String} id ファイル もしくは フォルダの ID
+  */
+function decideFileOrFolderId(itemType){
+  let id = "";
+  const idDef = configs.getObject("conf_ItemId");
+  if(idDef === null){
+    id = configs.get("conf_ItemId");
+  }else{
+    id = engine.findData(idDef);
+  }
+  
+  if(id === "" || id === null) {
+    throw "File ID or Folder ID is blank";
+  }
+  
+  if(itemType === "folders" && id === "0") {
+    throw "Collaborations not available on root folder";
+  }
+  return id;
+}
+
+/**
+  * ファイルまたはフォルダのコラボレーションのリストを取得する
+  * @param {String} oauth OAuth2 設定
+  * @param {String} itemType  項目の種類 ファイル/フォルダ
+  * @param {String} fileOrFolderId ファイル/フォルダの ID
+  * @return {Object} collaborationList コラボレーションのリストを格納した JSON オブジェクト
+  */
+function getCollaborationList(oauth2, itemType, fileOrFolderId) {
+  const url = `https://api.box.com/2.0/${itemType}/${fileOrFolderId}/collaborations/`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .queryParam("fields", "id,accessible_by,role")
+    .get(url);
+  
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  
+  if (status !== 200) {
+    engine.log(responseTxt);
+    throw `Failed to get information. status:${status}`;
+  }
+  
+  const jsonRes = JSON.parse(responseTxt);
+  if (jsonRes.entries === null) {
+    throw `No collaborations in ID:${fileOrFolderId}`;
+  }
+  return jsonRes.entries;
+}
+
+/**
+  * コラボレーションのリストからコラボレーション ID を探す
+  * @param {Object} collaborationList コラボレーションのリストを格納した JSON オブジェクト
+  * @param {String} emailAddress メールアドレス
+  * @param {String} role ロール
+  * @return {String} collaborationId コラボレーション ID
+  */
+function findCollaborationId(collaborationList, emailAddress, role) {
+  for (let i = 0; i < collaborationList.length; i++){
+    if(collaborationList[i].accessible_by.login === emailAddress && collaborationList[i].role === role){
+      return collaborationList[i].id;
+    }
+  }
+  
+  throw `Could not find the collaboration`;
+}
+
+/**
+  * コラボレーションを削除する
+  * @param {String} oauth2 Oauth2設定
+  * @param {String} collaborationId コラボレーション ID
+  */
+function deleteCollaboration(oauth2, collaborationId) {
+  const url = `https://api.box.com/2.0/collaborations/${collaborationId}`;
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .delete(url);
+  
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+  
+  if (status !== 204) {
+    engine.log(responseTxt);
+    throw `Failed to delete the collaboration. status:${status}`;
+  }
+  
+}
+
+]]></script>
+
+<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
+aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
+9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
+mLcfmY9gfgB/dxBBU14rXsxIyiCmr8XKzBog0GWCeG6xeQv6X2JiegPZY3IBVnLlOVtCG6a3ObN7
+LoDacyFCBa2sUGMpGjI1kQbQao/0Lllw+YJoYTqrk9mRAdC9G8Eb+c6zLDvJHkzvbjVHGiDQpXLX
+nZw4tOMGyp02Hjn457J8WQ5WUTB9ZWkAdcIJ+XWm8XCwFkexwLWrZ+UB9OmZ0EIiAhbKH2lLAKzZ
+eaUAEhmRAAh0dYBQZ3yqKQDnaoPDp8PUVZXo/pM9EV75Ylh/77q/jO2bSlmz2mBgLErjoUHad95I
+Z/80re0Jmw+e3UD1dcU8uP+8RRTlSUK++ssA3X3ATdkA61y2nIE/9k7Rd2GWx+4uxWZkAP8bo9Ru
+YAho+XyIUruNNxsqiMzE8bxgEUV1gZneO5MAMtuTioACUM7e+W4Uj8Pg5W1rdV9cwvSsxPx+nNPn
+LvLStnI2VdsZi8TwOGyMTsY0nNth493j/9DSPmSto5BXLAigsmDLW7388MeUnuDVh9ay74n1+vvI
+zxM0vJfOkNGDtdiLDH7pn+beW+3a5kRPhK37rMJ/mScDIGcLBvfXsM61isrWs4xMxPSIpza7+ayx
+Un8rbTz94UBqZX8fqNFp+82vkzTc5dL9n54K88xHaZu5YZBnCPnq5hXhqdequecWO2rPH3j7PBvc
+qzjWVEXN9cV6HhVmJbwvf5rgcGMlT2526y1wldiYiUl9wKhtUHp4/8TYIiK0SMP6WgdfvbiRMqeN
+yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
+2bu9QqdSNC7pHrjEjo8H+GssyifPV3JfjQNHscFQOMqeoyPsfXw9vw/P8HBbv3b4bWsVG8uL8L5+
+zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
+0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
+Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
+YII=</icon>
+</service-task-definition>

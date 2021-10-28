@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2021-02-09</last-modified>
+    <last-modified>2021-10-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Google Drive: Delete File / Folder</label>
@@ -15,8 +15,8 @@
         一度に複数の削除が可能です。
         複数削除する場合、データ項目では1行につき1つずつ ID を書くようにしてください。
     </summary>
-    <help-page-url>https://support.questetra.com/addons/googledrive-folderdelete/</help-page-url>
-    <help-page-url locale="ja">https://support.questetra.com/ja/addons/googledrive-folderdelete/</help-page-url>
+    <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-folderdelete/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-folderdelete/</help-page-url>
     <configs>
         <config name="UserID" form-type="QUSER" required="true">
             <label>C1: User who connect to Google Drive</label>
@@ -119,4 +119,145 @@ function deleteFile(quser, fileId) {
         rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
         6/Q2AAAAAElFTkSuQmCC
     </icon>
+
+    <test><![CDATA[
+/**
+ * 設定の準備
+ * @param configs
+ * @param ids
+ * @return {Object}
+ */
+const prepareIdsConfig = (configs, ids) => {
+    const idDef = engine.createDataDefinition('フォルダ ID', 3, 'q_folderId', 'STRING_TEXTAREA');
+    configs.putObject('FileIdsItem', idDef);
+    engine.setData(idDef, ids);
+
+    return idDef;
+};
+
+/**
+ * 設定の準備
+ * @param configs
+ * @param ids
+ * @return {Object}
+ */
+const prepareConfigs = (configs, ids) => {
+    const quser = engine.createQuser(3, 'サウスポール', 'SouthPole@questetra.com');
+    configs.putObject('UserID', quser);
+
+    return prepareIdsConfig(configs, ids);
+};
+
+test('IDs is null', () => {
+    prepareConfigs(configs, null);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File / Folder IDs aren\'t set.');
+    }
+});
+
+test('IDs is blank', () => {
+    prepareConfigs(configs, '\n\n\n'); //空行が複数行あるだけ
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File / Folder IDs aren\'t set.');
+    }
+});
+
+test('Number of IDs are over the limit', () => {
+    let ids = '';
+    for (let i = 0; i <= httpClient.getRequestingLimit(); i++) {
+        ids += 'aaaaa\n';
+    }
+    prepareConfigs(configs, ids);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Number of File IDs is over the limit.');
+    }
+});
+
+test('User not found', () => {
+    configs.put('UserID', '3'); // UserID は空ではないが、対応する QuserView がない状態
+    prepareIdsConfig(configs, '12345');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('User not found');
+    }
+});
+
+/**
+ * リクエストのテスト
+ * @param method
+ * @param contentType
+ * @param body
+ * @param name
+ * @param parentId
+ */
+const assertRequest = ({url, method, contentType, body}, id) => {
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${id}?supportsAllDrives=true`)
+    expect(method).toEqual('PATCH');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.trashed).toEqual(true);
+};
+
+test('Succeed to delete multiple files folders', () => {
+    let ids = '';
+    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+        ids += `f${i}\n`;
+    }
+    prepareConfigs(configs, ids);
+
+    let requestCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, `f${requestCount++}`);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    expect(requestCount).toEqual(httpClient.getRequestingLimit());
+});
+
+test('Failed to delete file folder', () => {
+    let ids = '';
+    for (let i = 0; i < 2; i++) {
+        ids += `000${i}\n`;
+    }
+    prepareConfigs(configs, ids);
+
+    let requestCount = 0;
+    httpClient.setRequestHandler((request) => {
+        try {
+            assertRequest(request, `000${requestCount}`);
+            if (requestCount === 1) {
+                return httpClient.createHttpResponse(400, 'application/json', '{}');
+            } else {
+                return httpClient.createHttpResponse(200, 'application/json', '{}');
+            }
+        } finally {
+            requestCount++;
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to delete: 0001\nstatus: 400');
+    }
+});
+]]></test>
 </service-task-definition>

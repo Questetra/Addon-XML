@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Box: Upload File</label>
     <label locale="ja">Box: ファイルアップロード</label>
-    <last-modified>2021-08-26</last-modified>
+    <last-modified>2021-10-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Upload files to the specified folder on Box.</summary>
@@ -368,7 +368,6 @@ function setData(dataDef, uploadedFileData) {
   ]]>
     </script>
 
-
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
         2qSd65x11aC0YgJWZUwEWZ0D/SJaHYKKmgykbL70Bf2k4IYwZOKWOhFRMM9QZxHUjSEo+7AOlA1E
@@ -391,4 +390,612 @@ function setData(dataDef, uploadedFileData) {
         l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==
     </icon>
 
+    <test><![CDATA[
+/**
+ * 設定の準備
+ * @param configs
+ * @param files
+ * @param folderId
+ * @return {{
+ *     fileDef: {Object},
+ *     idDef: {Object},
+ *     urlDef: {Object}
+ * }}
+ */
+const prepareConfigs = (configs, files, folderId) => {
+    configs.put('conf_OAuth2', 'Box');
+
+    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
+    configs.putObject('uploadedFile', fileDef);
+    engine.setData(fileDef, files);
+
+    configs.put('uploadedFolderId', folderId);
+
+    const idDef = engine.createDataDefinition('ファイルID', 2, 'q_ids', 'STRING_TEXTAREA');
+    configs.putObject('fileId', idDef);
+    engine.setData(idDef, '事前文字列');
+
+    const urlDef = engine.createDataDefinition('ファイルURL', 3, 'q_urls', 'STRING_TEXTAREA');
+    configs.putObject('fileUrl', urlDef);
+    engine.setData(urlDef, '事前文字列');
+
+    return {
+        fileDef,
+        idDef,
+        urlDef
+    };
+};
+
+/**
+ * 指定サイズのテキストファイルを作成
+ * @param name
+ * @param size
+ */
+const createQfile = (name, size) => {
+    let text = '';
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 < size) {
+            text += text;
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, 'text/plain; charset=US-ASCII', text);
+};
+
+test('File is null', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, null, '');
+
+    execute();
+
+    expect(engine.findData(idDef)).toEqual('');
+    expect(engine.findData(urlDef)).toEqual('');
+});
+
+test('File Count > requestingLimit', () => {
+    const files = new java.util.ArrayList();
+    while (files.size() <= httpClient.getRequestingLimit()) {
+        files.add(createQfile('テスト', 0));
+    }
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Number of requests is over the limit');
+    }
+});
+
+test('File Name contains /', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile('テスト/テスト', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Name contains \\', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile('テスト\\テスト', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Name starts with space', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile(' test', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Name ends with space', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile('test ', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Name is .', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile('.', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Name is ..', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テスト', 0));
+    files.add(createQfile('..', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Invalid File Name');
+    }
+});
+
+test('File Names are duplicated', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('...', 0));
+    files.add(createQfile('...', 0));
+
+    prepareConfigs(configs, files, '');
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Two or more files to upload have the same name.');
+    }
+});
+
+test('Fail to multipart upload', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('fail.txt', 8));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/content');
+        expect(method).toEqual('POST');
+        expect(contentType).startsWith('multipart/form-data');
+        return httpClient.createHttpResponse(409, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to upload\nstatus: 409\nfile: fail.txt');
+    }
+});
+
+test('Failed to create upload session', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/upload_sessions');
+        expect(method).toEqual('POST');
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to create upload session \nstatus: 403\nfile: large.txt');
+    }
+});
+
+test('Failed to partial upload', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "id": "S0",
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0': {
+                expect(method).toEqual('PUT');
+                return httpClient.createHttpResponse(412, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to upload\nstatus: 412\nfile: large.txt');
+    }
+});
+
+test('Failed to commit upload session', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('大きい.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "id": "S0",
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0': {
+                expect(method).toEqual('PUT');
+                const responseObj = {
+                    "part": {
+                        "size": PART_SIZE
+                    }
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0/commit': {
+                expect(method).toEqual('POST');
+                return httpClient.createHttpResponse(416, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('failed to commit upload session \nstatus: 416\nfile: 大きい.txt');
+    }
+});
+
+test('File Count > 1 and FileId is TextField', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('1.txt', 0));
+    files.add(createQfile('2.txt', 0));
+
+    prepareConfigs(configs, files, '');
+
+    // TEXTFIELD に上書き
+    const idDef = engine.createDataDefinition('ファイルID', 2, 'q_ids', 'STRING_TEXTFIELD');
+    configs.putObject('fileId', idDef);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Multiple files are set though the Data Item to save the output is Single-line String.');
+    }
+});
+
+test('File Count > 1 and FileUrl is TextField', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('1.txt', 0));
+    files.add(createQfile('2.txt', 0));
+
+    prepareConfigs(configs, files, '');
+
+    // TEXTFIELD に上書き
+    const urlDef = engine.createDataDefinition('ファイルURL', 3, 'q_urls', 'STRING_TEXTFIELD');
+    configs.putObject('fileUrl', urlDef);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Multiple files are set though the Data Item to save the output is Single-line String.');
+    }
+});
+
+test('File Count = 1 and FileId FileUrl is TextField', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('1.txt', 10));
+
+    prepareConfigs(configs, files, '12345');
+
+    // TEXTFIELD に上書き
+    const idDef = engine.createDataDefinition('ファイルID', 2, 'q_ids', 'STRING_TEXTFIELD');
+    configs.putObject('fileId', idDef);
+    const urlDef = engine.createDataDefinition('ファイルURL', 3, 'q_urls', 'STRING_TEXTFIELD');
+    configs.putObject('fileUrl', urlDef);
+
+    httpClient.setRequestHandler(({url, method, contentType, body}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/content');
+        expect(method).toEqual('POST');
+        expect(contentType).startsWith('multipart/form-data');
+        expect(body.size()).toEqual(2);
+        const attributes = JSON.parse(body.get('attributes').get(0));
+        expect(attributes.parent.id).toEqual('12345');
+        expect(attributes.name).toEqual('1.txt');
+        const file = body.get('file').get(0);
+        expect(file.getName()).toEqual('1.txt');
+        expect(file.getContentType()).startsWith('text/plain');
+        expect(file.getLength()).toEqual(10);
+        const responseObj = {
+            "entries": [
+                {
+                    "id": 1234,
+                    "etag": 1,
+                    "type": "file"
+                }
+            ],
+            "total_count": 1
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    execute();
+
+    expect(engine.findData(idDef)).toEqual('1234');
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/file/1234');
+});
+
+
+test('Failed to Upload too Large File', () => {
+    const maxRequests = httpClient.getRequestingLimit() - 2;
+    const FILE_SIZE = 52428800 + 1;
+    const PART_SIZE = Math.ceil(FILE_SIZE / maxRequests) - 1; // HTTP request わずかに足りない PART_SIZE
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/upload_sessions');
+        expect(method).toEqual('POST');
+        const responseObj = {
+            "id": `S99999`,
+            "type": "upload_session",
+            "part_size": PART_SIZE
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Number of requests is over the limit');
+    }
+});
+
+test('Failed to Upload Large File and Small File', () => {
+    const maxRequests = httpClient.getRequestingLimit() - 2;
+    const FILE_SIZE = 52428800 + 1;
+    const PART_SIZE = Math.ceil(FILE_SIZE / maxRequests); // HTTP request ぎりぎりの PART_SIZE
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+    files.add(createQfile('smal.txt', 0)); // サイズの小さなファイルがあるため、request 数が足りない
+
+    prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        expect(url).toEqual('https://upload.box.com/api/2.0/files/upload_sessions');
+        expect(method).toEqual('POST');
+        const responseObj = {
+            "id": `S99999`,
+            "type": "upload_session",
+            "part_size": PART_SIZE
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Number of requests is over the limit');
+    }
+});
+
+test('Succeed to Upload Large File', () => {
+    const maxRequests = httpClient.getRequestingLimit() - 2;
+    const FILE_SIZE = 52428800 + 1;
+    const PART_SIZE = Math.ceil(FILE_SIZE / maxRequests); // HTTP request 使い切る PART_SIZE
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('large.txt', FILE_SIZE));
+
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, files, '');
+
+    httpClient.setRequestHandler(({url, method, contentType, body}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                expect(contentType).toEqual('application/json; charset=UTF-8');
+                const bodyObj = JSON.parse(body);
+                expect(bodyObj.file_name).toEqual('large.txt');
+                expect(bodyObj.file_size).toEqual(FILE_SIZE);
+                expect(bodyObj.folder_id).toEqual('0');
+                const responseObj = {
+                    "id": `S99999`,
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S99999': {
+                expect(method).toEqual('PUT');
+                const responseObj = {
+                    "part": {
+                        "size": PART_SIZE
+                    }
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S99999/commit': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "entries": [
+                        {
+                            "id": 98765,
+                            "etag": 1,
+                            "type": "file"
+                        }
+                    ],
+                    "total_count": 1
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    execute();
+
+    expect(engine.findData(idDef)).toEqual('98765');
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/file/98765');
+});
+
+test('Succeed to Upload multiple size files', () => {
+    const FILE_SIZE = 52428800 + 4;
+    const PART_SIZE = FILE_SIZE / 2;
+
+    const files = new java.util.ArrayList();
+    files.add(createQfile('...', 8));
+    files.add(createQfile('large.txt', FILE_SIZE));
+    files.add(createQfile('大きい.txt', FILE_SIZE));
+    files.add(createQfile('test テスト', 16));
+
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, files, '12345');
+
+    let fileCount = 0;
+    const fileIds = [10, 20, 30, 40];
+    let sessionCount = 0;
+    httpClient.setRequestHandler(({url, method, contentType, body}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://upload.box.com/api/2.0/files/content': {
+                expect(method).toEqual('POST');
+                expect(contentType).startsWith('multipart/form-data');
+                expect(body.size()).toEqual(2);
+                const attributes = JSON.parse(body.get('attributes').get(0));
+                expect(attributes.parent.id).toEqual('12345');
+                const file = body.get('file').get(0);
+                expect(file.getContentType()).startsWith('text/plain');
+                const responseObj = {
+                    "entries": [
+                        {
+                            "id": fileIds[fileCount++],
+                            "etag": 1,
+                            "type": "file"
+                        }
+                    ],
+                    "total_count": 1
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions': {
+                expect(method).toEqual('POST');
+                expect(contentType).toEqual('application/json; charset=UTF-8');
+                const bodyObj = JSON.parse(body);
+                expect(bodyObj.file_size).toEqual(FILE_SIZE);
+                expect(bodyObj.folder_id).toEqual('12345');
+                const responseObj = {
+                    "id": `S${sessionCount++}`,
+                    "type": "upload_session",
+                    "part_size": PART_SIZE
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0':
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S1': {
+                expect(method).toEqual('PUT');
+                const responseObj = {
+                    "part": {
+                        "size": PART_SIZE
+                    }
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S0/commit':
+            case 'https://upload.box.com/api/2.0/files/upload_sessions/S1/commit': {
+                expect(method).toEqual('POST');
+                const responseObj = {
+                    "entries": [
+                        {
+                            "id": fileIds[fileCount++],
+                            "etag": 1,
+                            "type": "file"
+                        }
+                    ],
+                    "total_count": 1
+                };
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    execute();
+
+    expect(engine.findData(idDef)).toEqual('10\n20\n30\n40');
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/file/10\nhttps://app.box.com/file/20\nhttps://app.box.com/file/30\nhttps://app.box.com/file/40');
+});
+]]></test>
 </service-task-definition>
