@@ -471,68 +471,70 @@ test('Failed - GET success, but the folder cannot be found in 3 entries', () => 
 
 /**
  * フォルダ検索成功
- * リクエスト2回
+ * リクエスト2回目で検索される
  */
 test('200 success - 2 requests', () => {
 
     const {
         idDef,
         urlDef
-    } = prepareConfigs(configs, '54321', 'testnext');
+    } = prepareConfigs(configs, '54321', 'test1002');
+	
+    const requestCount = 0;
 	
     httpClient.setRequestHandler(({url, method}) => {
         engine.log(url);
-        switch (url) {
-            case 'https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=': {
-                expect(method).toEqual('GET');
-                const responseObj = {
-                    "entries": [
-                      {
-                      "id": 22222,
-                      "etag": 1,
-                      "type": "folder",
-                      "sequence_id": 3,
-                      "name": "test2"
-                      }
-                    ],
-                    "limit": 1000,
-                    "next_marker": "next",
-                    "offset": 2000,
-                    "order": [
-                      {
-                      "by": "type",
-                      "direction": "ASC"
-                      }
-                    ],
-                  "total_count": 5000
-                    };
-                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-            }
-            case 'https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=next': {
-                expect(method).toEqual('GET');
-                const responseObj = {
-                    "entries": [
-                      {
-                      "id": 11111,
-                      "etag": 1,
-                      "type": "folder",
-                      "sequence_id": 3,
-                      "name": "testnext"
-                      }
-                    ],
-                    "limit": 1000,
-                    "offset": 2000,
-                    "order": [
-                      {
-                      "by": "type",
-                      "direction": "ASC"
-                      }
-                    ],
-                  "total_count": 5000
-                    };
-                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-            }          
+
+        if (requestCount === 0) {
+            expect(url).toEqual('https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=');
+        }else{
+            expect(url).toEqual('https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=next%24%7BrequestCount%2B%2B%7D');
         }
+        expect(method).toEqual('GET');
+
+        const responseObj = {
+            "entries": [
+                    ],
+            "limit": 1000,
+            "next_marker": 'next${requestCount++}',
+            "offset": 2000,
+            "order": [
+              {
+               "by": "type",
+               "direction": "ASC"
+              }
+            ],
+            "total_count": 5000
+              };
+
+            // responseObj の 配列"entries" に 1000 アイテム分の簡易版レプリゼンテーションを push する
+            // 1回目のリクエストで返すアイテムは 、ID が 1 から 1000 のもの
+            // 10回目のリクエストで返すアイテムは 、ID が 9001 から 10000 のもの
+            for(let i = 0; i < 1000; i++){
+              let idNumber = (i + 1) + (requestCount - 1)*1000;
+              // 奇数 ID がファイルで、偶数 ID がフォルダとする
+              if(i%2 === 0 ){
+                  responseObj['entries'].push({
+                      "id": idNumber,
+                      "etag": 1,
+                      "type": "file",
+                      "sequence_id": 3,
+                      "name": 'test${idNumber}'
+                      });
+               }else{
+                  responseObj['entries'].push({
+                      "id": idNumber,
+                      "etag": 1,
+                      "type": "folder",
+                      "sequence_id": 3,
+                      "name": 'test${idNumber}'
+                      });
+               }
+               }
+
+            requestCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+                          
     });
 
 
@@ -541,8 +543,8 @@ test('200 success - 2 requests', () => {
     execute();
 
     // 文字型データ項目の値をチェック
-    expect(engine.findData(idDef)).toEqual(11111);
-    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/11111');
+    expect(engine.findData(idDef)).toEqual(1002);
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/1002');
 });
 
 
@@ -573,7 +575,7 @@ test('Too many folders and files are in the specified folder', () => {
             "entries": [
                     ],
             "limit": 1000,
-            "next_marker": "next${requestCount++}",
+            "next_marker": 'next${requestCount++}',
             "offset": 2000,
             "order": [
               {
@@ -584,26 +586,27 @@ test('Too many folders and files are in the specified folder', () => {
             "total_count": 5000
               };
 
-            // 1回のリクエストで responseObj の 配列"entries" に 1000 アイテム分の簡易版レプリゼンテーションを push する
+            // responseObj の 配列"entries" に 1000 アイテム分の簡易版レプリゼンテーションを push する
             // 1回目のリクエストで返すアイテムは 、ID が 1 から 1000 のもの
             // 10回目のリクエストで返すアイテムは 、ID が 9001 から 10000 のもの
-            for(let limitCount = 0; limitCount < 1000; limitCount++){
+            for(let i = 0; i < 1000; i++){
+              const idNumber = (i + 1) + (requestCount - 1)*1000;
               // 奇数 ID がファイルで、偶数 ID がフォルダとする
-              if(limitCount%2 === 0 ){
+              if(i%2 === 0 ){
                   responseObj['entries'].push({
-                      "id": (limitCount + 1) + requestCount*1000,
+                      "id": idNumber,
                       "etag": 1,
                       "type": "file",
                       "sequence_id": 3,
-                      "name": "test${(limitCount + 1) + requestCount*1000}"
+                      "name": 'test${idNumber}'
                       });
                }else{
                   responseObj['entries'].push({
-                      "id": (limitCount + 1) + requestCount*1000,
+                      "id": idNumber,
                       "etag": 1,
                       "type": "folder",
                       "sequence_id": 3,
-                      "name": "test${(limitCount + 1) + requestCount*1000}"
+                      "name": 'test${idNumber}'
                       });
                }
                }
@@ -618,7 +621,7 @@ test('Too many folders and files are in the specified folder', () => {
     // <script> のスクリプトを実行し、エラーがスローされることを確認
     try {
         execute();
-        fail('not come here');
+        fail('not ome here');
     } catch (e) {
         expect(e.message).endsWith("Too many folders and files are in the specified folder");
     }
