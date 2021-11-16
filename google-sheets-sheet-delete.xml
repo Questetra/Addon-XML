@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-10-11</last-modified>
+<last-modified>2021-11-15</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Delete Sheet</label>
@@ -144,4 +144,188 @@ kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
 AEwJzTC2ALrNAAAAAElFTkSuQmCC
 </icon>
 
+<test><![CDATA[
+
+const SAMPLE_GET = {
+  "spreadsheetId": "abc123",
+  "sheets": [
+    {
+      "properties": {
+        "sheetId": 0,
+        "title": "シート1",
+        "index": 0,
+        "sheetType": "GRID",
+        "gridProperties": {
+          "rowCount": 1000,
+          "columnCount": 26
+        }
+      }
+    },
+    {
+      "properties": {
+        "sheetId": 1,
+        "title": "シート2",
+        "index": 1,
+        "sheetType": "GRID",
+        "gridProperties": {
+          "rowCount": 1000,
+          "columnCount": 26
+        }
+      }
+    }
+  ],
+  "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/abc123/edit?ouid=102859041491136123607"
+}
+
+const SAMPLE_POST = {
+  "spreadsheetId": "abc123",
+  "replies": [
+    {}
+  ]
+}
+
+/**
+ * 設定の準備
+ * @param configs
+ * @param spreadSheetId
+ * @param sheetTitle
+ */
+const prepareConfigs = (configs, spreadSheetId, sheetTitle) => {
+    configs.put('conf_OAuth2', 'Google');
+    configs.put('conf_SpreadSheetId', spreadSheetId);
+    configs.put('conf_SheetTitle', sheetTitle);
+    
+};
+
+/**
+ * conf_SheetTitle が、空でエラーになる場合
+ */
+test('Sheet Title is blank', () => {
+    prepareConfigs(configs, 'abc123', '');
+    
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Sheet Title is empty.');
+    }
+});
+
+/**
+ * GET リクエストのテスト（Google スプレッドシートのシート ID を取得）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param spreadSheetId
+ */
+const assertGetRequest = ({url, method}, spreadSheetId) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadSheetId
+        )}?includeGridData=false`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * POST リクエストのテスト (Google スプレッドシートのシートを削除)
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetId
+ */
+const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, sheetId) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadSheetId
+        )}:batchUpdate`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.requests[0].deleteSheet.sheetId).toEqual(sheetId);
+};
+
+/**
+ * シート削除成功の場合
+ */
+test('Success', () => {
+    prepareConfigs(configs, 'abc123', 'シート1');
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        assertPostRequest(request, 'abc123', 0);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
+    });
+    
+    execute();
+});
+
+/**
+ * Google Sheets への GET API リクエストでエラー 
+ */
+ test('GET Failed', () => {
+    prepareConfigs(configs, 'abc123', 'シート1');
+    
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to get sheet information. status: 400');
+    }
+});
+
+/**
+ * Box への POST API リクエストでエラー 
+ */
+ test('POST Failed', () => {
+    prepareConfigs(configs, 'abc123', 'シート1');
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        assertPostRequest(request, 'abc123', 0);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to delete sheet. status: 400');
+    }
+});
+
+/**
+ * Google Sheets に指定したシートのタイトルがない
+ */
+test('Sheet Title dose not exist', () => {
+    prepareConfigs(configs, 'abc123', 'シート3');
+    
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+    });
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Sheet シート3 does not exist');
+    }
+});
+
+]]></test>
 </service-task-definition>
