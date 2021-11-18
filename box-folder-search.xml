@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-26</last-modified>
+<last-modified>2021-11-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Search Folder</label>
@@ -126,4 +126,460 @@ rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
 24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
 vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
 l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==</icon>
+    
+    
+    
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param configs
+ * @param folderId
+ * @param folderName
+ * @return {
+ *     idDef: {Object},
+ *     urlDef: {Object}
+ * }
+ */
+const prepareConfigs = (configs, folderId, folderName) => {
+    configs.put('conf_OAuth2', 'Box');
+    configs.put('ParentFolderId' , folderId);
+    configs.put('FolderName', folderName);
+
+    // 文字型データ項目を準備して、config に指定
+    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', 'STRING_TEXTAREA');
+    configs.putObject('FolderIdItem', idDef);
+    // 文字型データ項目の値（フォルダ ID を保存するデータ項目）を指定
+    engine.setData(idDef, '事前文字列');
+
+    // 文字型データ項目を準備して、config に指定
+    const urlDef = engine.createDataDefinition('ファイルURL', 4, 'q_urls', 'STRING_TEXTAREA');
+    configs.putObject('WebViewUrlItem', urlDef);
+    // 文字型データ項目の値（フォルダ URL を保存するデータ項目）を指定
+    engine.setData(urlDef, '事前文字列');
+
+    return {
+        idDef,
+        urlDef
+    };
+};
+
+
+/**
+ * リクエストのテスト
+ * フォルダ内の項目のリストを取得
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param folderId
+ */
+const assertRequest = ({url, method}, folderId) => {
+    expect(method).toEqual('GET');
+    expect(url).toEqual(`https://api.box.com/2.0/folders/${folderId}/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=`);
+
+};
+
+
+
+/**
+ * FolderName が空でエラーになる場合
+ */
+test('Folder Name is blank', () => {
+    prepareConfigs(configs, '56789', '');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Folder Name is blank');
+    }
+});
+
+
+/**
+ * FolderIdItem  WebViewUrlItem  が未設定でエラーになる場合
+ */
+test('Neither of Data Items to save result are set - neither C4 nor C5 are set ', () => {
+    configs.put('conf_OAuth2', 'Box');
+    configs.put('ParentFolderId' , '98765');
+    configs.put('FolderName', 'test3');
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Neither of Data Items to save result are set.');
+    }
+});
+
+
+/**
+ * Box への API リクエストでエラー 
+ * フォルダ内の項目のリストを取得失敗
+ */
+test('GET Failed', () => {
+    prepareConfigs(configs, '12345', 'test');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, '12345');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to search');
+    }
+});
+
+
+/**
+ * フォルダ検索成功
+ * フォルダ内の項目のリスト（1 entrie）を取得成功
+ * 検索するフォルダの親フォルダの ID 指定　
+ */
+test('200 Success - 1 entrie', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '54321', 'test2');
+	
+    httpClient.setRequestHandler((request) => {        
+        assertRequest(request, '54321');
+        //レスポンスの"entries"は、簡易版レプリゼンテーション
+        const responseObj = {
+            "entries": [
+                {
+                  "id": 11111,
+                  "etag": 1,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test2"
+                }
+              ],
+            "limit": 1000,
+            "offset": 2000,
+            "order": [
+                {
+                  "by": "type",
+                  "direction": "ASC"
+                }
+              ],
+            "total_count": 5000
+         };        
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(11111);
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/11111');
+});
+
+
+/**
+ * フォルダ検索成功
+ * フォルダ内の項目のリスト（3 entries）を取得成功
+ * 検索するフォルダの親フォルダの ID 指定　
+ */
+test('200 Success - 3 entries', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '12345', 'test5');
+	
+    httpClient.setRequestHandler((request) => {        
+        assertRequest(request, '12345');
+        //レスポンスの"entries"は、簡易版レプリゼンテーション
+        const responseObj = {
+            "entries": [
+                {
+                  "id": 11111,
+                  "etag": 1,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test"
+                },
+                {
+                  "id": 33333,
+                  "etag": 3,
+                  "type": "file",
+                  "sequence_id": 3,
+                  "name": "test5.txt"
+                },
+                {
+                  "id": 55555,
+                  "etag": 5,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test5"
+                }
+              ],
+            "limit": 1000,
+            "offset": 2000,
+            "order": [
+                {
+                  "by": "type",
+                  "direction": "ASC"
+                }
+              ],
+            "total_count": 5000
+         };        
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(55555);
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/55555');
+});
+
+
+/**
+ * フォルダ検索成功
+ * フォルダ内の項目のリスト（2 entries）を取得成功
+ * 検索するフォルダの親フォルダの ID 無指定　
+ */
+test('200 Success - 2 entries  no parentId', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '', 'test5');
+	
+
+    httpClient.setRequestHandler((request) => {        
+        assertRequest(request, '0');
+        //レスポンスの"entries"は、簡易版レプリゼンテーション
+        const responseObj = {
+            "entries": [
+                {
+                  "id": 11111,
+                  "etag": 1,
+                  "type": "file",
+                  "sequence_id": 3,
+                  "name": "test.txt"
+                },
+                {
+                  "id": 33333,
+                  "etag": 3,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test5"
+                }
+              ],
+                       
+            "limit": 1000,
+            "offset": 2000,
+            "order": [
+                {
+                  "by": "type",
+                  "direction": "ASC"
+                }
+              ],
+            "total_count": 5000
+         };        
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(33333);
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/33333');
+});
+
+
+/**
+ * フォルダ検索失敗
+ * フォルダ内の項目のリスト（3 entries）を取得成功
+ * 検索するフォルダの親フォルダの ID 指定
+ * 親フォルダ内に検索するフォルダ名が無い
+ */
+test('Failed - GET success, but the folder cannot be found in 3 entries', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '88888', 'test8');
+	
+    httpClient.setRequestHandler((request) => {        
+        assertRequest(request, '88888');
+        //レスポンスの"entries"は、簡易版レプリゼンテーション
+        const responseObj = {
+            "entries": [
+                {
+                  "id": 11111,
+                  "etag": 1,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test"
+                },
+                {
+                  "id": 33333,
+                  "etag": 3,
+                  "type": "file",
+                  "sequence_id": 3,
+                  "name": "test5.txt"
+                },
+                {
+                  "id": 55555,
+                  "etag": 5,
+                  "type": "folder",
+                  "sequence_id": 3,
+                  "name": "test5"
+                }
+              ],
+            "limit": 1000,
+            "offset": 2000,
+            "order": [
+                {
+                  "by": "type",
+                  "direction": "ASC"
+                }
+              ],
+            "total_count": 5000
+         };        
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("Folder test8 doesn't exist.");
+    }
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+
+
+/**
+ * レスポンスを設定する
+ */
+const setRequestHandler = () => {	
+
+    let requestCount = 0;
+	
+    httpClient.setRequestHandler(({url, method}) => {
+        engine.log(url);
+
+        if (requestCount === 0) {
+            expect(url).toEqual(`https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=`);
+        }else{
+            expect(url).toEqual(`https://api.box.com/2.0/folders/54321/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=next${requestCount}`);
+        }
+        expect(method).toEqual('GET');
+
+        const responseObj = {
+            "entries": [
+            ],
+            "limit": 1000,
+            "next_marker": `next${requestCount + 1}`,
+            "offset": 2000,
+            "order": [
+              {
+               "by": "type",
+               "direction": "ASC"
+              }
+            ],
+            "total_count": 5000
+         };
+
+            // responseObj の 配列"entries" に 1000 アイテム分の簡易版レプリゼンテーションを push する
+            // 1回目のリクエストで返すアイテムは 、ID が 1 から 1000 のもの
+            // 10回目のリクエストで返すアイテムは 、ID が 9001 から 10000 のもの
+            for(let i = 0; i < 1000; i++){
+              let idNumber = (i + 1) + (requestCount)*1000;
+              // 奇数 ID がファイルで、偶数 ID がフォルダとする
+              if(i%2 === 0 ){
+                  responseObj['entries'].push({
+                      "id": idNumber,
+                      "etag": 1,
+                      "type": "file",
+                      "sequence_id": 3,
+                      "name": `test${idNumber}`
+                  });
+              }else{
+                  responseObj['entries'].push({
+                      "id": idNumber,
+                      "etag": 1,
+                      "type": "folder",
+                      "sequence_id": 3,
+                      "name": `test${idNumber}`
+                  });
+              }
+            }
+
+        //    jsonStr = JSON.stringify(responseObj);  ログ出力確認用
+        //    engine.log(jsonStr);  ログ出力確認用
+
+            requestCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+                          
+    });
+};
+
+
+/**
+ * フォルダ検索成功
+ * リクエスト2回目で検索される
+ */
+test('200 success - 2 requests', () => {
+
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '54321', 'test1002');
+		
+	setRequestHandler();
+	
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(1002);
+    expect(engine.findData(urlDef)).toEqual('https://app.box.com/folder/1002');
+});
+
+
+/**
+ * フォルダ検索失敗
+ * リクエスト数の上限を超えてしまう場合
+ */
+test('Too many folders and files are in the specified folder', () => {
+
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, '54321', 'testnext');
+
+    setRequestHandler();
+	
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("Too many folders and files are in the specified folder");
+    }
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+]]></test>
 </service-task-definition>

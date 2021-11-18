@@ -3,7 +3,7 @@
 <engine-type>2</engine-type>
 <label>Box: Move File</label>
 <label locale="ja">Box: ファイル移動</label>
-<last-modified>2021-04-02</last-modified>
+<last-modified>2021-11-08</last-modified>
 <summary>Move the File to the specified Folder. File ID and URL won't change.</summary>
 <summary locale="ja">既存ファイルを指定フォルダに移動します。ファイルのID・URLは変化しません。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-move/</help-page-url>
@@ -40,7 +40,7 @@ function main(){
 
   if(folderId === "" || folderId === null){
     //空の場合はエラーとする when folder id isn't set, throw error
-    throw "No Folder ID "
+    throw "No Folder ID";
   }
   moveFile(oauth2, folderId, fileId);
 }
@@ -80,12 +80,14 @@ function moveFile(oauth2, folderId, fileId) {
 
   const response = httpClient.begin()
     .authSetting(oauth2)
+    // fields には id を指定（レスポンスを基本レプリゼンテーションに縮小するため）
+    .queryParam("fields", "id")
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
     .put(url);
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  
+
   engine.log(`status: ${status}`);
 
   if (status >= 300) {
@@ -117,5 +119,163 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+    
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * conf_FileId  conf_FolderId は、文字型データ項目で指定
+ * @param configs
+ * @param fileId
+ * @param folderId
+ * @return {
+ *     fileIdDef: {Object},
+ *     folderIdDef: {Object}
+ * }
+ */
+const prepareConfigs = (configs, fileId, folderId) => {
+    configs.put('conf_OAuth2', 'Box');
+
+    // 文字型データ項目を準備して、config に指定
+    const fileIdDef = engine.createDataDefinition('移動させるファイルID', 1, 'q_sourceFileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_FileId', fileIdDef);
+    // 文字型データ項目の値（移動させるファイルの ID）を指定
+    engine.setData(fileIdDef, fileId);
+
+    // 文字型データ項目を準備して、config に指定
+    const folderIdDef = engine.createDataDefinition('移動先フォルダID', 2, 'q_folderId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_FolderId', folderIdDef);
+    // 文字型データ項目の値（移動先フォルダの ID）を指定
+    engine.setData(folderIdDef, folderId);
+
+    return {
+        fileIdDef,
+        folderIdDef
+    };
+};
+
+
+/**
+ * リクエストのテスト
+ * ファイル移動
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param fileId
+ * @param folderId
+ */
+const assertRequest = ({url, method, contentType, body}, fileId, folderId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/files/${fileId}?fields=id`);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.parent.id).toEqual(folderId);
+};
+
+
+/**
+ * conf_FileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test('No File ID - FileId specified by String Data', () => {
+    prepareConfigs(configs, null, '12345');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No File ID');
+    }
+});
+
+
+/**
+ * conf_FolderId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test('No Folder ID - FolderId specified by String Data', () => {
+    prepareConfigs(configs, '12345678', null);
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No Folder ID');
+    }
+});
+
+
+/**
+ * conf_FolderId に固定値を指定しているが、その固定値が空でエラーになる場合
+ */
+test('No Folder ID - FolderId specified with fixed value ' , () => {
+    prepareConfigs(configs, '87654321', '54321');
+    //conf_FolderId の設定値を固定値（空）で上書き
+    configs.put('conf_FolderId', '');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No Folder ID');
+    }
+});
+
+
+
+/**
+ * ファイル移動失敗
+ * Box への API リクエストでエラー
+ */
+test('Failed to move. - PUT Failed ', () => {
+    prepareConfigs(configs, '87654321',　'54321');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, '87654321', '54321');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to move.');
+    }
+});
+
+
+/**
+ * ファイル移動成功　
+ */
+test('200 Success', () => {
+    const {
+        fileIdDef,
+        folderIdDef
+    } = prepareConfigs(configs, '12345678', '12345');
+	
+    httpClient.setRequestHandler((request) => {        
+        assertRequest(request, '12345678', '12345');
+        //レスポンスは、簡易版レプリゼンテーション
+        const responseObj = {
+            "type": "file",
+            "id": "12345678",
+            "etag": "0"
+        };        
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileIdDef)).toEqual('12345678');
+    expect(engine.findData(folderIdDef)).toEqual('12345');
+});
+
+]]></test>
 
 </service-task-definition>
