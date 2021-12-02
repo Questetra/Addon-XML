@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-26</last-modified>
+<last-modified>2021-11-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Delete Folder</label>
@@ -84,4 +84,160 @@ rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
 24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
 vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
 l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==</icon>
+
+<test><![CDATA[
+/**
+ * 設定の準備
+ * FolderId は、文字型データ項目で指定
+ * @param configs
+ * @param folderId
+ * @return {Object}
+ */
+const prepareConfigs = (configs, folderId) => {
+  configs.put('OAuth2', 'Box');
+  const folderIdDef = engine.createDataDefinition('フォルダ ID', 3, 'q_folderId', 'STRING_TEXTAREA');
+  configs.putObject('FolderIdsItem', folderIdDef);
+  engine.setData(folderIdDef, folderId);
+
+  return folderIdDef;
+};
+
+/**
+ * リクエストのテスト
+ * @param url
+ * @param method
+ * @param id
+ */
+const assertRequest = ({url, method}, folderId) => {
+  expect(url).toEqual(`https://api.box.com/2.0/folders/${folderId}?recursive=true`);
+  expect(method).toEqual('DELETE');
+};
+
+/**
+ * フォルダ ID が null の場合
+ */
+test('IDs is null', () => {
+  prepareConfigs(configs, null);
+
+  try {
+      execute();
+      fail('not come here');
+  } catch (e) {
+      expect(e.message).endsWith("Folder IDs aren't set.");
+  }
+});
+
+/**
+ * フォルダ ID が空白の場合
+ */
+test('IDs is blank', () => {
+  prepareConfigs(configs, '\n\n\n'); //空行が複数行あるだけ
+
+  try {
+      execute();
+      fail('not come here');
+  } catch (e) {
+      expect(e.message).endsWith("Folder IDs aren't set.");
+  }
+});
+
+/**
+ * フォルダ ID の数が最大リクエスト数を超えた場合
+ */
+test('Number of Folder IDs is over the limit', () => {
+  let ids = '';
+  for (let i = 0; i <= httpClient.getRequestingLimit(); i++) {
+      ids += `f${i}\n`;
+  }
+  prepareConfigs(configs, ids);
+
+  try {
+      execute();
+      fail('not come here');
+  } catch (e) {
+      expect(e.message).endsWith('Number of Folder IDs is over the limit.');
+  }
+});
+
+
+/**
+ * 削除するフォルダが複数の場合（この場合、最大リクエスト数）
+ */
+test('Succeed to delete multiple folders', () => {
+  let ids = '';
+  for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+      ids += `f${i}\n`;
+  }
+  const folderIdDef = prepareConfigs(configs, ids);
+
+  let requestCount = 0;
+  httpClient.setRequestHandler((request) => {
+      assertRequest(request, `f${requestCount++}`);
+      return httpClient.createHttpResponse(204, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderIdDef)).toEqual(ids);
+
+  // リクエスト数をチェック
+  expect(requestCount).toEqual(httpClient.getRequestingLimit());
+});
+
+
+/**
+ * 削除するフォルダが1つの場合
+ */
+test('Succeed to delete 1 folder', () => {
+  const folderIdDef = prepareConfigs(configs, '12345');
+
+  httpClient.setRequestHandler((request) => {
+      assertRequest(request, '12345');
+      return httpClient.createHttpResponse(204, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderIdDef)).toEqual('12345');
+});
+
+
+/**
+ * フォルダ削除失敗の場合（400レスポンスが返ってくる）
+ */
+test('Failed to delete folder', () => {
+  let ids = '';
+  for (let i = 0; i < 2; i++) {
+      ids += `000${i}\n`;
+  }
+  prepareConfigs(configs, ids);
+
+  let requestCount = 0;
+  httpClient.setRequestHandler((request) => {
+      try {
+          assertRequest(request, `000${requestCount}`);
+          if (requestCount === 1) {
+              return httpClient.createHttpResponse(400, 'application/json', '{}');
+          } else {
+              return httpClient.createHttpResponse(204, 'application/json', '{}');
+          }
+      } finally {
+          requestCount++;
+      }
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+      execute();
+      fail('not come here');
+  } catch (e) {
+      expect(e.message).endsWith('Failed to delete Folder ID:0001');
+  }
+});
+]]></test>
+
 </service-task-definition>
