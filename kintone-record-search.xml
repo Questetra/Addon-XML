@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Search Records</label>
 <label locale="ja">kintone: レコード検索</label>
-<last-modified>2021-12-09</last-modified>
+<!--
+<last-modified>2021-12-14</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Search Records in a Kintone App using a query.</summary>
@@ -81,7 +83,7 @@ function main(){
   const apiToken = httpClient.getOAuth2Token( auth );
 
   //// == 演算 / Calculating ==
-  checkFieldCodesAndDataDefs( fieldCodeList, dataDefList );
+  const singleLineFlag = checkFieldCodesAndDataDefs( fieldCodeList, dataDefList );
 
   const apiUri = determineApiUri( domain, guestSpaceId );
   checkAppId( appId );
@@ -98,7 +100,7 @@ function main(){
 
   const initialParams = prepareInitialParams( appId, fields, query );
   const records = []; // レコードオブジェクトを格納する配列
-  getRecords( apiUri, apiToken, basic, initialParams, records, requestNum );
+  getRecords( apiUri, apiToken, basic, initialParams, records, requestNum, singleLineFlag );
 
   //// == ワークフローデータへの代入 / Data Updating ==
   saveData( records, fieldCodeList, dataDefList );
@@ -111,11 +113,18 @@ function main(){
   * 3. フィールドコードが設定されているのに、保存先データ項目が設定されていない
   * @param {Array<String>} fieldCodeList  フィールドコードの配列
   * @param {Array<ProcessDataDefinitionView>} dataDefList  保存先データ項目の ProcessDataDefinitionView の配列
+  * @return {boolean} singleLineFlag  保存先データ項目のいずれかが単一行であれば true
   */
 function checkFieldCodesAndDataDefs( fieldCodeList, dataDefList ) {
+  let singleLineFlag = false;
+
   // 保存先データ項目が一つも設定されていなければエラー
   if ( dataDefList.filter(dataDef => dataDef !== null).length === 0 ) {
     throw "No data item to save the result is set.";
+  }
+
+  if ( dataDefList[0].matchDataType("STRING_TEXTFIELD") ) {
+    singleLineFlag = true;
   }
 
   for (let i = 1; i < fieldCodeList.length; i++) {
@@ -127,8 +136,13 @@ function checkFieldCodesAndDataDefs( fieldCodeList, dataDefList ) {
       if ( dataDefList[i] === null ) { // 保存先データ項目が設定されていない
         throw `Data item to save the values of Field Code ${i} is not set.`;
       }
+      if ( !singleLineFlag && dataDefList[i].matchDataType("STRING_TEXTFIELD") ) {
+        singleLineFlag = true;
+      }
     }
   }
+
+  return singleLineFlag;
 }
 
 /**
@@ -265,8 +279,9 @@ function prepareInitialParams( appId, fields, query ) {
   *              {Number} lastRecordId  検索済みの最後のレコード番号
   * @param {Array<Object>} records  レコードオブジェクトを格納する配列
   * @param {Number} requestNum  HTTP リクエスト回数
+  * @param {boolean} singleLineFlag  保存先データ項目のいずれかが単一行であれば true
   */
-function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId }, records, requestNum ) {
+function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId }, records, requestNum, singleLineFlag ) {
   // リクエスト回数の上限チェック
   if ( requestNum + 1 > httpClient.getRequestingLimit() ) {
     throw "HTTP requests exceed the limit.";
@@ -305,6 +320,9 @@ function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId
   // レコード件数のチェック
   if ( records.length === 0 ) { // 該当するレコードが一件もなければエラー
     throw "No records found.";
+  }
+  if ( singleLineFlag && records.length > 1 ) { // 保存先データ項目が単一行なのにレコードが複数件あればエラー
+    throw "Multiple records were found while the data item to save the result is Single-Line.";
   }
 
   // 再帰呼び出し
