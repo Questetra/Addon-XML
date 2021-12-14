@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Get Record</label>
 <label locale="ja">kintone: レコード取得</label>
-<last-modified>2021-12-13</last-modified>
+<last-modified>2021-12-14</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get values of a record in a Kintone App.</summary>
@@ -703,7 +703,7 @@ test('200 Success - without guestSpaceId, recordId with String, SINGLE_LINE_TEXT
 
   // <script> のスクリプトを実行
   execute();
-  
+
   // 文字型データ項目の値をチェック
   for (let i = 0; i < FIELD_SIZE; i++) {
     expect(engine.findData(dataDefList[i])).toEqual(`値_${i+1}`);
@@ -749,7 +749,7 @@ test('200 Success - with guestSpaceId, recordId with Select, MULTI_LINE_TEXT to 
 
   // <script> のスクリプトを実行
   execute();
-  
+
   // 文字型データ項目の値をチェック
   for (let i = 0; i < FIELD_SIZE; i++) {
     if (i === 0) {
@@ -1004,7 +1004,7 @@ test('200 Success - Saved to various data-type items', () => {
 
   // <script> のスクリプトを実行
   execute();
-  
+
   // データ項目の値をチェック
   const string = new java.text.DecimalFormat('#,###.0').format(engine.findData(dataDefList[0]));
   expect(string).toEqual('777.0');
@@ -1013,13 +1013,231 @@ test('200 Success - Saved to various data-type items', () => {
   expect(engine.findData(dataDefList[3]).toString()).toEqual('2024-04-04');
 
   const dateFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mmZ');
-  dateFormatter.setTime
   const datetime = dateFormatter.format(engine.findData(dataDefList[4]));
   expect(datetime).toEqual('2022-02-02 11:25+0900');
   const createdTime = dateFormatter.format(engine.findData(dataDefList[5]));
   expect(createdTime).toEqual('2022-02-02 11:26+0900');
   const updatedTime = dateFormatter.format(engine.findData(dataDefList[6]));
   expect(updatedTime).toEqual('2022-02-02 11:27+0900');
+});
+
+/**
+ * 保存先データ項目が文字型以外で、kintone 側のデータのフィールド型が計算型
+ * 保存に成功する場合
+ * 1. 設定なし
+ * 2. CALC(NUMBER) to DECIMAL
+ * 3. 設定なし
+ * 4. 設定なし
+ * 5. CALC(DATE) to DATE
+ * 6. CACL(DATETIME) to DATETIME
+ * 7. 設定なし
+ */
+test('200 Success - CALC data saved to various data-type items', () => {
+  configs.put('conf_auth', 'kintone');
+  configs.put('conf_domain', 'xxxxx.kintone.com');
+  configs.put('conf_appId', '123');
+  configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
+  const dataDefList = [];
+  for (let i = 0; i < FIELD_SIZE; i++) {
+    let dataDef = null;
+    if (i === 1) {
+      configs.put(`conf_fieldCode${i+1}`, '計算型（数値）');
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DECIMAL');
+      engine.setData(dataDef, new java.math.BigDecimal(123));
+      configs.putObject(`conf_fieldValue${i+1}`, dataDef);
+    } else if (i === 4) {
+      configs.put(`conf_fieldCode${i+1}`, '計算型（日付）');
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DATE');
+      engine.setData(dataDef, java.sql.Date.valueOf('2021-01-01'));
+      configs.putObject(`conf_fieldValue${i+1}`, dataDef);
+    } else if (i === 5) {
+      configs.put(`conf_fieldCode${i+1}`, '計算型（日時）');
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DATETIME');
+      engine.setData(dataDef, java.sql.Timestamp.valueOf("2021-01-01 12:12:12"));
+      configs.putObject(`conf_fieldValue${i+1}`, dataDef);
+    }
+    dataDefList.push(dataDef);
+  }
+
+  httpClient.setRequestHandler((request) => {
+    assertRequestWithoutGuestSpaceId(request, 'xxxxx.kintone.com', '123', '456');
+    const responseObj = {
+      "record": {
+        "計算型（日時）": {
+          "type": "CALC",
+          "value": "2022-02-02T02:22:22Z"
+        },
+        "関係のないフィールド_1": {
+          "type": "CREATED_TIME",
+          "value": "2022-02-02T02:26:26Z"
+        },
+        "関係のないフィールド_2": {
+          "type": "DATETIME",
+          "value": "2022-02-02T02:25:25Z"
+        },
+        "計算型（日付）": {
+          "type": "CALC",
+          "value": "2025-05-05"
+        },
+        "関係のないフィールド_3": {
+          "type": "RADIO_BUTTON",
+          "value": "ラジオボタンの選択肢"
+        },
+        "関係のないフィールド_4": {
+          "type": "DROP_DOWN",
+          "value": "ドロップダウンの選択肢"
+        },
+        "計算型（数値）": {
+          "type": "CALC",
+          "value": "888.8"
+        }
+      }
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // データ項目の値をチェック
+  const string = new java.text.DecimalFormat('#,###.0').format(engine.findData(dataDefList[1]));
+  expect(string).toEqual('888.8');
+  expect(engine.findData(dataDefList[4]).toString()).toEqual('2025-05-05');
+
+  const dateFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mmZ');
+  const datetime = dateFormatter.format(engine.findData(dataDefList[5]));
+  expect(datetime).toEqual('2022-02-02 11:22+0900');
+});
+
+/**
+ * 保存先データ項目が文字型以外で、kintone 側のデータのフィールド型が計算型
+ * パースできず保存に失敗する場合
+ */
+test('Failed to save CALC data', () => {
+  configs.put('conf_auth', 'kintone');
+  configs.put('conf_domain', 'xxxxx.kintone.com');
+  configs.put('conf_appId', '123');
+  configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
+
+  // kintone の計算型（日時）フィールドを数値型データ項目に保存するよう設定
+  configs.put('conf_fieldCode1', '計算型（日時）');
+  const dataDef = engine.createDataDefinition('値を保存するデータ項目_1', 2, 'q_value1', 'DECIMAL');
+  engine.setData(dataDef, new java.math.BigDecimal(123));
+  configs.putObject('conf_fieldValue1', dataDef);
+
+  httpClient.setRequestHandler((request) => {
+    assertRequestWithoutGuestSpaceId(request, 'xxxxx.kintone.com', '123', '456');
+    const responseObj = {
+      "record": {
+        "計算型（日時）": {
+          "type": "CALC",
+          "value": "2022-02-02T02:22:22Z"
+        }
+      }
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message)
+      .endsWith('Returned value "2022-02-02T02:22:22Z" cannot be saved to Numeric type data item.');
+  }
+});
+
+/**
+ * kintone 側のデータが null または空文字列
+ * 1. null (DATE) to STRING_TEXTFIELD
+ * 2. "" (RICH_TEXT) to STRING_TEXTFIELD
+ * 3. null (RADIO_BUTTON) to SELECT
+ * 4. "" (DROP_DOWN) to SELECT
+ * 5. "" (NUMBER) to DECIMAL
+ * 6. null (DATE) to DATE
+ * 7. null (DATETIME) to DATETIME
+ */
+test('200 Success - null or blank data saved to various data-type items', () => {
+  configs.put('conf_auth', 'kintone');
+  configs.put('conf_domain', 'xxxxx.kintone.com');
+  configs.put('conf_appId', '123');
+  configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
+  const dataDefList = [];
+  for (let i = 0; i < FIELD_SIZE; i++) {
+    configs.put(`conf_fieldCode${i+1}`, `フィールドコード_${i+1}`);
+    let dataDef;
+    if (i < 2) { // STRING_TEXTFIELD
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'STRING_TEXTFIELD');
+      engine.setData(dataDef, '元の文字列');
+    } else if (i < 4) { // SELECT
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'SELECT');
+      const select = new java.util.ArrayList();
+      const item = engine.createItem('元の選択肢の値', '元の選択肢のラベル');
+      select.add(item);
+      engine.setData(dataDef, select);
+    } else if (i < 5) { // DECIMAL
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DECIMAL');
+      engine.setData(dataDef, new java.math.BigDecimal(123));
+    } else if (i < 6) { // DATE
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DATE');
+      engine.setData(dataDef, java.sql.Date.valueOf('2021-01-01'));
+    } else if (i < 7) { // DATETIME
+      dataDef = engine.createDataDefinition(`値を保存するデータ項目_${i+1}`, i+2, `q_value${i+1}`, 'DATETIME');
+      engine.setData(dataDef, java.sql.Timestamp.valueOf("2021-01-01 12:12:12"));
+    }
+    configs.putObject(`conf_fieldValue${i+1}`, dataDef);
+    dataDefList.push(dataDef);
+  }
+
+  httpClient.setRequestHandler((request) => {
+    assertRequestWithoutGuestSpaceId(request, 'xxxxx.kintone.com', '123', '456');
+    const responseObj = {
+      "record": {
+        "フィールドコード_7": {
+          "type": "DATETIME",
+          "value": null
+        },
+        "フィールドコード_6": {
+          "type": "DATE",
+          "value": null
+        },
+        "フィールドコード_5": {
+          "type": "NUMBER",
+          "value": ""
+        },
+        "フィールドコード_4": {
+          "type": "DROP_DOWN",
+          "value": ""
+        },
+        "フィールドコード_3": {
+          "type": "RADIO_BUTTON",
+          "value": null
+        },
+        "フィールドコード_2": {
+          "type": "RICH_TEXT",
+          "value": ""
+        },
+        "フィールドコード_1": {
+          "type": "DATE",
+          "value": null
+        }
+      }
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // データ項目の値をチェック。文字型データ項目は空文字列、それ以外は null のはず
+  for (let i = 0; i < FIELD_SIZE; i++) {
+    if (i < 2) {
+      expect(engine.findData(dataDefList[i])).toEqual("");
+    } else {
+      expect(engine.findData(dataDefList[i])).toEqual(null);
+    }
+  }
 });
 
 ]]></test>
