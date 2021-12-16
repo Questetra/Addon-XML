@@ -183,27 +183,25 @@ const prepareConfigs = (configs, fileId, fileName, files) => {
     configs.put('conf_FileId', fileId);
     configs.put('conf_FileName', fileName);
     const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
-    configs.putObject('uploadedFile', fileDef);
+    configs.putObject('conf_Files', fileDef);
     engine.setData(fileDef, files);
 
     return fileDef;
 };
 
 /**
- * 指定サイズのテキストファイルを作成
+ * ファイルのテスト
+ * @param file
  * @param name
- * @param size
+ * @param contentType
+ * @param body
  */
-const createQfile = (name, size) => {
+const assertFile = (file, name, contentType, encoding, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
     let text = '';
-    while (text.length < size) {
-        if (text.length !== 0 && text.length * 2 < size) {
-            text += text;
-        } else {
-            text += 'a';
-        }
-    }
-    return engine.createQfile(name, 'text/plain; charset=US-ASCII', text);
+    fileRepository.readFile(file, encoding, line => text += line + '\n');
+    expect(text).toEqual(body);
 };
 
 test('File ID is empty', () => {
@@ -228,7 +226,7 @@ test('Failed to find file', () => {
                 return httpClient.createHttpResponse(404, 'application/json', JSON.stringify(responseObj));
             }
             case 'https://api.box.com/2.0/files/1234567890/content/': {
-                expect(method).toEqual('PUT');
+                expect(method).toEqual('GET');
                 return httpClient.createHttpResponse(404, 'application/json', '{}');
             }
             default:
@@ -244,7 +242,7 @@ test('Failed to find file', () => {
     }
 });
 
-test('Failed to find file', () => {
+test('Failed to download file', () => {
     const fileDef = prepareConfigs(configs, '1234567890', '', null);
     httpClient.setRequestHandler(({url, method, contentType}) => {
         engine.log(url);
@@ -255,7 +253,7 @@ test('Failed to find file', () => {
                 return httpClient.createHttpResponse(403, 'application/json', JSON.stringify(responseObj));
             }
             case 'https://api.box.com/2.0/files/1234567890/content/': {
-                expect(method).toEqual('PUT');
+                expect(method).toEqual('GET');
                 return httpClient.createHttpResponse(403, 'application/json', '{}');
             }
             default:
@@ -271,20 +269,50 @@ test('Failed to find file', () => {
     }
 });
 
-test('Succeeded to find file', () => {
-    const file = createQfile('file.txt', '100')
-    const fileDef = prepareConfigs(configs, '1234567890', 'fileName', null);
+test('Succeeded to download file / File is null', () => {
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', fileName, null);
     httpClient.setRequestHandler(({url, method, contentType}) => {
         engine.log(url);
         switch (url) {
             case 'https://api.box.com/2.0/files/1234567890/': {
                 expect(method).toEqual('GET');
-                const responseObj = {};
+                const responseObj = {name: "dummy"};
                 return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
             }
             case 'https://api.box.com/2.0/files/1234567890/content/': {
-                expect(method).toEqual('PUT');
-                return httpClient.createHttpResponse(200, 'application/json', file);
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'こんにちは');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+    
+    execute();
+
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), fileName, 'text/plain', 'UTF-8', 'こんにちは\n');
+});
+
+test('Succeeded to download file / File is not null', () => {
+    let files = new java.util.ArrayList();
+    files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+    files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', fileName, files);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {name: "dummy"};
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=EUC-JP', 'さようなら');
             }
             default:
                 fail('Request Error');
@@ -293,14 +321,36 @@ test('Succeeded to find file', () => {
 
     execute();
 
-    const files = new java.util.ArrayList();
-    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
-      fileName, contentType, content
-    )
-    files.add( qfile );
-    except(engine.findData(fileDef)).toEqual(files)
-    except(engine.findData(fileDef)[0].getName()).toEqual('fileName')
+    const files_data = engine.findData(fileDef);
+    expect(files_data.size()).toEqual(3);
+    assertFile(files_data.get(2), fileName, 'text/plain', 'EUC-JP', 'さようなら\n');
+});
 
+test('File Name is empty', () => {
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', "", null);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {name: fileName};
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'こんにちは');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+    
+    execute();
 
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), fileName, 'text/plain', 'UTF-8', 'こんにちは\n');
+});
 ]]></test>
 </service-task-definition>
