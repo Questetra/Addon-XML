@@ -154,4 +154,227 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+
+<test><![CDATA[
+/**
+ * 共有リンクがあるサンプル
+ */
+const HAS_SHARED_LINK = {
+  id: 12345,
+  type: "folder",
+  etag: 1,
+  name: "Contracts",
+  sequence_id: 3,
+  shared_link: {
+    access: "open",
+    download_count: 3,
+    download_url: "https://www.box.com/shared/static/rh935iit6ewrmw0unyul.jpeg",
+    effective_access: "company",
+    effective_permission: "can_download",
+    is_password_enabled: true,
+    permissions: {
+      can_download: true,
+      can_preview: true,
+    },
+    preview_count: 3,
+    unshared_at: "2018-04-13T13:53:23-07:00",
+    url: "https://www.box.com/s/vspke7y05sb214wjokpk",
+    vanity_name: "my_url",
+    vanity_url: "https://acme.app.box.com/v/my_url/",
+  },
+};
+
+/**
+ * 共有リンクがないサンプル
+ */
+const NO_SHARED_LINK = {
+  id: 12345,
+  type: "folder",
+  etag: 1,
+  name: "Contracts",
+  sequence_id: 3,
+  shared_link: null,
+};
+
+/**
+ * 設定の準備
+ * FolderId は、文字型データ項目で指定
+ * @param configs
+ * @param folderId
+ * @return {Object}
+ */
+const prepareConfigs = (configs, folderId) => {
+  configs.put("OAuth2", "Box");
+  const folderIdDef = engine.createDataDefinition(
+    "フォルダ ID",
+    3,
+    "q_folderId",
+    "STRING_TEXTFIELD"
+  );
+  configs.putObject("FolderId", folderIdDef);
+  engine.setData(folderIdDef, folderId);
+  return folderIdDef;
+};
+
+/**
+ * 共有リンクがある場合のテスト
+ * @param url
+ * @param method
+ */
+const assertGetRequest = ({ url, method }, folderId) => {
+  expect(url).toEqual(
+    `https://api.box.com/2.0/folders/${folderId}?fields=shared_link`
+  );
+  expect(method).toEqual("GET");
+};
+
+/**
+ * 共有リンクがない場合のテスト
+ * @param url
+ * @param method
+ * @param contentType
+ * @param body
+ * @param folderId
+ */
+const assertPutRequest = ({ url, method, contentType, body }, folderId) => {
+  expect(url).toEqual(
+    `https://api.box.com/2.0/folders/${folderId}?fields=shared_link`
+  );
+  expect(method).toEqual("PUT");
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj.shared_link).toEqual(null);
+};
+
+test('Success / FolderId specified by String Data', () => {
+  const folderIdDef = prepareConfigs(configs, '12345');
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+      if (reqCount === 0) {
+          assertGetRequest(request, '12345');
+          reqCount++;
+          return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+      }
+      assertPutRequest(request, '12345');
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PUT));
+  });
+  execute();
+  expect(engine.findData(folderIdDef)).toEqual('12345');
+});
+
+test('Success / FolderID specified with fixed value', () => {
+  configs.put('OAuth2', 'Box');
+  configs.put('conf_FolderId', '98765');
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+      if (reqCount === 0) {
+          assertGetRequest(request, '98765');
+          reqCount++;
+          return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+      }
+      assertPutRequest(request, '98765');
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PUT));
+  });
+  execute();
+});
+
+test("FolderID is null", () => {
+  prepareConfigs(configs, null);
+
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith("Folder ID is blank");
+  }
+});
+
+test("FolderID is blank", () => {
+  configs.put("OAuth2", "Box");
+  configs.put("conf_FolderId", "");
+
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith("Folder ID is blank");
+  }
+});
+
+test("GET Failed", () => {
+  prepareConfigs(configs, "12345");
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, "12345");
+    return httpClient.createHttpResponse(400, "application/json", "{}");
+  });
+
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith(
+      "Failed to get folder information \n status: 400"
+    );
+  }
+});
+
+test("PUT Failed", () => {
+  prepareConfigs(configs, "12345");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "12345");
+      reqCount++;
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(SAMPLE_GET)
+      );
+    }
+    assertPutRequest(request, "12345");
+    return httpClient.createHttpResponse(400, "application/json", "{}");
+  });
+
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith("Failed to delete \n status: 400");
+  }
+});
+
+/**
+ * 既に共有リンクが存在する
+ */
+test("Shared link already exists", () => {
+  prepareConfigs(configs, "12345");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "12345");
+      reqCount++;
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(HAS_SHARED_LINK)
+      );
+    }
+    assertPutRequest(request, "12345");
+    return httpClient.createHttpResponse(400, "application/json", "{}");
+  });
+
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith(
+      "Shared link(https://api.box.com/2.0/files/12345?fields=shared_link) was already created."
+    );
+  }
+});
+]]></test>
 </service-task-definition>
