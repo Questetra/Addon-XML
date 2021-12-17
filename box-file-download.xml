@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-02-09</last-modified>
+<last-modified>2021-12-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Download File</label>
@@ -169,4 +169,224 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+<test><![CDATA[
+/**
+ * 設定の準備
+ * @param configs
+ * @param fileId
+ * @param fileIdIsFixed
+ * @param fileName
+ * @param files
+ * @return fileDef: {Object}
+ */
+const prepareConfigs = (configs, fileId, fileIdIsFixed, fileName, files) => {
+    configs.put('conf_OAuth2', 'Box');
+
+    //fileIdIsFixed が true なら固定値、false ならデータ項目
+    if (fileIdIsFixed) {
+      configs.put('conf_FileId', fileId);
+    }else{
+      const fileIdDef = engine.createDataDefinition('文字', 2, 'q_string', 'STRING_TEXTFIELD');
+      configs.putObject('conf_FileId', fileIdDef);
+      engine.setData(fileIdDef, fileId);
+    }
+    
+    configs.put('conf_FileName', fileName);
+
+    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
+    configs.putObject('conf_Files', fileDef);
+    engine.setData(fileDef, files);
+
+    return fileDef;
+};
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param contentType
+ * @param encoding
+ * @param body
+ */
+const assertFile = (file, name, contentType, encoding, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+    let text = '';
+    fileRepository.readFile(file, encoding, line => text += line + '\n');
+    expect(text).toEqual(body);
+};
+
+/**
+ * C2 に指定したデータ項目の値が空の場合
+ * ファイルIDはデータ項目で指定
+ */
+test('File ID is empty', () => {
+    const fileDef = prepareConfigs(configs, '', false,  '', null);
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('fileId is blank');
+    }
+});
+
+/**
+ * 404エラーが返ってくる場合
+ * ファイルIDはデータ項目で指定
+ */
+test('Failed to find file', () => {
+    const fileDef = prepareConfigs(configs, '1234567890', false, '', null);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {};
+                return httpClient.createHttpResponse(404, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(404, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to download file. status: 404');
+    }
+});
+
+/**
+ * 403エラーが返ってくる場合
+ * ファイルIDは固定値で指定
+ */
+test('Failed to download file', () => {
+    const fileDef = prepareConfigs(configs, '1234567890', true, '', null);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {};
+                return httpClient.createHttpResponse(403, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(403, 'application/json', '{}');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to download file. status: 403');
+    }
+});
+
+/**
+ * ファイル型データ項目に他のファイルが入っていない状態で、ダウンロードに成功した場合
+ * ファイルIDは固定値で指定
+ */
+test('Succeeded to download file / File is null', () => {
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', true, fileName, null);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {name: "dummy"};
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'こんにちは');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+    
+    execute();
+
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), fileName, 'text/plain', 'UTF-8', 'こんにちは\n');
+});
+
+/**
+ * ファイル型データ項目に他のファイルが入っている状態で、ダウンロードに成功した場合
+ * ファイルIDはデータ項目で指定
+ */
+test('Succeeded to download file / File is not null', () => {
+    let files = new java.util.ArrayList();
+    files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+    files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', false, fileName, files);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {name: "dummy"};
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=EUC-JP', 'さようなら');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+
+    execute();
+
+    const files_data = engine.findData(fileDef);
+    expect(files_data.size()).toEqual(3);
+    assertFile(files_data.get(2), fileName, 'text/plain', 'EUC-JP', 'さようなら\n');
+});
+
+/**
+ * ファイル名の指定をせずにダウンロードに成功した場合
+ * ファイルIDはデータ項目で指定
+ */
+test('File Name is empty', () => {
+    const fileName = "test.txt";
+    const fileDef = prepareConfigs(configs, '1234567890', false, "", null);
+    httpClient.setRequestHandler(({url, method, contentType}) => {
+        engine.log(url);
+        switch (url) {
+            case 'https://api.box.com/2.0/files/1234567890/': {
+                expect(method).toEqual('GET');
+                const responseObj = {name: fileName};
+                return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+            }
+            case 'https://api.box.com/2.0/files/1234567890/content/': {
+                expect(method).toEqual('GET');
+                return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'こんにちは');
+            }
+            default:
+                fail('Request Error');
+        }
+    });
+    
+    execute();
+
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), fileName, 'text/plain', 'UTF-8', 'こんにちは\n');
+});
+]]></test>
 </service-task-definition>
