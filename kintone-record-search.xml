@@ -86,12 +86,13 @@ function main(){
   const apiUri = determineApiUri( domain, guestSpaceId );
   checkAppId( appId );
 
-  // フィールドの存在とフィールド型をチェック
   const fields = new Set( fieldCodeList );
   fields.delete(null);
   fields.delete("");
   let requestNum = 0; // HTTP リクエスト回数
-  if ( fields.size > 1 ) { // $id 以外のフィールドがある場合のみチェック
+
+  // $id と $revision 以外のフィールドがある場合のみ、フィールドの存在とフィールド型をチェック
+  if ( Array.from(fields).some(fieldCode => !fieldCode.equals("$id") && !fieldCode.equals("$revision")) ) {
     checkFields( apiUri, apiToken, basic, appId, fields );
     requestNum++;
   }
@@ -114,16 +115,9 @@ function main(){
   * @return {boolean} singleLineFlag  保存先データ項目のいずれかが単一行であれば true
   */
 function checkFieldCodesAndDataDefs( fieldCodeList, dataDefList ) {
-  let singleLineFlag = false;
-
   // 保存先データ項目が一つも設定されていなければエラー
   if ( dataDefList.filter(dataDef => dataDef !== null).length === 0 ) {
     throw "No data item to save the result is set.";
-  }
-
-  // レコード ID を保存するデータ項目をチェック
-  if ( dataDefList[0] !== null && dataDefList[0].matchDataType("STRING_TEXTFIELD") ) {
-    singleLineFlag = true;
   }
 
   // フィールドコードと、値を保存するデータ項目をチェック
@@ -136,13 +130,10 @@ function checkFieldCodesAndDataDefs( fieldCodeList, dataDefList ) {
       if ( dataDefList[i] === null ) { // 保存先データ項目が設定されていない
         throw `Data item to save the values of Field Code ${i} is not set.`;
       }
-      if ( !singleLineFlag && dataDefList[i].matchDataType("STRING_TEXTFIELD") ) {
-        singleLineFlag = true;
-      }
     }
   }
 
-  return singleLineFlag;
+  return dataDefList.some(dataDef => dataDef !== null && dataDef.matchDataType("STRING_TEXTFIELD"));
 }
 
 /**
@@ -347,10 +338,11 @@ function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId
   */
 function saveData( records, fieldCodeList, dataDefList ) {
   dataDefList.forEach((dataDef, i) => {
-    if ( dataDef !== null ) {
-      const dataList = records.map( record => record[fieldCodeList[i]].value );
-      engine.setData( dataDef, dataList.join("\n") );
+    if ( dataDef === null ) {
+      return;
     }
+    const dataList = records.map( record => record[fieldCodeList[i]].value );
+    engine.setData( dataDef, dataList.join("\n") );
   });
 }
 
@@ -867,14 +859,7 @@ test('No data item to save the result is set', () => {
  * フィールドコード_1 が空なのに値_1 の保存先データ項目が設定されていてエラーになる場合
  */
 test('FieldCode1 is empty but the data item to save the values is set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-
-  // 文字型データ項目（複数行）を準備
-  const value1DataDef = engine.createDataDefinition('値_1', 1, 'q_fieldValues1', 'STRING_TEXTAREA');
-  configs.putObject('conf_ids', value1DataDef);
+  prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '', '数値');
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
@@ -889,14 +874,7 @@ test('FieldCode1 is empty but the data item to save the values is set', () => {
  * フィールドコード_2 が空なのに値_2 の保存先データ項目が設定されていてエラーになる場合
  */
 test('FieldCode2 is empty but the data item to save the values is set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-
-  // 文字型データ項目（複数行）を準備
-  const value2DataDef = engine.createDataDefinition('値_2', 1, 'q_fieldValues2', 'STRING_TEXTAREA');
-  configs.putObject('conf_labels', value2DataDef);
+  prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '文字列__1行_', '');
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
@@ -1392,16 +1370,10 @@ test('200 Success - FieldCode "$id" and "$revision" is also supported', () => {
   const fields = ['$id', '$revision'];
   const types = ['__ID__', '__REVISION__'];
 
-  let requestCount = 0;
   httpClient.setRequestHandler((request) => {
-    if (requestCount === 0) { // フィールド一覧のリクエスト
-      assertCheckFieldsRequest(request, 'xxxxx.kintone.com', '', '123');
-      requestCount++;
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(CHECK_FIELDS_RESPONSE));
-    } else { // レコード取得のリクエスト
-      assertGetRecordsRequest(request, 'xxxxx.kintone.com', '', '123', '$id < 10', fields, 0);
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 9, fields, types)));
-    }
+    // $id, $revision 以外のフィールドコードの指定がないので、フィールド一覧のリクエストはなし
+    assertGetRecordsRequest(request, 'xxxxx.kintone.com', '', '123', '$id < 10', fields, 0);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 9, fields, types)));
   });
 
   // <script> のスクリプトを実行
@@ -1566,6 +1538,41 @@ test('200 Success - FieldCode2 and Data item to save the values of it are not se
   for (let i = 0; i < 9; i++) {
     expect(recordIds[i]).toEqual(`${i+1}`);
     expect(values1[i]).toEqual(`${i+1} 番目のレコードの 作成日時 の値`);
+  }
+});
+
+/**
+ * レコード検索成功
+ * レコード ID のみ保存
+ */
+test('200 Success - Record IDs only', () => {
+  configs.put('conf_auth', 'kintone');
+  configs.put('conf_domain', 'xxxxx.kintone.com');
+  configs.put('conf_appId', '123');
+  configs.put('conf_query', '$id < 10');
+  const fields = ['$id'];
+  const types = ['__ID__'];
+
+  // 文字型データ項目（複数行）を準備（レコード ID を保存するデータ項目のみ）
+  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
+  engine.setData(recordIdDataDef, '事前\n文字列');
+  configs.putObject('conf_recordIds', recordIdDataDef);
+
+  httpClient.setRequestHandler((request) => {
+    // フィールド一覧のリクエストはなし
+    assertGetRecordsRequest(request, 'xxxxx.kintone.com', '', '123', '$id < 10', fields, 0);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 9, fields, types)));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  const recordIds = engine.findData(recordIdDataDef).split('\n');
+  expect(recordIds.length).toEqual(9);
+
+  for (let i = 0; i < 9; i++) {
+    expect(recordIds[i]).toEqual(`${i+1}`);
   }
 });
 
