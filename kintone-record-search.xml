@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Search Records</label>
 <label locale="ja">kintone: レコード検索</label>
-<last-modified>2021-12-20</last-modified>
+<last-modified>2021-12-21</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Search Records in a Kintone App using a query.</summary>
@@ -89,13 +89,9 @@ function main(){
   const fields = new Set( fieldCodeList );
   fields.delete(null);
   fields.delete("");
-  let requestNum = 0; // HTTP リクエスト回数
 
-  // $id と $revision 以外のフィールドがある場合のみ、フィールドの存在とフィールド型をチェック
-  if ( Array.from(fields).some(fieldCode => !fieldCode.equals("$id") && !fieldCode.equals("$revision")) ) {
-    checkFields( apiUri, apiToken, basic, appId, fields );
-    requestNum++;
-  }
+  // フィールドの存在とフィールド型をチェック（requestNum は現時点での HTTP リクエスト回数）
+  const requestNum = checkFields( apiUri, apiToken, basic, appId, fields );
 
   const initialParams = prepareInitialParams( appId, fields, query );
   const records = []; // レコードオブジェクトを格納する配列
@@ -197,6 +193,7 @@ function isValidId( idString ) {
 /**
   * kintone REST API にフィールド一覧取得の GET リクエストを送信し、
   * 指定したフィールドの存在とフィールド型をチェックする
+  * ただし、$id と $revision 以外のフィールドが指定されていない場合はリクエストを送信しない
   *  サポートするフィールド型:
   *    レコードID, リビジョン, レコード番号, 文字列（１行）, リンク, 数値, 日付, 時刻, 日時, 計算,
   *    ドロップダウン, ラジオボタン, ステータス, 作成日時, 更新日時
@@ -205,8 +202,17 @@ function isValidId( idString ) {
   * @param {String} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {Set<String>} fields  フィールドコードの集合
+  * @return {Number} requestNum  HTTP リクエスト回数（リクエストを送信したら 1, 送信しなければ 0）
   */
 function checkFields( apiUri, apiToken, basic, appId, fields ) {
+  const fieldsToCheck = new Set(fields);
+  fieldsToCheck.delete("$id");
+  fieldsToCheck.delete("$revision");
+
+  if ( fieldsToCheck.size === 0 ) { // チェックすべきフィールドがない
+    return 0;
+  }
+
   const getFieldsUri = `${apiUri}app/form/fields.json`;
   let request = httpClient.begin()
     .queryParam("app", appId)
@@ -224,21 +230,19 @@ function checkFields( apiUri, apiToken, basic, appId, fields ) {
   }
   const json = JSON.parse(responseStr);
 
-  // フィールドコードの存在とフィールド型をチェック（フィールドコードが $id または $revision であればチェック不要）
   const supportedFieldTypes = new Set([
     "RECORD_NUMBER", "SINGLE_LINE_TEXT", "LINK", "NUMBER", "DATE", "TIME", "DATETIME", "CALC",
     "DROP_DOWN", "RADIO_BUTTON", "STATUS", "CREATED_TIME", "UPDATED_TIME"
   ]);
-  fields.forEach(fieldCode => {
-    if ( fieldCode !== '$id' && fieldCode !== '$revision' ) {
-      if ( json.properties[fieldCode] === undefined ) {
-        throw `Field Code: ${fieldCode} does not exist in the app.`;
-      }
-      if ( !supportedFieldTypes.has( json.properties[fieldCode].type ) ) { // フィールド型がサポート外であればエラー
-        throw `Unable to save the values of ${fieldCode}. Field Type ${json.properties[fieldCode].type} is not supported.`;
-      }
+  fieldsToCheck.forEach(fieldCode => {
+    if ( json.properties[fieldCode] === undefined ) {
+      throw `Field Code: ${fieldCode} does not exist in the app.`;
+    }
+    if ( !supportedFieldTypes.has( json.properties[fieldCode].type ) ) { // フィールド型がサポート外であればエラー
+      throw `Unable to save the values of ${fieldCode}. Field Type ${json.properties[fieldCode].type} is not supported.`;
     }
   });
+  return 1;
 }
 
 /**
