@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-07-15</last-modified>
+<last-modified>2021-12-21</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Add New Sheet</label>
@@ -15,13 +15,17 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_SheetId" required="true" form-type="TEXTFIELD">
+  <config name="conf_SheetId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Target Spreadsheet ID</label>
     <label locale="ja">C2: スプレッドシートの ID</label>
   </config>
   <config name="conf_SheetTitle" required="false" form-type="TEXTFIELD" el-enabled="true">
     <label>C3: New Sheet Title (if blank, set automatically)</label>
     <label locale="ja">C3: 新しいシートのタイトル (空白の場合、自動設定されます)</label>
+  </config>
+  <config name="conf_AddedSheetTitle" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+    <label>C4: Data item to save Added Sheet Title</label>
+    <label locale="ja">C4: 追加したシートのタイトルを保存するデータ項目</label>
   </config>
 </configs>
 
@@ -38,26 +42,45 @@ main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("conf_OAuth2");
-
-  const sheetId = configs.get("conf_SheetId");
-  if (sheetId === "" || sheetId === null) {
-    throw "Target Sheet ID isn't set";
-  }
-
+  const spreadSheetId = retrieveSpreadSheetId();
   const sheetTitle = configs.get("conf_SheetTitle");
-  addSheet(oauth2, sheetId, sheetTitle);
+  const addedSheetTitleDef = configs.getObject("conf_AddedSheetTitle");
+
+  //// == Calculating / 演算 ==
+  const addedSheetTitle = addSheet(oauth2, spreadSheetId, sheetTitle);
+
+  //// == ワークフローデータへの代入 / Data Updating ==
+  if (addedSheetTitleDef !== null) {
+    engine.setData(addedSheetTitleDef, addedSheetTitle);
+  }
 }
 
+/**
+ * config からスプレッドシートの ID を読み出す
+ * @return {String} spreadSheetId スプレッドシートの ID
+ */
+function retrieveSpreadSheetId() {
+  let spreadSheetId = configs.get("conf_SheetId");
+  const spreadSheetIdDef = configs.getObject("conf_SheetId");
+  if (spreadSheetIdDef !== null) {
+    spreadSheetId = engine.findData(spreadSheetIdDef);
+  }
+  if (spreadSheetId === null || spreadSheetId === "") {
+    throw "Target Spreadsheet ID isn't set.";
+  }
+  return spreadSheetId;
+}
 
 /**
  * Google スプレッドシートに新しいシートを追加
  * @param {String} oauth2 OAuth2 認証設定
- * @param {String} sheetId スプレッドシートの ID
+ * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetTitle シートのタイトル
+ * @return {String} addedSheetTitle 追加したシートのタイトル
  */
-function addSheet(oauth2, sheetId, sheetTitle) {
+function addSheet(oauth2, spreadSheetId, sheetTitle) {
   // Method: spreadsheets.batchUpdate
-  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}:batchUpdate`;
+  const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadSheetId)}:batchUpdate`;
 
   const requestObj = {
     requests: [
@@ -78,11 +101,14 @@ function addSheet(oauth2, sheetId, sheetTitle) {
   const status = response.getStatusCode();
   const responseStr = response.getResponseAsString();
   if (status >= 300) {
-        engine.log(`Status: ${status}`);
-        engine.log(responseStr);
-        throw `Failed to add a new sheet.`;
+    engine.log(`Status: ${status}`);
+    engine.log(responseStr);
+    throw "Failed to add a new sheet.";
   }
-  engine.log("Succeeded to add a sheet");
+
+  // レスポンスから追加したシートのタイトルを取得して返す
+  const {replies} = JSON.parse(responseStr);
+  return replies[0].addSheet.properties.title;
 }
 ]]></script>
 
@@ -106,5 +132,199 @@ j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
 kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
 AEwJzTC2ALrNAAAAAElFTkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID はデータ項目で指定
+ * @param configs
+ * @param spreadSheetId
+ * @param sheetTitle
+ * @return addedSheetTitleDef
+ */
+const prepareConfigs = (spreadSheetId, sheetTitle) => {
+  configs.put('conf_OAuth2', 'Google');
+  configs.put('conf_SheetTitle', sheetTitle);
+
+  // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+  const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
+  engine.setData(spreadSheetIdDef, spreadSheetId);
+  configs.putObject('conf_SheetId', spreadSheetIdDef);
+
+  // 追加したシートのタイトルを保存する文字型データ項目（単一行）を準備
+  const addedSheetTitleDef = engine.createDataDefinition('追加したシートのタイトル', 2, 'q_AddedSheetTitle', 'STRING_TEXTFIELD');
+  engine.setData(addedSheetTitleDef, '事前文字列');
+  configs.putObject('conf_AddedSheetTitle', addedSheetTitleDef);
+
+  return addedSheetTitleDef;
+};
+
+/**
+ * conf_SheetId でデータ項目を選択し、値が空でエラーになる場合
+ */
+test('Spreadsheet ID is blank', () => {
+  prepareConfigs('', '新しいシート');
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith("Target Spreadsheet ID isn't set.");
+  }
+});
+
+/**
+ * POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetTitle
+ */
+const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, sheetTitle) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadSheetId
+        )}:batchUpdate`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    if (sheetTitle === '') {
+        expect(bodyObj.requests[0].addSheet).toEqual({});
+    } else {
+        expect(bodyObj.requests[0].addSheet.properties.title).toEqual(sheetTitle);
+    }
+};
+
+/**
+ * POST リクエストのレスポンスを準備
+ * @param sheetTitle
+ * @return responseObj
+ */
+const preparePostResponse = (sheetTitle) => {
+  return {
+    "spreadsheetId": "abc123",
+    "replies": [
+      {
+        "addSheet": {
+          "properties": {
+            "sheetId": 1112052210,
+            "title": sheetTitle,
+            "index": 2,
+            "sheetType": "GRID",
+            "gridProperties": {
+              "rowCount": 1000,
+              "columnCount": 26
+            }
+          }
+        }
+      }
+    ]
+  };
+};
+
+/**
+ * シート追加成功の場合 - 新しいシートのタイトルを指定
+ */
+test('Success - with New Sheet Title', () => {
+  const addedSheetTitleDef = prepareConfigs('abc123', '新しいシート / 1');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'abc123', '新しいシート / 1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('新しいシート / 1')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(addedSheetTitleDef)).toEqual('新しいシート / 1');
+});
+
+/**
+ * シート追加成功の場合 - 新しいシートのタイトルは自動設定
+ */
+test('Success - without New Sheet Title', () => {
+  const addedSheetTitleDef = prepareConfigs('abc123', '');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'abc123', '');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('シート2')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(addedSheetTitleDef)).toEqual('シート2');
+});
+
+/**
+ * シート追加成功の場合 - スプレッドシートの ID を固定値で指定
+ */
+test('Success - Set the Spreadsheet ID as a fixed value', () => {
+  configs.put('conf_OAuth2', 'Google');
+  configs.put('conf_SheetId', 'abc123');
+  configs.put('conf_SheetTitle', '新しいシート');
+
+  // 追加したシートのタイトルを保存する文字型データ項目（単一行）を準備
+  const addedSheetTitleDef = engine.createDataDefinition('追加したシートのタイトル', 1, 'q_AddedSheetTitle', 'STRING_TEXTFIELD');
+  engine.setData(addedSheetTitleDef, '事前文字列');
+  configs.putObject('conf_AddedSheetTitle', addedSheetTitleDef);
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'abc123', '新しいシート');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('新しいシート')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(addedSheetTitleDef)).toEqual('新しいシート');
+});
+
+/**
+ * シート追加成功の場合 - 追加したシートのタイトルを保存しない
+ */
+test('Success - Added Sheet Title not saved', () => {
+  configs.put('conf_OAuth2', 'Google');
+  configs.put('conf_SheetId', 'abc123');
+  configs.put('conf_SheetTitle', '新しいシート');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'abc123', '新しいシート');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('新しいシート')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+/**
+ * POST API リクエストでエラー
+ */
+test('POST Failed', () => {
+  prepareConfigs('abc123', '新しいシート');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'abc123', '新しいシート');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to add a new sheet.');
+  }
+});
+
+]]></test>
 
 </service-task-definition>
