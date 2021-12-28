@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-10</last-modified>
+<last-modified>2021-12-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Shared Link to File</label>
@@ -170,4 +170,378 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=</icon>
+    
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * conf_FileId  conf_Password  は、文字型データ項目で指定
+ * conf_UnsharedAt は、日時型データ項目で指定
+ * @param configs
+ * @param fileId
+ * @param unsharedDate
+ * @param password
+ * @return {{
+ *     fileIdDef: {Object},
+ *     unsharedDateDef: {Object},
+ *     passwordDef: {Object},
+ *     urlDef: {Object}
+ * }}
+ */
+const prepareConfigs = (configs, fileId, unsharedDate, password) => {
+    configs.put('conf_OAuth2', 'Box');
+
+    // 文字型データ項目を準備して、config に指定
+    const fileIdDef = engine.createDataDefinition('共有するファイルID', 1, 'q_fileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_FileId', fileIdDef);
+    // 文字型データ項目の値（共有するファイルID）を指定
+    engine.setData(fileIdDef, fileId);
+
+    // 日時型データ項目を準備して、config に指定
+    const unsharedDateDef = engine.createDataDefinition('有効期限', 2, 'q_dateTime', 'DATETIME');
+    configs.putObject('conf_UnsharedAt', unsharedDateDef);
+    // 日時型データ項目の値（有効期限）を指定
+    engine.setData(unsharedDateDef, unsharedDate);
+
+    // 文字型データ項目を準備して、config に指定
+    const passwordDef = engine.createDataDefinition('パスワード', 3, 'q_password', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Password', passwordDef);
+    // 文字型データ項目の値（パスワード）を指定
+    engine.setData(passwordDef, password);
+
+    // 文字型データ項目を準備して、config に指定
+    const urlDef = engine.createDataDefinition('リンクURL', 4, 'q_urls', 'STRING_TEXTFIELD');
+    configs.putObject('conf_SharedLink', urlDef);
+    // 文字型データ項目の値（リンク URL を保存するデータ項目）を指定
+    engine.setData(urlDef, '事前文字列');
+
+    return {
+        fileIdDef,
+        unsharedDateDef,
+        passwordDef,
+        urlDef
+    };
+};
+
+
+/**
+ * リクエストのテスト（対象ファイルの共有リンク情報を取得）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param fileId
+ */
+const assertGetRequest = ({url, method}, fileId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/files/${fileId}?fields=shared_link`);
+    expect(method).toEqual('GET');
+};
+
+
+/**
+ * リクエストのテスト（ファイル共有リンク作成）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param fileId
+ * @param unsharedDate
+ * @param password
+ */
+const assertPutRequest = ({url, method, contentType, body}, fileId, unsharedDate, password) => {
+    expect(url).toEqual(`https://api.box.com/2.0/files/${fileId}?fields=shared_link`);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+
+    let timezone = engine.getTimeZoneId();
+        if (timezone === "GMT"){
+        timezone += "+00:00";
+        }
+
+    if ( unsharedDate !== "" && unsharedDate !== null ){ 
+        expect(bodyObj.shared_link.unshared_at).toEqual(unsharedDate.toString() + timezone.slice(3));
+    }else{
+        //unsharedDate が空の場合、bodyObj に time の指定がないことを確認
+        expect(bodyObj.shared_link.unshared_at === undefined).toEqual(true);
+    }
+    if ( password !== "" && password !== null ){ 
+        expect(bodyObj.shared_link.password).toEqual(password);
+    }else{
+        //password が空の場合、bodyObj に password の指定がないことを確認
+        expect(bodyObj.shared_link.password === undefined).toEqual(true);
+    }
+};
+
+
+/**
+ * conf_FileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test('File ID is blank - FileId specified by String Data', () => {
+    prepareConfigs(configs, null, '2020-03-14 23:45', 'word1');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File ID is blank');
+    }
+});
+
+/**
+ * conf_FileId に固定値を指定しているが、その固定値が空でエラーになる場合
+ */
+test('File ID is blank - FileId specified with fixed value ' , () => {
+    prepareConfigs(configs, null, '2021-04-15 10:00', 'word2');
+    //conf_SourceFileId の設定値を固定値で上書き
+    configs.put('conf_FileId', '');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('File ID is blank');
+    }
+});
+
+
+/**
+ * Box への API リクエストでエラー 
+ * 対象ファイルの共有リンク情報の取得失敗
+ */
+test('GET Failed', () => {
+    prepareConfigs(configs, '12345678', '2022-01-01 00:00', 'word3');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, '12345678');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to get file information. status:400');
+    }
+});
+
+
+/**
+ * 対象ファイルに共有リンクが既に有り、エラー
+ */
+test('Shared link was already created.', () => {
+    prepareConfigs(configs, '87654321', '2023-01-02 20:15', 'word4');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, '87654321');
+            //レスポンスは、簡易版レプリゼンテーション＋ field で指定した属性
+            const responseGetObj = {
+                "type": "file",
+                "id": "87654321",
+                "etag": "0",
+                "shared_link": {
+                    "access": "open",
+                    "download_count": 3,
+                    "download_url": "https://www.box.com/shared/static/rh935iit6ewrmw0unyul.jpeg",
+                    "effective_access": "company",
+                    "effective_permission": "can_download",
+                    "is_password_enabled": true,
+                    "permissions": {
+                        "can_download": true,
+                        "can_preview": true
+                    },
+                    "preview_count": 3,
+                    "unshared_at": "2023-01-02T20:15:00-07:00",
+                    "url": "https://www.box.com/s/vspke7y05sb214wjokpk",
+                    "vanity_name": "my_url",
+                    "vanity_url": "https://acme.app.box.com/v/my_url/"
+                }
+            };
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
+        }
+   　});
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Shared link(https://www.box.com/s/vspke7y05sb214wjokpk) was already created.');
+    }
+});
+
+
+
+/**
+ * Box への API リクエストでエラー 
+ * ファイル共有リンク作成失敗
+ */
+test('PUT Failed', () => {
+    prepareConfigs(configs, '11111111', '2020-03-14 23:45', 'word5');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, '11111111');
+            //レスポンスは、簡易版レプリゼンテーション＋ field で指定した属性
+            const responseGetObj = {
+                "type": "file",
+                "id": "87654321",
+                "etag": "0",
+                "shared_link": null
+            };
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
+        }
+        assertPutRequest(request, '11111111', '2020-03-14 23:45', 'word5');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to create Shared Link. status:400');
+    }
+});
+
+
+/**
+ * ファイル共有リンク作成成功
+ */
+test('200 Success', () => {
+    const {
+        fileIdDef,
+        unsharedDateDef,
+        passwordDef,
+        urlDef
+    } = prepareConfigs(configs, '87654321', '2020-03-14 23:45', 'word6');
+	
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, '87654321');
+            //レスポンスは、簡易版レプリゼンテーション
+            const responseGetObj = {
+                "type": "file",
+                "id": "87654321",
+                "etag": "0",
+                "shared_link": null
+            };
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
+        }
+
+        assertPutRequest(request, '87654321', '2020-03-14 23:45', 'word6');
+        //レスポンスは、簡易版レプリゼンテーション
+        const responsePutObj = {
+            "type": "file",
+            "id": "87654321",
+            "etag": "0",
+            "shared_link": {
+                "access": "open",
+                "download_count": 3,
+                "download_url": "https://www.box.com/shared/static/rh935iit6ewrmw0unyul.jpeg",
+                "effective_access": "company",
+                "effective_permission": "can_download",
+                "is_password_enabled": true,
+                "permissions": {
+                    "can_download": true,
+                    "can_preview": true
+                },
+                "preview_count": 3,
+                "unshared_at": "2020-03-14T23:45:00-07:00",
+                "url": "https://www.box.com/s/vspke7y05sb214123456",
+                "vanity_name": "my_url",
+                "vanity_url": "https://acme.app.box.com/v/my_url/"
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responsePutObj));
+    })
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileIdDef)).toEqual('87654321');
+    expect(engine.findData(unsharedDateDef)).toEqual('2020-03-14 23:45');
+    expect(engine.findData(passwordDef)).toEqual('word6');
+    expect(engine.findData(urlDef)).toEqual('https://www.box.com/s/vspke7y05sb214123456');
+});
+
+
+/**
+ * ファイル共有リンク作成成功
+ * 有効期限、パスワード　共に空　
+ */
+test('200 Success - no unsharedDate and no password', () => {
+    const {
+        fileIdDef,
+        unsharedDateDef,
+        passwordDef,
+        urlDef
+    } = prepareConfigs(configs, '12345678', null , null);
+	
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, '12345678');
+            //レスポンスは、簡易版レプリゼンテーション
+            const responseGetObj = {
+                "type": "file",
+                "id": "12345678",
+                "etag": "0",
+                "shared_link": null
+            };
+            reqCount++;        
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
+        }
+
+        assertPutRequest(request, '12345678', null , null);
+        //レスポンスは、簡易版レプリゼンテーション
+        const responsePutObj = {
+            "type": "file",
+            "id": "12345678",
+            "etag": "0",
+            "shared_link": {
+                "access": "open",
+                "download_count": 3,
+                "download_url": "https://www.box.com/shared/static/rh935iit6ewrmw0unyul.txt",
+                "effective_access": "company",
+                "effective_permission": "can_download",
+                "is_password_enabled": true,
+                "permissions": {
+                    "can_download": true,
+                    "can_preview": true
+                },
+                "preview_count": 3,
+                "unshared_at": null,
+                "url": "https://www.box.com/s/vspke7y05sb987654321",
+                "vanity_name": "my_url",
+                "vanity_url": "https://acme.app.box.com/v/my_url/"
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responsePutObj));
+    })
+
+    // <script> のスクリプトを実行
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileIdDef)).toEqual('12345678');
+    expect(engine.findData(unsharedDateDef)).toEqual(null);
+    expect(engine.findData(passwordDef)).toEqual(null);
+    expect(engine.findData(urlDef)).toEqual('https://www.box.com/s/vspke7y05sb987654321');
+});
+
+]]></test>    
+    
+
 </service-task-definition>
