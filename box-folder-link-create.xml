@@ -217,8 +217,14 @@ const assertGetRequest = ({ url, method }, folderId) => {
  * @param contentType
  * @param body
  * @param folderId
+ * @param offsetInMinutes
  */
-const assertCreateRequest = ({ url, method, contentType, body }, folderId) => {
+const assertCreateRequest = (
+  { url, method, contentType, body },
+  folderId,
+  unsharedDate,
+  offsetInMinutes
+) => {
   configs.put("FolderId", "12345");
   expect(url).toEqual(
     `https://api.box.com/2.0/folders/${folderId}?fields=shared_link`
@@ -226,6 +232,28 @@ const assertCreateRequest = ({ url, method, contentType, body }, folderId) => {
   expect(method).toEqual("PUT");
   expect(contentType).toEqual("application/json; charset=UTF-8");
   const bodyObj = JSON.parse(body);
+
+  engine.setTimeZoneOffsetInMinutes(offsetInMinutes); // テストスクリプトではタイムゾーンの値をコントロール可能
+  let timezone = engine.getTimeZoneId(); // offsetInMinutes:540 → timezone = 'GMT+09:00' , 0 → 'GMT', -330 → 'GMT-05:30'
+  if (timezone === "GMT") {
+    // GMT+00:00  → 2023-01-02 20:15:00.0 は、タイムゾーンが"GMT"の場合、2023-01-02 20:15:00.0+00:00 となる
+    timezone += "+00:00 ";
+  }
+
+  if ( unsharedDate !== null ){ 
+    expect(bodyObj.shared_link.unshared_at).toEqual(
+      `${unsharedDate.toString()}.0${timezone.slice(3)}`
+    );
+  } else {
+    //unsharedDate が空の場合、bodyObj に time の指定がないことを確認
+    expect(bodyObj.shared_link.unshared_at === undefined).toEqual(true);
+  }
+  if (password !== null) {
+    expect(bodyObj.shared_link.password).toEqual(password);
+  } else {
+    //password が空の場合、bodyObj に password の指定がないことを確認
+    expect(bodyObj.shared_link.password === undefined).toEqual(true);
+  }
 };
 
 /**
@@ -258,10 +286,14 @@ test("Success / Create Shared Link", () => {
 
 /**
  * 正常系 / 指定された FolderID
+ * 有効期限、パスワード : 共に空
  */
-test("Success / FolderID specified with fixed value", () => {
+test("200 Success - No unsharedDate and No password", (folderId, unsharedDateDef, passwordDef, urlDef) => {
   configs.put("OAuth2", "Box");
   configs.put("FolderId", "98765");
+  configs.put("unsharedDateDef", "87654321");
+  configs.put("passwordDef", "word6");
+  configs.put("urlDef", "https://www.box.com/s/vspke7y05sb214wjokpk");
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -282,6 +314,53 @@ test("Success / FolderID specified with fixed value", () => {
     );
   });
   execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderId).toString()).toEqual("12345");
+  expect(engine.findData(unsharedDateDef).toString()).toEqual(
+    "2018-04-13T13:53:23-07:00"
+  );
+  expect(engine.findData(passwordDef)).toEqual("word6");
+  expect(engine.findData(urlDef)).toEqual(
+    "https://www.box.com/s/vspke7y05sb214123456"
+  );
+});
+
+/**
+ * 正常系 / 指定された FolderID
+ * 有効期限、パスワード : 共に指定しない
+ */
+test("200 Success - Not specified both unsharedDate and password", (folderId, unsharedDateDef, passwordDef, urlDef) => {
+  configs.put("OAuth2", "Box");
+  configs.put("FolderId", "22222222");
+  configs.put("unsharedDateDef", "87654321");
+  configs.put("passwordDef", null);
+  configs.put("urlDef", "https://www.box.com/s/vspke7y05sb214wjokpk");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      reqCount++;
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(NO_SHARED_LINK)
+      );
+    }
+    assertCreateRequest(request, "22222222");
+    return httpClient.createHttpResponse(
+      200,
+      "application/json",
+      JSON.stringify(HAS_SHARED_LINK)
+    );
+  });
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderId).toString()).toEqual("12345");
+  expect(engine.findData(urlDef)).toEqual(
+    "https://www.box.com/s/vspke7y05sb214123456"
+  );
 });
 
 /**
