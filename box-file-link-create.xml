@@ -205,7 +205,7 @@ const prepareConfigs = (configs, fileId, unsharedDate, password) => {
         const datetime = java.sql.Timestamp.valueOf(unsharedDate); 
         engine.setData(unsharedDateDef, datetime);
     }else{
-        engine.setData(unsharedDateDef, unsharedDate);
+        engine.setData(unsharedDateDef, null);
     }
 
     // 文字型データ項目を準備して、config に指定
@@ -252,21 +252,24 @@ const assertGetRequest = ({url, method}, fileId) => {
  * @param fileId
  * @param unsharedDate
  * @param password
+ * @param offsetInMinutes
  */
-const assertPutRequest = ({url, method, contentType, body}, fileId, unsharedDate, password) => {
+const assertPutRequest = ({url, method, contentType, body}, fileId, unsharedDate, password, offsetInMinutes) => {
     expect(url).toEqual(`https://api.box.com/2.0/files/${fileId}?fields=shared_link`);
     expect(method).toEqual('PUT');
     expect(contentType).toEqual('application/json; charset=UTF-8');
     const bodyObj = JSON.parse(body);
 
-    let timezone = engine.getTimeZoneId();
+    engine.setTimeZoneOffsetInMinutes(offsetInMinutes); // テストスクリプトではタイムゾーンの値をコントロール可能
+    let timezone = engine.getTimeZoneId(); // offsetInMinutes:540 → timezone = 'GMT+09:00' , 0 → 'GMT', -330 → 'GMT-05:30'
+
         if (timezone === "GMT"){
-        // GMT+00:00  →　2023-01-02 20:15:00.0 は、タイムゾーンが"GMT"の場合、2023-01-02 20:15:00.0+00:00 となる
+        // GMT+00:00  →　2023-01-02 20:15:00 は、タイムゾーンが"GMT"の場合、2023-01-02 20:15:00.0+00:00 となる
         timezone += "+00:00 ";
         }
 
     if ( unsharedDate !== null ){ 
-        expect(bodyObj.shared_link.unshared_at).toEqual(`${(unsharedDate.toString()).slice(0,19)}.0${timezone.slice(3)}`); 
+        expect(bodyObj.shared_link.unshared_at).toEqual(`${unsharedDate.toString()}.0${timezone.slice(3)}`); 
     }else{
         //unsharedDate が空の場合、bodyObj に time の指定がないことを確認
         expect(bodyObj.shared_link.unshared_at === undefined).toEqual(true);
@@ -284,7 +287,7 @@ const assertPutRequest = ({url, method, contentType, body}, fileId, unsharedDate
  * conf_FileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('File ID is blank - FileId specified by String Data', () => {
-    prepareConfigs(configs, null, '2020-03-14 23:45:00.0', 'word1');
+    prepareConfigs(configs, null, '2020-03-14 23:45:00', 'word1');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
     try {
@@ -299,7 +302,7 @@ test('File ID is blank - FileId specified by String Data', () => {
  * conf_FileId に固定値を指定しているが、その固定値が空でエラーになる場合
  */
 test('File ID is blank - FileId specified with fixed value ' , () => {
-    prepareConfigs(configs, null, '2021-04-15 10:00:00.0', 'word2');
+    prepareConfigs(configs, null, '2021-04-15 10:00:00', 'word2');
     //conf_SourceFileId の設定値を固定値で上書き
     configs.put('conf_FileId', '');
 
@@ -318,7 +321,7 @@ test('File ID is blank - FileId specified with fixed value ' , () => {
  * 対象ファイルの共有リンク情報の取得失敗
  */
 test('GET Failed', () => {
-    prepareConfigs(configs, '12345678', '2022-01-01 00:00:00.0', 'word3');
+    prepareConfigs(configs, '12345678', '2022-01-01 00:00:00', 'word3');
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, '12345678');
@@ -339,7 +342,7 @@ test('GET Failed', () => {
  * 対象ファイルに共有リンクが既に有り、エラー
  */
 test('Shared link was already created.', () => {
-    prepareConfigs(configs, '87654321', '2023-01-02 20:15:00.0', 'word4');
+    prepareConfigs(configs, '87654321', '2023-01-02 20:15:00', 'word4');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -389,7 +392,7 @@ test('Shared link was already created.', () => {
  * ファイル共有リンク作成失敗
  */
 test('PUT Failed', () => {
-    prepareConfigs(configs, '11111111', '2020-03-14 23:45:00.0', 'word5');
+    prepareConfigs(configs, '11111111', '2020-03-14 23:45:00', 'word5');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -405,7 +408,7 @@ test('PUT Failed', () => {
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
         }
-        assertPutRequest(request, '11111111', '2020-03-14 23:45:00.0', 'word5');
+        assertPutRequest(request, '11111111', '2020-03-14 23:45:00', 'word5', 540);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -428,7 +431,7 @@ test('200 Success', () => {
         unsharedDateDef,
         passwordDef,
         urlDef
-    } = prepareConfigs(configs, '87654321', '2020-03-14 23:45:00.0', 'word6');
+    } = prepareConfigs(configs, '87654321', '2020-03-14 23:45:00', 'word6');
 	
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -445,7 +448,7 @@ test('200 Success', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
         }
 
-        assertPutRequest(request, '87654321', '2020-03-14 23:45:00.0', 'word6');
+        assertPutRequest(request, '87654321', '2020-03-14 23:45:00', 'word6', 540);
         //レスポンスは、簡易版レプリゼンテーション
         const responsePutObj = {
             "type": "file",
@@ -510,7 +513,7 @@ test('200 Success - no unsharedDate and no password', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
         }
 
-        assertPutRequest(request, '12345678', null , null);
+        assertPutRequest(request, '12345678', null , null, -330);
         //レスポンスは、簡易版レプリゼンテーション
         const responsePutObj = {
             "type": "file",
@@ -583,7 +586,7 @@ test('200 Success - Not specified both unsharedDate and password', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseGetObj));
         }
    
-        assertPutRequest(request, '22222222', null , null);
+        assertPutRequest(request, '22222222', null , null, 540);
         //レスポンスは、簡易版レプリゼンテーション
         const responsePutObj = {
             "type": "file",
