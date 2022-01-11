@@ -5,7 +5,7 @@
 <label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
 <summary>Appends values of table data item after the last row in a sheet. Inserts new rows if necessary.</summary>
 <summary locale="ja">シート末尾にテーブル型データの値を入力します。必要あれば行領域を拡大します。</summary>
-<last-modified>2022-01-07</last-modified>
+<last-modified>2022-01-11</last-modified>
 <help-page-url>https://support.questetra.com/bpmn-icons/googlesheets-appendtable/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googlesheets-appendtable/</help-page-url>
 
@@ -81,30 +81,19 @@ main();
 
 function main() {
     const tableDataDef = configs.getObject("conf_DataIdT");
-    if (tableDataDef === null) {
-        throw "Table Data is not specified.";
-    }
     const oauth2 = configs.get( "conf_OAuth2" );
     const spreadsheetId = retrieveStringData("conf_DataIdW", "Target Spreadsheet ID");
     const sheetName = retrieveStringData("conf_DataIdX", "Target Sheet Title");
     const fieldNames = getFieldNames();
 
-    // テーブル型データおよびサブデータ項目の定義を取得
-    const tableData = engine.findData(tableDataDef);
-    if (tableData === null) {
-        throw "the table data is empty.";
-    }
-    const subDataDefs = tableDataDef.getSubDataDefinitions();
+    // 追加するデータを準備
+    const rows = makeRows(tableDataDef, fieldNames);
 
     // シート名からシート ID の取得
     const sheetId = getSheetId(oauth2, spreadsheetId, sheetName);
 
-    // 追加するデータの追加
-    const appendCells = makeAppendCells(tableData, sheetId, subDataDefs, fieldNames);
-    //engine.log(JSON.stringify(appendCells));
-
     // データの追加
-    appendData(oauth2, spreadsheetId, appendCells);
+    appendData(oauth2, sheetId, spreadsheetId, rows);
 }
 
 /**
@@ -184,35 +173,31 @@ function getSheetId(oauth2, spreadsheetId, sheetName) {
 }
 
 /**
- * 追加用のデータ作成
- * @param {ScriptListArray} tableData
- * @param {Number} sheetId
- * @param {Array<SubDataDefinitionView>} subDataDefs
+ * 追加用の行データを作成
+ * @param {ProcessDataDefinitionView} tableDataDef
  * @param {Array<String>} fieldNames
- * @return {Object}
+ * @return {Array<Object>}
  */
-function makeAppendCells(tableData, sheetId, subDataDefs, fieldNames) {
+function makeRows(tableDataDef, fieldNames) {
+    // テーブル型データおよびサブデータ項目の定義を取得
+    const tableData = engine.findData(tableDataDef);
+    if (tableData === null) {
+        throw "the table data is empty.";
+    }
+    const subDataDefs = tableDataDef.getSubDataDefinitions();
+
     // subDataDef のマップを作成。キーはフィールド名。
     const subDataDefMap = makeSubDataDefMap(subDataDefs);
 
     //行データの作成
     const rowCount = tableData.size();
-    const rows = [rowCount];
+    const rows = [];
     for (let i = 0; i < rowCount; i++) {
         const values = makeRowValues(i, tableData, subDataDefMap, fieldNames);
         rows[i] = {values};
-        //engine.log(`${i}: ${JSON.stringify(rows[i])}`);
     }
 
-    return {
-        requests: [{
-            appendCells: {
-                rows,
-                sheetId,
-                fields: "*"
-            }
-        }]
-    };
+    return rows;
 }
 
 /**
@@ -238,10 +223,10 @@ function makeSubDataDefMap(subDataDefs) {
  * @param {ScriptListArray} tableData
  * @param {Map<String, SubDataDefinitionView>>} subDataDefMap
  * @param {Array<String>} fieldName
- * @return {[*]}
+ * @return {Array<Object>}
  */
 function makeRowValues(rowNumber, tableData, subDataDefMap, fieldNames) {
-    const values = [fieldNames.length];
+    const values = [];
     let flag = true;
     // 後ろの列から前の列へ
     for (let j = fieldNames.length - 1; j >= 0; j--) {
@@ -279,7 +264,7 @@ function makeRowValues(rowNumber, tableData, subDataDefMap, fieldNames) {
  * @param {ScriptListArray} tableData
  * @param {Map<String, SubDataDefinitionView>} subDataDefMap
  * @param {String} fieldName
- * @return {Object}
+ * @return {String}
  */
 function getCellValue(rowNumber, tableData, subDataDefMap, fieldName) {
     if (fieldName === "" || fieldName === null) {
@@ -301,12 +286,21 @@ function getCellValue(rowNumber, tableData, subDataDefMap, fieldName) {
 /**
  * データを Google Sheets に送信する
  * @param {String} oauth2
+ * @param {String} sheetId
  * @param {String} spreadsheetId
- * @param {Object} obj
+ * @param {Array<Object>} rows
  */
-function appendData(oauth2, spreadsheetId, obj) {
+function appendData(oauth2, sheetId, spreadsheetId, rows) {
     const uri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
-
+    const obj = {
+        requests: [{
+            appendCells: {
+                rows,
+                sheetId,
+                fields: "*"
+            }
+        }]
+    };
     const response = httpClient.begin()
         .authSetting(oauth2)
         .body(JSON.stringify(obj), "application/json")
@@ -339,5 +333,298 @@ j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
 kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
 AEwJzTC2ALrNAAAAAElFTkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+const COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID とシートのタイトルはデータ項目で指定
+ * @param spreadSheetId
+ * @param sheetTitle
+ * @return tableDef
+ */
+const prepareConfigs = (spreadSheetId, sheetTitle) => {
+    configs.put('conf_OAuth2', 'Google');
+
+    // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+    const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
+    engine.setData(spreadSheetIdDef, spreadSheetId);
+    configs.putObject('conf_DataIdW', spreadSheetIdDef);
+
+    // シートのタイトルを設定した文字型データ項目（単一行）を準備
+    const sheetTitleDef = engine.createDataDefinition('シートのタイトル', 2, 'q_SheetTitle', 'STRING_TEXTFIELD');
+    engine.setData(sheetTitleDef, sheetTitle);
+    configs.putObject('conf_DataIdX', sheetTitleDef);
+
+    // テーブル型データ項目を準備
+    const tableDef = engine.createDataDefinition('テーブル', 3, 'q_Table', 'LIST');
+    // 文字型のサブデータ項目を設定可能な列数ぶん準備し、config にフィールド名をセット
+    COLUMNS.forEach((col, i) => {
+        tableDef.addSubDataDefinition(`文字${i}`, `q_String${i}`, 'STRING');
+        configs.put(`conf_DataId${col}`, `q_String${i}`);
+    });
+
+    // テーブルにデータを2行追加
+    const table = tableDef.createListArray();
+    for (let i = 0; i < 2; i++) {
+        const row = table.addRow();
+        for (let j = 0; j < COLUMNS.length; j++) {
+            row.put(`q_String${j}`, `${i}行${j}列の文字列`);
+        }
+    }
+    engine.setData(tableDef, table);
+    configs.putObject('conf_DataIdT', tableDef);
+
+    return tableDef;
+};
+
+/**
+ * スプレッドシートの ID をデータ項目で指定し、値が空でエラーになる場合
+ */
+test('Target Spreadsheet ID is empty', () => {
+    prepareConfigs(null, 'シート1');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Target Spreadsheet ID is empty.');
+    }
+});
+
+/**
+ * シートのタイトルをデータ項目で指定し、値が空でエラーになる場合
+ */
+test('Target Sheet Title is empty', () => {
+    prepareConfigs('abc123', null);
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Target Sheet Title is empty.');
+    }
+});
+
+/**
+ * フィールド名の設定がひとつもなく、エラーになる場合
+ */
+test('No field names', () => {
+    prepareConfigs('abc123', 'シート1');
+    COLUMNS.forEach(col => configs.put(`conf_DataId${col}`, '')); // 空文字列で上書き
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No Data to add is selected.');
+    }
+});
+
+/**
+ * テーブルにデータが一行もなくエラーになる場合
+ */
+test('Table is empty', () => {
+    const tableDef = prepareConfigs('abc123', 'シート1');
+    engine.setData(tableDef, null); // null で上書き
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('the table data is empty.');
+    }
+});
+
+/**
+ * テーブルデータに空行が含まれていて、エラーになる場合
+ */
+test('Table has an empty row', () => {
+    const tableDef = prepareConfigs('abc123', 'シート1');
+    const table = engine.findData(tableDef);
+    table.addRow(); // 空行を追加
+    engine.setData(tableDef, table);
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("There is an empty row in data to append.");
+    }
+});
+
+/**
+ * 存在しないフィールド名が設定されていて、エラーになる場合
+ */
+test('Field name does not exist', () => {
+    prepareConfigs('abc123', 'シート1');
+    configs.put('conf_DataIdB', '存在しないフィールド名'); // B 列を存在しないフィールド名で上書き
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Field Name 存在しないフィールド名 does not exist');
+    }
+});
+
+/**
+ * サブデータ項目に 50,000 文字を超える文字列が設定されていて、エラーになる場合
+ */
+test('Over 50,000 characters', () => {
+    const tableDef = prepareConfigs('abc123', 'シート1');
+    const table = engine.findData(tableDef);
+    const string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUV'
+        .repeat(500) + 'A';
+    table.getRow(0).setCol(2, string); // 1行3列目を上書き
+    engine.setData(tableDef, table);
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("Can't set text over 50,000 character.");
+    }
+});
+
+const SAMPLE_GET = {
+    "spreadsheetId": "abc123",
+    "properties": {
+        "title": "テスト用スプレッドシート"
+    },
+    "sheets": [
+        {
+        "properties": {
+            "sheetId": 0,
+            "title": "シート1",
+            "index": 0,
+            "sheetType": "GRID",
+            "gridProperties": {
+            "rowCount": 1000,
+            "columnCount": 26
+            }
+        }
+        },
+        {
+        "properties": {
+            "sheetId": 1,
+            "title": "シート 2/2",
+            "index": 1,
+            "sheetType": "GRID",
+            "gridProperties": {
+            "rowCount": 1000,
+            "columnCount": 26
+            }
+        }
+        }
+    ],
+    "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/abc123/edit?ouid=102859041491136123607"
+};
+
+/**
+ * GET リクエストのテスト（Google スプレッドシートのシート ID を取得）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param spreadSheetId
+ */
+const assertGetRequest = ({url, method}, spreadSheetId) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadSheetId
+        )}?includeGridData=false`);
+    expect(method).toEqual('GET');
+};
+
+const SAMPLE_POST = {
+    "spreadsheetId": "abc123",
+    "replies": [
+        {}
+    ]
+};
+
+/**
+ * POST リクエストのテスト (Google スプレッドシートの行を追加)
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetId
+ * @param rows
+ */
+const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, sheetId, rows) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadSheetId
+        )}:batchUpdate`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.requests[0].appendCells.sheetId).toEqual(sheetId);
+    expect(bodyObj.requests[0].appendCells.fields).toEqual('*');
+    assertRows(rows, bodyObj.requests[0].appendCells.rows);
+};
+
+/**
+ * リクエストボディの行データのテスト
+ * @param expectedRows
+ * @param actualRows
+ */
+const assertRows = (expectedRows, actualRows) => {
+    expectedRows.forEach((cells, i) => {
+        cells.forEach(({type, value}, j) => {
+            if (value === null) {
+                expect(actualRows[i].values[j]).toEqual(null);
+            } else {
+                expect(actualRows[i].values[j].userEnteredValue[type]).toEqual(value);
+            }
+        });
+    });
+};
+
+/**
+ * 行追加成功の場合 - 先頭にあるシート
+ */
+test('Success - 1st sheet', () => {
+    prepareConfigs('abc123', 'シート1');
+    const rows = [];
+    for (let i = 0; i < 2; i++) {
+        rows[i] = [];
+        for (let j = 0; j < COLUMNS.length; j++) {
+            rows[i][j] = {
+                type: 'stringValue',
+                value: `${i}行${j}列の文字列`
+            };
+        }
+    }
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // シート ID 取得のリクエスト
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        // 行追加のリクエスト
+        assertPostRequest(request, 'abc123', 0, rows);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
+        
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+});
+
+
+]]></test>
 
 </service-task-definition>
