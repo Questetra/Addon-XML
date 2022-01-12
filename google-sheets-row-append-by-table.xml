@@ -5,7 +5,7 @@
 <label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
 <summary>Appends values of table data item after the last row in a sheet. Inserts new rows if necessary.</summary>
 <summary locale="ja">シート末尾にテーブル型データの値を入力します。必要あれば行領域を拡大します。</summary>
-<last-modified>2022-01-11</last-modified>
+<last-modified>2022-01-12</last-modified>
 <help-page-url>https://support.questetra.com/bpmn-icons/googlesheets-appendtable/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googlesheets-appendtable/</help-page-url>
 
@@ -341,9 +341,10 @@ const COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 /**
  * 設定の準備
  * スプレッドシートの ID とシートのタイトルはデータ項目で指定
+ * サブデータ項目はすべて文字型
  * @param spreadSheetId
  * @param sheetTitle
- * @return tableDef
+ * @return {tableDef, expectedRows}
  */
 const prepareConfigs = (spreadSheetId, sheetTitle) => {
     configs.put('conf_OAuth2', 'Google');
@@ -360,24 +361,37 @@ const prepareConfigs = (spreadSheetId, sheetTitle) => {
 
     // テーブル型データ項目を準備
     const tableDef = engine.createDataDefinition('テーブル', 3, 'q_Table', 'LIST');
+
     // 文字型のサブデータ項目を設定可能な列数ぶん準備し、config にフィールド名をセット
-    COLUMNS.forEach((col, i) => {
-        tableDef.addSubDataDefinition(`文字${i}`, `q_String${i}`, 'STRING');
-        configs.put(`conf_DataId${col}`, `q_String${i}`);
+    COLUMNS.forEach(col => {
+        tableDef.addSubDataDefinition(`${col}列のサブデータ`, `q_SubData${col}`, 'STRING');
+        configs.put(`conf_DataId${col}`, `q_SubData${col}`);
     });
 
     // テーブルにデータを2行追加
     const table = tableDef.createListArray();
     for (let i = 0; i < 2; i++) {
         const row = table.addRow();
-        for (let j = 0; j < COLUMNS.length; j++) {
-            row.put(`q_String${j}`, `${i}行${j}列の文字列`);
-        }
+        COLUMNS.forEach((col, j) => {
+            row.put(`q_SubData${col}`, `${i+1}行${j+1}列の文字列`);
+        });
     }
     engine.setData(tableDef, table);
     configs.putObject('conf_DataIdT', tableDef);
 
-    return tableDef;
+    // POST リクエストボディ確認用の行データを準備
+    const expectedRows = [];
+    for (let i = 0; i < 2; i++) {
+        expectedRows[i] = [];
+        for (let j = 0; j < COLUMNS.length; j++) {
+            expectedRows[i][j] = {
+                type: 'stringValue',
+                value: `${i+1}行${j+1}列の文字列`
+            };
+        }
+    }
+
+    return {tableDef, expectedRows};
 };
 
 /**
@@ -430,7 +444,7 @@ test('No field names', () => {
  * テーブルにデータが一行もなくエラーになる場合
  */
 test('Table is empty', () => {
-    const tableDef = prepareConfigs('abc123', 'シート1');
+    const {tableDef} = prepareConfigs('abc123', 'シート1');
     engine.setData(tableDef, null); // null で上書き
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -446,7 +460,7 @@ test('Table is empty', () => {
  * テーブルデータに空行が含まれていて、エラーになる場合
  */
 test('Table has an empty row', () => {
-    const tableDef = prepareConfigs('abc123', 'シート1');
+    const {tableDef} = prepareConfigs('abc123', 'シート1');
     const table = engine.findData(tableDef);
     table.addRow(); // 空行を追加
     engine.setData(tableDef, table);
@@ -480,7 +494,7 @@ test('Field name does not exist', () => {
  * サブデータ項目に 50,000 文字を超える文字列が設定されていて、エラーになる場合
  */
 test('Over 50,000 characters', () => {
-    const tableDef = prepareConfigs('abc123', 'シート1');
+    const {tableDef} = prepareConfigs('abc123', 'シート1');
     const table = engine.findData(tableDef);
     const string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUV'
         .repeat(500) + 'A';
@@ -560,9 +574,9 @@ const SAMPLE_POST = {
  * @param request.body
  * @param spreadSheetId
  * @param sheetId
- * @param rows
+ * @param expectedRows
  */
-const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, sheetId, rows) => {
+const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, sheetId, expectedRows) => {
     expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
         spreadSheetId
         )}:batchUpdate`);
@@ -571,7 +585,7 @@ const assertPostRequest = ({url, method, contentType, body}, spreadSheetId, shee
     const bodyObj = JSON.parse(body);
     expect(bodyObj.requests[0].appendCells.sheetId).toEqual(sheetId);
     expect(bodyObj.requests[0].appendCells.fields).toEqual('*');
-    assertRows(rows, bodyObj.requests[0].appendCells.rows);
+    assertRows(expectedRows, bodyObj.requests[0].appendCells.rows);
 };
 
 /**
@@ -595,17 +609,7 @@ const assertRows = (expectedRows, actualRows) => {
  * 行追加成功の場合 - 先頭にあるシート
  */
 test('Success - 1st sheet', () => {
-    prepareConfigs('abc123', 'シート1');
-    const rows = [];
-    for (let i = 0; i < 2; i++) {
-        rows[i] = [];
-        for (let j = 0; j < COLUMNS.length; j++) {
-            rows[i][j] = {
-                type: 'stringValue',
-                value: `${i}行${j}列の文字列`
-            };
-        }
-    }
+    const {expectedRows} = prepareConfigs('abc123', 'シート1');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -615,15 +619,200 @@ test('Success - 1st sheet', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
         }
         // 行追加のリクエスト
-        assertPostRequest(request, 'abc123', 0, rows);
+        assertPostRequest(request, 'abc123', 0, expectedRows);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
-        
     });
 
     // <script> のスクリプトを実行
     execute();
 });
 
+/**
+ * 行追加成功の場合 - 2番目にあるシート
+ */
+test('Success - 2nd sheet', () => {
+    const {expectedRows} = prepareConfigs('abc123', 'シート 2/2');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // シート ID 取得のリクエスト
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        // 行追加のリクエスト
+        assertPostRequest(request, 'abc123', 1, expectedRows);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+});
+
+/**
+ * シート ID 取得の GET リクエストで失敗
+ */
+test('Fail in GET Request', () => {
+    prepareConfigs('abc123', 'シート1');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith("Can't get sheet information. status: 400");
+    }
+});
+
+/**
+ * 存在しないシートタイトルを指定
+ */
+test('Sheet does not exist', () => {
+    prepareConfigs('abc123', '存在しないシート');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET))
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Sheet 存在しないシート does not exist');
+    }
+});
+
+/**
+ * 行追加の POST リクエストで失敗
+ */
+test('Fail in POST Request', () => {
+    const {expectedRows} = prepareConfigs('abc123', 'シート1');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // シート ID 取得のリクエスト
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        // シート追加のリクエスト
+        assertPostRequest(request, 'abc123', 0, expectedRows);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Failed to append data. status: 400');
+    }
+});
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID とシートのタイトルは直接指定
+ * サブデータ項目に文字型、数値型、選択型、日時型を含む
+ * @param spreadSheetId
+ * @param sheetTitle
+ * @return {tableDef, expectedRows}
+ */
+const prepareConfigsWithVariousDataTypes = (spreadSheetId, sheetTitle) => {
+    configs.put('conf_OAuth2', 'Google');
+    configs.put('conf_DataIdW', spreadSheetId);
+    configs.put('conf_DataIdX', sheetTitle);
+
+    // テーブル型データ項目を準備
+    const tableDef = engine.createDataDefinition('テーブル', 1, 'q_Table', 'LIST');
+
+    // サブデータ項目を準備し、config にフィールド名をセット
+    tableDef.addSubDataDefinition('A列のサブデータ', 'q_SubDataA', 'STRING');
+    tableDef.addSubDataDefinition('B列のサブデータ', 'q_SubDataB', 'STRING');
+    tableDef.addSubDataDefinition('C列のサブデータ', 'q_SubDataC', 'DECIMAL');
+    tableDef.addSubDataDefinition('D列のサブデータ', 'q_SubDataD', 'DECIMAL');
+    // E列は設定しない
+    tableDef.addSubDataDefinition('F列のサブデータ', 'q_SubDataF', 'SELECT');
+    tableDef.addSubDataDefinition('G列のサブデータ', 'q_SubDataG', 'SELECT');
+    tableDef.addSubDataDefinition('H列のサブデータ', 'q_SubDataH', 'DATE');
+    tableDef.addSubDataDefinition('I列のサブデータ', 'q_SubDataI', 'DATE');
+    // J列は設定しない
+
+    // config にフィールド名をセット（E列, J列は設定しない）
+    COLUMNS.forEach(col => {
+        if (col === 'E' || col === 'J') {
+            return;
+        }
+        configs.put(`conf_DataId${col}`, `q_SubData${col}`);
+    });
+
+    // テーブルにデータを2行追加
+    const table = tableDef.createListArray();
+    const values = [
+        {A:'文字列1', B:'', C:'111', D:'', F:'選択肢1', G:'', H:'2021-01-01', I:''},
+        {A:'', B:'文字列2', C:'', D:'222', F:'', G:'選択肢2', H:'', I:'2022-02-02'}
+    ];
+    for (let i = 0; i < 2; i++) {
+        const row = table.addRow();
+        COLUMNS.forEach((col, j) => {
+            if (col === 'E' || col === 'J') {
+                return;
+            }
+            row.put(`q_SubData${col}`, values[i][col]);
+        });
+    }
+    engine.setData(tableDef, table);
+    configs.putObject('conf_DataIdT', tableDef);
+
+    // POST リクエストボディ確認用の行データを準備
+    const expectedRows = [];
+    const expectedValues = [
+        ['文字列1', '', '111', '', '', '選択肢1', '', '2021-01-01', null, null],
+        ['', '文字列2', '', '222', '', '', '選択肢2', '', '2022-02-02', null]
+    ];
+    for (let i = 0; i < 2; i++) {
+        expectedRows[i] = [];
+        COLUMNS.forEach((col, j) => {
+            const value = expectedValues[i][j];
+            let type = 'stringValue';
+            if ((i === 0 && col === 'C') || (i === 1 && col === 'D')) {
+                type = 'numberValue';
+            }
+            expectedRows[i][j] = {
+                type,
+                value
+            };
+        });
+    }
+
+    return {tableDef, expectedRows};
+};
+
+/**
+ * 行追加成功の場合 - 様々なデータ型
+ * スプレッドシートの ID とシートのタイトルは固定値で指定
+ */
+test('Success - Various data types', () => {
+    const {expectedRows} = prepareConfigsWithVariousDataTypes('abc123', 'シート1');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // シート ID 取得のリクエスト
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        // 行追加のリクエスト
+        assertPostRequest(request, 'abc123', 0, expectedRows);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
+    });
+
+    // <script> のスクリプトを実行
+    execute();
+});
 
 ]]></test>
 
