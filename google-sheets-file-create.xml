@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-01-17</last-modified>
+<last-modified>2022-01-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Create File</label>
@@ -61,17 +61,9 @@ function main() {
   }
   engine.log(`User Name: ${quser.getName()}`);
   
-  // get OAuth token
-  let request;
-  try{
-    request = httpClient.begin().googleOAuth2(quser, "Drive");
-  }catch(e){
-    throw "This User has not connected with Google Drive."
-  }
+  const {id, webViewLink} = createFile(quser, parentFolderId, fileName);
   
-  const {id, webViewLink} = createFile(request, parentFolderId, fileName);
-  
-  updateSheetTitle(request, id, sheetTitle);
+  updateSheetTitle(quser, id, sheetTitle);
   
   setData("Conf_FileIdItem", id);
   setData("Conf_WebViewUrlItem", webViewLink);
@@ -92,14 +84,14 @@ function setData(configName, data) {
 
 /**
   * google スプレッドシートを親フォルダに作成する
-  * @param {String} token  OAuth2 のトークン
+  * @param {QuserView} quser  Google ドライブ に接続するユーザ
   * @param {String} parentFolderId  親フォルダ
   * @param {String} fileName  ファイル名
   * @return {Object} createFile  スプレッドシートのファイル IDと表示 URLを格納した JSON オブジェクト
   *   プロパティ： {String} id スプレッドシートのファイル ID
   *                {String} webViewLink スプレッドシートの表示 URL
   */
-function createFile(request, parentFolderId, fileName) {
+function createFile(quser, parentFolderId, fileName) {
   let jsonReq = {};
   jsonReq["mimeType"] = "application/vnd.google-apps.spreadsheet";
   if (parentFolderId !== "" && parentFolderId !== null){
@@ -108,7 +100,8 @@ function createFile(request, parentFolderId, fileName) {
   jsonReq["name"] = String(fileName);
   
   const url = 'https://www.googleapis.com/drive/v3/files/';
-  const response = request
+  const response = httpClient.begin()
+    .googleOAuth2(quser, "Drive")
     .queryParam("fields", "id, webViewLink")
     .queryParam("supportsAllDrives", "true")
     .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
@@ -133,11 +126,11 @@ function createFile(request, parentFolderId, fileName) {
 
 /**
   * google スプレッドシートのシート名を更新する
-  * @param {String} token  OAuth2 のトークン
+  * @param {QuserView} quser  Google ドライブ に接続するユーザ
   * @param {String} fileId  ファイルID
   * @param {String} sheetTitle  シート名
   */
-function updateSheetTitle(request, fileId, sheetTitle) {
+function updateSheetTitle(quser, fileId, sheetTitle) {
   
   let jsonReq = {
     requests: []
@@ -154,7 +147,8 @@ function updateSheetTitle(request, fileId, sheetTitle) {
   };
   
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}:batchUpdate`;
-  const response = request
+  const response = httpClient.begin()
+    .googleOAuth2(quser, "Drive")
     .body(JSON.stringify(jsonReq), "application/json")
     .post(url);
   const status = response.getStatusCode();
@@ -356,19 +350,15 @@ const assertPostUpdateSheetTitle = ({url, method, contentType, body}, fileId, sh
 
 /**
  * POST リクエスト（ファイル作成）のレスポンスを準備
- * @param folderId
+ * @param id ファイルID作成用文字列
  * @param fileName
  * @return {Object} responseObj
  */
-const preparePostCreateFileResponse = (folderId, fileName) => {
-
-  if(folderId === "" || folderId === null){
-    folderId =  "myDriveRoot";
-  }
+const preparePostCreateFileResponse = (id, fileName) => {
 
   return {
     "kind": "drive#file",
-    "id": `fileId${folderId}`,
+    "id": `fileId${id}`,
     "name": fileName,
     "mimeType": "string",
     "description": "string",
@@ -379,7 +369,7 @@ const preparePostCreateFileResponse = (folderId, fileName) => {
     "string123"
     ],
     "webContentLink": "string123",
-    "webViewLink": `https://link${folderId}`
+    "webViewLink": `https://link${id}`
   }
 };
 
@@ -391,6 +381,7 @@ const preparePostCreateFileResponse = (folderId, fileName) => {
  * @return {Object} responseObj
  */
 const preparePostUpdateSheetTitleResponse = (fileId, sheetTitle) => {
+
   return {
     "spreadsheetId": `${fileId}`,
     "updatedSpreadsheet": {
@@ -441,9 +432,9 @@ test('POST Update SheetTitle Failed', () => {
         if (reqCount === 0) {
             assertPostCreateFileRequest(request, '23456789', 'ファイル2');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('23456789', 'ファイル2')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('spreadsheets23456789', 'ファイル2')));
         }
-        assertPostUpdateSheetTitle(request, "fileId23456789", 'シート2',);
+        assertPostUpdateSheetTitle(request, "fileIdspreadsheets23456789", 'シート2',);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -473,16 +464,16 @@ test('Success', () => {
         if (reqCount === 0) {
             assertPostCreateFileRequest(request, '45678901', 'ファイル4');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('45678901', 'ファイル4')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('spreadsheets45678901', 'ファイル4')));
         }
-        assertPostUpdateSheetTitle(request, "fileId45678901", 'シート4',);
+        assertPostUpdateSheetTitle(request, "fileIdspreadsheets45678901", 'シート4',);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostUpdateSheetTitleResponse('fileId45678901', 'シート4')));
     });
       // <script> のスクリプトを実行
       execute();
       // 文字型データ項目の値をチェック
-      expect(engine.findData(idDef)).toEqual('fileId45678901');
-      expect(engine.findData(urlDef)).toEqual('https://link45678901');
+      expect(engine.findData(idDef)).toEqual('fileIdspreadsheets45678901');
+      expect(engine.findData(urlDef)).toEqual('https://linkspreadsheets45678901');
 });
 
 
@@ -505,23 +496,23 @@ test('Success - No Source File ID - FileId specified by String Data', () => {
             assertPostCreateFileRequest(request, null, 'ファイル5');
 
             //（ファイル作成）のレスポンスのログ確認用
-            jsonStr = JSON.stringify(preparePostCreateFileResponse(null, 'ファイル5'));
+            jsonStr = JSON.stringify(preparePostCreateFileResponse('spreadsheetsnull', 'ファイル5'));
             engine.log(`jsonStr:${jsonStr}`);
 
 
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse(null, 'ファイル5')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('spreadsheetsnull', 'ファイル5')));
 
 
         }
-        assertPostUpdateSheetTitle(request, "fileIdmyDriveRoot", 'シート5',);
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostUpdateSheetTitleResponse('fileIdmyDriveRoot', 'シート5')));
+        assertPostUpdateSheetTitle(request, "fileIdspreadsheetsnull", 'シート5',);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostUpdateSheetTitleResponse('fileIdspreadsheetsnull', 'シート5')));
     });
       // <script> のスクリプトを実行
       execute();
       // 文字型データ項目の値をチェック
-      expect(engine.findData(idDef)).toEqual('fileIdmyDriveRoot');
-      expect(engine.findData(urlDef)).toEqual('https://linkmyDriveRoot');
+      expect(engine.findData(idDef)).toEqual('fileIdspreadsheetsnull');
+      expect(engine.findData(urlDef)).toEqual('https://linkspreadsheetsnull');
 });
 
 
@@ -545,10 +536,10 @@ test('Success - No Source File ID - FileId specified with fixed value ', () => {
         if (reqCount === 0) {
             assertPostCreateFileRequest(request, '', 'ファイル6');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('', 'ファイル6')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostCreateFileResponse('spreadsheetskara', 'ファイル6')));
         }
-        assertPostUpdateSheetTitle(request, "fileIdmyDriveRoot", 'シート6',);
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostUpdateSheetTitleResponse('fileIdmyDriveRoot', 'シート6')));
+        assertPostUpdateSheetTitle(request, "fileIdspreadsheetskara", 'シート6',);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostUpdateSheetTitleResponse('fileIdspreadsheetskara', 'シート6')));
     });
       // <script> のスクリプトを実行
       execute();
