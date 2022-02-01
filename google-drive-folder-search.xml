@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-09-09</last-modified>
+<last-modified>2022-02-01</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Drive: Search Folder</label>
@@ -177,4 +177,423 @@ K/y48ywQnNXY9S0ZePlx1zGfP37D60aZN33fONheVoJyETwN4MsBIN+/vxADrngIWU4odDjeH/vP
 rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
 6/Q2AAAAAElFTkSuQmCC
 </icon>
+    
+<test><![CDATA[
+/**
+ * 設定の準備 - 保存する文字型データ項目が複数行
+ * @param configs
+ * @param folderId
+ * @param folderName
+ * @return {
+ *     idDef: {Object},
+ *     urlDef: {Object}
+ * }
+ */
+const prepareConfigs = (configs, folderId, folderName) => {
+
+    configs.put('OAuth', 'Google');
+    configs.put('ParentFolderId', folderId,);
+    configs.put('FolderName', folderName);
+
+    // 文字型データ項目を準備して、config に指定
+    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', 'STRING_TEXTAREA');
+    configs.putObject('FolderIdItem', idDef);
+    // 文字型データ項目の値（検索したフォルダの ID を保存する文字型データ項目）を指定
+    engine.setData(idDef, '事前文字列');
+
+    // 文字型データ項目を準備して、config に指定
+    const urlDef = engine.createDataDefinition('表示URL', 4, 'q_urls', 'STRING_TEXTAREA');
+    configs.putObject('WebViewUrlItem', urlDef);
+    // 文字型データ項目の値（検索したフォルダの表示 URL を保存するデータ項目）を指定
+    engine.setData(urlDef, '事前文字列');
+
+    return {
+        idDef,
+        urlDef
+    };
+};
+
+
+/**
+ * 設定の準備 - 保存する文字型データ項目が単一行
+ * @param configs
+ * @param folderId
+ * @param folderName
+ * @return {
+ *     idDef: {Object},
+ *     urlDef: {Object}
+ * }
+ */
+const prepareSingleLineConfigs = (configs, folderId, folderName) => {
+
+    configs.put('OAuth', 'Google');
+    configs.put('ParentFolderId', folderId,);
+    configs.put('FolderName', folderName);
+
+    // 文字型データ項目を準備して、config に指定
+    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', 'STRING_TEXTFIELD');
+    configs.putObject('FolderIdItem', idDef);
+    // 文字型データ項目の値（検索したフォルダの ID を保存する文字型データ項目）を指定
+    engine.setData(idDef, '事前文字列');
+
+    // 文字型データ項目を準備して、config に指定
+    const urlDef = engine.createDataDefinition('表示URL', 4, 'q_urls', 'STRING_TEXTFIELD');
+    configs.putObject('WebViewUrlItem', urlDef);
+    // 文字型データ項目の値（検索したフォルダの表示 URL を保存するデータ項目）を指定
+    engine.setData(urlDef, '事前文字列');
+
+    return {
+        idDef,
+        urlDef
+    };
+};
+
+
+
+/**
+ * フォルダ名が空でエラーになる場合
+ */
+test('Folder Name is blank', () => {
+    prepareConfigs(configs, '12345abcde', '');
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Folder Name is blank');
+    }
+});
+
+
+/**
+ * 検索したフォルダの ID を保存する文字型データ項目と検索したフォルダの表示 URL を保存するデータ項目の両方が未設定でエラーになる場合
+ */
+test('Neither of Data Items to save result are set.', () => {
+    prepareConfigs(configs, '12345abcde', 'folder0');
+
+    // ID を保存する文字型データ項目を未設定に上書き
+    configs.put('FolderIdItem', '');
+
+    // URL を保存する文字型データ項目を未設定に上書き
+    configs.put('WebViewUrlItem', '');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('Neither of Data Items to save result are set.');
+    }
+});
+
+
+/**
+ * リクエストのテスト（親フォルダのドライブ ID を取得する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param parentFolderId
+ */
+const assertGetDriveIdRequest = ({url, method}, parentFolderId) => {
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${parentFolderId}?fields=driveId&supportsAllDrives=true`);	
+    expect(method).toEqual('GET');
+};
+
+
+/**
+ * リクエストのテスト（フォルダを検索する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param driveId (共有ドライブになければ null)
+ * @param parentFolderId
+ * @param folderName
+ */
+const assertSearchFolderRequest = ({url, method}, driveId, parentFolderId, folderName) => {
+
+  const q = `mimeType+%3D+%27application%2Fvnd.google-apps.folder%27+and+trashed+%3D+false+and+name+%3D+%27${folderName}%27+and+%27${parentFolderId}%27+in+parents`;
+
+  if (driveId !== null) { // 親フォルダが共有ドライブにある場合
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=drive&driveId=${driveId}`);
+  }else{
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29`);
+  }
+  expect(method).toEqual('GET');
+};
+
+
+/**
+ * GET リクエスト（親フォルダのドライブ ID を取得する）のレスポンスを準備
+ * @param id ドライブID作成用文字列
+ * @return {Object} responseObj
+ */
+const prepareGetDriveIdResponse = (id) => {
+  return {
+  "driveId": `Drive_${id}`
+  }
+};
+
+
+/**
+ * GET リクエスト（フォルダを検索する）のレスポンスを準備
+ * @param id ドライブID作成用文字列
+ * @param num
+ * @return {Object} responseObj
+ */
+const prepareGetSerchDriveResponse = (id) => {
+  return {
+   "files": [
+    {
+     "id": `Folder1_${id}`,
+     "webViewLink": `https://drive.google.com/drive/folders/Folder1_${id}`
+    },
+    {
+     "id": `Folder2_${id}`,
+     "webViewLink": `https://drive.google.com/drive/folders/Folder2_${id}`
+    },
+    {
+     "id": `Folder3_${id}`,
+     "webViewLink": `https://drive.google.com/drive/folders/Folder3_${id}`
+    }
+    ]
+  };
+};
+
+
+/**
+ * GET API リクエストでエラー
+ *（親フォルダのドライブ ID を取得する）
+ */
+test('GET Get Parent folderId Failed', () => {
+  prepareConfigs(configs, 'abcd12345678', 'folder1');
+  httpClient.setRequestHandler((request) => {
+    assertGetDriveIdRequest(request, 'abcd12345678', 'folder1');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to get parent folder with parent folder ID abcd12345678. status:400');
+  }
+});
+
+
+/**
+ * GET API リクエストでエラー
+ *（フォルダを検索する）
+ */
+test('GET Search Failed', () => {
+    prepareConfigs(configs, 'efgh23456789', 'folder2');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'efgh23456789');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('abc123')));
+        }
+        assertSearchFolderRequest(request, "Drive_abc123","efgh23456789", 'folder2',);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Failed to search. status:400');
+    }
+});
+
+
+/**
+ * GET API 成功 - 共有ドライブでフォルダが見つかる場合 - URL を保存する文字型データ項目が未設定
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Success - Shared drive - UrlData Items to save result are not set', () => {
+    const {
+        idDef
+    } = prepareConfigs(configs, 'ijkl34567890', 'folder3');
+
+    // URL を保存する文字型データ項目を未設定に上書き
+    configs.put('WebViewUrlItem', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'ijkl34567890');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('efg789')));
+        }
+        assertSearchFolderRequest(request, "Drive_efg789", "ijkl34567890", 'folder3');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('aaabbbccc111222333')));
+    });
+    // <script> のスクリプトを実行
+    execute();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_aaabbbccc111222333\nFolder2_aaabbbccc111222333\nFolder3_aaabbbccc111222333');
+});
+
+
+/**
+ * GET API 成功 - フォルダが見つかる場合 - マイドライブでフォルダが見つかる場合 - エスケープ文字
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+
+test('Success - My drive - Escape character', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs(configs, 'mnop45678901', 'Fol\\d\'er');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'mnop45678901');
+            reqCount++;
+            // マイドライブの場合、ドライブIDが無い
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSearchFolderRequest(request, null, "mnop45678901", 'Fol%5C%5Cd%5C%27er');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('dddeeefff444555666')));
+    });
+    // <script> のスクリプトを実行
+    execute();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
+    
+expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
+});
+
+
+
+/**
+ * GET API 成功 - フォルダが見つかる場合 - ID を保存する文字型データ項目が未設定
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Success - Shared drive - IdData Items to save result are not set', () => {
+    const {
+        urlDef
+    } = prepareConfigs(configs, 'qrst45678901', 'folder5');
+
+    // ID を保存する文字型データ項目を未設定に上書き
+    configs.put('FolderIdItem', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'qrst45678901');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('ghi012')));
+        }
+        assertSearchFolderRequest(request, "Drive_ghi012", "qrst45678901", 'folder5');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('ggghhhiii777888999')));
+    });
+    // <script> のスクリプトを実行
+    execute();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_ggghhhiii777888999\nhttps://drive.google.com/drive/folders/Folder2_ggghhhiii777888999\nhttps://drive.google.com/drive/folders/Folder3_ggghhhiii777888999');
+});
+
+
+/**
+ * GET API 成功 - 検索したフォルダが見つからずエラー
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Could not find Folder', () => {
+    prepareConfigs(configs, 'uvwx56789012', 'folder6');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'uvwx56789012');
+            reqCount++;
+            // マイドライブの場合、ドライブIDが無い
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSearchFolderRequest(request, null, "uvwx56789012", 'folder6');
+        // 親フォルダ内にリストが無い		
+        const responsePostObj = {
+            "files": []
+        };        
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responsePostObj));	
+    });
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Could not find Folder folder6 with Parent Folder ID uvwx56789012');
+    }
+});
+	
+	
+/**
+ * GET API 成功 - フォルダが複数見つかるが、 ID、URL を保存する文字型データ項目が単一行でエラー
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Cannot set multiple Folders to single-line string Data Item', () => {
+    prepareSingleLineConfigs(configs, 'yzab67890123', 'folder7');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'yzab67890123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('jkl345')));
+        }
+        assertSearchFolderRequest(request, "Drive_jkl345", "yzab67890123", 'folder7');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('jjjkkklll000111222')));
+    });
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Multiple folders are found. Can\'t set data to single-line string Data Item.');
+    }
+});	
+
+
+/**
+ * GET API 成功 - フォルダが1つ見つかる　 ID、URL を保存する文字型データ項目が単一行
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Success -　Set a Folder to single-line string Data Item', () => {
+    const {
+        idDef,
+        urlDef
+    } = prepareSingleLineConfigs(configs, 'cdef78901234', 'folder8');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveIdRequest(request, 'cdef78901234');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('mno678')));
+        }
+        assertSearchFolderRequest(request, "Drive_mno678", "cdef78901234", 'folder8');
+        // 親フォルダ内に検索したフォルダが1つ見つかる
+        const responsePostObj = {
+            "files": [
+            {
+             "id": `Folder1_mmmnnnooo333444555`,
+             "webViewLink": `https://drive.google.com/drive/folders/Folder1_mmmnnnooo333444555`
+            }
+            ]
+        };        
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responsePostObj));
+    });
+    // <script> のスクリプトを実行
+    execute();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_mmmnnnooo333444555');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_mmmnnnooo333444555');
+});	
+]]></test>
 </service-task-definition>
