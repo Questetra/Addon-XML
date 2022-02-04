@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-02-03</last-modified>
+<last-modified>2022-02-04</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Microsoft 365 Excel: Insert New Row</label>
@@ -102,6 +102,8 @@ function main(){
   values[9] = configs.get( "conf_ValueJ" );
 
   //// == Calculating / 演算 ==
+  const patchRequestBody = makeRequestToAdd(values);
+
   // Access to the API 1st(Get Book Info)
   const bookInfo = getFileInfoByUrl( bookUrl, oauth2 );
   
@@ -109,7 +111,7 @@ function main(){
   insertRow( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, oauth2);
 
   // Access to the API 3rd(PATCH)
-  patchData( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, values, oauth2);
+  patchData( bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, patchRequestBody, oauth2);
 }
 
 /**
@@ -244,12 +246,11 @@ function insertRow( driveId, bookId, sheetName, rowNumber, oauth2 ){
   * @param {String,String} driveId, bookId  挿入先ファイルのドライブ ID、ファイル ID
   * @param {String} sheetName  挿入先シートの名前
   * @param {Number} rowNumber  挿入箇所の行番号
-  * @param {Array} values  入力するデータの配列
+  * @param {Object} requestBody  入力するデータの入ったリクエストオブジェクト
   * @param {String} oauth2  OAuth2 設定
   */
-function patchData( driveId, bookId, sheetName, rowNumber, values, oauth2 ){
+function patchData( driveId, bookId, sheetName, rowNumber, requestBody, oauth2 ){
   const patchUri = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='A${rowNumber}:J${rowNumber}')/`;
-  const requestBody = makeRequestToAdd(values);
 
   const response = httpClient.begin()
     .authSetting( oauth2 )
@@ -479,6 +480,25 @@ test('RowNumber is not an integer (fixed value)', () => {
   }
 });
 
+/**
+ * 32,768 文字以上の値が設定されていてエラーになる場合
+ */
+test('Value string is too long', () => {
+  const rowData = Array.from(SAMPLE_ROW);
+  // 3列目の値を 32,768 文字に
+  rowData[2] = 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    .repeat(315) + 'ABCDEFGH';
+  prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '1', rowData);
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith("Can't set text over 32,767 character.");
+  }
+});
+
 const SAMPLE_GET_1 = {
   "id": "testBook-id-123",
   "name": "test.xlsx",
@@ -561,7 +581,7 @@ const assertPatchRequest = ({url, method, contentType, body}, driveId, bookId, s
 /**
  * 行挿入成功
  */
-test('Success', () => {
+test('Success - All columns are set', () => {
   const rowNum = '3';
   prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, rowNum, SAMPLE_ROW);
 
@@ -742,6 +762,87 @@ test('Success - RowNumber is not set (fixed value)', () => {
 
   // <script> のスクリプトを実行
   execute();
+});
+
+/**
+ * GET リクエストで失敗
+ */
+test('Fail in GET request', () => {
+  prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '1', SAMPLE_ROW);
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, SAMPLE_URL_1_ENCODED);
+    return httpClient.createHttpResponse(404, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed in GET request. status: 404');
+  }
+});
+
+/**
+ * POST リクエストで失敗
+ */
+test('Fail in POST request', () => {
+  const rowNum = '1';
+  prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, rowNum, SAMPLE_ROW);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // ファイル情報取得のリクエスト
+      assertGetRequest(request, SAMPLE_URL_1_ENCODED);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    // 行挿入のリクエスト
+    assertPostRequest(request, 'testDrive-id-123', 'testBook-id-123', SAMPLE_SHEET_1, rowNum);
+    return httpClient.createHttpResponse(401, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed in POST request. status: 401');
+  }
+});
+
+/**
+ * PATCH リクエストで失敗
+ */
+test('Fail in PATCH request', () => {
+  const rowNum = '1';
+  prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, rowNum, SAMPLE_ROW);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // ファイル情報取得のリクエスト
+      assertGetRequest(request, SAMPLE_URL_1_ENCODED);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    if (reqCount === 1) { // 行挿入のリクエスト
+      assertPostRequest(request, 'testDrive-id-123', 'testBook-id-123', SAMPLE_SHEET_1, rowNum);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', '{}');
+    }
+    // 値入力のリクエスト
+    assertPatchRequest(request, 'testDrive-id-123', 'testBook-id-123', SAMPLE_SHEET_1, rowNum, SAMPLE_ROW);
+    return httpClient.createHttpResponse(403, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed in PATCH request. status: 403');
+  }
 });
 
 ]]></test>
