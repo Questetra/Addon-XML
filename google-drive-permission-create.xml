@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-02-04</last-modified>
+<last-modified>2022-02-10</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Drive: Create Permission</label>
@@ -157,7 +157,13 @@ function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery
   const responseGet = httpClient.begin()
     .googleOAuth2(quser, "Drive")
     .queryParam("fields", "webViewLink")
+    .queryParam("supportsAllDrives", "true")
     .get(getUrl);
+  const getStatus = responseGet.getStatusCode();
+  if (getStatus >= 300) {
+    engine.log(responseGet.getResponseAsString())
+    throw `Failed to get url:${fileId}\nStatus:${getStatus}`;
+  }
   const resJson = JSON.parse(responseGet.getResponseAsString());
   const sharedlink = resJson["webViewLink"];
   return(sharedlink);
@@ -408,9 +414,35 @@ test('POST Failed', () => {
  * @param fileIds
  */
 const assertGetRequest = ({url, method}, fileIds) => {
-  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileIds}?fields=webViewLink`);
+  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileIds}?fields=webViewLink&supportsAllDrives=true`);
   expect(method).toEqual('GET');
 };
+
+/**
+ * GET API リクエストでエラー
+ */
+test('GET Failed', () => {
+  prepareConfigs('def789', PUBLIC, '', false, false);
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertPostRequest(request, 'def789', PUBLIC, '', 'false', false);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', '{}');
+    }
+    assertGetRequest(request, 'def789');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to get url:def789\nStatus:400');
+  }
+});
 
 /**
  * 共有するファイル/フォルダの ID の数が１つの場合(URL 出力先のデータ項目が単一行)
