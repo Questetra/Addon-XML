@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-12-20</last-modified>
+<last-modified>2022-02-16</last-modified>
 <license>(C) Questetra, In. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Get Row </label>
@@ -284,7 +284,7 @@ function setDataByLists( valueDefList, dataStringList ) {
           case 'DECIMAL':
             convertedData = new java.math.BigDecimal( dataString );
             break;
-          case 'SELECT': // 一致する選択肢 ID がない場合のエラーは QBPMS のバリデーションに任せる　　　　　
+          case 'SELECT': // 一致する選択肢 ID がない場合のエラーは QBPMS のバリデーションに任せる
             convertedData = new java.util.ArrayList();
             convertedData.add( dataString );
             break;
@@ -346,20 +346,20 @@ const prepareConfigs = (configs, sheetId, sheetTitle, row, range, type) => {
     configs.put('conf_Range', range);
     const columnDefList = [];
     let i = 0;
-    type.foreach(elememt => function(elememt){
-      if element !== null{
+    type.foreach(element => {
+      if (element !== null){
         const columnDef = engine.createDataDefinition(`データ${i}`, i, `q_data${i}`, element);
-        configs.putObject(`conf_Column1${i}`, columnDef);
+        configs.putObject(`conf_Column${i}`, columnDef);
         columnDefList.put(columnDef);
       }
-      
-    })
+      i++;
+    });
 
     return columnDefList;
 };
 
 test('Row Number is invalid', () => {
-    prepareConfigs(configs, 'id', 'title', 'invalid', 'A:J', ['STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', 'invalidrow', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
 
     try {
         execute();
@@ -370,7 +370,7 @@ test('Row Number is invalid', () => {
 });
 
 test('Row Number is empty', () => {
-    prepareConfigs(configs, 'id', 'title', '', 'A:J', ['STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', '', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
 
     try {
         execute();
@@ -381,7 +381,7 @@ test('Row Number is empty', () => {
 });
 
 test('Column Range is invalid', () => {
-    prepareConfigs(configs, 'id', 'title', '1', 'invalid', ['STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', '1', 'invalidrange', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
 
     try {
         execute();
@@ -392,7 +392,7 @@ test('Column Range is invalid', () => {
 });
 
 test('Same Data Item is set twice', () => {
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'invalid', ['STRING_TEXTFIELD']);
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
     configs.putObject(`conf_Column2`, columnDefList[0]);
     try {
         execute();
@@ -410,58 +410,68 @@ test('Same Data Item is set twice', () => {
  * @param name
  * @param parentId
  */
-const assertRequest = ({url, method, contentType, body}, id) => {
-    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${id}?supportsAllDrives=true`)
-    expect(method).toEqual('PATCH');
-    expect(contentType).toEqual('application/json; charset=UTF-8');
-    const bodyObj = JSON.parse(body);
-    expect(bodyObj.trashed).toEqual(true);
+const assertRequest = ({url, method, contentType, body}, enSheetId, enSheetTitle, rangeArr, rowNo) => {
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`);
+    expect(method).toEqual('GET');
 };
+//`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`
+/*
+  const response = httpClient.begin()
+    .authSetting( oauth )
+    .queryParam( "valueRenderOption", "UNFORMATTED_VALUE" )
+    .queryParam( "dateTimeRenderOption", "FORMATTED_STRING" )
+    .queryParam( "majorDimension", "ROWS" )
+    .get( uri );
+    */
+//存在しないID -> 404
+//存在しないタイトル -> 400
+//からの列・行 -> "No Data in range."
+//prepareConfigs = (configs, sheetId, sheetTitle, row, range, type)
+//const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'invalid', ['STRING_TEXTFIELD']);
+test('Succeed to get row 1', () => {
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
 
-test('Succeed to delete multiple files folders', () => {
-    let ids = '';
-    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
-        ids += `f${i}\n`;
-    }
-    prepareConfigs(configs, ids);
-
-    let requestCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, `f${requestCount++}`);
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
+        return httpClient.createHttpResponse(200, 'application/json', {values: [['A', '2' , 'う']]});
     });
 
     execute();
 
-    expect(requestCount).toEqual(httpClient.getRequestingLimit());
+    expect('A').toEqual(configs.get(columnDefList[0]));
+    expect('2').toEqual(configs.get(columnDefList[1]));
+    expect('う').toEqual(configs.get(columnDefList[2]));
 });
 
-test('Failed to delete file folder', () => {
-    let ids = '';
-    for (let i = 0; i < 2; i++) {
-        ids += `000${i}\n`;
-    }
-    prepareConfigs(configs, ids);
+test('404 Error', () => {
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
 
-    let requestCount = 0;
     httpClient.setRequestHandler((request) => {
-        try {
-            assertRequest(request, `000${requestCount}`);
-            if (requestCount === 1) {
-                return httpClient.createHttpResponse(400, 'application/json', '{}');
-            } else {
-                return httpClient.createHttpResponse(200, 'application/json', '{}');
-            }
-        } finally {
-            requestCount++;
-        }
+        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
+        return httpClient.createHttpResponse(404, 'application/json', {});
     });
 
     try {
         execute();
         fail('not come here');
     } catch (e) {
-        expect(e.message).endsWith('Failed to delete: 0001\nstatus: 400');
+        expect(e.message).endsWith('Failed to get. status:404');
+    }
+});
+
+test('All cells are empty', () => {
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
+        return httpClient.createHttpResponse(200, 'application/json', {});
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No Data in range.');
     }
 });
 ]]></test>
