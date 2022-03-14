@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-03-11</last-modified>
+<last-modified>2022-03-14</last-modified>
 <license>(C) Questetra, In. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Get Row </label>
@@ -333,27 +333,31 @@ AEwJzTC2ALrNAAAAAElFTkSuQmCC
  * @param configs
  * @param sheetId
  * @param sheetTitle
- * @param row
+ * @param rowNo
  * @param range
- * @param {Array} type
+ * @param types
  * @return {Object}
  */
-const prepareConfigs = (configs, sheetId, sheetTitle, row, range, type) => {
+const prepareConfigs = (configs, sheetId, sheetTitle, rowNo, range, ...types) => {
     configs.put('conf_OAuth2', 'Google');
     configs.put('conf_SheetId', sheetId);
     configs.put('conf_SheetTitle', sheetTitle);
-    configs.put('conf_RowNo', row);
     configs.put('conf_Range', range);
+
+    // 行番号を設定したデータ項目を作成し、C4 に設定
+    const rowNoDef = engine.createDataDefinition('行番号', 1, 'q_rowNo', 'STRING_TEXTFIELD');
+    engine.setData(rowNoDef, rowNo);
+    configs.putObject('conf_RowNo', rowNoDef);
+
     const columnDefList = [];
-    let i = 1;
-    type.forEach(element => {
-      //typeで指定したタイプのデータ項目を作成し、C6に一行目から順に設定
-      if (element !== null){
-        const columnDef = engine.createDataDefinition(`データ${i}`, i, `q_data${i}`, element);
-        configs.putObject(`conf_Column${i}`, columnDef);
+    types.forEach((type, i) => {
+      // 指定したタイプのデータ項目を作成し、C6 以降に順に設定
+      if (type !== null){
+        const columnDef = engine.createDataDefinition(`データ${i+1}`, i+2, `q_data${i+1}`, type);
+        engine.setData(columnDef, '事前文字列');
+        configs.putObject(`conf_Column${i+1}`, columnDef);
         columnDefList.push(columnDef);
       }
-      i++;
     });
 
     return columnDefList;
@@ -361,7 +365,7 @@ const prepareConfigs = (configs, sheetId, sheetTitle, row, range, type) => {
 
 test('Row Number is invalid', () => {
     //行番号が不適切な場合
-    prepareConfigs(configs, 'id', 'title', 'invalidrow', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', 'invalidrow', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
     try {
         execute();
@@ -373,7 +377,7 @@ test('Row Number is invalid', () => {
 
 test('Row Number is empty', () => {
     //行番号が入力されていない場合
-    prepareConfigs(configs, 'id', 'title', '', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', '', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
     try {
         execute();
@@ -385,7 +389,7 @@ test('Row Number is empty', () => {
 
 test('Column Range is invalid', () => {
     //列範囲が不適切である場合
-    prepareConfigs(configs, 'id', 'title', '1', 'invalidrange', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
+    prepareConfigs(configs, 'id', 'title', '1', 'invalidrange', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
     try {
         execute();
@@ -397,7 +401,7 @@ test('Column Range is invalid', () => {
 
 test('Same Data Item is set twice', () => {
     //同じデータ項目がC6に2回セットされている場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', ['STRING_TEXTFIELD', 'STRING_TEXTFIELD']);
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
     configs.putObject("conf_Column2", columnDefList[0]);
     try {
         execute();
@@ -422,38 +426,28 @@ const assertRequest = ({url, method, contentType, body}, enSheetId, enSheetTitle
     expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`);
     expect(method).toEqual('GET');
 };
-//`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`
-/*
-  const response = httpClient.begin()
-    .authSetting( oauth )
-    .queryParam( "valueRenderOption", "UNFORMATTED_VALUE" )
-    .queryParam( "dateTimeRenderOption", "FORMATTED_STRING" )
-    .queryParam( "majorDimension", "ROWS" )
-    .get( uri );
-    */
 
 test('Succeed to get row 1', () => {
     //行取得に成功する場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
-        const ret = JSON.stringify({"values":[['A','2','う']]});
+        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
+        const ret = JSON.stringify({"values":[['A列','B列\n複数行']]});
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
     execute();
-    expect(engine.findData(columnDefList[0])).toEqual('A');
-    expect(engine.findData(columnDefList[1])).toEqual('2');
-    expect(engine.findData(columnDefList[2])).toEqual('う');
+    expect(engine.findData(columnDefList[0])).toEqual('A列');
+    expect(engine.findData(columnDefList[1])).toEqual('B列\n複数行');
 });
 
 test('404 Error', () => {
     //APIからエラーが返ってくる場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
+        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
         return httpClient.createHttpResponse(404, 'application/json', JSON.stringify({}));
     });
 
@@ -467,10 +461,10 @@ test('404 Error', () => {
 
 test('All cells are empty', () => {
     //範囲内のセルがすべて空の場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:C', ['STRING_TEXTFIELD', 'DECIMAL', 'STRING_TEXTAREA'])
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'C'], 1);
+        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({}));
     });
 
