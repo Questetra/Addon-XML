@@ -377,7 +377,7 @@ test('Row Number is invalid', () => {
 
 test('Row Number is empty', () => {
     //行番号が入力されていない場合
-    prepareConfigs(configs, 'id', 'title', '', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
+    prepareConfigs(configs, 'id', 'title', null, 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
     try {
         execute();
@@ -411,28 +411,40 @@ test('Same Data Item is set twice', () => {
     }
 });
 
+test('No Data Item is set', () => {
+    //保存先データ項目がひとつも設定されていない場合
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B');
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        expect(e.message).endsWith('No Data Item is set.');
+    }
+});
+
 /**
  * リクエストのテスト
  * @param url
  * @param method
  * @param contentType
  * @param body
- * @param enSheetId
- * @param enSheetTitle
- * @param rangeArr
- * @param rowNo
+ * @param sheetId
+ * @param sheetTitle
+ * @param range
  */
-const assertRequest = ({url, method, contentType, body}, enSheetId, enSheetTitle, rangeArr, rowNo) => {
-    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${rangeArr[0]}${rowNo}:${rangeArr[1]}${rowNo}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`);
+const assertRequest = ({url, method, contentType, body}, sheetId, sheetTitle, range) => {
+    const enSheetId = encodeURIComponent(sheetId);
+    const enSheetTitle = encodeURIComponent(sheetTitle);
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${enSheetId}/values/${enSheetTitle}!${range}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING&majorDimension=ROWS`);
     expect(method).toEqual('GET');
 };
 
-test('Succeed to get row 1', () => {
+test('Succeed to get - TEXTFIELD and TEXTAREA', () => {
     //行取得に成功する場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 1', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
+        assertRequest(request, 'id', 'シート 1', 'A1:B1');
         const ret = JSON.stringify({"values":[['A列','B列\n複数行']]});
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
@@ -442,12 +454,108 @@ test('Succeed to get row 1', () => {
     expect(engine.findData(columnDefList[1])).toEqual('B列\n複数行');
 });
 
-test('404 Error', () => {
-    //APIからエラーが返ってくる場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
+test('Succeed to get - 10 columns', () => {
+    //保存先データ項目がすべて設定されている場合
+    const types = [...Array(10)].map(() => 'STRING_TEXTFIELD');
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 2!', '70', 'XA:XJ', ...types);
+
+    const rowData = [...Array(10)].map((_, i) => `値${i+1}`);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'シート 2!', 'XA70:XJ70');
+        const ret = JSON.stringify({"values":[rowData]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    execute();
+    columnDefList.forEach((def, i) => {
+        expect(engine.findData(def)).toEqual(`値${i+1}`);
+    });
+});
+
+test('Succeed to get - Some data items are not set', () => {
+    //保存先データ項目が設定されていないものがある場合
+    const types = [...Array(10)].map(() => 'STRING_TEXTFIELD');
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 1', '1', 'A:J', ...types);
+    configs.put('conf_Column5', '');
+    configs.put('conf_Column8', '');
+
+    const rowData = [...Array(10)].map((_, i) => `値${i+1}`);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'シート 1', 'A1:J1');
+        const ret = JSON.stringify({"values":[rowData]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    execute();
+    columnDefList.forEach((def, i) => {
+        if (i === 4 || i === 7) { // 5, 8列目は保存先が未設定
+            expect(engine.findData(def)).toEqual('事前文字列');
+            return;
+        }
+        expect(engine.findData(def)).toEqual(`値${i+1}`);
+    });
+});
+
+test('Succeed to get - Number of Returned values is bigger than 10', () => {
+    //取得した行データの値の数が 10 を超える場合
+    const types = [...Array(10)].map(() => 'STRING_TEXTFIELD');
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 1', '1', 'A:Z', ...types);
+
+    const rowData = [...Array(11)].map((_, i) => `値${i+1}`);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'シート 1', 'A1:Z1');
+        const ret = JSON.stringify({"values":[rowData]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    execute();
+    columnDefList.forEach((def, i) => {
+        expect(engine.findData(def)).toEqual(`値${i+1}`);
+    });
+});
+
+test('Succeed to get - Number of Returned values is smaller than that of data items', () => {
+    //取得した行データの値の数が設定した保存先データ項目数より少ない場合
+    const types = [...Array(10)].map(() => 'STRING_TEXTFIELD');
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 1', '1', 'A:J', ...types);
+
+    const rowData = [...Array(8)].map((_, i) => `値${i+1}`);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'シート 1', 'A1:J1');
+        const ret = JSON.stringify({"values":[rowData]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    execute();
+    columnDefList.forEach((def, i) => {
+        if (i > 7) { // 9列目、10列目の保存される値は null
+            expect(engine.findData(def)).toEqual(null);
+            return;
+        }
+        expect(engine.findData(def)).toEqual(`値${i+1}`);
+    });
+});
+
+test('Succeed to get Numeric data', () => {
+    //数値データは文字列に変換され保存される
+    const columnDefList = prepareConfigs(configs, 'id', 'シート 1', '1', 'A:A', 'STRING_TEXTFIELD');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
+        assertRequest(request, 'id', 'シート 1', 'A1:A1');
+        const ret = JSON.stringify({"values":[[100]]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    execute();
+    expect(engine.findData(columnDefList[0])).toEqual('100');
+});
+
+test('404 Error', () => {
+    //APIからエラーが返ってくる場合
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'title', 'A1:B1', 1);
         return httpClient.createHttpResponse(404, 'application/json', JSON.stringify({}));
     });
 
@@ -461,10 +569,10 @@ test('404 Error', () => {
 
 test('All cells are empty', () => {
     //範囲内のセルがすべて空の場合
-    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA')
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTAREA');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'id', 'title', ['A', 'B'], 1);
+        assertRequest(request, 'id', 'title', 'A1:B1', 1);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({}));
     });
 
@@ -475,5 +583,23 @@ test('All cells are empty', () => {
         expect(e.message).endsWith('No Data in range.');
     }
 });
+
+test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', () => {
+    //単一行データ項目に複数行の文字列を保存しようとしてエラーになる場合
+    const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:A', 'STRING_TEXTFIELD');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'title', 'A1:A1', 1);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({"values":[['複数行の\n文字列']]}));
+    });
+
+    try {
+        execute();
+        fail('not come here');
+    } catch (e) {
+        //エラーになるのが正しい
+    }
+});
+
 ]]></test>
 </service-task-definition>
