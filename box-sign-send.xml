@@ -1,125 +1,139 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-02-14</last-modified>
+<last-modified>2022-03-15</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
-<label>Box  Sign: Create Sign Request</label>
+<label>Box Sign: Create Sign Request</label>
 <label locale="ja">Box Sign: 署名リクエスト作成</label>
-<summary>Create a URL to access the specified file on Box. Created with no expiration and/or no password requests if you leave them blank.</summary>
-<summary locale="ja">(要編集)Box 上のファイルにアクセスできる URL を作成します。有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します。</summary>
-<help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-link-create/</help-page-url>
-<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-link-create/</help-page-url>
+<summary>Create a signing document from the specified file on Box and send a sign request.</summary>
+<summary locale="ja">Box 上のファイルから署名用ドキュメントを作成し、署名リクエストを送信します。</summary>
+<help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-sign-request-create/</help-page-url>
+<help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-sign-request-create/</help-page-url>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/sign_requests.readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_FileId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C2: Document File ID to sign</label>
-    <label locale="ja">C2: 署名するドキュメントのファイル ID</label>
+  <config name="conf_SourceFileId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C2: Source File ID to create a signing document from</label>
+    <label locale="ja">C2: 署名用ドキュメントの作成元ファイル ID</label>
   </config>
-  <config name="conf_MailAddress" required="true" form-type="TEXTAREA" el-enabled="true">
-    <label>C3: Mail Address to send Request</label>
-    <label locale="ja">C3: 送信先のメールアドレス</label>
+  <config name="conf_FolderId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+    <label>C3: Folder ID to save the Signed Document (Root cannot be used)</label>
+    <label locale="ja">C3: 署名済みドキュメントを保存するフォルダ ID (ルートフォルダは使用できません)</label>
   </config>
-  <config name="conf_MailTitle" form-type="TEXTFIELD" el-enabled="true">
-    <label>C4: Sending Mail Title</label>
-    <label locale="ja">C4: 送信されるメールのタイトル</label>
+  <config name="conf_EmailAddress" required="true" form-type="TEXTAREA" el-enabled="true">
+    <label>C4: Email Addresses to send the request to (Write one per line)</label>
+    <label locale="ja">C4: 送信先メールアドレス (複数設定する場合、1件ごとに改行してください)</label>
   </config>
-  <config name="conf_FolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-    <label>C5: Folder ID to save the Signed Document</label>
-    <label locale="ja">C5: 署名済みドキュメントを保存するフォルダID</label>
+  <config name="conf_EmailSubject" form-type="TEXTFIELD" el-enabled="true">
+    <label>C5: Email Subject (Default subject if blank)</label>
+    <label locale="ja">C5: 送信されるメールの件名 (空白の場合、デフォルトの件名が使用されます)</label>
   </config>
 </configs>
 
 <script><![CDATA[
+
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://account.box.com/api/oauth2/authorize
+// - Token Endpoint URL: https://api.box.com/oauth2/token
+// - Scope: sign_requests.readwrite root_readwrite
+// - Consumer Key: (Get by Box Developer Console)
+// - Consumer Secret: (Get by Box Developer Console)
+
 main();
 function main(){
-  // get OAuth2 Setting
-  const oauth2 = configs.get("conf_OAuth2");
-  const fileId = decideFileId();
-  const folderId = decideFolderId();
-  const mailAddress = configs.get('conf_MailAddress').split('\n');
-  const mailTitle = configs.get('conf_MailTitle');
+  //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+  const oauth2 = configs.get('conf_OAuth2');
+  const fileId = decideEditable('conf_SourceFileId', 'Source File ID');
+  const folderId = decideEditable('conf_FolderId', 'Folder ID');
+  if (folderId === '0') {
+    throw 'Root folder cannot be used.';
+  }
+  const addresses = retrieveEmailAddresses();
+  const subject = configs.get('conf_EmailSubject');
 
-  createRequest(oauth2, fileId, mailAddress, mailTitle, folderId);
+  //// == 演算 / Calculating ==
+  createRequest(oauth2, fileId, folderId, addresses, subject);
 }
 
 /**
-  * ファイルのIDをconfigから読み出して出力する。
-  * @return {String} fileId ファイルの ID
+  * editable な config から設定値を読み出す
+  * 設定値が空の場合はエラー
+  * @param {String} confName 設定名
+  * @param {String} label エラー出力用ラベル
+  * @return {String} value 設定値
   */
-function decideFileId(){
-  let fileId = "";
-  const fileIdDef = configs.getObject("conf_FileId");
-  if(fileIdDef === null){
-    fileId = configs.get("conf_FileId");
-  }else{
-    fileId = engine.findData(fileIdDef);
+function decideEditable(confName, label) {
+  let value = '';
+  const dataDef = configs.getObject(confName);
+  if (dataDef === null) {
+    value = configs.get(confName);
+  } else {
+    value = engine.findData(dataDef);
   }
-  if (fileId === "" || fileId === null) {
-    throw "File ID is blank";
+  if (value === '' || value === null) {
+    throw `${label} is blank.`;
   }
-  return fileId;
+  return value;
 }
 
 /**
-  * フォルダのIDをconfigから読み出して出力する。
-  * @return {String}  フォルダの ID
+  * メールアドレスを config から読み出す
+  * 1つも設定されていない場合はエラー
+  * @return {Array<String>} addresses メールアドレス
   */
-function decideFolderId(){
-  let folderId = "";
-  const folderIdDef = configs.getObject("conf_FolderId");
-  if(folderIdDef === null){
-    folderId = configs.get("conf_FolderId");
-  }else{
-    folderId = engine.findData(folderIdDef);
+function retrieveEmailAddresses() {
+  let addresses = configs.get('conf_EmailAddress').split('\n');
+  addresses = addresses.filter(line => line !== ''); // 空文字列を削除
+  if (addresses.length === 0) {
+    throw 'No Email Address.';
   }
-  return folderId;
+  return addresses;
 }
 
 /**
   * Create Sign Request  署名リクエスト作成
   * @param {String} oauth OAuth2 設定
-  * @param {String} fileId ファイルの ID
-  * @param {Array} mailAddress 送信先メールアドレス
-  * @param {String} mailTitle 送信メールのタイトル
+  * @param {String} fileId 元ファイルの ID
   * @param {String} folderId 保存先フォルダの ID
+  * @param {Array<String>} addresses 送信先メールアドレス
+  * @param {String} subject 送信メールの件名
   */
-function createRequest(oauth2, fileId, mailAddress, mailTitle, folderId) {
-
+function createRequest(oauth2, fileId, folderId, addresses, subject) {
   const jsonBody = {};
-
-  jsonBody["source_files"] = [{
+  jsonBody['source_files'] = [{
     'id': fileId,
     'type': 'file'
   }];
-  jsonBody["signers"] = mailAddress.map(element => ({'email': element}));
-  //jsonBody["email_subject"] = mailTitle;
   jsonBody["parent_folder"] = {
     'id': folderId,
     'type': 'folder'
   };
-
-  engine.log(JSON.stringify(jsonBody))
+  jsonBody['signers'] = addresses.map(address => ({'email': address}));
+  if (subject !== '' && subject !== null) {
+    jsonBody['email_subject'] = subject;
+  }
 
   const url = 'https://api.box.com/2.0/sign_requests';
   const response = httpClient.begin()
     .authSetting(oauth2)
-    .body(JSON.stringify(jsonBody), "application/json; charset=UTF-8")
+    .body(JSON.stringify(jsonBody), 'application/json; charset=UTF-8')
     .post(url);
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
 
-  if (status >= 300) {
+  if (status !== 201) {
     engine.log(responseTxt);
     throw `Failed to create Sign Request. status:${status}`;
   }
 }
+
 ]]></script>
 
-<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+<icon>
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
 0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
 aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
 9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
@@ -138,5 +152,6 @@ yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
 zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
-YII=</icon>
+YII=
+</icon>
 </service-task-definition>
