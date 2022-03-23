@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2022-03-04</last-modified>
+<last-modified>2022-03-23</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Get an email message in Gmail.</summary>
@@ -500,17 +500,22 @@ const prepareConfigs = (messageId) => {
 
   items.forEach((item, i) => {
     let dataType = 'STRING_TEXTFIELD';
+    let preValue = '事前文字列';
     if (item.startsWith('recipient') || item === 'body') {
       dataType = 'STRING_TEXTAREA';
+      preValue = '事前\n文字列';
     }
     if (item === 'sentDatetime') {
       dataType = 'DATETIME';
+      preValue = java.sql.Timestamp.valueOf('2000-01-01 00:00:00');
     }
     if (item === 'attachments') {
       dataType = 'FILE';
+      preValue = new java.util.ArrayList();
+      preValue.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル.csv', 'text/csv', '1,2,3'));
     }
     const dataDef = engine.createDataDefinition(item, i + 2, `q_${item}`, dataType);
-    // TODO 事前データのセット
+    engine.setData(dataDef, preValue); // 事前データをセット
     configs.putObject(`conf_${item}`, dataDef);
     dataDefs[item] = dataDef;
   });
@@ -579,6 +584,256 @@ test('The same data item is set multiple times - recipientNames and body', () =>
     fail('not come here');
   } catch (e) {
     expect(e.message).endsWith('The same data item is set multiple times.');
+  }
+});
+
+/**
+ * メッセージ取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ */
+const assertGetMessageRequest = ({url, method}, messageId) => {
+  expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+      messageId
+    )}`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * 添付ファイル取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ * @param attachmentId
+ */
+const assertGetAttachmentRequest = ({url, method}, messageId, attachmentId) => {
+  expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+      messageId
+    )}/attachments/${attachmentId}`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * メール取得の GET リクエストで失敗
+ */
+test('Fail in 1st GET Request', () => {
+  const messageId = 'messageId';
+  prepareConfigs(messageId);
+
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(400, 'application/json', `{}`);
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to get message. status: 400');
+  }
+});
+
+const SAMPLE_MESSAGE_1 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Cc",
+        "value": "\"Cc 表示名\" \u003cCc@example.com\u003e"
+      },
+      {
+        "name": "Bcc",
+        "value": "\"Bcc 表示名\" \u003cBcc@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"----=_Part_1807_553364219.1646619554132\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "base64"
+              }
+            ],
+            "body": {
+              // "data": "44OG44K544OI44Oh44O844Or44Gn44GZ44CCDQrjgZPjgozjga_jg4bjgrnjg4jjg6Hjg7zjg6vjgafjgZnjgII="
+              "data": base64.encodeToUrlSafeString('テストメールです。\nこれはテストメールです。')
+            }
+          },
+          {
+            "partId": "1",
+            "mimeType": "image/png",
+            "filename": "添付ファイル1.png",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "image/png; name=\"添付ファイル1.png\""
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"添付ファイル1.png\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "base64"
+              }
+            ],
+            "body": {
+              "attachmentId": "attachmentId-1"
+            }
+          }
+        ]
+      }
+    ]
+  }
+};
+
+const SAMPLE_ATTACHMENT_1 = { // png ファイル
+  "size": 886,
+  "data": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPUlEQVRYR8WXX0hTURzHv2dzy5bb1HKKRH-"
+    + "gtx7K2izooXI-BVH41F-IglAJmhVICr2kgRG6DFRERXBpGIgkZA_Oeigir-VzIGQE1bTUyXYdy90Tu-5u997dea"
+    + "9p3PO2nd-fz_md359zCXReRKv_76cPW4ysoYKAnARoCSj2gCCP16dYAMEMQKYo6OuYhRsqHvnIarGtCjB7wlWEL"
+    + "NSCohJAthajACIg6MAKmhxvmJ9r6awJECgrrSSEPgKwTaNjuViYUnKncHyiI5N-RoC5clcbpaj6R8cSNULQXjDG"
+    + "VCvZUgQIlDn7CSHnN8O5YINSOlA4PnlBbjMNYDNPnuZMIRISgMSdt2_myeW2KCVV4pxIAvDZbsS0kHCGAgdsdQ0"
+    + "w2HPBPvchMvpCMxexWmGrb4SxqBiRl8NgB31i3TBi2CdURwqg3NUCCo8gme8b5g0IK8q8R7C-BuC4NUFMJU7YG7"
+    + "0gZnNSLnj3JuL6yUXgdYwxNfHfPEC8yWSxht_iOi949Q7IMkmcccFFLHquI_ZtRhEip_oWtlacS9tjB_sQ7nwi_"
+    + "j-yYuG2x5sVDxBwuy4RoE8soQTA71MOodaHWB4ZSh3IakWetwvG3XsVweJXEO5slexR4HKhn_HxALPu0m6AXtUE"
+    + "kBASrsR80AlbQ7Mk5HIKJQCA9Dj8E9cSAK5PAErWA8AHg2VBLBbV5FQGwJTDzxxaBShzzScHS8JcxitQdZcuoAh"
+    + "AseAYZ_KFCFC5WhoApQBRnV2AglyGCMDhZ1YtzrpdqgCxwA-w_b2wemoBYlCMQ-zrF4Sf9sBWd1-yrw6g4QriAP"
+    + "MXz8C4cxdyH3fxDUq8loeeIdTWDPORY7A3tqgDyK5ANQkFAN6ywQD7Ay_MzqOg0SiW7t1GdPIDv6UZAOIk1FCGE"
+    + "oDE-bYcd-PP1CS4pWDyxNoBRGWopREpASglglYASSNSasU7Rt-CmFL9fEMAA70Id7eJeaWtmK8E2TDKqfIg-9TZ"
+    + "ZOmtTH_m54DaMu0_AHtTqu3SUAgLN66A-zWXUpUPIx5ANo7VHG1gX3kcxw3q-iARTqTrk0yA0PVR-j8ise5neSo"
+    + "SOn6YCBC6fpqJS023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg=="
+};
+
+/**
+ * メール取得成功
+ * 添付ファイル 1 つのマルチパートメール
+ */
+test('200 Success - Multipart message with one attachment', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_1));
+    }
+    // 添付ファイル取得の GET リクエスト
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 保存先データ項目の値をチェック
+  expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
+  expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名');
+
+  const recipientAddresses = 'To@example.com\n'
+    + 'Cc@example.com\n'
+    + 'Bcc@example.com';
+  const recipientNames = 'To 表示名\n'
+    + 'Cc 表示名\n'
+    + 'Bcc 表示名';
+  expect(engine.findData(dataDefs.recipientAddresses)).toEqual(recipientAddresses);
+  expect(engine.findData(dataDefs.recipientNames)).toEqual(recipientNames);
+
+  const datetimeString = dateFormatter.format('GMT+0900', 'yyyy年MM月dd日 HH時mm分', engine.findData(dataDefs.sentDatetime));
+  expect(datetimeString).toEqual('2022年03月07日 10時00分');
+
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメールです。\nこれはテストメールです。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(2);
+  expect(files[0].getName()).toEqual('事前ファイル.csv');
+  expect(files[1].getName()).toEqual('添付ファイル1.png');
+  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
+});
+
+/**
+ * 添付ファイル取得の GET リクエストで失敗
+ */
+test('Fail in 2nd GET Request', () => {
+  const messageId = 'messageId-1';
+  prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_1));
+    }
+    // 添付ファイル取得の GET リクエスト
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(400, 'application/json', `{}`));
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to get attachment. status: 400');
   }
 });
 
