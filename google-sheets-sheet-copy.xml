@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-01-27</last-modified>
+<last-modified>2022-03-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Copy Sheet</label>
@@ -237,7 +237,7 @@ const prepareConfigs = (
   spreadSheetId,
   destinationId,
   sheetTitle,
-  newSheetTitle
+  NewSheetTitle
 ) => {
   configs.put("conf_OAuth2", "Google");
   configs.put("conf_SpreadSheetId", spreadSheetId);
@@ -251,8 +251,7 @@ const prepareConfigs = (
   );
   engine.setData(destinationDef, destinationId);
   configs.putObject("conf_Destination", destinationDef);
-
-  configs.put("conf_NewSheetTitle", newSheetTitle);
+  configs.put("conf_NewSheetTitle", NewSheetTitle);
 };
 
 const SAMPLE_GET = {
@@ -288,6 +287,36 @@ const SAMPLE_GET = {
 };
 
 /**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetTitle
+ */
+const assertGetRequese = (
+  { url, method, contentType, body },
+  spreadSheetId,
+  sheetTitle
+) => {
+  expect(url).toEqual(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadSheetId
+    )}:batchUpdate`
+  );
+  expect(method).toEqual("GET");
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  if (sheetTitle === "") {
+    expect(bodyObj.requests[0].addSheet).toEqual({});
+  } else {
+    expect(bodyObj.requests[0].addSheet.properties.title).toEqual(sheetTitle);
+  }
+};
+
+/**
  * POST リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -297,7 +326,7 @@ const SAMPLE_GET = {
  * @param spreadSheetId
  * @param sheetTitle
  */
-const assertPostRequest = (
+const assertPOSTRequese = (
   { url, method, contentType, body },
   spreadSheetId,
   sheetTitle
@@ -305,69 +334,25 @@ const assertPostRequest = (
   expect(url).toEqual(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       spreadSheetId
-    )}?includeGridData=false`
-  );
-  expect(method).toEqual("GET");
-  // expect(contentType).toEqual("application/json; charset=UTF-8");
-  // const bodyObj = JSON.parse(body);
-  // expect(bodyObj.requests[0].updateSheetProperties.fields).toEqual("title");
-  // if (sheetTitle === "") {
-  //   expect(bodyObj.requests[0].addSheet).toEqual({});
-  // } else {
-  //   expect(bodyObj.requests[0].addSheet.properties.title).toEqual(sheetTitle);
-  // }
-};
-
-const assertPostUpdateSheetTitle = (
-  { url, method, contentType, body },
-  fileId,
-  sheetTitle
-) => {
-  expect(url).toEqual(
-    `https://sheets.googleapis.com/v4/spreadsheets/${fileId}:batchUpdate`
+    )}:batchUpdate`
   );
   expect(method).toEqual("POST");
   expect(contentType).toEqual("application/json; charset=UTF-8");
   const bodyObj = JSON.parse(body);
-  expect(bodyObj.requests[0].updateSheetProperties.fields).toEqual("title");
-  expect(bodyObj.requests[0].updateSheetProperties.properties.sheetId).toEqual(
-    0
-  );
-  expect(bodyObj.requests[0].updateSheetProperties.properties.title).toEqual(
-    sheetTitle
-  );
+  if (sheetTitle === "") {
+    expect(bodyObj.requests[0].addSheet).toEqual({});
+  } else {
+    expect(bodyObj.requests[0].addSheet.properties.title).toEqual(sheetTitle);
+  }
 };
 
-/**
- *
- * @param fileId
- * @param sheetTitle
- * @returns {Object} responseObj
- */
-const preparePostUpdateSheetTitleResponse = (fileId, sheetTitle) => {
-  return {
-    spreadSheetId: `${fileId}`,
-    updateSpreadsheet: {
-      spreadSheetId: `${fileId}`,
-      sheets: [
-        {
-          properties: {
-            sheetId: 123456789012345,
-            title: sheetTitle,
-            index: 2,
-          },
-        },
-      ],
-    },
-  };
-};
 
 /**
  * POST リクエストのレスポンスを準備
  * @param sheetTitle
  * @return responseObj
  */
-const preparePostResponse = (sheetTitle) => {
+const prepareGetResponse = (sheetTitle) => {
   return {
     spreadsheetId: "abc123",
     replies: [
@@ -390,17 +375,31 @@ const preparePostResponse = (sheetTitle) => {
 };
 
 /**
- * conf_SpreadSheetId でデータ項目を選択し、値が空でエラーになる場合
+ * シート名が重複
  */
-test("Source SpreadSheet Title isn't set", () => {
-  prepareConfigs("12345678", "98765432", "", "新しいシート");
-
+test("Source SpreadSheet ID isn't set", () => {
+  configs.put("conf_OAuth2", "Google");
+  configs.put("conf_SheetId", "abc123");
+  configs.put("conf_SheetTitle", "新しいシート");
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequese(request, "abc123", "新しいシート");
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(preparePostResponse("新しいシート"))
+      );
+    }
+    assertPOSTRequese(request, "abc123", "");
+    return httpClient.createHttpResponse(200, "application/json", "{}");
+  });
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
     execute();
     fail("not come here");
   } catch (e) {
-    expect(e.message).endsWith("Source SpreadSheet Title isn't set");
+    expect(e.message).endsWith("Source SpreadSheet ID isn't set");
   }
 });
 
@@ -412,15 +411,13 @@ test("Sheet Title Length > 100", () => {
   while (name.length <= 100) {
     name += "a";
   }
-  prepareConfigs("12345678", "98765432", "シート1", name);
+  prepareConfigs("12345678", "87654321", "abc123", name);
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
     execute();
     fail("not come here");
   } catch (e) {
-    expect(e.message).endsWith(
-      "Sheet Title is too long. It cannot be longer than 100 characters."
-    );
+    expect(e.message).endsWith("Sheet Title should be 100 characters or less");
   }
 });
 
@@ -428,15 +425,13 @@ test("Sheet Title Length > 100", () => {
  * コピー元スプレッドシートのIDが不正な文字列を含む
  */
 test("Illegal File Name", () => {
-  prepareConfigs("12345678", "98765432", "/", "新しいシート");
+  prepareConfigs(configs, "12345678", "/");
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
     execute();
     fail("not come here");
   } catch (e) {
-    expect(e.message).endsWith(
-      "Failed to get sheet information. status: ${status}"
-    );
+    expect(e.message).endsWith("Failed to get sheet information.");
   }
 });
 
@@ -444,29 +439,19 @@ test("Illegal File Name", () => {
  * シートコピー成功の場合 - 新しいシートのタイトルを指定
  */
 test("Success - Copy Sheet Title", () => {
-  const addedSheetTitleDef = prepareConfigs(
-    "",
-    "98765432",
-    "新しいシート / 1",
-    "新しいシート"
-  );
+  const addedSheetTitleDef = prepareConfigs("abc123", "新しいシート / 1");
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
     if (reqCount === 0) {
-      assertPostRequest(request, "", "新しいシート / 1");
-      reqCount++;
+      assertGetRequese(request, "abc123", "新しいシート / 1");
       return httpClient.createHttpResponse(
         200,
         "application/json",
-        JSON.stringify(preparePostUpdateSheetTitleResponse("新しいシート / 1"))
+        JSON.stringify(preparePostResponse("新しいシート / 1"))
       );
     }
-    assertPostUpdateSheetTitle(request, "spreadsheetskara", "シート6",);
-    return httpClient.createHttpResponse(
-      200,
-      "application/json",
-      JSON.stringify(preparePostUpdateSheetTitleResponse("新しいシート / 1"))
-    );
+    assertPOSTRequese(request, "abc123", "");
+    return httpClient.createHttpResponse(200, "application/json", "{}");
   });
   // <script> のスクリプトを実行
   execute();
@@ -478,29 +463,19 @@ test("Success - Copy Sheet Title", () => {
  * シートコピー成功の場合 - 新しいシートのタイトルは自動設定
  */
 test("Success - without New Sheet Title", () => {
-  const addedSheetTitleDef = prepareConfigs(
-    "abc123",
-    "98765432",
-    "シート1",
-    ""
-  );
+  const addedSheetTitleDef = prepareConfigs("abc123", "");
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
     if (reqCount === 0) {
-      assertPostRequest(request, "", "新しいシート / 1");
-      reqCount++;
+      assertGetRequese(request, "abc123", "");
       return httpClient.createHttpResponse(
         200,
         "application/json",
-        JSON.stringify(preparePostUpdateSheetTitleResponse("新しいシート / 1"))
+        JSON.stringify(preparePostResponse("シート2"))
       );
     }
-    assertPostRequest(request, "abc123", "");
-    return httpClient.createHttpResponse(
-      200,
-      "application/json",
-      JSON.stringify(preparePostUpdateSheetTitleResponse("シート2"))
-    );
+    assertPOSTRequese(request, "abc123", "");
+    return httpClient.createHttpResponse(200, "application/json", "{}");
   });
   // <script> のスクリプトを実行
   execute();
@@ -516,26 +491,31 @@ test("Success - Set the Spreadsheet ID as a fixed value", () => {
   configs.put("conf_SpreadSheetId", "abc123");
   configs.put("conf_SheetTitle", "新しいシート");
   // コピーしたシートのタイトルを保存する文字型データ項目（単一行）を準備
-  const addedSheetTitleDef = engine.createDataDefinition(
-    "コピーしたシートのタイトル",
+  const destinationDef = engine.createDataDefinition(
+    "スプレッドシートの ID",
     1,
-    "q_AddedSheetTitle",
+    "q_destination",
     "STRING_TEXTFIELD"
   );
-  engine.setData(addedSheetTitleDef, "事前文字列");
-  configs.putObject("conf_AddedSheetTitle", addedSheetTitleDef);
+  engine.setData(destinationDef, "12345678");
+  configs.putObject("conf_Destination", destinationDef);
+  let reqCount = 0;
   httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, "abc123", "新しいシート");
-    return httpClient.createHttpResponse(
-      200,
-      "application/json",
-      JSON.stringify(preparePostUpdateSheetTitleResponse("新しいシート"))
-    );
+    if (reqCount === 0) {
+      assertGetRequese(request, "abc123", "新しいシート");
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(preparePostResponse("新しいシート"))
+      );
+    }
+    assertPOSTRequese(request, "abc123", "");
+    return httpClient.createHttpResponse(200, "application/json", "{}");
   });
   // <script> のスクリプトを実行
   execute();
   // 文字型データ項目の値をチェック
-  expect(engine.findData(addedSheetTitleDef)).toEqual("新しいシート");
+  expect(engine.findData(destinationDef)).toEqual("新しいシート");
 });
 
 /**
@@ -545,40 +525,21 @@ test("Success - Added Sheet Title not saved", () => {
   configs.put("conf_OAuth2", "Google");
   configs.put("conf_SpreadSheetId", "abc123");
   configs.put("conf_SheetTitle", "新しいシート");
+  let reqCount = 0;
   httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, "abc123", "新しいシート");
-    return httpClient.createHttpResponse(
-      200,
-      "application/json",
-      JSON.stringify(preparePostUpdateSheetTitleResponse("新しいシート"))
-    );
+    if (reqCount === 0) {
+      assertGetRequese(request, "abc123", "新しいシート");
+      return httpClient.createHttpResponse(
+        200,
+        "application/json",
+        JSON.stringify(preparePostResponse("新しいシート"))
+      );
+    }
+    assertPOSTRequese(request, "abc123", "");
+    return httpClient.createHttpResponse(200, "application/json", "{}");
   });
   // <script> のスクリプトを実行
   execute();
-});
-
-/**
- * POST API リクエストでエラー
- */
-test("POST Failed", () => {
-  prepareConfigs("12345678", "98765432", "シート1", "新しいシート");
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(
-      request,
-      "12345678",
-      "98765432",
-      "シート1",
-      "新しいシート"
-    );
-    return httpClient.createHttpResponse(400, "application/json", "{}");
-  });
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail("not come here");
-  } catch (e) {
-    expect(e.message).endsWith("Failed to add a new sheet.");
-  }
 });
 ]]></test>
 
