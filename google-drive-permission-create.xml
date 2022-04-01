@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-03-23</last-modified>
+<last-modified>2022-04-01</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
-<label>Google Drive: Create Permission</label>
-<label locale="ja">Google ドライブ: 共有設定</label>
-<summary>Create Permissions in the specified files and/or folders on Google Drive</summary>
-<summary locale="ja">Google ドライブ の指定ファイルやフォルダを共有します</summary>
+<label>Google Drive: Create Shared Link</label>
+<label locale="ja">Google ドライブ: 共有リンク作成</label>
+<summary>Create Permissions in the specified files and/or folders on Google Drive. An error occurs when a specified file/folder is already shared.</summary>
+<summary locale="ja">Google ドライブ の指定ファイルやフォルダを共有します。すでに共有されているファイル/フォルダを指定した場合はエラーになります。</summary>
 <configs>
   <config name="conf_UserID" required="true" form-type="QUSER">
     <label>C1: User connects to Google Drive (must be App Administrator)</label>
-    <label locale="ja">C1: Google ドライブ に接続するユーザ（要アプリ管理権限）</label>
+    <label locale="ja">C1: Google ドライブ に接続するユーザ (要アプリ管理権限)</label>
   </config>
   <config name="conf_FileIdsItem" form-type="SELECT" select-data-type="STRING" required="true">
     <label>C2: File / Folder IDs to share</label>
@@ -19,8 +19,8 @@
   <config name="conf_SharedRange" form-type="SELECT_ITEM" required="true">
     <label>C3: Shared range</label>
     <label locale="ja">C3: 共有範囲</label>
-    <item value="public">
-      <label>Public</label>
+    <item value="anyone">
+      <label>Anyone with the link</label>
       <label locale="ja">リンクを知っている全員</label>
     </item>
     <item value="domain">
@@ -28,17 +28,25 @@
       <label locale="ja">ドメイン</label>
     </item>
   </config>
+  <config name="conf_Role" form-type="SELECT_ITEM" required="true">
+    <label>C4: Role (Editable or not)</label>
+    <label locale="ja">C4: ロール (編集可能にするかどうか)</label>
+    <item value="reader">
+      <label>Viewer (Unable to edit)</label>
+      <label locale="ja">閲覧者 (編集不可)</label>
+    </item>
+    <item value="writer">
+      <label>Editor</label>
+      <label locale="ja">編集者</label>
+    </item>
+  </config>
   <config name="conf_Domain" form-type="TEXTFIELD">
-    <label>C4: Domain to share (required if the shared range is domain)</label>
-    <label locale="ja">C4: 共有先のドメイン(共有範囲がドメインの場合は必須</label>
+    <label>C5: Domain to share (required if the shared range is domain)</label>
+    <label locale="ja">C5: 共有先のドメイン (共有範囲がドメインの場合は必須)</label>
   </config>
   <config name="conf_AllowFileDiscovery" form-type="TOGGLE">
-    <label>C5: Allow the file to be discovered through search</label>
-    <label locale="ja">C5: 検索可能にする</label>
-  </config>
-  <config name="conf_Editable" form-type="TOGGLE">
-    <label>C6: Allow the file to be edited</label>
-    <label locale="ja">C6: 編集可能にする</label>
+    <label>C6: Enable discovery through search within the domain</label>
+    <label locale="ja">C6: 共有先ドメインで検索可能にする</label>
   </config>
   <config name="conf_SharedUrlItem" form-type="SELECT" select-data-type="STRING">
     <label>C7: Data Item that will save URLs of shared Files / Folders</label>
@@ -47,26 +55,31 @@
 </configs>
 <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-permissioncreate/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-permissioncreate/</help-page-url>
-  <script><![CDATA[
+
+<script><![CDATA[
+
 main();
 
 function main() {
   const filesIdArray = getFileIds();
   const quser = getQuser();
   const sharedRange = configs.get("conf_SharedRange");
+  const role = configs.get("conf_Role");
   const domain = configs.get("conf_Domain");
-  if (sharedRange === "domain" && domain === ""){
+  if (sharedRange === "domain" && domain === "") {
     throw "Domain to share isn't set.";
   }
   const allowFileDiscovery = configs.get("conf_AllowFileDiscovery");
-  const editable = configs.getObject("conf_Editable");
+  if (sharedRange == "anyone" && allowFileDiscovery) {
+    throw "File / Folder discovery through search is available only when the shared range is domain.";
+  }
   const urlDataDef = configs.getObject("conf_SharedUrlItem");
   const idsNum = filesIdArray.length;
   idNumCheck(urlDataDef,idsNum)
 
   const sharedUrls = [];
   for (let i = 0; i < idsNum; i++) {
-    sharedUrls.push(createPermission(quser, filesIdArray[i], sharedRange, domain, allowFileDiscovery, editable));
+    sharedUrls.push(createPermission(quser, filesIdArray[i], sharedRange, role, domain, allowFileDiscovery));
   }
   
   if (urlDataDef !== null) {
@@ -127,20 +140,36 @@ function getQuser() {
   * create permission on Google Drive
   * @param {QuserView} quser  Google Drive に接続するユーザ
   * @param {String} fileId  ファイルの ID
-  * @param {String} sharedRange  共有範囲
+  * @param {String} type 共有範囲
+  * @param {String} role ロール
   * @param {String} domain  共有先ドメイン
   * @param {String} allowFileDiscovery  検索可能にするかどうか
-  * @param {boolean} editable  編集可能にするかどうか
   * @return {String} 共有リンク
   */
-function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery, editable) {
-  const json = {};
-  json["role"] = editable ? "writer" : "reader";
-  json["type"] = sharedRange === "public" ? "anyone" : "domain";
-  if(sharedRange === "domain"){
-    json["domain"] = domain;
+function createPermission(quser, fileId, type, role, domain, allowFileDiscovery) {
+  // ファイル情報を取得し、URL 取得と共有済みかどうかのチェックを行う
+  const getUrl = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+  const responseGet = httpClient.begin()
+    .googleOAuth2(quser, "Drive")
+    .queryParam("fields", "webViewLink, shared, hasAugmentedPermissions")
+    .queryParam("supportsAllDrives", "true")
+    .get(getUrl);
+  const getStatus = responseGet.getStatusCode();
+  if (getStatus >= 300) {
+    engine.log(responseGet.getResponseAsString())
+    throw `Failed to get. ID: ${fileId}\nStatus: ${getStatus}`;
   }
-  json["allowFileDiscovery"] = allowFileDiscovery;
+  const resJson = JSON.parse(responseGet.getResponseAsString());
+  const {webViewLink, shared, hasAugmentedPermissions} = resJson;
+  if (shared || hasAugmentedPermissions) {
+    throw `The item (ID: ${fileId}) is already shared.`;
+  }
+
+  const json = {role, type};
+  if (type === "domain") {
+    json["domain"] = domain;
+    json["allowFileDiscovery"] = allowFileDiscovery;
+  }
   const permissionUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/permissions`;
   const responsePermission = httpClient.begin()
     .googleOAuth2(quser, "Drive")
@@ -152,25 +181,13 @@ function createPermission(quser, fileId, sharedRange, domain, allowFileDiscovery
     engine.log(responsePermission.getResponseAsString())
     throw `Failed to create permission:${fileId}\nStatus:${status}`;
   }
-  //URL 取得
-  const getUrl = `https://www.googleapis.com/drive/v3/files/${fileId}`;
-  const responseGet = httpClient.begin()
-    .googleOAuth2(quser, "Drive")
-    .queryParam("fields", "webViewLink")
-    .queryParam("supportsAllDrives", "true")
-    .get(getUrl);
-  const getStatus = responseGet.getStatusCode();
-  if (getStatus >= 300) {
-    engine.log(responseGet.getResponseAsString())
-    throw `Failed to get url:${fileId}\nStatus:${getStatus}`;
-  }
-  const resJson = JSON.parse(responseGet.getResponseAsString());
-  const sharedlink = resJson["webViewLink"];
-  return(sharedlink);
+  
+  return webViewLink;
 }
-  ]]></script>
 
-  <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
+]]></script>
+
+<icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
 hUBmYabNj19/dglzM7ERirGerpkshNTA5ImOgvTClGu/fjEq5AfeYdeX+YrT0cv2S3y69kjgVGv7
 IjdiHEGUAzKK0nKf8X9peyz5ntv5jty/7qTzTPgML51n+O/rbyaH6f3TjxByBFEOSMxO/XZB/wnH
 d6k/DGpnRb82WT/nwhcKF59w/5++VfnmzP45WhQ7IL0wdfZzga8Rt4xfc4MM43zGwkBMKICi4vBt
