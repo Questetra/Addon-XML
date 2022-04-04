@@ -66,7 +66,6 @@ function main(){
   const auth = configs.get("conf_auth");
   const messageId = engine.findData( configs.getObject("conf_messageId") );
   const defs = retrieveDefs();
-  const files = retrieveFiles( defs.attachmentsDef );
 
   //// == 演算 / Calculating ==
   const hasNoDefs = Object.values(defs).every( def => def === null );
@@ -75,6 +74,7 @@ function main(){
   const apiUri = determineApiUri( messageId );
   const message = getMessage( apiUri, auth );
 
+  const files = new java.util.ArrayList(); // もともと添付されていたファイルはクリアする
   if ( defs.attachmentsDef !== null ) {
     getAttachments( apiUri, auth, message.attachments );
     convertAndAddAttachments( message.attachments, files );
@@ -118,21 +118,6 @@ function retrieveDefs() {
     defs[`${item}Def`] = dataItemDef;
   });
   return defs;
-}
-
-/**
-  * ワークフローデータからファイル型データ項目の値（ファイルの配列）を読み出す
-  * @return {ListArray<Qfile>} files  ファイルの配列
-  */
-function retrieveFiles( attachmentsDef ) {
-  let files = null;
-  if ( attachmentsDef !== null ) {
-    files = engine.findData( attachmentsDef );
-  }
-  if ( files === null ) {
-    files = new java.util.ArrayList();
-  }
-  return files;
 }
 
 /**
@@ -811,11 +796,10 @@ test('200 Success - Multipart message with one attachment', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名');
   expect(engine.findData(dataDefs.body)).toEqual('テストメールです。\nこれはテストメールです。');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(2);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('添付ファイル1.png');
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
+  expect(files.length).toEqual(1); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル1.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
 });
 
 /**
@@ -1031,14 +1015,13 @@ test('200 Success - Multipart message with two attachments', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名2');
   expect(engine.findData(dataDefs.body)).toEqual('<h1>テストメール2です。</h1>\n<p>これはテストメール2です。</p>');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(3);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('添付ファイル1.png');
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
-  expect(files[2].getName()).toEqual('添付ファイル2.txt');
-  expect(files[2].getLength()).toEqual(SAMPLE_ATTACHMENT_2.size);
-  expect(files[2].getContentType()).toEqual('text/plain; name="添付ファイル2.txt"');
+  expect(files.length).toEqual(2); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル1.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
+  expect(files[1].getName()).toEqual('添付ファイル2.txt');
+  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_2.size);
+  expect(files[1].getContentType()).toEqual('text/plain; name="添付ファイル2.txt"');
 });
 
 /**
@@ -1134,8 +1117,7 @@ test('200 Success - Single-part message with text/plain body encoded in Shift_JI
   expect(engine.findData(dataDefs.subject)).toEqual('件名3');
   expect(engine.findData(dataDefs.body)).toEqual('テストメール3です。\nこれはテストメール3です。');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(1); // 事前設定されたファイルのみ
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
+  expect(files.length).toEqual(0); // 事前ファイルは削除される
 });
 
 /**
@@ -1246,8 +1228,7 @@ test('200 Success - Single-part message with text/html body', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名4_1つ目'); // 1 つめの件名が採用される
   expect(engine.findData(dataDefs.body)).toEqual('<h1>テストメール4です。</h1>\n<p>これはテストメール4です。</p>');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(1); // 事前設定されたファイルのみ
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
+  expect(files.length).toEqual(0); // 事前ファイルは削除される
 });
 
 /**
@@ -1316,8 +1297,7 @@ test('200 Success - Single-part message with no Content-Type/To/Cc/Bcc/Subject h
   expect(engine.findData(dataDefs.subject)).toEqual(''); // 空
   expect(engine.findData(dataDefs.body)).toEqual('テストメール5です。\nこれはテストメール5です。');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(1); // 事前設定されたファイルのみ
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
+  expect(files.length).toEqual(0); // 事前ファイルは削除される
 });
 
 const ATTACHMENT_PART = {
@@ -1410,9 +1390,9 @@ test('200 Success - Number of HTTP requests is within the limit', () => {
   // <script> のスクリプトを実行
   execute();
 
-  // 保存されているファイルの個数をチェック。事前ファイルが 1 つあるので、合計 httpRequestLimit 個のはず
+  // 保存されているファイルの個数をチェック。事前ファイルは削除されるので、合計 httpRequestLimit - 1 個のはず
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(httpRequestLimit);
+  expect(files.length).toEqual(httpRequestLimit - 1);
 });
 
 /**
@@ -1445,11 +1425,10 @@ test('200 Success - Attachment has no name', () => {
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(2);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('noname'); // ファイル名はデフォルトのものが使われる
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル.png"');
+  expect(files.length).toEqual(1); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('noname'); // ファイル名はデフォルトのものが使われる
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png; name="添付ファイル.png"');
 });
 
 /**
@@ -1482,11 +1461,10 @@ test('200 Success - Attachment has no Content-Type', () => {
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(2);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('添付ファイル.png');
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('application/octet-stream'); // デフォルトの Content-Type
+  expect(files.length).toEqual(1); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('application/octet-stream'); // デフォルトの Content-Type
 });
 
 /**
@@ -1520,11 +1498,10 @@ test('200 Success - Attachment has no Content-Disposition', () => {
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(2);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('添付ファイル.png');
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル.png"');
+  expect(files.length).toEqual(1); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png; name="添付ファイル.png"');
 });
 
 /**
@@ -1544,7 +1521,7 @@ test('200 Success - Attachments not saved', () => {
   // <script> のスクリプトを実行
   execute();
 
-  // データ項目の値をチェック。ファイルは追加されていない
+  // データ項目の値をチェック。事前ファイルは残ったまま
   const files = engine.findData(dataDefs.attachments);
   expect(files.length).toEqual(1);
   expect(files[0].getName()).toEqual('事前ファイル.csv');
@@ -1629,11 +1606,10 @@ test('200 Success - Some data items are not set', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名');
   expect(engine.findData(dataDefs.body)).toEqual('事前\n文字列');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(2);
-  expect(files[0].getName()).toEqual('事前ファイル.csv');
-  expect(files[1].getName()).toEqual('添付ファイル1.png');
-  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
-  expect(files[1].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
+  expect(files.length).toEqual(1); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル1.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png; name="添付ファイル1.png"');
 });
 
 ]]></test>
