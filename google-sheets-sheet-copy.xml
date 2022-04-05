@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-27</last-modified>
+<last-modified>2022-04-05</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Copy Sheet</label>
@@ -45,16 +45,8 @@ main();
 function main() {
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth2 = configs.get("conf_OAuth2");
-
   const spreadSheetId = configs.get("conf_SpreadSheetId");
-  if (spreadSheetId === "" || spreadSheetId === null) {
-    throw "Source SpreadSheet ID isn't set";
-  }
-
   const sheetTitle = configs.get("conf_SheetTitle");
-  if (sheetTitle === "" || sheetTitle === null) {
-    throw "Source SpreadSheet Title isn't set";
-  }
 
   const destinationDef = configs.getObject("conf_Destination");
   let destinationSpreadsheetId = "";
@@ -127,7 +119,7 @@ function getSheetId(oauth2, spreadSheetId, sheetTitle) {
 }
 
 /**
- * Google スプレッドシートに新しいシートを追加
+ * Google スプレッドシートに新しいシートをコピー
  * @param {String} oauth2 OAuth2 認証設定
  * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetId シートの ID
@@ -223,5 +215,433 @@ j+tjl4NnH1qQvZKltLO8kyi9JEBwOm7/pZSxTmpyNETz/atreUzksgqEFv0XFRB79E1J8dEICQfW
 kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
 AEwJzTC2ALrNAAAAAElFTkSuQmCC
 </icon>
+
+<test><![CDATA[
+/**
+ * 設定の準備
+ * @param spreadSheetId
+ * @param sheetTitle
+ * @param destinationSpreadsheetId
+ * @param newSheetTitle
+ */
+const prepareConfigs = (
+  spreadSheetId,
+  sheetTitle,
+  destinationSpreadsheetId,
+  newSheetTitle
+) => {
+  configs.put("conf_OAuth2", "Google");
+  configs.put("conf_SpreadSheetId", spreadSheetId);
+  configs.put("conf_SheetTitle", sheetTitle);
+  // コピー先スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+  const destinationDef = engine.createDataDefinition(
+    "コピー先スプレッドシートの ID",
+    1,
+    "q_destination",
+    "STRING_TEXTFIELD"
+  );
+  engine.setData(destinationDef, destinationSpreadsheetId);
+  configs.putObject("conf_Destination", destinationDef);
+  configs.put("conf_NewSheetTitle", newSheetTitle);
+};
+
+/**
+ * シート名が長すぎる
+ */
+test("Sheet Title Length > 100", () => {
+  const newSheetName = "a".repeat(101); // 101 文字
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", newSheetName);
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  try {
+    execute();
+    fail("not come here");
+  } catch (e) {
+    expect(e.message).endsWith("Sheet Title is too long. It cannot be longer than 100 characters.");
+  }
+});
+
+const SAMPLE_GET_1 = {
+  spreadsheetId: "spreadsheet-1",
+  properties: {
+    "title": "スプレッドシート 1"
+  },
+  sheets: [
+    {
+      properties: {
+        sheetId: 0,
+        title: "シート 1",
+        index: 0,
+        sheetType: "GRID",
+        gridProperties: {
+          rowCount: 1000,
+          columnCount: 26,
+        },
+      },
+    },
+    {
+      properties: {
+        sheetId: 1,
+        title: "シート 2",
+        index: 1,
+        sheetType: "GRID",
+        gridProperties: {
+          rowCount: 1000,
+          columnCount: 26,
+        },
+      },
+    },
+  ],
+  spreadsheetUrl:
+    "https://docs.google.com/spreadsheets/d/spreadsheet-1/edit?ouid=12345678",
+};
+
+const SAMPLE_GET_2 = {
+  spreadsheetId: "spreadsheet-2",
+  properties: {
+    "title": "スプレッドシート 2"
+  },
+  sheets: [
+    {
+      properties: {
+        sheetId: 2,
+        title: "シート 1",
+        index: 0,
+        sheetType: "GRID",
+        gridProperties: {
+          rowCount: 1000,
+          columnCount: 26,
+        },
+      },
+    }
+  ],
+  spreadsheetUrl:
+    "https://docs.google.com/spreadsheets/d/spreadsheet-2/edit?ouid=12345678",
+};
+
+const SAMPLE_POST_1 = {
+  "sheetId": 1234567,
+  "title": "シート 1 のコピー",
+  "index": 10,
+  "sheetType": "GRID",
+  "gridProperties": {
+    "rowCount": 150001,
+    "columnCount": 26
+  }
+};
+
+const SAMPLE_POST_2 = {
+  "sheetId": 7654321,
+  "title": "シート 2 のコピー",
+  "index": 10,
+  "sheetType": "GRID",
+  "gridProperties": {
+    "rowCount": 150001,
+    "columnCount": 26
+  }
+};
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param spreadSheetId
+ */
+const assertGetRequest = (
+  { url, method },
+  spreadSheetId
+) => {
+  expect(url).toEqual(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadSheetId
+    )}?includeGridData=false`
+  );
+  expect(method).toEqual("GET");
+};
+
+/**
+ * シートコピーの POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetId
+ * @param destinationSpreadsheetId
+ */
+const assertCopySheetRequest = (
+  { url, method, contentType, body },
+  spreadSheetId,
+  sheetId,
+  destinationSpreadsheetId
+) => {
+  expect(url).toEqual(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadSheetId
+    )}/sheets/${encodeURIComponent(sheetId)}:copyTo`
+  );
+  expect(method).toEqual("POST");
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj).toEqual({destinationSpreadsheetId});
+};
+
+/**
+ * シート名変更の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param spreadSheetId
+ * @param sheetId
+ * @param newSheetTitle
+ */
+const assertSetTitleRequest = (
+  { url, method, contentType, body },
+  spreadSheetId,
+  sheetId,
+  newSheetTitle
+) => {
+  expect(url).toEqual(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadSheetId
+    )}:batchUpdate`
+  );
+  expect(method).toEqual("POST");
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj.requests[0].updateSheetProperties.fields).toEqual("title");
+  expect(bodyObj.requests[0].updateSheetProperties.properties.title).toEqual(newSheetTitle);
+  expect(bodyObj.requests[0].updateSheetProperties.properties.sheetId).toEqual(sheetId);
+};
+
+/**
+ * GET リクエストで失敗
+ */
+test('Fail in 1st Request', () => {
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", "新しいシート");
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, "spreadsheet-1");
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to get sheet information. status: 400');
+  }
+});
+
+/**
+ * GET リクエストには成功するが、シートが存在しない
+ */
+test('Sheet does not exist', () => {
+  prepareConfigs("spreadsheet-1", "存在しないシート", "spreadsheet-2", "新しいシート");
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, "spreadsheet-1");
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Sheet 存在しないシート does not exist');
+  }
+});
+
+/**
+ * シートコピーの POST リクエストで失敗
+ */
+test('Fail in 2nd Request', () => {
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", "新しいシート");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    assertCopySheetRequest(request, "spreadsheet-1", 0, "spreadsheet-2");
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to copy sheet.');
+  }
+});
+
+/**
+ * シート名変更の POST リクエストで失敗
+ */
+test('Fail in 3rd Request', () => {
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", "新しいシート");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    if (reqCount === 1) {
+      assertCopySheetRequest(request, "spreadsheet-1", 0, "spreadsheet-2");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_1));
+    }
+    assertSetTitleRequest(request, "spreadsheet-2", 1234567, "新しいシート");
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to set sheet title.');
+  }
+});
+
+/**
+ * シートコピー成功の場合 - コピー先スプレッドシート、新しいシートのタイトルを指定
+ * コピー先スプレッドシートの指定は文字型データ項目
+ * コピー元シートはひとつ目のシート
+ */
+test("Success - Set Destination and New Sheet Title", () => {
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", "新しいシート");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    if (reqCount === 1) {
+      assertCopySheetRequest(request, "spreadsheet-1", 0, "spreadsheet-2");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_1));
+    }
+    assertSetTitleRequest(request, "spreadsheet-2", 1234567, "新しいシート");
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+/**
+ * シートコピー成功の場合 - コピー先スプレッドシートを指定しない場合
+ * コピー先スプレッドシートの指定は文字型データ項目
+ * コピー元シートはふたつ目のシート
+ */
+test("Success - without Destination", () => {
+  prepareConfigs("spreadsheet-1", "シート 2", null, "新しいシート");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    if (reqCount === 1) {
+      assertCopySheetRequest(request, "spreadsheet-1", 1, "spreadsheet-1"); // コピー先はコピー元と同じ
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_2));
+    }
+    assertSetTitleRequest(request, "spreadsheet-1", 7654321, "新しいシート");
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+/**
+ * シートコピー成功の場合 - 新しいシートのタイトルは自動設定
+ */
+test("Success - without New Sheet Title", () => {
+  prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", "");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+    }
+    assertCopySheetRequest(request, "spreadsheet-1", 0, "spreadsheet-2");
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_1));
+    // シート名変更のリクエストは送信されない
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+/**
+ * シートコピー成功の場合 - コピー先スプレッドシートの ID を固定値で指定
+ */
+test("Success - Destination set as fixed value", () => {
+  prepareConfigs("spreadsheet-2", "シート 1", null, "新しいシート 2");
+  configs.put("conf_Destination", "spreadsheet-1");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-2");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2));
+    }
+    if (reqCount === 1) {
+      assertCopySheetRequest(request, "spreadsheet-2", 2, "spreadsheet-1");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_1));
+    }
+    assertSetTitleRequest(request, "spreadsheet-1", 1234567, "新しいシート 2");
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+/**
+ * シートコピー成功の場合 - コピー先スプレッドシートの ID を固定値で指定し、空
+ */
+test("Success - without Destination, fixed value", () => {
+  prepareConfigs("spreadsheet-2", "シート 1", null, "新しいシート 2");
+  configs.put("conf_Destination", "");
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, "spreadsheet-2");
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2));
+    }
+    if (reqCount === 1) {
+      assertCopySheetRequest(request, "spreadsheet-2", 2, "spreadsheet-2"); // コピー先はコピー元と同じ
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST_1));
+    }
+    assertSetTitleRequest(request, "spreadsheet-2", 1234567, "新しいシート 2");
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+]]></test>
 
 </service-task-definition>
