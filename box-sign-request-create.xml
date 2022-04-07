@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-04-05</last-modified>
+<last-modified>2022-04-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box Sign: Create Sign Request</label>
@@ -22,17 +22,21 @@
     <label>C3: Folder ID to save the signing document (Root cannot be used)</label>
     <label locale="ja">C3: 署名用ドキュメントを保存するフォルダ ID (ルートフォルダは使用できません)</label>
   </config>
-  <config name="conf_EmailAddress" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+  <config name="conf_EmailAddress" required="true" form-type="SELECT" select-data-type="STRING">
     <label>C4: Email Addresses of the signers (Write one per line)</label>
     <label locale="ja">C4: 署名者メールアドレス (複数設定する場合、1件ごとに改行してください)</label>
   </config>
+  <config name="conf_Password" form-type="SELECT" select-data-type="STRING">
+    <label>C5: Passwords for each signer (Write one per line)</label>
+    <label locale="ja">C5: 署名者ごとのパスワード (1件ごとに改行してください)</label>
+  </config>
   <config name="conf_EmailSubject" form-type="TEXTFIELD" el-enabled="true">
-    <label>C5: Email Subject (Default subject if blank)</label>
-    <label locale="ja">C5: 送信されるメールの件名 (空白の場合、デフォルトの件名が使用されます)</label>
+    <label>C6: Email Subject (Default subject if blank)</label>
+    <label locale="ja">C6: 送信されるメールの件名 (空白の場合、デフォルトの件名が使用されます)</label>
   </config>
   <config name="conf_EmailMessage" form-type="TEXTAREA" el-enabled="true">
-    <label>C6: Message to include in the email (Default message if blank)</label>
-    <label locale="ja">C6: メール本文に含めるメッセージ (空白の場合、デフォルトの文面が使用されます)</label>
+    <label>C7: Message to include in the email (Default message if blank)</label>
+    <label locale="ja">C7: メール本文に含めるメッセージ (空白の場合、デフォルトの文面が使用されます)</label>
   </config>
 </configs>
 
@@ -54,12 +58,12 @@ function main(){
   if (folderId === '0') {
     throw 'Root folder cannot be used.';
   }
-  const addresses = retrieveEmailAddresses();
+  const signers = retrieveSigners();
   const subject = configs.get('conf_EmailSubject');
   const message = configs.get('conf_EmailMessage');
 
   //// == 演算 / Calculating ==
-  createRequest(oauth2, fileId, folderId, addresses, subject, message);
+  createRequest(oauth2, fileId, folderId, signers, subject, message);
 }
 
 /**
@@ -84,25 +88,81 @@ function decideEditable(confName, label) {
 }
 
 /**
-  * メールアドレスをデータ項目から読み出す
-  * 1つも設定されていない場合はエラー
-  * @return {Array<String>} addresses メールアドレス
+  * 署名者情報 (メールアドレスとパスワード) をデータ項目から読み出す
+  * 1つも設定されていない場合、上限件数を超える場合はエラー
+  * @return {Array<Object>} signers 署名者 {email, password} の配列
   */
-function retrieveEmailAddresses() {
-  const emailAddressDef = configs.getObject('conf_EmailAddress');
-  const emailAddressString = engine.findData(emailAddressDef);
-  if (emailAddressString === null || emailAddressString === "") {
+function retrieveSigners() {
+  const emails = retrieveEmails();
+  const passwords = retrievePasswords(); // データ項目が設定されていない場合は null
+
+  // 署名者の配列を作成
+  let signers = []; // {email, password}
+  if (passwords === null) { // パスワード設定なし
+    signers = emails.filter(email => email !== '') // 途中の空行を削除
+      .map(email => ({email}));
+  } else if (emails.length !== passwords.length) { // パスワード設定があるが、行数が一致しない
+    throw 'Number of Passwords does not match the number of Email Addresses.';
+  } else { // パスワードの設定がある
+    emails.forEach((email, i) => {
+      const password = passwords[i];
+      if (email === '' && passwords === '') { // 両方空行なら無視する
+        return;
+      }
+      if (email === '' || passwords === '') { // 片方だけ空行ならエラー
+        throw 'Number of Passwords does not match the number of Email Addresses.';
+      }
+      signers.push({email, password});
+    });
+  }
+
+  if (signers.length === 0) {
     throw 'No Email Address.';
   }
-  let addresses = emailAddressString.split('\n');
-  addresses = addresses.filter(line => line !== ''); // 空文字列を削除
-  if (addresses.length === 0) {
-    throw 'No Email Address.';
-  }
-  if (addresses.length > 35) {
+  if (signers.length > 35) {
     throw 'Number of Email Addresses exceeds the limit. The maximum number is 35.';
   }
-  return addresses;
+  return signers;
+}
+
+/**
+  * メールアドレスをデータ項目から読み出す
+  * データ項目の中身が空の場合ははエラー
+  * @return {Array<String>} emails
+  */
+function retrieveEmails() {
+  const emailDef = configs.getObject('conf_EmailAddress');
+  const emailString = engine.findData(emailDef);
+  if (emailString === null || emailString === "") {
+    throw 'No Email Address.';
+  }
+  const emails = emailString.split('\n');
+  while (emails[emails.length - 1] === '') { // 末尾の空行を削除
+    emails.pop();
+  }
+  return emails;
+}
+
+/**
+  * パスワードをデータ項目から読み出す
+  * データ項目が設定されていない場合は null を返す
+  * データ項目の中身が空の場合ははエラー
+  * @return {Array<String>} passwords
+  */
+function retrievePasswords() {
+  const passwordDef = configs.getObject('conf_Password');
+  if (passwordDef === null) {
+    return null;
+  }
+  passwordString = engine.findData(passwordDef);
+  if (passwordString === null || passwordString === "") {
+    throw 'Data item for Passwords is set but its content is empty.';
+  }
+  passwords = passwordString.split('\n');
+  while (passwords[passwords.length - 1] === '') { // 末尾の空行を削除
+    passwords.pop();
+  }
+  return passwords;
 }
 
 /**
@@ -110,21 +170,20 @@ function retrieveEmailAddresses() {
   * @param {String} oauth OAuth2 設定
   * @param {String} fileId 元ファイルの ID
   * @param {String} folderId 保存先フォルダの ID
-  * @param {Array<String>} addresses 送信先メールアドレス
+  * @param {Array<Object>} signers 署名者 {email, password} の配列
   * @param {String} subject 送信メールの件名
   * @param {String} message 送信メールに含めるメッセージ
   */
-function createRequest(oauth2, fileId, folderId, addresses, subject, message) {
-  const jsonBody = {};
+function createRequest(oauth2, fileId, folderId, signers, subject, message) {
+  const jsonBody = {signers};
   jsonBody['source_files'] = [{
     'id': fileId,
     'type': 'file'
   }];
-  jsonBody["parent_folder"] = {
+  jsonBody['parent_folder'] = {
     'id': folderId,
     'type': 'folder'
   };
-  jsonBody['signers'] = addresses.map(address => ({'email': address}));
   if (subject !== '' && subject !== null) {
     jsonBody['email_subject'] = subject;
   }
