@@ -96,11 +96,19 @@ function retrieveSigners() {
   const emails = retrieveEmails();
   const passwords = retrievePasswords(); // データ項目が設定されていない場合は null
 
+  // 件数チェック
+  if (emails.length === 0) { // メールアドレスが改行のみだった場合
+    throw 'No Email Address.';
+  }
+  if (emails.length > 35) { // Box Sign の仕様で最大35件まで
+    throw 'Number of Email Addresses exceeds the limit. The maximum number is 35.';
+  }
+
   // 署名者の配列を作成
   let signers = []; // {email, password}
   if (passwords === null) { // パスワード設定なし
     signers = emails.map(email => ({email}));
-  } else if (emails.length !== passwords.length) { // パスワード設定があるが、行数が一致しない
+  } else if (emails.length !== passwords.length) { // パスワード設定があるが、件数が一致しない
     throw 'Number of Passwords does not match the number of Email Addresses.';
   } else { // パスワードの設定がある
     emails.forEach((email, i) => {
@@ -109,13 +117,6 @@ function retrieveSigners() {
     });
   }
 
-  // 件数チェック
-  if (signers.length === 0) {
-    throw 'No Email Address.';
-  }
-  if (signers.length > 35) { // Box Sign の仕様で最大35件まで
-    throw 'Number of Email Addresses exceeds the limit. The maximum number is 35.';
-  }
   return signers;
 }
 
@@ -236,4 +237,347 @@ zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
 Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
 YII=
 </icon>
+
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * ファイル ID、フォルダ ID はデータ項目で指定
+ * メールアドレス、パスワードは複数行のデータ項目で指定
+ * @param fileId
+ * @param folderId
+ * @param emails
+ * @param passwords
+ * @param subject
+ * @param message
+ */
+const prepareConfigs = (fileId, folderId, emails, passwords, subject, message) => {
+  configs.put('conf_OAuth2', 'Box Sign');
+
+  // ファイル ID を設定した文字型データ項目（単一行）を準備し、設定
+  const fileIdDef = engine.createDataDefinition('ファイル ID', 1, 'q_FileId', 'STRING_TEXTFIELD');
+  engine.setData(fileIdDef, fileId);
+  configs.putObject('conf_SourceFileId', fileIdDef);
+
+  // フォルダ ID を設定した文字型データ項目（単一行）を準備し、設定
+  const folderIdDef = engine.createDataDefinition('フォルダ ID', 2, 'q_FolderId', 'STRING_TEXTFIELD');
+  engine.setData(folderIdDef, folderId);
+  configs.putObject('conf_FolderId', folderIdDef);
+
+  // メールアドレスを設定した文字型データ項目（複数行）を準備し、設定
+  const emailDef = engine.createDataDefinition('メールアドレス', 3, 'q_EmailAddress', 'STRING_TEXTAREA');
+  engine.setData(emailDef, emails);
+  configs.putObject('conf_EmailAddress', emailDef);
+
+  // パスワードを設定した文字型データ項目（複数行）を準備し、設定
+  const passwordDef = engine.createDataDefinition('パスワード', 4, 'q_Password', 'STRING_TEXTAREA');
+  engine.setData(passwordDef, passwords);
+  configs.putObject('conf_Password', passwordDef);
+
+  // メールの件名、メッセージを設定
+  configs.put('conf_EmailSubject', subject);
+  configs.put('conf_EmailMessage', message);
+}
+
+/**
+ * ファイル ID をデータ項目で指定し、値が空でエラー
+ */
+test('Source File ID is blank', () => {
+  prepareConfigs(null, 'folderId-1', 'test1@example.com', 'password1', '', '');
+  expect(execute).toThrow('Source File ID is blank.');
+});
+
+/**
+ * フォルダ ID をデータ項目で指定し、値が空でエラー
+ */
+test('Folder ID is blank', () => {
+  prepareConfigs('fileId-1', null, 'test1@example.com', 'password1', '', '');
+  expect(execute).toThrow('Folder ID is blank.');
+});
+
+/**
+ * フォルダ ID に 0 (ルートフォルダの ID) を指定しエラー
+ */
+test('Root folder cannot be used', () => {
+  prepareConfigs('fileId-1', '0', 'test1@example.com', 'password1', '', '');
+  expect(execute).toThrow('Root folder cannot be used.');
+});
+
+/**
+ * メールアドレスが空でエラー
+ */
+test('No Email Address', () => {
+  prepareConfigs('fileId-1', 'folderId-1', null, 'password1', '', '');
+  expect(execute).toThrow('No Email Address.');
+});
+
+/**
+ * メールアドレスが改行のみでエラー
+ */
+test('No Email Address - only blank lines', () => {
+  prepareConfigs('fileId-1', 'folderId-1', '\n\n', 'password1', '', '');
+  expect(execute).toThrow('No Email Address.');
+});
+
+/**
+ * メールアドレスが 35 件を超えていてエラー
+ */
+test('Number of Email Addresses exceeds the limit', () => {
+  const emails = 'test@example.com\n'.repeat(36);
+  const passwords = 'password\n'.repeat(36);
+  prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
+  expect(execute).toThrow('Number of Email Addresses exceeds the limit. The maximum number is 35.');
+});
+
+/**
+ * メールアドレスの途中に空行がありエラー
+ */
+test('An Email Address is blank', () => {
+  const emails = 'test1@example.com\n\ntest2@example.com'; // 2 件。2行目が空行
+  const passwords = 'password1\npassword2'; // 2件
+  prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
+  expect(execute).toThrow('Email Address at line 2 is blank.');
+});
+
+/**
+ * パスワードが空でエラー
+ */
+test('Data item for Passwords is set but its content is empty', () => {
+  prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', null, '', '');
+  expect(execute).toThrow('Data item for Passwords is set but its content is empty.');
+});
+
+/**
+ * パスワードの途中に空行がありエラー
+ */
+test('A Password is blank', () => {
+  const emails = 'test1@example.com\ntest2@example.com'; // 2 件
+  const passwords = '\npassword1\npassword2'; // 2件。先頭に空行がある
+  prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
+  expect(execute).toThrow('Password at line 1 is blank.');
+});
+
+/**
+ * パスワードが改行のみでエラー
+ */
+test('No Password - only blank lines', () => {
+  prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', '\n\n\n', '', '');
+  expect(execute).toThrow('Number of Passwords does not match the number of Email Addresses.');
+});
+
+/**
+ * メールアドレスとパスワードの件数が一致せずエラー
+ */
+test('Number of Passwords does not match the number of Email Addresses', () => {
+  const emails = 'test1@example.com\ntest2@example.com\ntest3@example.com'; // 3 件
+  const passwords = 'password1\npassword2'; // 2件
+  prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
+  expect(execute).toThrow('Number of Passwords does not match the number of Email Addresses.');
+});
+
+/**
+ * POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param fileId
+ * @param folderId
+ * @param signers
+ * @param subject
+ * @param message
+ */
+const assertPostRequest = ({url, method, contentType, body}, fileId, folderId, signers, subject, message) => {
+  expect(url).toEqual('https://api.box.com/2.0/sign_requests');
+  expect(method).toEqual('POST');
+  expect(contentType).toEqual('application/json; charset=UTF-8');
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj.source_files[0].id).toEqual(fileId);
+  expect(bodyObj.source_files[0].type).toEqual('file');
+  expect(bodyObj.parent_folder.id).toEqual(folderId);
+  expect(bodyObj.parent_folder.type).toEqual('folder');
+  expect(bodyObj.signers).toEqual(signers);
+  if (subject !== '') {
+    expect(bodyObj.email_subject).toEqual(subject);
+  } else {
+    expect(bodyObj.email_subject).toEqual(undefined);
+  }
+  if (message !== '') {
+    expect(bodyObj.email_message).toEqual(message);
+  } else {
+    expect(bodyObj.email_message).toEqual(undefined);
+  }
+};
+
+/**
+ * POST リクエストで失敗
+ */
+test('Fail in POST Request', () => {
+  const email = 'test1@example.com';
+  const password = 'password1';
+  const signers = [{email, password}];
+  prepareConfigs('fileId-1', 'folderId-1', email, password, '', '');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+
+  expect(execute).toThrow('Failed to create Sign Request. status:400');
+});
+
+/**
+ * 署名リクエスト作成成功
+ * Box Sign の上限 35 件の署名者でテスト
+ * パスワード設定あり
+ */
+test('Success - 35 signers with passwords', () => {
+  const emails = [];
+  const passwords = [];
+  const signers = [];
+  for (let i = 0; i < 35; i++) {
+    const email = `test${i+1}@example.com`;
+    const password = `password${i+1}`
+    emails.push(email);
+    passwords.push(password);
+    signers.push({email, password});
+  }
+  const emailString = emails.join('\n') + '\n'; // 末尾の改行は無視される
+  const passwordString = passwords.join('\n') + '\n\n';
+  prepareConfigs('fileId-1', 'folderId-1', emailString, passwordString, '', '');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+/**
+ * 署名リクエスト作成成功
+ * メールアドレスを単一行データ項目で指定
+ * パスワード設定あり
+ */
+test('Success - Email Address set with TEXTFIELD', () => {
+  const email = 'test2@example.com';
+  const password = 'password2';
+  const signers = [{email, password}];
+
+  // メールアドレスはいったん null に
+  prepareConfigs('fileId-2', 'folderId-2', null, password, '', '');
+
+  // メールアドレスを設定した文字型データ項目（単一行）を準備し、設定
+  const emailDef = engine.createDataDefinition('メールアドレス (単一行)', 5, 'q_EmailAddressSingle', 'STRING_TEXTFIELD');
+  engine.setData(emailDef, email);
+  configs.putObject('conf_EmailAddress', emailDef);
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-2', 'folderId-2', signers, '', '');
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+/**
+ * 署名リクエスト作成成功
+ * パスワードを単一行データ項目で指定
+ */
+test('Success - Password set with TEXTFIELD', () => {
+  const email = 'test3@example.com';
+  const password = 'password3';
+  const signers = [{email, password}];
+
+  // パスワードはいったん null に
+  prepareConfigs('fileId-3', 'folderId-3', email, null, '', '');
+
+  // メールアドレスを設定した文字型データ項目（単一行）を準備し、設定
+  const passwordDef = engine.createDataDefinition('パスワード (単一行)', 5, 'q_PasswordSingle', 'STRING_TEXTFIELD');
+  engine.setData(passwordDef, password);
+  configs.putObject('conf_Password', passwordDef);
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+/**
+ * 署名リクエスト作成成功
+ * パスワードを指定しない
+ */
+test('Success - Without passwords', () => {
+  const emails = [];
+  const signers = [];
+  for (let i = 0; i < 5; i++) {
+    const email = `test${i+1}@example.com`;
+    emails.push(email);
+    signers.push({email});
+  }
+  const emailString = emails.join('\n');
+
+  // パスワードはいったん null に
+  prepareConfigs('fileId-3', 'folderId-3', emailString, null, '', '');
+
+  // パスワードの設定をクリア
+  configs.put('conf_Password', '');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+/**
+ * 署名リクエスト作成成功
+ * メールの件名、メッセージを指定
+ */
+test('Success - With email subject and message', () => {
+  const email = 'test1@example.com';
+  const password = 'password1';
+  const signers = [{email, password}];
+  const subject = '署名リクエスト';
+  const message = '署名リクエストです。\n署名をお願いします。';
+  prepareConfigs('fileId-1', 'folderId-2', email, password, subject, message);
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-1', 'folderId-2', signers, subject, message);
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+/**
+ * 署名リクエスト作成成功
+ * ファイル ID、フォルダ ID を固定値で指定
+ */
+test('Success - File ID and Folder ID are set as fixed values', () => {
+  const email = 'test1@example.com';
+  const password = 'password1';
+  const signers = [{email, password}];
+
+  // ファイル ID、フォルダ ID はいったん null に
+  prepareConfigs(null, null, email, password, '', '');
+
+  // ファイル ID、フォルダ ID を固定値で指定
+  configs.put('conf_SourceFileId', 'fileId-2');
+  configs.put('conf_FolderId', 'folderId-1');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'fileId-2', 'folderId-1', signers, '', '');
+    return httpClient.createHttpResponse(201, 'application/json', '{}');
+  });
+
+  execute();
+});
+
+]]></test>
+
 </service-task-definition>
