@@ -97,11 +97,11 @@ function decideEditable(confName, label) {
   * @return {Array<Object>} signers 署名者 {email, password} の配列
   */
 function retrieveSigners() {
-  const emails = retrieveEmails();
-  const passwords = retrievePasswords(); // データ項目が設定されていない場合は null
+  const emails = retrieveFilledArray('conf_EmailAddress', 'Email Address');
+  const passwords = retrieveFilledArray('conf_Password', 'Password');
 
   // 件数チェック
-  if (emails.length === 0) { // メールアドレスが改行のみだった場合
+  if (emails === null || emails.length === 0) {
     throw 'No Email Address.';
   }
   if (emails.length > 35) { // Box Sign の仕様で最大35件まで
@@ -109,66 +109,44 @@ function retrieveSigners() {
   }
 
   // 署名者の配列を作成
-  let signers = []; // {email, password}
+  const signers = emails.map(email => ({email}));
   if (passwords === null) { // パスワード設定なし
-    signers = emails.map(email => ({email}));
-  } else if (emails.length !== passwords.length) { // パスワード設定があるが、件数が一致しない
-    throw 'Number of Passwords does not match the number of Email Addresses.';
-  } else { // パスワードの設定がある
-    emails.forEach((email, i) => {
-      const password = passwords[i];
-      signers.push({email, password});
-    });
+    return signers;
   }
-
+  // パスワード設定あり
+  if (passwords.length !== signers.length) { // 件数が一致しない
+    throw 'Number of Passwords does not match the number of Email Addresses.';
+  }
+  passwords.forEach((password, i) => {
+    signers[i].password = password
+  });
   return signers;
 }
 
 /**
-  * メールアドレスをデータ項目から読み出す
-  * データ項目の中身が空の場合はエラー
-  * @return {Array<String>} emails メールアドレスの配列
-  */
-function retrieveEmails() {
-  const emailDef = configs.getObject('conf_EmailAddress');
-  const emailString = engine.findData(emailDef);
-  if (emailString === null || emailString === '') {
-    throw 'No Email Address.';
-  }
-  return makeFilledArray(emailString, 'Email Address');
-}
-
-/**
-  * パスワードをデータ項目から読み出す
+  * config から複数行のデータを読み出し、配列を生成する
   * データ項目が設定されていない場合は null を返す
-  * データ項目の中身が空の場合はエラー
-  * @return {Array<String>} passwords パスワードの配列
-  */
-function retrievePasswords() {
-  const passwordDef = configs.getObject('conf_Password');
-  if (passwordDef === null) {
-    return null;
-  }
-  const passwordString = engine.findData(passwordDef);
-  if (passwordString === null || passwordString === '') {
-    throw 'Data item for Passwords is set but its content is empty.';
-  }
-  return makeFilledArray(passwordString, 'Password');
-}
-
-/**
-  * 改行を含む文字列から配列を生成する
-  * 途中に空行を含む場合はエラー
-  * @param {String} string 入力文字列
+  * データ項目が設定されていて、中身が空の場合はエラー
+  * 空行を含む場合はエラー (最後に空行がひとつだけある場合は無視)
+  * @param {String} confName config 名
   * @param {String} label エラー出力に使用するラベル
   * @return {Array<String>} array 空文字列を含まない配列
   */
-function makeFilledArray(string, label) {
+function retrieveFilledArray(confName, label) {
+  const dataDef = configs.getObject(confName);
+  if (dataDef === null) { // データ項目が設定されていない
+    return null;
+  }
+  const string = engine.findData(dataDef);
+  if (string === null || string === '') { // データ項目の中身が空
+    throw `Data item for ${label} is set but its content is empty.`;
+  }
+
   const array = string.split('\n');
-  while (array[array.length - 1] === '') { // 末尾の空行を削除
+  if (array[array.length - 1] === '') { // 最後に空行があれば削除
     array.pop();
   }
-  // 途中に空行がある場合はエラー
+  // 空行が残っている場合はエラー
   const i = array.indexOf('');
   if (i !== -1) {
     throw `${label} at line ${i+1} is blank.`;
@@ -310,17 +288,17 @@ test('Root folder cannot be used', () => {
 /**
  * メールアドレスが空でエラー
  */
-test('No Email Address', () => {
+test('No Email Address - Data item is set but its content is empty', () => {
   prepareConfigs('fileId-1', 'folderId-1', null, 'password1', '', '');
-  expect(execute).toThrow('No Email Address.');
+  expect(execute).toThrow('Data item for Email Address is set but its content is empty.');
 });
 
 /**
  * メールアドレスが改行のみでエラー
  */
-test('No Email Address - only blank lines', () => {
-  prepareConfigs('fileId-1', 'folderId-1', '\n\n', 'password1', '', '');
-  expect(execute).toThrow('No Email Address.');
+test('No Email Address - A blank line', () => {
+  prepareConfigs('fileId-1', 'folderId-1', '\n', 'password1', '', '');
+  expect(execute).toThrow('Email Address at line 1 is blank.');
 });
 
 /**
@@ -346,9 +324,9 @@ test('An Email Address is blank', () => {
 /**
  * パスワードが空でエラー
  */
-test('Data item for Passwords is set but its content is empty', () => {
+test('Data item for Password is set but its content is empty', () => {
   prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', null, '', '');
-  expect(execute).toThrow('Data item for Passwords is set but its content is empty.');
+  expect(execute).toThrow('Data item for Password is set but its content is empty.');
 });
 
 /**
@@ -364,9 +342,9 @@ test('A Password is blank', () => {
 /**
  * パスワードが改行のみでエラー
  */
-test('No Password - only blank lines', () => {
-  prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', '\n\n\n', '', '');
-  expect(execute).toThrow('Number of Passwords does not match the number of Email Addresses.');
+test('No Password - A blank line', () => {
+  prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', '\n', '', '');
+  expect(execute).toThrow('Password at line 1 is blank.');
 });
 
 /**
@@ -448,7 +426,7 @@ test('Success - 35 signers with passwords', () => {
     signers.push({email, password});
   }
   const emailString = emails.join('\n') + '\n'; // 末尾の改行は無視される
-  const passwordString = passwords.join('\n') + '\n\n';
+  const passwordString = passwords.join('\n');
   prepareConfigs('fileId-1', 'folderId-1', emailString, passwordString, '', '');
   
   httpClient.setRequestHandler((request) => {
