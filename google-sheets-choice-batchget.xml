@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-09-09</last-modified>
+<last-modified>2022-04-12</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Sheets: Download Choice Data</label>
@@ -101,7 +101,8 @@ function getChoice( oauth, docId, sheet, rangeI, rangeL ) {
   const I_LABEL = "Choice-ID";
   const L_LABEL = "Label";
   const idCols = jsonObj.valueRanges[0].values;
-  const labelCols = jsonObj.valueRanges[1].values;
+  const labelCols = jsonObj.valueRanges[1].values
+
   // error for empty column, multiple columns
   checkCols(idCols, I_LABEL);
   checkCols(labelCols, L_LABEL);
@@ -180,4 +181,620 @@ kNLDRIQIPM3MYDArBhE2JhCeZpYtPc2iIw0ogmoQogMYB5DygA1zAYSCMeGR6pSLWHEOKJZ5i4Z/
 AEwJzTC2ALrNAAAAAElFTkSuQmCC
 </icon>
 
+<test><![CDATA[
+
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID はデータ項目で指定
+ * @param configs
+ * @param sheetId
+ * @param sheetTitle
+ * @param conf_DataIdT
+ * @return {
+ *     idDataDef: {Object},
+ *     labelDataDef: {Object}
+ * }
+ */
+const prepareConfigs = (configs, sheetId, sheetTitle, rangeI, rangeL) => {
+  configs.put('conf_OAuth2', 'Google');
+  configs.put('conf_DataIdB', sheetId);
+  configs.put('conf_DataIdC', sheetTitle);
+  configs.put('conf_DataIdD', rangeI);
+  configs.put('conf_DataIdE', rangeL);
+
+  // 文字型データ項目を準備して、config に指定
+  const idDataDef = engine.createDataDefinition('選択肢 ID の一覧', 1, 'q_Id', 'STRING_TEXTFIELD');
+  configs.putObject('conf_DataIdF', idDataDef);
+  // 文字型データ項目の値（スプレッドシートの ID）を指定
+  engine.setData(idDataDef, '事前文字列');
+
+  // 文字型データ項目を準備して、config に指定
+  const labelDataDef = engine.createDataDefinition('選択肢ラベルの一覧', 2, 'q_Label', 'STRING_TEXTFIELD');
+  configs.putObject('conf_DataIdG', labelDataDef);
+  // 文字型データ項目の値（スプレッドシートのタイトル）を指定
+  engine.setData(labelDataDef, '事前文字列');
+  
+  return {
+        idDataDef,
+        labelDataDef
+    };
+};
+
+
+
+/**
+ * Get リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param sheetId
+ * @param sheetTitle
+ */
+const assertGetRequest = ({url, method, contentType, body}, sheetId, sheetTitle, rangeI, rangeL) => {
+
+    let newRangeI = rangeI.replace(":", "%3A");
+    let newRangeL = rangeL.replace(":", "%3A");
+
+    expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/:batchGet?ranges=${sheetTitle}%21${newRangeI}&ranges=${sheetTitle}%21${newRangeL}&valueRenderOption=UNFORMATTED_VALUE&majorDimension=COLUMNS`);
+    expect(method).toEqual('GET');
+};
+
+
+/**
+ * GET API リクエストでエラーになる場合
+ */
+test('GET Failed', () => {
+  prepareConfigs(configs, '12345abcde', 'sheet1', 'C1:C3', 'E1:E3');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '12345abcde', 'sheet1', 'C1:C3', 'E1:E3');
+    return httpClient.createHttpResponse(400,'application/json', '{}');
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+
+   expect(execute).toThrow('Failed to get. status:400');
+});
+
+
+
+/**
+ * データの一括取得成功の場合
+ * 行範囲も指定
+ */
+test('Success', () => {
+  const {
+        idDataDef,
+        labelDataDef
+    } = prepareConfigs(configs, '12345abcde', 'sheet1', 'A1:A5', 'B1:B5');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '12345abcde', 'sheet1', 'A1:A5', 'B1:B5');
+
+
+    const responseObj = {
+      "spreadsheetId": "12345abcde",
+      "valueRanges": [
+        {
+          "range": "'sheet1'!A1:A5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5"
+            ]
+          ]
+        },
+        {
+          "range": "'sheet1'!B1:B5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(idDataDef)).toEqual('1\n2\n3\n4\n5');
+  expect(engine.findData(labelDataDef)).toEqual('a\nb\nc\nd\ne');
+});
+
+
+
+/**
+ * データの一括取得成功の場合
+ * 行範囲は指定しない
+ */
+test('Success - without line range specified', () => {
+  const {
+        idDataDef,
+        labelDataDef
+    } = prepareConfigs(configs, '54321abcde', 'sheet1', 'A:A', 'B:B');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '54321abcde', 'sheet1', 'A:A', 'B:B');
+
+
+    const responseObj = {
+      "spreadsheetId": "54321abcde",
+      "valueRanges": [
+        {
+          "range": "'sheet1'!A1:A1000",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7"
+            ]
+          ]
+        },
+        {
+          "range": "'sheet1'!B1:B1000",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e",
+              "f",
+              "g"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(idDataDef)).toEqual('1\n2\n3\n4\n5\n6\n7');
+  expect(engine.findData(labelDataDef)).toEqual('a\nb\nc\nd\ne\nf\ng');
+});
+
+
+
+/**
+ * 取得した2列のデータ数が異なってエラーになる場合
+ */
+test('error for different number of cells', () => {
+  prepareConfigs(configs, '23456bcdef', 'sheet2', 'A1:A3', 'B1:B5');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '23456bcdef', 'sheet2', 'A1:A3', 'B1:B5');
+
+
+    const responseObj = {
+      "spreadsheetId": "12345abcde",
+      "valueRanges": [
+        {
+          "range": "'sheet2'!A1:A3",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "1",
+              "2",
+              "3"             
+            ]
+          ]
+        },
+        {
+          "range": "'sheet2'!B1:B5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//   expect(execute).toThrow('Number of cells in two ranges is different.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Number of cells in two ranges is different.');
+    }
+});
+
+
+/**
+ * 取得したデータ数が150000を超えてエラーになる場合
+ */
+test('error for over 150,000 of Choice Data ', () => {
+  prepareConfigs(configs, '23456bcdef', 'sheet2', 'A1:A150001', 'B1:B150001');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '23456bcdef', 'sheet2', 'A1:A150001', 'B1:B150001');
+
+
+    const responseObj = {
+      "spreadsheetId": "23456bcdef",
+      "valueRanges": [
+        {
+          "range": "'sheet2'!A1:A150001",
+          "majorDimension": "COLUMNS",
+          "values": [
+            []
+          ]
+        },
+        {
+          "range": "'sheet2'!B1:B150001",
+          "majorDimension": "COLUMNS",
+          "values": [
+            []
+          ]
+        }
+      ]
+    };
+
+
+    for (let i = 0; i <= 150000 ; i ++) {
+        responseObj.valueRanges[0].values[0].push(i);
+    }
+    for (let j = 0; j <= 150000 ; j ++) {
+        responseObj.valueRanges[1].values[0].push(j);
+    }
+    
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//   expect(execute).toThrow('Number of Choice Data is over 150,000.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Number of Choice Data is over 150,000.');
+    }
+});
+
+
+
+/**
+ * 取得した選択肢IDデータが重複していてエラーになる場合
+ */
+test('error for same ids', () => {
+  prepareConfigs(configs, '34567cdefg', 'sheet3', 'D1:D5', 'B1:B5');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '34567cdefg', 'sheet3', 'D1:D5', 'B1:B5');
+
+
+    const responseObj = {
+      "spreadsheetId": "34567cdefg",
+      "valueRanges": [
+        {
+          "range": "'sheet3'!D1:D5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "1",
+              "2",
+              "3",
+              "1",
+              "2"              
+            ]
+          ]
+        },
+        {
+          "range": "'sheet3'!B1:B5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//    expect(execute).toThrow('Same Choice-IDs are in range.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Same Choice-IDs are in range.');
+    }
+});
+
+
+
+/**
+ * 取得した配列の要素に、空文字がありエラーになる場合
+ */
+test('error for Empty Cell is in', () => {
+  prepareConfigs(configs, '45678defgh', 'sheet4', 'D1:D5', 'E1:E5');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '45678defgh', 'sheet4', 'D1:D5', 'E1:E5');
+
+
+    const responseObj = {
+      "spreadsheetId": "45678defgh",
+      "valueRanges": [
+        {
+          "range": "'sheet4'!D1:D5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "",
+              "d",
+              "e"              
+            ]
+          ]
+        },
+        {
+          "range": "'sheet4'!E1:E5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "aa",
+              "bb",
+              "cc",
+              "dd",
+              "ee"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//    expect(execute).toThrow('Empty Cell is in Choice-IDs range.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Empty Cell is in Choice-IDs range.');
+    }
+});
+
+
+
+/**
+ * 取得した配列の要素に、1000字以上のデータがありエラーになる場合
+ */
+test('error for over 1000 characters is in', () => {
+  prepareConfigs(configs, '56789efghi', 'sheet5', 'D1:D5', 'F1:F5');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '56789efghi', 'sheet5', 'D1:D5', 'F1:F5');
+
+
+    const responseObj = {
+      "spreadsheetId": "56789efghi",
+      "valueRanges": [
+        {
+          "range": "'sheet5'!D1:D5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "aa",
+              "bb",
+              "cc",
+              "dd",
+              "ee"              
+            ]
+          ]
+        },
+        {
+          "range": "'sheet5'!F1:F5",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "aaa",
+              "bbb",
+              "ccc",
+              "ddd"
+            ]
+          ]
+        }
+      ]
+    };
+
+    let data = '';
+    while (data.length <= 1000) {
+        data += 'e';
+    }
+    responseObj.valueRanges[1].values[0].push(data);
+
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//    expect(execute).toThrow('Over 1000-character Label is in range.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Over 1000-character Label is in range.');
+    }
+});
+
+
+
+/**
+ * 取得した列が空でエラーになる場合
+ */
+test('error for empty column', () => {
+  prepareConfigs(configs, '67890fghij', 'sheet6', 'A6:A10', 'B6:B10');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '67890fghij', 'sheet6', 'A6:A10', 'B6:B10');
+
+
+    const responseObj = {
+      "spreadsheetId": "67890fghij",
+      "valueRanges": [
+        {
+          "range": "'sheet6'!A6:A10",
+          "majorDimension": "COLUMNS"
+        },
+        {
+          "range": "'sheet6'!B6:B10",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "aa",
+              "bb",
+              "cc",
+              "dd",
+              "ee"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//    expect(execute).toThrow('No Data in Choice-IDs range.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('No Data in Choice-IDs range.');
+    }
+});
+
+
+
+/**
+ * 取得した列が複数でエラーになる場合
+ */
+test('error for multiple columns', () => {
+  prepareConfigs(configs, '78901ghijk', 'sheet7', 'A6:A10', 'B6:C10');
+
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, '78901ghijk', 'sheet7', 'A6:A10', 'B6:C10');
+
+
+    const responseObj = {
+      "spreadsheetId": "67890fghij",
+      "valueRanges": [
+        {
+          "range": "'sheet6'!A6:A10",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e"
+            ]
+          ]
+        },
+        {
+          "range": "'sheet6'!B6:B10",
+          "majorDimension": "COLUMNS",
+          "values": [
+            [
+              "aa",
+              "bb",
+              "cc",
+              "dd",
+              "ee"
+            ],
+            [
+              "aaa",
+              "bbb",
+              "ccc",
+              "ddd",
+              "eee"
+            ]
+          ]
+        }
+      ]
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+//    execute();
+//    expect(execute).toThrow('Multiple Columns in Labels range.');
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    try {
+      execute();
+      fail('not come here');
+    } catch (e) {
+      expect(e.message).endsWith('Multiple Columns in Labels range.');
+    }
+});
+]]></test>
 </service-task-definition>
