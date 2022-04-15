@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-04-14</last-modified>
+    <last-modified>2022-04-15</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Google Drive: Delete Shared Link</label>
@@ -36,18 +36,9 @@ function main() {
     const quser = getQuser();
     const fileIds = getFileIds(); // ファイル数 * 2 がリクエスト上限を超えないかチェック
 
-    const permissionsToDelete = []; // 削除する共有設定の情報 {fileId, permissionId} を格納する配列
     fileIds.forEach(fileId => {
-        getPermissionsToDelete(quser, fileId, permissionsToDelete);
-    });
-
-    // Web UI では設定できないが、API では 1 つのファイルに anyone, domain の permission を複数設定できる
-    // HTTP リクエスト数の上限を超える場合があるので、事前にチェック
-    if (fileIds.length + permissionsToDelete.length > HTTP_LIMIT) {
-        throw "Number of Permissions to delete is over the limit.";
-    }
-    permissionsToDelete.forEach(permission => {
-        deletePermission(quser, permission);
+        const permissionId = getPermissionIdToDelete(quser, fileId);
+        deletePermission(quser, fileId, permissionId);
     });
 }
 
@@ -87,13 +78,14 @@ function getFileIds() {
 
 /**
   * Google Drive API にファイル/フォルダの共有設定一覧を取得する GET リクエストを送信し、
-  * 削除対象の共有設定の情報を配列に格納する
-  * type が anyone または domain のものを削除対象にする
+  * 削除対象の共有設定の ID を返す
+  * type が anyone または domain のものが削除対象
+  * 削除対象の共有設定がない場合はエラー
   * @param {QuserView} quser  Google Drive に接続するユーザ
   * @param {String} fileId  ファイルの ID
-  * @param {Array<Object>} permissionsToDelete  削除対象の共有設定の情報を格納する配列 {fileId, permissionId}
+  * @return {String} permissionId  削除する共有設定の ID
   */
-function getPermissionsToDelete(quser, fileId, permissionsToDelete) {
+function getPermissionIdToDelete(quser, fileId) {
     const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`;
     const response = httpClient.begin()
         .googleOAuth2(quser, "Drive")
@@ -106,22 +98,26 @@ function getPermissionsToDelete(quser, fileId, permissionsToDelete) {
         engine.log(responseStr)
         throw `Failed to get permission list. File:${fileId}, Status:${status}`;
     }
-    let {permissions} = JSON.parse(responseStr);
-    permissions = permissions.filter(permission => permission.type === "anyone" || permission.type === "domain");
-    if (permissions.length === 0) {
-        throw `No shared link to delete:${fileId}`;
+    const {permissions} = JSON.parse(responseStr);
+    const permissionIds = permissions
+        .filter(permission => permission.type === "anyone" || permission.type === "domain")
+        .map(permission => permission.id);
+    if (permissionIds.length === 0) {
+        throw `No shared link to delete. File:${fileId}`;
     }
-    permissions.forEach(permission => permissionsToDelete.push({fileId, "permissionId": permission.id}));
+    // Web UI から設定できる anyone / domain の共有設定は 1 つのみ
+    // 共有設定作成の API を直接叩けば anyone / domain の共有設定を複数作成できるが、ここでは考慮しない
+    // もし複数ある場合は 1 つ目だけ削除
+    return permissionIds[0];
 }
 
 /**
-  * Google Drive API に DELETE リクエストを送信し、共有瀬亭を削除する
+  * Google Drive API に DELETE リクエストを送信し、共有設定を削除する
   * @param {QuserView} quser  Google Drive に接続するユーザ
-  * @param {Object} permission  削除する共有設定の情報
-  * @param {String} permission.fileId  ファイル ID
-  * @param {String} permission.permissionId  共有設定の ID
+  * @param {String} fileId  ファイル ID
+  * @param {String} permissionId  削除する共有設定の ID
   */
-function deletePermission(quser, {fileId, permissionId}) {
+function deletePermission(quser, fileId, permissionId) {
     const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${permissionId}`;
     const response = httpClient.begin()
         .googleOAuth2(quser, "Drive")
