@@ -71,7 +71,7 @@ function getFileIds() {
         throw "File / Folder IDs aren't set.";
     }
     if (fileIdsArray.length * 2 > HTTP_LIMIT) {
-        throw "Number of File IDs is over the limit.";
+        throw "Number of File / Folder IDs is over the limit.";
     }
     return fileIdsArray;
 }
@@ -130,7 +130,7 @@ function deletePermission(quser, fileId, permissionId) {
     }
 }
 
-]]></script>
+    ]]></script>
 
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
         hUBmYabNj19/dglzM7ERirGerpkshNTA5ImOgvTClGu/fjEq5AfeYdeX+YrT0cv2S3y69kjgVGv7
@@ -149,5 +149,262 @@ function deletePermission(quser, fileId, permissionId) {
         rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
         6/Q2AAAAAElFTkSuQmCC
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param fileIds
+ */
+const prepareConfigs = (fileIds) => {
+    const quser = engine.createQuser(3, 'サウスポール', 'SouthPole@questetra.com');
+    configs.putObject('conf_User', quser);
+
+    // ファイル/フォルダの ID が保存された文字型データ項目（複数行）を準備
+    const fileIdsDef = engine.createDataDefinition('共有リンクを削除するファイル/フォルダの ID', 1, 'q_fileIds', 'STRING_TEXTAREA');
+    engine.setData(fileIdsDef, fileIds);
+    configs.putObject('conf_FileIds', fileIdsDef);
+};
+
+/**
+ * 設定の準備
+ * ファイル/フォルダ ID は単一行データ項目で指定
+ * @param fileIds
+ */
+const prepareConfigsWithSingleLine = (fileIds) => {
+    const quser = engine.createQuser(4, 'オアフ', 'Oahu@questetra.com');
+    configs.putObject('conf_User', quser);
+
+    // ファイル/フォルダの ID が保存された文字型データ項目（単一行）を準備
+    const fileIdsDef = engine.createDataDefinition('共有リンクを削除するファイル/フォルダの ID', 1, 'q_fileIds', 'STRING_TEXTFIELD');
+    engine.setData(fileIdsDef, fileIds);
+    configs.putObject('conf_FileIds', fileIdsDef);
+};
+
+/**
+ * UserID に対応する QuserView がない場合
+ */
+test('User not found', () => {
+    prepareConfigs('abc123');
+    configs.put('conf_User', '');
+    expect(execute).toThrow('User not found');
+});
+
+/**
+ * ファイル/フォルダの ID が空でエラーになる場合
+ */
+test('No File / Folder IDs', () => {
+    prepareConfigs(null);
+    expect(execute).toThrow("File / Folder IDs aren't set.");
+});
+
+/**
+ * ファイル/フォルダの ID が空行のみでエラーになる場合
+ */
+test('No File / Folder IDs - blank lines only', () => {
+    prepareConfigs('\n\n\n');
+    expect(execute).toThrow("File / Folder IDs aren't set.");
+});
+
+/**
+ * ファイル/フォルダの ID が通信制限数を超えてエラーになる場合
+ */
+test('Number of File / Folder IDs is over the limit', () => {
+    let ids = '';
+    for (let i = 0; i < httpClient.getRequestingLimit() / 2 + 1; i++) {
+        ids += `f${i}\n`;
+    }
+    prepareConfigs(ids);
+    expect(execute).toThrow('Number of File / Folder IDs is over the limit.');
+});
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param fileId
+ */
+const assertGetRequest = ({url, method}, fileId) => {
+    const fields = encodeURIComponent('permissions/id,permissions/type');
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=${fields}&supportsAllDrives=true`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * GET API リクエストでエラー
+ */
+test('GET Failed', () => {
+    prepareConfigs('abc123');
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    expect(execute).toThrow('Failed to get permission list. File:abc123, Status:400');
+});
+
+const SAMPLE_GET_NO_SHARED_LINK = {
+    "permissions": [
+        {
+            "id": "p1",
+            "type": "user"
+        }
+    ]
+};
+
+/**
+ * GET リクエストは成功するが、削除対象の共有設定がなくエラー
+ */
+test('No shared link to delete', () => {
+    prepareConfigs('abc123');
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'abc123');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_NO_SHARED_LINK));
+    });
+    expect(execute).toThrow('No shared link to delete. File:abc123');
+});
+
+const SAMPLE_GET_1 = {
+    "permissions": [
+        {
+            "id": "p1",
+            "type": "user"
+        },
+        {
+            "id": "p2",
+            "type": "group"
+        },
+        {
+            "id": "p3",
+            "type": "anyone"
+        }
+    ]
+};
+
+const SAMPLE_GET_2 = {
+    "permissions": [
+        {
+            "id": "p1",
+            "type": "domain"
+        },
+        {
+            "id": "p2",
+            "type": "user"
+        }
+    ]
+};
+
+/**
+ * DELETE リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param fileId
+ * @param permissionId
+ */
+const assertDeleteRequest = ({url, method, contentType, body}, fileId, permissionId) => {
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${permissionId}?supportsAllDrives=true`);
+    expect(method).toEqual('DELETE');
+};
+
+/**
+ * DELETE API リクエストでエラー
+ */
+test('DELETE Failed', () => {
+    prepareConfigs('abc123');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+        }
+        assertDeleteRequest(request, 'abc123', 'p3');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to delete permission. File:abc123, Permission:p3, Status:400');
+});
+
+/**
+ * 共有リンク削除成功
+ * ファイル/フォルダ ID は複数行データ項目で指定
+ * 共有範囲が anyone のものを削除
+ */
+test('Success - Multi-line, anyone', () => {
+    prepareConfigs('abc123');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'abc123');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+        }
+        assertDeleteRequest(request, 'abc123', 'p3');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 共有リンク削除成功
+ * ファイル/フォルダ ID は単一行データ項目で指定
+ * 共有範囲が domain のものを削除
+ */
+test('Success - Single-line, domain', () => {
+    prepareConfigsWithSingleLine('def789');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'def789');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2));
+        }
+        assertDeleteRequest(request, 'def789', 'p1');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 共有リンク削除成功
+ * ファイル/フォルダ ID を上限数指定
+ */
+test('Success - Max number of IDs', () => {
+    let ids = '';
+    for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
+        ids += `f${i}\n`;
+    }
+    prepareConfigs(ids);
+
+    let reqCount = 0;
+    let fileCount = 0;
+    httpClient.setRequestHandler((request) => {
+        let getRes = SAMPLE_GET_1;
+        let permissionId = 'p3';
+        if (fileCount % 2 === 0) {
+            getRes = SAMPLE_GET_2;
+            permissionId = 'p1';
+        }
+        if (reqCount % 2 === 0) {
+            assertGetRequest(request, `f${fileCount}`);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getRes));
+        }
+        assertDeleteRequest(request, `f${fileCount}`, permissionId);
+        reqCount++;
+        fileCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
 
 </service-task-definition>
