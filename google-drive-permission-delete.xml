@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-04-15</last-modified>
+    <last-modified>2022-04-18</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Google Drive: Delete Shared Link</label>
     <label locale="ja">Google ドライブ: 共有リンク削除</label>
-    <summary>Delete the shared link accessible by anyone with the link or within the domain from the specified files
-        and/or folders on Google Drive. Permissions for users or groups remain undeleted.
+    <summary>Delete the shared link accessible by anyone with the link or within the domain from the specified file
+        or folder on Google Drive. Permissions for users or groups remain undeleted.
     </summary>
     <summary locale="ja">Google ドライブ
         の指定ファイルやフォルダから、リンクを知っている全員、もしくはドメイン内の全員がアクセスできる共有リンクを削除します。ユーザやグループへのアクセス許可は削除されずに残ります。
@@ -16,8 +16,8 @@
             <label>C1: User connects to Google Drive (must be App Administrator)</label>
             <label locale="ja">C1: Google ドライブ に接続するユーザ (要アプリ管理権限)</label>
         </config>
-        <config name="conf_FileIds" form-type="SELECT" select-data-type="STRING" required="true">
-            <label>C2: File / Folder IDs to delete the shared link</label>
+        <config name="conf_FileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" required="true">
+            <label>C2: File / Folder ID from which to delete the shared link</label>
             <label locale="ja">C2: 共有リンクを削除するファイル/フォルダの ID</label>
         </config>
     </configs>
@@ -28,18 +28,13 @@
 
     <script><![CDATA[
 
-const HTTP_LIMIT = httpClient.getRequestingLimit();
-
 main();
 
 function main() {
     const quser = getQuser();
-    const fileIds = getFileIds(); // ファイル数 * 2 がリクエスト上限を超えないかチェック
-
-    fileIds.forEach(fileId => {
-        const permissionId = getPermissionIdToDelete(quser, fileId);
-        deletePermission(quser, fileId, permissionId);
-    });
+    const fileId = getFileId();
+    const permissionId = getPermissionIdToDelete(quser, fileId);
+    deletePermission(quser, fileId, permissionId);
 }
 
 /**
@@ -56,24 +51,15 @@ function getQuser() {
 }
 
 /**
- * データ項目からファイル / フォルダ ID を取得し、配列に入れて返す
- * ID の数 * 2 が HTTP リクエスト数の上限を超えていればエラー
- * @return {Array<String>}  ファイル / フォルダ ID の配列
+ * データ項目からファイル / フォルダの ID を取得する
+ * @return {String}  ファイル / フォルダの ID
  */
-function getFileIds() {
-    const fileIds = engine.findData(configs.getObject("conf_FileIds"));
-    if (fileIds === null) {
-        throw "File / Folder IDs aren't set.";
+function getFileId() {
+    const fileId = engine.findData(configs.getObject("conf_FileId"));
+    if (fileId === null || fileId === "") {
+        throw "File / Folder ID isn't set.";
     }
-    let fileIdsArray = fileIds.split("\n");
-    fileIdsArray = fileIdsArray.filter(lines => lines !== ""); // 空文字列を削除
-    if (fileIdsArray.length === 0) {
-        throw "File / Folder IDs aren't set.";
-    }
-    if (fileIdsArray.length * 2 > HTTP_LIMIT) {
-        throw "Number of File / Folder IDs is over the limit.";
-    }
-    return fileIdsArray;
+    return fileId;
 }
 
 /**
@@ -154,31 +140,16 @@ function deletePermission(quser, fileId, permissionId) {
 
 /**
  * 設定の準備
- * @param fileIds
+ * @param fileId
  */
-const prepareConfigs = (fileIds) => {
+const prepareConfigs = (fileId) => {
     const quser = engine.createQuser(3, 'サウスポール', 'SouthPole@questetra.com');
     configs.putObject('conf_User', quser);
 
-    // ファイル/フォルダの ID が保存された文字型データ項目（複数行）を準備
-    const fileIdsDef = engine.createDataDefinition('共有リンクを削除するファイル/フォルダの ID', 1, 'q_fileIds', 'STRING_TEXTAREA');
-    engine.setData(fileIdsDef, fileIds);
-    configs.putObject('conf_FileIds', fileIdsDef);
-};
-
-/**
- * 設定の準備
- * ファイル/フォルダ ID は単一行データ項目で指定
- * @param fileIds
- */
-const prepareConfigsWithSingleLine = (fileIds) => {
-    const quser = engine.createQuser(4, 'オアフ', 'Oahu@questetra.com');
-    configs.putObject('conf_User', quser);
-
     // ファイル/フォルダの ID が保存された文字型データ項目（単一行）を準備
-    const fileIdsDef = engine.createDataDefinition('共有リンクを削除するファイル/フォルダの ID', 1, 'q_fileIds', 'STRING_TEXTFIELD');
-    engine.setData(fileIdsDef, fileIds);
-    configs.putObject('conf_FileIds', fileIdsDef);
+    const fileIdDef = engine.createDataDefinition('共有リンクを削除するファイル/フォルダの ID', 1, 'q_fileId', 'STRING_TEXTFIELD');
+    engine.setData(fileIdDef, fileId);
+    configs.putObject('conf_FileId', fileIdDef);
 };
 
 /**
@@ -193,29 +164,9 @@ test('User not found', () => {
 /**
  * ファイル/フォルダの ID が空でエラーになる場合
  */
-test('No File / Folder IDs', () => {
+test('No File / Folder ID', () => {
     prepareConfigs(null);
-    expect(execute).toThrow("File / Folder IDs aren't set.");
-});
-
-/**
- * ファイル/フォルダの ID が空行のみでエラーになる場合
- */
-test('No File / Folder IDs - blank lines only', () => {
-    prepareConfigs('\n\n\n');
-    expect(execute).toThrow("File / Folder IDs aren't set.");
-});
-
-/**
- * ファイル/フォルダの ID が通信制限数を超えてエラーになる場合
- */
-test('Number of File / Folder IDs is over the limit', () => {
-    let ids = '';
-    for (let i = 0; i < httpClient.getRequestingLimit() / 2 + 1; i++) {
-        ids += `f${i}\n`;
-    }
-    prepareConfigs(ids);
-    expect(execute).toThrow('Number of File / Folder IDs is over the limit.');
+    expect(execute).toThrow("File / Folder ID isn't set.");
 });
 
 /**
@@ -329,7 +280,6 @@ test('DELETE Failed', () => {
 
 /**
  * 共有リンク削除成功
- * ファイル/フォルダ ID は複数行データ項目で指定
  * 共有範囲が anyone のものを削除
  */
 test('Success - Multi-line, anyone', () => {
@@ -351,11 +301,10 @@ test('Success - Multi-line, anyone', () => {
 
 /**
  * 共有リンク削除成功
- * ファイル/フォルダ ID は単一行データ項目で指定
  * 共有範囲が domain のものを削除
  */
 test('Success - Single-line, domain', () => {
-    prepareConfigsWithSingleLine('def789');
+    prepareConfigs('def789');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -365,40 +314,6 @@ test('Success - Single-line, domain', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2));
         }
         assertDeleteRequest(request, 'def789', 'p1');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
-    });
-
-    execute();
-});
-
-/**
- * 共有リンク削除成功
- * ファイル/フォルダ ID を上限数指定
- */
-test('Success - Max number of IDs', () => {
-    let ids = '';
-    for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
-        ids += `f${i}\n`;
-    }
-    prepareConfigs(ids);
-
-    let reqCount = 0;
-    let fileCount = 0;
-    httpClient.setRequestHandler((request) => {
-        let getRes = SAMPLE_GET_1;
-        let permissionId = 'p3';
-        if (fileCount % 2 === 0) {
-            getRes = SAMPLE_GET_2;
-            permissionId = 'p1';
-        }
-        if (reqCount % 2 === 0) {
-            assertGetRequest(request, `f${fileCount}`);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getRes));
-        }
-        assertDeleteRequest(request, `f${fileCount}`, permissionId);
-        reqCount++;
-        fileCount++;
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
