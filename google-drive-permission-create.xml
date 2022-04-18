@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-04-04</last-modified>
+<last-modified>2022-04-18</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Google Drive: Create Shared Link</label>
 <label locale="ja">Google ドライブ: 共有リンク作成</label>
-<summary>Create Permissions in the specified files and/or folders on Google Drive. An error occurs when a specified file/folder is already shared.</summary>
-<summary locale="ja">Google ドライブ の指定ファイルやフォルダを共有します。すでに共有されているファイル/フォルダを指定した場合はエラーになります。</summary>
+<summary>Create a shared link for the specified file or folder on Google Drive. An error occurs when a specified file/folder is already shared with anyone or within the domain.</summary>
+<summary locale="ja">Google ドライブ の指定ファイルやフォルダの共有リンクを作成します。すでにリンクを知っている全員、もしくはドメインで共有されているファイル/フォルダを指定した場合はエラーになります。</summary>
 <configs>
   <config name="conf_UserID" required="true" form-type="QUSER">
     <label>C1: User connects to Google Drive (must be App Administrator)</label>
     <label locale="ja">C1: Google ドライブ に接続するユーザ (要アプリ管理権限)</label>
   </config>
-  <config name="conf_FileIdsItem" form-type="SELECT" select-data-type="STRING" required="true">
-    <label>C2: File / Folder IDs to share</label>
+  <config name="conf_FileIdsItem" form-type="SELECT" select-data-type="STRING_TEXTFIELD" required="true">
+    <label>C2: File / Folder ID to share</label>
     <label locale="ja">C2: 共有するファイル/フォルダの ID</label>
   </config>
   <config name="conf_SharedRange" form-type="SELECT_ITEM" required="true">
@@ -49,7 +49,7 @@
     <label locale="ja">C6: 共有先ドメインで検索可能にする</label>
   </config>
   <config name="conf_SharedUrlItem" form-type="SELECT" select-data-type="STRING">
-    <label>C7: Data Item that will save URLs of shared Files / Folders</label>
+    <label>C7: Data Item that will save URL of shared File / Folder</label>
     <label locale="ja">C7: 共有したファイル/フォルダの表示 URL を保存するデータ項目</label>
   </config>
 </configs>
@@ -61,8 +61,8 @@
 main();
 
 function main() {
-  const filesIdArray = getFileIds();
   const quser = getQuser();
+  const fileId = getFileId();
   const sharedRange = configs.get("conf_SharedRange");
   const role = configs.get("conf_Role");
   const domain = configs.get("conf_Domain");
@@ -71,52 +71,13 @@ function main() {
   }
   const allowFileDiscovery = configs.getObject("conf_AllowFileDiscovery");
   const urlDataDef = configs.getObject("conf_SharedUrlItem");
-  const idsNum = filesIdArray.length;
-  idNumCheck(urlDataDef,idsNum)
 
-  const sharedUrls = [];
-  for (let i = 0; i < idsNum; i++) {
-    sharedUrls.push(createPermission(quser, filesIdArray[i], sharedRange, role, domain, allowFileDiscovery));
-  }
-  
+  checkIfAlreadyShared(quser, fileId);
+  createPermission(quser, fileId, sharedRange, role, domain, allowFileDiscovery);
+
   if (urlDataDef !== null) {
-    engine.setData(urlDataDef, sharedUrls.join("\n"));
-  }
-}
-
-/**
- * データ項目からファイル / フォルダ ID を取得し、配列に入れて返す
- * ID の数が通信制限を超えていればエラー
- * @return {Array<String>}  ファイル / フォルダ ID の配列
- */
-function getFileIds() {
-    const fileIds = engine.findData(configs.getObject("conf_FileIdsItem"));
-    if (fileIds === null) {
-        throw "File / Folder IDs aren't set.";
-    }
-    let fileIdsArray = fileIds.split("\n");
-    fileIdsArray = fileIdsArray.filter(lines => lines !== ""); // 空文字列を削除
-    if (fileIdsArray.length === 0) {
-        throw "File / Folder IDs aren't set.";
-    }
-    if (fileIdsArray.length * 2 > httpClient.getRequestingLimit()) {
-        //check number of files
-        throw "Number of File IDs is over the limit.";
-    }
-    return fileIdsArray;
-}
-
-/**
-  * 共有するファイル/フォルダの ID が複数で URL 出力先のデータ項目が単一行ならエラーにする
-  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
-  * @param {Number} idNum  共有しようとしているファイル/フォルダの ID の個数
-  */
-function idNumCheck(dataDef,idNum){
-  if(dataDef !==  null){
-    //Multiple Judge
-    if(dataDef.matchDataType("STRING_TEXTFIELD") && idNum > 1){
-      throw "Multiple ids are set though the Data Item to save the output is Single-line String."
-    }
+    const sharedUrl = getWebViewLink(quser, fileId);
+    engine.setData(urlDataDef, sharedUrl);
   }
 }
 
@@ -132,11 +93,52 @@ function getQuser() {
     engine.log(`User Name: ${quser.getName()}`);
     return quser;
 }
+
 /**
-  * Google Drive 上で共有設定をする
+ * データ項目からファイル / フォルダの ID を取得する
+ * @return {String}  ファイル / フォルダの ID
+ */
+function getFileId() {
+    const fileId = engine.findData(configs.getObject("conf_FileIdsItem"));
+    if (fileId === null || fileId === "") {
+        throw "File / Folder ID isn't set.";
+    }
+    return fileId;
+}
+
+/**
+  * Google Drive API で共有設定の一覧を取得し、
+  * anyone / domain の共有設定がすでにある場合はエラー
+  * @param {QuserView} quser  Google Drive に接続するユーザ
+  * @param {String} fileId  ファイル / フォルダの ID
+  */
+function checkIfAlreadyShared(quser, fileId) {
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`;
+    const response = httpClient.begin()
+        .googleOAuth2(quser, "Drive")
+        .queryParam("fields", "permissions/type")
+        .queryParam("supportsAllDrives", "true")
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status >= 300) {
+        engine.log(responseStr)
+        throw `Failed to get permission list. File:${fileId}, Status:${status}`;
+    }
+    const {permissions} = JSON.parse(responseStr);
+
+    const alreadyShared = permissions
+        .some(permission => permission.type === "anyone" || permission.type === "domain");
+    if (alreadyShared) {
+        throw `The item (ID: ${fileId}) is already shared.`;
+    }
+}
+
+/**
+  * Google Drive API で共有設定をする
   * create permission on Google Drive
   * @param {QuserView} quser  Google Drive に接続するユーザ
-  * @param {String} fileId  ファイルの ID
+  * @param {String} fileId  ファイル / フォルダの ID
   * @param {String} type 共有範囲
   * @param {String} role ロール
   * @param {String} domain  共有先ドメイン
@@ -144,49 +146,44 @@ function getQuser() {
   * @return {String} 共有リンク
   */
 function createPermission(quser, fileId, type, role, domain, allowFileDiscovery) {
-  const encodedFileId = encodeURIComponent(fileId);
-
-  // ファイル情報を取得し、URL 取得と共有済みかどうかのチェックを行う
-  const getUrl = `https://www.googleapis.com/drive/v3/files/${encodedFileId}`;
-  const responseGet = httpClient.begin()
-    .googleOAuth2(quser, "Drive")
-    .queryParam("fields", "webViewLink,shared,hasAugmentedPermissions")
-    .queryParam("supportsAllDrives", "true")
-    .get(getUrl);
-  const getStatus = responseGet.getStatusCode();
-  if (getStatus >= 300) {
-    engine.log(responseGet.getResponseAsString())
-    throw `Failed to get item info:${fileId}\nStatus:${getStatus}`;
-  }
-  const resJson = JSON.parse(responseGet.getResponseAsString());
-  const {webViewLink, shared, hasAugmentedPermissions} = resJson;
-
-  // マイドライブ内のファイル/フォルダがすでに共有されている場合、shared が true
-  // 共有ドライブ内のファイル/フォルダにすでに個別の共有設定がある場合、hasAugmentedPermissions が true
-  // WebUI からは user/group の共有設定と domain/anyone の共有設定を共存させられるが、
-  // このアイテムでは user/group/domain/anyone のいずれかの共有設定がすでにある場合、エラーにする
-  if (shared || hasAugmentedPermissions) {
-    throw `The item (ID: ${fileId}) is already shared.`;
-  }
-
   const json = {role, type};
   if (type === "domain") {
     json["domain"] = domain;
     json["allowFileDiscovery"] = allowFileDiscovery;
   }
-  const permissionUrl = `https://www.googleapis.com/drive/v3/files/${encodedFileId}/permissions`;
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`;
   const responsePermission = httpClient.begin()
     .googleOAuth2(quser, "Drive")
     .queryParam("supportsAllDrives", "true")
     .body(JSON.stringify(json), "application/json; charset=UTF-8")
-    .post(permissionUrl);
+    .post(url);
   const status = responsePermission.getStatusCode();
   if (status >= 300) {
     engine.log(responsePermission.getResponseAsString())
-    throw `Failed to create permission:${fileId}\nStatus:${status}`;
+    throw `Failed to create permission. File:${fileId}, Status:${status}`;
   }
-  
-  return webViewLink;
+}
+
+/**
+  * Google Drive API でファイル / フォルダの表示 URL を取得する
+  * @param {QuserView} quser  Google Drive に接続するユーザ
+  * @param {String} fileId  ファイル / フォルダの ID
+  * @return {String} 表示 URL
+  */
+function getWebViewLink(quser, fileId) {
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+  const responseGet = httpClient.begin()
+    .googleOAuth2(quser, "Drive")
+    .queryParam("fields", "webViewLink")
+    .queryParam("supportsAllDrives", "true")
+    .get(url);
+  const getStatus = responseGet.getStatusCode();
+  if (getStatus >= 300) {
+    engine.log(responseGet.getResponseAsString())
+    throw `Failed to get item info. File:${fileId}, Status:${getStatus}`;
+  }
+  const resJson = JSON.parse(responseGet.getResponseAsString());
+  return resJson.webViewLink;
 }
 
 ]]></script>
@@ -211,7 +208,6 @@ rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
 
 <test><![CDATA[
 
-
 const DOMAIN = 'domain';
 const ANYONE = 'anyone';
 const VIEWER = 'reader';
@@ -219,52 +215,21 @@ const EDITOR = 'writer';
 
 /**
  * 設定の準備
- * @param fileIds
+ * @param fileId
  * @param sharedRange
  * @param role
  * @param domain
  * @param allowFileDiscovery
  * @return sharedUrlItemDef
  */
-const prepareConfigs = (fileIds, sharedRange, role, domain, allowFileDiscovery) => {
+const prepareConfigs = (fileId, sharedRange, role, domain, allowFileDiscovery) => {
   const quser = engine.createQuser(3, 'サウスポール', 'SouthPole@questetra.com');
   configs.putObject('conf_UserID', quser);
   
-  // 共有するファイル/フォルダの ID を保存する文字型データ項目（複数行）を準備
-  const fileIdsDef = engine.createDataDefinition('共有するファイル/フォルダの ID', 1, 'q_fileIds', 'STRING_TEXTAREA');
-  engine.setData(fileIdsDef, fileIds);
-  configs.putObject('conf_FileIdsItem', fileIdsDef);
-  
-  configs.put('conf_SharedRange', sharedRange);
-  configs.put('conf_Role', role);
-  configs.put('conf_Domain', domain);
-  configs.putObject('conf_AllowFileDiscovery', allowFileDiscovery);
-  
-  // 共有したファイル/フォルダの表示 URL を保存する文字型データ項目（複数行）を準備
-  const sharedUrlItemDef = engine.createDataDefinition('作成したフォルダの表示 URL', 2, 'q_URLs_of_shared_Files', 'STRING_TEXTAREA');
-  engine.setData(sharedUrlItemDef, '事前文字列');
-  configs.putObject('conf_SharedUrlItem', sharedUrlItemDef);
-  
-  return sharedUrlItemDef;
-};
-
-/**
- * 設定の準備-共有したファイル/フォルダの表示 URL を保存する文字型データ項目が単一行
- * @param fileIds
- * @param sharedRange
- * @param role
- * @param domain
- * @param allowFileDiscovery
- * @return sharedUrlItemDef
- */
-const prepareConfigs_single_line = (fileIds, sharedRange, role, domain, allowFileDiscovery) => {
-  const quser = engine.createQuser(4, 'オアフ', 'Oahu@questetra.com');
-  configs.putObject('conf_UserID', quser);
-  
-  // 共有するファイル/フォルダの ID を保存する文字型データ項目（複数行）を準備
-  const fileIdsDef = engine.createDataDefinition('共有するファイル/フォルダの ID', 5, 'q_fileIds_', 'STRING_TEXTAREA');
-  engine.setData(fileIdsDef, fileIds);
-  configs.putObject('conf_FileIdsItem', fileIdsDef);
+  // 共有するファイル/フォルダの ID を保存する文字型データ項目（単一行）を準備
+  const fileIdDef = engine.createDataDefinition('共有するファイル/フォルダの ID', 1, 'q_fileId', 'STRING_TEXTFIELD');
+  engine.setData(fileIdDef, fileId);
+  configs.putObject('conf_FileIdsItem', fileIdDef);
   
   configs.put('conf_SharedRange', sharedRange);
   configs.put('conf_Role', role);
@@ -272,7 +237,7 @@ const prepareConfigs_single_line = (fileIds, sharedRange, role, domain, allowFil
   configs.putObject('conf_AllowFileDiscovery', allowFileDiscovery);
   
   // 共有したファイル/フォルダの表示 URL を保存する文字型データ項目（単一行）を準備
-  const sharedUrlItemDef = engine.createDataDefinition('作成したフォルダの表示 URL単一行', 6, 'q_URL_of_shared_File', 'STRING_TEXTFIELD');
+  const sharedUrlItemDef = engine.createDataDefinition('共有したファイル/フォルダの表示 URL', 2, 'q_fileUrl', 'STRING_TEXTFIELD');
   engine.setData(sharedUrlItemDef, '事前文字列');
   configs.putObject('conf_SharedUrlItem', sharedUrlItemDef);
   
@@ -285,14 +250,7 @@ const prepareConfigs_single_line = (fileIds, sharedRange, role, domain, allowFil
 test('User not found', () => {
   prepareConfigs('abc123', ANYONE, VIEWER, '', false);
   configs.put('conf_UserID', '');
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('User not found');
-  }
+  expect(execute).toThrow('User not found');
 });
 
 /**
@@ -300,128 +258,101 @@ test('User not found', () => {
  */
 test('domain is blank', () => {
   prepareConfigs('abc456', DOMAIN, VIEWER, '', false);
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith("Domain to share isn't set.");
-  }
+  expect(execute).toThrow("Domain to share isn't set.");
 });
 
 /**
  * 共有するファイル/フォルダの ID が空でエラーになる場合
  */
-test('File / Folder IDs is blank', () => {
+test('File / Folder ID is blank', () => {
   prepareConfigs(null, ANYONE, VIEWER, '', true);
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('File / Folder IDs aren\'t set.');
-  }
+  expect(execute).toThrow("File / Folder ID isn't set.");
 });
 
 /**
- * 共有するファイル/フォルダの ID が空行でエラーになる場合
- */
-test('File / Folder IDs is blank line', () => {
-  prepareConfigs('\n\n\n', DOMAIN, VIEWER, 'test1.com', true);
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('File / Folder IDs aren\'t set.');
-  }
-});
-
-/**
- * 共有するファイル/フォルダの ID が通信制限数を超えてエラーになる場合
- */
-test('Number of File / Folder IDs is over the limit', () => {
-  let ids = '';
-  for (let i = 0; i <= httpClient.getRequestingLimit() / 2; i++) {
-    ids += `f${i}\n`;
-  }
-  prepareConfigs(ids, ANYONE, VIEWER, '', false);
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('Number of File IDs is over the limit.');
-  }
-});
-
-/**
- * 共有するファイル/フォルダの ID が複数行で URL 出力先のデータ項目が単一行エラーになる場合
- */
-test('SharedUrl is Single-line String data for Multiple ids', () => {
-  prepareConfigs_single_line(`abc123\ndef456`, DOMAIN, VIEWER, 'test2.com', false);
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('Multiple ids are set though the Data Item to save the output is Single-line String.');
-  }
-});
-
-/**
- * GET リクエストのテスト
+ * 1つ目の API リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
- * @param fileIds
+ * @param fileId
  */
-const assertGetRequest = ({url, method}, fileIds) => {
-  const fields = encodeURIComponent('webViewLink,shared,hasAugmentedPermissions');
-  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileIds}?fields=${fields}&supportsAllDrives=true`);
+const assert1stRequest = ({url, method}, fileId) => {
+  const fields = encodeURIComponent('permissions/type');
+  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=${fields}&supportsAllDrives=true`);
   expect(method).toEqual('GET');
 };
 
 /**
- * GET API リクエストでエラー
+ * 1つ目の API リクエストでエラー
  */
-test('GET Failed', () => {
+test('1st API Request Failed', () => {
   prepareConfigs('def789', ANYONE, VIEWER, '', false);
   
   httpClient.setRequestHandler((request) => {
-    assertGetRequest(request, 'def789');
+    assert1stRequest(request, 'def789');
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
-  
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('Failed to get item info:def789\nStatus:400');
-  }
+
+  expect(execute).toThrow('Failed to get permission list. File:def789, Status:400');
 });
 
 /**
- * POST リクエストのテスト
+ * すでにドメイン内で共有されていてエラー
+ */
+test('The file is already shared - domain', () => {
+  prepareConfigs('def789', ANYONE, VIEWER, '', false);
+
+  const res = {
+    permissions: [
+      { "type": "user" },
+      { "type": "domain" }
+    ]
+  };
+
+  httpClient.setRequestHandler((request) => {
+    assert1stRequest(request, 'def789');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(res));
+  });
+
+  expect(execute).toThrow('The item (ID: def789) is already shared.');
+});
+
+/**
+ * すでにリンクを知っている全員に共有されていてエラー
+ */
+test('The file is already shared - anyone', () => {
+  prepareConfigs('def789', ANYONE, VIEWER, '', false);
+
+  const res = {
+    permissions: [
+      { "type": "anyone" },
+      { "type": "group" }
+    ]
+  };
+
+  httpClient.setRequestHandler((request) => {
+    assert1stRequest(request, 'def789');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(res));
+  });
+
+  expect(execute).toThrow('The item (ID: def789) is already shared.');
+});
+
+/**
+ * 2つ目の API リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
  * @param request.contentType
  * @param request.body
- * @param fileIds
+ * @param fileId
  * @param type
  * @param role
  * @param domain
  * @param allowFileDiscovery
  */
-const assertPostRequest = ({url, method, contentType, body}, fileIds, type, role, domain, allowFileDiscovery) => {
-  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileIds}/permissions?supportsAllDrives=true`);
+const assert2ndRequest = ({url, method, contentType, body}, fileId, type, role, domain, allowFileDiscovery) => {
+  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?supportsAllDrives=true`);
   expect(method).toEqual('POST');
   expect(contentType).toEqual('application/json; charset=UTF-8');
   const bodyObj = JSON.parse(body);
@@ -436,189 +367,195 @@ const assertPostRequest = ({url, method, contentType, body}, fileIds, type, role
     expect(bodyObj.domain).toEqual(undefined);
     expect(bodyObj.allowFileDiscovery).toEqual(undefined);
   }
-  
 };
 
-const SAMPLE_GET_1 = {
-  "webViewLink": "https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk",
-  "shared": false
-};
-
-const SAMPLE_GET_1_SHARED = {
-  "webViewLink": "https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk",
-  "shared": true
-};
-
-const SAMPLE_GET_2 = {
-  "webViewLink": "https://docs.google.com/spreadsheets/d/abc789/edit?usp=drivesdk",
-  "hasAugmentedPermissions": false
-};
-
-const SAMPLE_GET_2_SHARED = {
-  "webViewLink": "https://docs.google.com/spreadsheets/d/abc789/edit?usp=drivesdk",
-  "hasAugmentedPermissions": true
+const SAMPLE_PERMISSION_LIST = {
+  permissions: [
+    { "type": "user" },
+    { "type": "group" }
+  ]
 };
 
 /**
- * POST API リクエストでエラー
+ * 2つ目の API リクエストでエラー
  */
-test('POST Failed', () => {
-  prepareConfigs('abc789', DOMAIN, EDITOR, 'test3.com', true);
+test('2nd API Request Failed', () => {
+  prepareConfigs('abc789', DOMAIN, EDITOR, 'test1.example.com', true);
   
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
     if (reqCount === 0) {
-      assertGetRequest(request, 'abc789');
+      assert1stRequest(request, 'abc789');
       reqCount++;
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2));
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
     }
-    assertPostRequest(request, 'abc789', DOMAIN, EDITOR, 'test3.com', true);
+    assert2ndRequest(request, 'abc789', DOMAIN, EDITOR, 'test1.example.com', true);
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
   
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('Failed to create permission:abc789\nStatus:400');
-  }
+  expect(execute).toThrow('Failed to create permission. File:abc789, Status:400');
 });
 
 /**
- * すでに共有されている場合はエラー
- * マイドライブ内のファイル/フォルダの場合
+ * 3つ目の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param fileId
  */
-test('The item is already shared - My Drive', () => {
-  const sharedUrlItemDef = prepareConfigs('def123', DOMAIN, VIEWER, 'example.com', true);
-
-  httpClient.setRequestHandler((request) => {
-    assertGetRequest(request, 'def123');
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1_SHARED));
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('The item (ID: def123) is already shared.');
-  }
-});
+const assert3rdRequest = ({url, method}, fileId) => {
+  expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=webViewLink&supportsAllDrives=true`);
+  expect(method).toEqual('GET');
+};
 
 /**
- * すでに共有されている場合はエラー
- * 共有ドライブ内のファイル/フォルダの場合
+ * 3つ目の API リクエストでエラー
  */
-test('The item is already shared - Shared Drive', () => {
-  const sharedUrlItemDef = prepareConfigs('abc789', ANYONE, EDITOR, '', false);
-
-  httpClient.setRequestHandler((request) => {
-    assertGetRequest(request, 'abc789');
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_2_SHARED));
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  try {
-    execute();
-    fail('not come here');
-  } catch (e) {
-    expect(e.message).endsWith('The item (ID: abc789) is already shared.');
-  }
-});
-
-/**
- * 共有するファイル/フォルダの ID の数が１つの場合(URL 出力先のデータ項目が単一行)
- */
-test('Succeed to share 1 File / Folder ID', () => {
-  const sharedUrlItemDef = prepareConfigs_single_line('def123', DOMAIN, VIEWER, 'test4.com', true);
+test('3rd API Request Failed', () => {
+  prepareConfigs('abc789', ANYONE, VIEWER, '', false);
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
     if (reqCount === 0) {
-      assertGetRequest(request, 'def123');
+      assert1stRequest(request, 'abc789');
       reqCount++;
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
     }
-    assertPostRequest(request, 'def123', DOMAIN, VIEWER, 'test4.com', true);
-    return httpClient.createHttpResponse(200, 'application/json', '{}');
+    if (reqCount === 1) {
+      assert2ndRequest(request, 'abc789', ANYONE, VIEWER, '', false);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', '{}');
+    }
+    assert3rdRequest(request, 'abc789');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
-  
+
+  expect(execute).toThrow('Failed to get item info. File:abc789, Status:400');
+});
+
+const SAMPLE_FILE_1 = {
+  "webViewLink": "https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk"
+};
+
+const SAMPLE_FILE_2 = {
+  "webViewLink": "https://docs.google.com/spreadsheets/d/abc789/edit?usp=drivesdk"
+};
+
+/**
+ * 共有成功 - ドメイン
+ */
+test('Succeed - domain', () => {
+  const sharedUrlItemDef = prepareConfigs('def123', DOMAIN, VIEWER, 'test1.example.com', true);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assert1stRequest(request, 'def123');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
+    }
+    if (reqCount === 1) {
+      assert2ndRequest(request, 'def123', DOMAIN, VIEWER, 'test1.example.com', true);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', '{}');
+    }
+    assert3rdRequest(request, 'def123');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_FILE_1));
+  });
+
   // <script> のスクリプトを実行
   execute();
-  
+
   // 文字型データ項目の値をチェック
   expect(engine.findData(sharedUrlItemDef)).toEqual('https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk');
 });
 
 /**
- * 共有するファイル/フォルダの ID の数が複数(最大リクエスト数)の場合
+ * 共有成功 - リンクを知っている全員
+ * ドメインや検索可能にする設定があってもエラーにならず無視される
  */
-test('Succeed to share multiple File / Folder IDs', () => {
-  let ids = [];
-  let urls = [];
-  for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
-    ids.push(`f${i}`);
-    urls.push(`https://docs.google.com/spreadsheets/d/f${i}/edit?usp=drivesdk`);
-  }
-  const sharedUrlItemDef = prepareConfigs(ids.join('\n'), ANYONE, EDITOR, '', false);
-  
+test('Succeed - anyone, unnecessary configs ignored', () => {
+  const sharedUrlItemDef = prepareConfigs('abc789', ANYONE, EDITOR, 'example.com', true);
+
   let reqCount = 0;
-  let fileCount = 0;
   httpClient.setRequestHandler((request) => {
-    if (reqCount % 2 === 0) {
-      assertGetRequest(request, `f${fileCount}`);
-      const getRes = {...SAMPLE_GET_1};
-      getRes.webViewLink = urls[fileCount];
+    if (reqCount === 0) {
+      assert1stRequest(request, 'abc789');
       reqCount++;
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getRes));
-    } else {
-      assertPostRequest(request, `f${fileCount}`, ANYONE, EDITOR, '', false);
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
+    }
+    if (reqCount === 1) {
+      assert2ndRequest(request, 'abc789', ANYONE, EDITOR, '', false);
       reqCount++;
-      fileCount++;
       return httpClient.createHttpResponse(200, 'application/json', '{}');
     }
+    assert3rdRequest(request, 'abc789');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_FILE_2));
   });
-  
+
   // <script> のスクリプトを実行
   execute();
-  
+
   // 文字型データ項目の値をチェック
-  expect(engine.findData(sharedUrlItemDef)).toEqual(urls.join('\n'));
+  expect(engine.findData(sharedUrlItemDef)).toEqual('https://docs.google.com/spreadsheets/d/abc789/edit?usp=drivesdk');
 });
 
 /**
- * 共有範囲が ANYONE で、ドメインや検索可能にする設定があってもエラーにならず無視される
+ * 共有成功 - 保存先データ項目が複数行
  */
-test('Succeed - Unnecessary configs are ignored', () => {
-  const sharedUrlItemDef = prepareConfigs('def123\nabc789', ANYONE, EDITOR, 'example.com', true);
+test('Succeed - URL saved to multi-line data item', () => {
+  prepareConfigs('def123', DOMAIN, EDITOR, 'test2.example.com', false);
+
+  // 共有したファイル/フォルダの表示 URL を保存する文字型データ項目（複数行）を準備
+  const sharedUrlItemDef = engine.createDataDefinition('共有したファイル/フォルダの表示 URL (複数行)', 3, 'q_fileUrl_multiline', 'STRING_TEXTAREA');
+  engine.setData(sharedUrlItemDef, '事前文字列');
+  configs.putObject('conf_SharedUrlItem', sharedUrlItemDef);
 
   let reqCount = 0;
-  let fileId = 'def123';
-  let getRes = SAMPLE_GET_1;
   httpClient.setRequestHandler((request) => {
-    if (reqCount % 2 === 0) {
-      assertGetRequest(request, fileId);
+    if (reqCount === 0) {
+      assert1stRequest(request, 'def123');
       reqCount++;
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getRes));
-    } else {
-      assertPostRequest(request, fileId, ANYONE, EDITOR, '', false);
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
+    }
+    if (reqCount === 1) {
+      assert2ndRequest(request, 'def123', DOMAIN, EDITOR, 'test2.example.com', false);
       reqCount++;
-      fileId = 'abc789';
-      getRes = SAMPLE_GET_2;
       return httpClient.createHttpResponse(200, 'application/json', '{}');
     }
+    assert3rdRequest(request, 'def123');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_FILE_1));
   });
 
   // <script> のスクリプトを実行
   execute();
 
   // 文字型データ項目の値をチェック
-  const urlStr = 'https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk\n'
-    + 'https://docs.google.com/spreadsheets/d/abc789/edit?usp=drivesdk';
-  expect(engine.findData(sharedUrlItemDef)).toEqual(urlStr);
+  expect(engine.findData(sharedUrlItemDef)).toEqual('https://docs.google.com/spreadsheets/d/def123/edit?usp=drivesdk');
 });
 
+/**
+ * 共有成功 - 保存先データ項目の設定なし
+ */
+test('Succeed - URL not saved', () => {
+  prepareConfigs('def123', ANYONE, EDITOR, '', false);
+  configs.put('conf_SharedUrlItem', '');
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assert1stRequest(request, 'def123');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PERMISSION_LIST));
+    }
+    assert2ndRequest(request, 'def123', ANYONE, EDITOR, '', false);
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+    // 3つ目のリクエストは発行されない
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
 
 ]]></test>
 </service-task-definition>
