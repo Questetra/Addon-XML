@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Upload File</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-<last-modified>2021-09-16</last-modified>
+<last-modified>2022-04-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -115,7 +115,7 @@ function fileCheck(files,urlDataDef,folderUrl){
       requestNum++;
     }
   }
-  if(folderUrl !== "" || folderUrl !== null){
+  if(folderUrl !== "" && folderUrl !== null){
     requestNum++;
   }
   if(requestNum > httpClient.getRequestingLimit()){
@@ -390,5 +390,275 @@ ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
 FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
 TkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+const SMALL_FILE_SIZE_LIMIT = 4194304;
+const PACKET_SIZE_LIMIT = 10485760;
+
+/**
+ * 設定の準備
+ * @param files
+ * @param folderUrl
+ * @param shouldReplace
+ * @return fileUrlDef
+ */
+const prepareConfigs = (files, folderUrl, shouldReplace) => {
+    configs.put('conf_OAuth2', 'OneDrive');
+
+    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
+    configs.putObject('conf_uploadedFile', fileDef);
+    engine.setData(fileDef, files);
+
+    // アップロード先フォルダの URL が保存されている文字型データ項目（単一行）を準備
+    const folderUrlDef = engine.createDataDefinition('フォルダ URL', 2, 'q_folderUrl', 'STRING_TEXTFIELD');
+    engine.setData(folderUrlDef, folderUrl);
+    configs.putObject('conf_folderUrl', folderUrlDef);
+
+    configs.putObject('conf_shouldReplace', shouldReplace);
+
+    // アップロードしたファイルの URL を保存する文字型データ項目（複数行）を準備
+    const fileUrlDef = engine.createDataDefinition('ファイル URL', 3, 'q_fileUrl', 'STRING_TEXTAREA');
+    engine.setData(fileUrlDef, '事前文字列');
+    configs.putObject('conf_fileUrl', fileUrlDef);
+
+    return fileUrlDef;
+};
+
+/**
+ * 指定サイズのテキストファイルを作成
+ * @param name
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, 'text/plain; charset=US-ASCII', text);
+};
+
+/**
+ * ファイルが添付されていない
+ */
+test('File is null', () => {
+    const fileUrlDef = prepareConfigs(null, null, false);
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileUrlDef)).toEqual('');
+});
+
+/**
+ * ファイルが複数添付されていて、URL を保存するデータ項目が単一行
+ */
+test('Multiple files, Single-line data item', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル1', 0));
+    files.add(createQfile('ファイル2', 0));
+    prepareConfigs(files, null, false);
+
+    // アップロードしたファイルの URL を保存する文字型データ項目（単一行）を準備
+    const fileUrlDef = engine.createDataDefinition('ファイル URL (単一行)', 4, 'q_fileUrl_single', 'STRING_TEXTFIELD');
+    engine.setData(fileUrlDef, '事前文字列');
+    configs.putObject('conf_fileUrl', fileUrlDef);
+
+    expect(execute).toThrow('Multiple files are set though the Data Item to save the output is Single-line String.');
+});
+
+/**
+ * ファイル数が HTTP リクエスト数制限を超える
+ */
+test('File Count > requestingLimit', () => {
+    const files = new java.util.ArrayList();
+    for (let i = 0; i < httpClient.getRequestingLimit() + 1; i++) {
+        files.add(createQfile(`ファイル${i}`, 0));
+    }
+    prepareConfigs(files, null, false);
+
+    expect(execute).toThrow('Necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * ファイル数が HTTP リクエスト数制限と同じ
+ * アップロード先フォルダの URL が設定されている場合、1回多くリクエストが必要なためエラー
+ */
+test('File Count = requestingLimit, with Folder URL', () => {
+    const files = new java.util.ArrayList();
+    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+        files.add(createQfile(`ファイル${i}`, 0));
+    }
+    prepareConfigs(files, 'https://sample.com', false);
+
+    expect(execute).toThrow('Necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * ファイル数は HTTP リクエスト数制限を超えないが、
+ * サイズが大きいファイルがあり、リクエスト回数の合計が制限を超える
+ */
+test('Exceeds requestingLimit due to a large file', () => {
+    const files = new java.util.ArrayList();
+    for (let i = 0; i < httpClient.getRequestingLimit() - 1; i++) { // (requestingLimit - 1) 回リクエスト
+        files.add(createQfile(`ファイル${i}`, 0));
+    }
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1)); // 2回リクエスト
+    prepareConfigs(files, null, false);
+
+    expect(execute).toThrow('Necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * ファイル数は HTTP リクエスト数制限を超えないが、
+ * サイズが大きいファイルがあり、リクエスト回数の合計が制限を超える
+ * パケット分割が複数回必要な場合
+ */
+test('Exceeds requestingLimit due to a large file - requires several packets', () => {
+    const files = new java.util.ArrayList();
+    for (let i = 0; i < httpClient.getRequestingLimit() - 2; i++) { // (requestingLimit - 2) 回リクエスト
+        files.add(createQfile(`ファイル${i}`, 0));
+    }
+    files.add(createQfile('ファイル', PACKET_SIZE_LIMIT * 2)); // 3回リクエスト
+    prepareConfigs(files, null, false);
+
+    expect(execute).toThrow('Necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * 同じ名前のファイルが2つ以上
+ */
+test('Two or more files have the same name', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル1', 0));
+    files.add(createQfile('ファイル2', 0));
+    files.add(createQfile('ファイル1', 0)); // 名前が重複
+    prepareConfigs(files, null, false);
+
+    expect(execute).toThrow('Two or more files to upload have the same name.');
+});
+
+/**
+ * 4MB以下のファイルをアップロードする API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param file
+ * @param driveId
+ * @param folderId
+ * @param shouldReplace
+ */
+const assertUploadSmallFileRequest = ({url, method, contentType}, file, driveId, folderId, shouldReplace) => {
+    let expectedUrl = `https://graph.microsoft.com/v1.0/${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
+    if (!shouldReplace) {
+      expectedUrl += `?${encodeURIComponent('@microsoft.graph.conflictBehavior')}=fail`;
+    }
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual(file.getContentType());
+};
+
+/**
+ * 4MB以下のファイルのアップロードに失敗
+ */
+test('Fail to upload a small file', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT));
+    prepareConfigs(files, null, false);
+
+    httpClient.setRequestHandler((request) => {
+      assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
+      return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to upload');
+});
+
+/**
+ * アップロード完了時のレスポンス文字列を作成する
+ * @param index アップロードファイルの区別をつけるためのインデックス
+ * @return response
+ */
+const createUploadedResponse = (index) => {
+    const json = {
+        'webUrl': `https://sample.com/:f:/g/personal/test_user/uploaded_file_${index}`
+    };
+    return JSON.stringify(json);
+};
+
+/**
+ * 4MB以下のファイル1個のアップロードに成功
+ * フォルダ指定なし (データ項目が設定されていて、値が空)
+ * 上書きしない
+ * ファイルが1個であれば、保存先データ項目が単一行でもエラーにならない
+ */
+test('Succeed to upload a small file', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT));
+    prepareConfigs(files, null, false);
+
+    // アップロードしたファイルの URL を保存する文字型データ項目（単一行）を準備
+    const fileUrlDef = engine.createDataDefinition('ファイル URL (単一行)', 4, 'q_fileUrl_single', 'STRING_TEXTFIELD');
+    engine.setData(fileUrlDef, '事前文字列');
+    configs.putObject('conf_fileUrl', fileUrlDef);
+
+    httpClient.setRequestHandler((request) => {
+      assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
+      return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileUrlDef)).toEqual('https://sample.com/:f:/g/personal/test_user/uploaded_file_1');
+});
+
+/**
+ * 4MB以下のファイル上限個のアップロードに成功
+ * フォルダ指定なし (固定値で空)
+ * 上書きする
+ */
+test('Succeed to upload small files', () => {
+    const files = new java.util.ArrayList();
+    const fileNum = httpClient.getRequestingLimit();
+    for (let i = 0; i < fileNum; i++) {
+      　// サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
+        const file = createQfile(`ファイル${i}`, 1000);
+        files.add(file);
+    }
+    const fileUrlDef = prepareConfigs(files, 'dummy', true);
+    configs.put('conf_folderUrl', ''); // 固定値で空
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+      assertUploadSmallFileRequest(request, files.get(reqCount), 'me/drive', 'root', true);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const fileUrls = [];
+    for (let i = 0; i < fileNum; i++) {
+        fileUrls.push(`https://sample.com/:f:/g/personal/test_user/uploaded_file_${i+1}`);
+    }
+    expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
+});
+
+// const FOLDER_URL_1 = 'https://sample.com/:f:/g/personal/test_user/abcd1234?e=efgh';
+// const FOLDER_URL_2 = 'https://sample.com/personal/test_user/Documents/test_folder';
+
+]]></test>
 
 </service-task-definition>
