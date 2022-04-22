@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Remove Label from Email Message</label>
 <label locale="ja">Gmail: メールのラベルを解除</label>
-<last-modified>2021-01-28</last-modified>
+<last-modified>2022-04-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Remove labels from an email message in Gmail. You can remove multiple labels at once. When you remove multiple ones, you should write one label on each line.</summary>
@@ -154,4 +154,245 @@ UAgLN66A+zWXUpUPIx5ANo7VHG1gX3kcxw3q+iARTqTrk0yA0PVR+j8ise5neSoSOn6YCBC6fpqJ
 S023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg==
 </icon>
 
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param messageId
+ * @param label
+ */
+const prepareConfigs = (messageId, label) => {
+  configs.put('conf_auth', 'Google');
+  
+  // メール ID を保存する文字型データ項目（単数行）を準備
+  const messageIdDef = engine.createDataDefinition('メール ID', 1, 'q_messageId', 'STRING_TEXTFIELD');
+  engine.setData(messageIdDef, messageId);
+  configs.putObject('conf_messageId', messageIdDef);
+  
+  // ラベル
+  configs.put('conf_label', label);
+};
+
+/**
+ * メール ID が空であればエラー
+ */
+test('Message ID is empty', () => {
+  prepareConfigs(null, 'ラベル1');
+  
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  expect(execute).toThrow('Message ID is empty.');
+});
+
+/**
+ * ラベルが改行のみであればエラー
+ */
+test('No labels to remove are set - Label is line break only', () => {
+  prepareConfigs('abc123', '\n');
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  expect(execute).toThrow('No labels to remove are set.');
+});
+
+/**
+ * GET リクエストのテスト(ラベルのリストからラベル ID を取得する)
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ */
+const assertGetRequest = ({url, method}) => {
+  expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/labels`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * Gmail への GET API リクエストでエラー 
+ */
+test('GET Failed', () => {
+  prepareConfigs('def456', 'ラベル2');
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request)
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+     expect(e.message).endsWith('Failed to get labels. status: 400');
+  }
+});
+
+const SAMPLE_GET1 = {
+  "labels": [
+    {
+      "id": "Label_123",
+      "name": "ラベル1",
+      "type": "user"
+    },
+    {
+      "id": "Label_456",
+      "name": "ラベル2",
+      "type": "user"
+    }
+  ]
+};
+
+/**
+ * 正しいラベル指定のなかに、ラベルとして存在しない文字列の行が含まれる場合、エラー
+ */
+test('label ids not found - Correct labels contain a line of strings that does not exist as a label', () => {
+  const labels = `ラベル1\nラベル2\nラベル3`;
+  prepareConfigs('ghi789', labels);
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request)
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+  });
+  
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('label ids of ラベル3 not found');
+  }
+});
+
+/**
+ * POST リクエストのテスト (ラベルを解除)
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param messageId
+ * @param labelIds
+ */
+const assertPostRequest = ({url, method, contentType, body}, messageId, labelIds) => {
+  expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURI(messageId)}/modify`);
+  expect(method).toEqual("POST");
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj.removeLabelIds).toEqual(labelIds);
+};
+
+/**
+ * Gmail への POST API リクエストでエラー 
+ */
+test('POST Failed', () => {
+  prepareConfigs('jkl123', 'ラベル1');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    const labelIds = ['Label_123'];
+    assertPostRequest(request, 'jkl123', labelIds);
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  try {
+    execute();
+    fail('not come here');
+  } catch (e) {
+    expect(e.message).endsWith('Failed to remove labels. status: 400');
+  }
+});
+
+/**
+ * ラベル解除成功-ラベル1つ 
+ */
+test('200 Success - 1 label', () => {
+  prepareConfigs('mno456', 'ラベル2');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    const labelIds = ['Label_456'];
+    assertPostRequest(request, 'mno456', labelIds);
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+  
+  execute();
+});
+
+const SAMPLE_GET2 = {
+  "labels": [
+    {
+      "id": "STARRED",
+      "name": "STARRED",
+      "messageListVisibility": "hide",
+      "labelListVisibility": "labelShow",
+      "type": "system"
+    },
+    {
+      "id": "UNREAD",
+      "name": "UNREAD",
+      "type": "system"
+    },
+    {
+      "id": "Label_789",
+      "name": "ラベル4",
+      "type": "user"
+    },
+    {
+      "id": "Label_123",
+      "name": "ラベル5",
+      "type": "user"
+    }
+  ]
+};
+
+/**
+ * ラベル解除成功-ラベル2つ
+ */
+test('200 Success - 2 labels', () => {
+  const labels = `STARRED\nラベル4`;
+  prepareConfigs('pqr789', labels);
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET2));
+    }
+    const labelIds = ['STARRED', 'Label_789'];
+    assertPostRequest(request, 'pqr789', labelIds);
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+  
+  execute();
+});
+
+/**
+ * ラベル解除成功-ラベル2つ。途中に改行のみの行を含む
+ */
+test('200 Success - 2 labels/Includes lines with only line breaks in the middle', () => {
+  const labels = `UNREAD\n\n\nラベル5`;
+  prepareConfigs('stu123', labels);
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET2));
+    }
+    const labelIds = ['UNREAD', 'Label_123'];
+    assertPostRequest(request, 'stu123', labelIds);
+    return httpClient.createHttpResponse(200, 'application/json', '{}');
+  });
+  
+  execute();
+});
+
+]]></test>
 </service-task-definition>
