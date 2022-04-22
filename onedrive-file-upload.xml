@@ -577,8 +577,8 @@ test('Fail to upload a small file', () => {
     prepareConfigs(files, null, false);
 
     httpClient.setRequestHandler((request) => {
-      assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
-      return httpClient.createHttpResponse(400, 'application/json', '{}');
+        assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
     expect(execute).toThrow('Failed to upload');
@@ -613,8 +613,8 @@ test('Succeed to upload a small file', () => {
     configs.putObject('conf_fileUrl', fileUrlDef);
 
     httpClient.setRequestHandler((request) => {
-      assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
-      return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+        assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
     });
 
     execute();
@@ -641,9 +641,9 @@ test('Succeed to upload small files', () => {
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-      assertUploadSmallFileRequest(request, files.get(reqCount), 'me/drive', 'root', true);
-      reqCount++;
-      return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount));
+        assertUploadSmallFileRequest(request, files.get(reqCount), 'me/drive', 'root', true);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount));
     });
 
     execute();
@@ -656,8 +656,116 @@ test('Succeed to upload small files', () => {
     expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
 });
 
-// const FOLDER_URL_1 = 'https://sample.com/:f:/g/personal/test_user/abcd1234?e=efgh';
-// const FOLDER_URL_2 = 'https://sample.com/personal/test_user/Documents/test_folder';
+/**
+ * フォルダ情報取得の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param encodedFolderUrl
+ */
+const assertGetFolderInfoRequest = ({url, method}, encodedFolderUrl) => {
+    expect(url).toEqual(`https://graph.microsoft.com/v1.0/shares/${encodedFolderUrl}/driveItem`);
+    expect(method).toEqual('GET');
+};
+
+const FOLDER_URL_1 = 'https://sample.com/:f:/g/personal/test_user/abcd1234?e=efgh';
+const ENCODED_FOLDER_URL_1 = 'u!aHR0cHM6Ly9zYW1wbGUuY29tLzpmOi9nL3BlcnNvbmFsL3Rlc3RfdXNlci9hYmNkMTIzND9lPWVmZ2g';
+
+const FOLDER_URL_2 = 'https://sample.com/personal/test_user/Documents/test_folder';
+const ENCODED_FOLDER_URL_2 = 'u!aHR0cHM6Ly9zYW1wbGUuY29tL3BlcnNvbmFsL3Rlc3RfdXNlci9Eb2N1bWVudHMvdGVzdF9mb2xkZXI';
+
+const FOLDER_INFO_1 = {
+    'id': 'folder-id-1',
+    'parentReference': {
+        'driveId': 'drive-id-1'
+    }
+};
+
+const FOLDER_INFO_2 = {
+    'id': 'folder-id-2',
+    'parentReference': {
+        'driveId': 'drive-id-2'
+    }
+};
+
+/**
+ * フォルダ情報の取得に失敗
+ */
+test('Fail to get folder info', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', 0));
+    prepareConfigs(files, FOLDER_URL_1, false);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_1);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to get drive item.');
+});
+
+/**
+ * 4MB以下のファイル1個のアップロードに成功
+ * フォルダ指定あり (データ項目)
+ */
+test('Succeed to upload a small file - folder url specified via data item', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', 0));
+    const fileUrlDef = prepareConfigs(files, FOLDER_URL_1, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_1);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(FOLDER_INFO_1));
+        }
+        assertUploadSmallFileRequest(request, files.get(0), 'drives/drive-id-1', 'folder-id-1', false);
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileUrlDef)).toEqual('https://sample.com/:f:/g/personal/test_user/uploaded_file_1');
+});
+
+/**
+ * 4MB以下のファイル上限個のアップロードに成功
+ * フォルダ指定あり (固定値)
+ */
+test('Succeed to upload small files - folder url specified as fixed value', () => {
+    const files = new java.util.ArrayList();
+    const fileNum = httpClient.getRequestingLimit() - 1; // フォルダを指定する場合、リクエストが1回増える
+    for (let i = 0; i < fileNum; i++) {
+      　// サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
+        const file = createQfile(`ファイル${i}`, 1000);
+        files.add(file);
+    }
+    const fileUrlDef = prepareConfigs(files, null, false);
+    configs.put('conf_folderUrl', FOLDER_URL_2); // 固定値で指定
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_2);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(FOLDER_INFO_2));
+        }
+        assertUploadSmallFileRequest(request, files.get(reqCount-1), 'drives/drive-id-2', 'folder-id-2', false);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount-1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const fileUrls = [];
+    for (let i = 0; i < fileNum; i++) {
+        fileUrls.push(`https://sample.com/:f:/g/personal/test_user/uploaded_file_${i+1}`);
+    }
+    expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
+});
 
 ]]></test>
 
