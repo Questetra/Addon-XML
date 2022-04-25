@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Upload File</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-<last-modified>2022-04-22</last-modified>
+<last-modified>2022-04-25</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -561,7 +561,7 @@ test('Two or more files have the same name', () => {
 const assertUploadSmallFileRequest = ({url, method, contentType}, file, driveId, folderId, shouldReplace) => {
     let expectedUrl = `https://graph.microsoft.com/v1.0/${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
     if (!shouldReplace) {
-      expectedUrl += `?${encodeURIComponent('@microsoft.graph.conflictBehavior')}=fail`;
+        expectedUrl += `?${encodeURIComponent('@microsoft.graph.conflictBehavior')}=fail`;
     }
     expect(url).toEqual(expectedUrl);
     expect(method).toEqual('PUT');
@@ -624,6 +624,24 @@ test('Succeed to upload a small file', () => {
 });
 
 /**
+ * 4MB以下のファイル1個のアップロードに成功
+ * 保存先データ項目を指定しない場合
+ */
+test('Succeed to upload a small file - file url not saved', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT));
+    prepareConfigs(files, null, false);
+    configs.put('conf_fileUrl', ''); // データ項目の選択を解除
+
+    httpClient.setRequestHandler((request) => {
+        assertUploadSmallFileRequest(request, files.get(0), 'me/drive', 'root', false);
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+    });
+
+    execute();
+});
+
+/**
  * 4MB以下のファイル上限個のアップロードに成功
  * フォルダ指定なし (固定値で空)
  * 上書きする
@@ -632,7 +650,7 @@ test('Succeed to upload small files', () => {
     const files = new java.util.ArrayList();
     const fileNum = httpClient.getRequestingLimit();
     for (let i = 0; i < fileNum; i++) {
-      　// サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
+        // サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
         const file = createQfile(`ファイル${i}`, 1000);
         files.add(file);
     }
@@ -738,7 +756,7 @@ test('Succeed to upload small files - folder url specified as fixed value', () =
     const files = new java.util.ArrayList();
     const fileNum = httpClient.getRequestingLimit() - 1; // フォルダを指定する場合、リクエストが1回増える
     for (let i = 0; i < fileNum; i++) {
-      　// サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
+        // サイズを SMALL_FILE_SIZE_LIMIT にするとメモリが足りずエラーになるので、小さめの値を設定
         const file = createQfile(`ファイル${i}`, 1000);
         files.add(file);
     }
@@ -755,6 +773,210 @@ test('Succeed to upload small files - folder url specified as fixed value', () =
         assertUploadSmallFileRequest(request, files.get(reqCount-1), 'drives/drive-id-2', 'folder-id-2', false);
         reqCount++;
         return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount-1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const fileUrls = [];
+    for (let i = 0; i < fileNum; i++) {
+        fileUrls.push(`https://sample.com/:f:/g/personal/test_user/uploaded_file_${i+1}`);
+    }
+    expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
+});
+
+/**
+ * 4MBを超えるファイルをアップロードするためのセッションを作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param file
+ * @param driveId
+ * @param folderId
+ * @param shouldReplace
+ */
+const assertCreateSessionRequest = ({url, method, contentType, body}, file, driveId, folderId, shouldReplace) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/createUploadSession`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    if (!shouldReplace) {
+        const bodyObj = JSON.parse(body);
+        expect(bodyObj.item['@microsoft.graph.conflictBehavior']).toEqual('fail');
+        expect(contentType).toEqual('application/json; charset=UTF-8');
+    }
+};
+
+/**
+ * 4MBを超えるファイルのアップロードに失敗
+ * セッション作成のリクエストでエラー
+ */
+test('Fail to upload a large file - fail in creating session', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1));
+    prepareConfigs(files, null, false);
+
+    httpClient.setRequestHandler((request) => {
+        assertCreateSessionRequest(request, files.get(0), 'me/drive', 'root', false);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create upload session');
+});
+
+/**
+ * 4MBを超えるファイルの各部分をアップロードする API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param uploadUrl
+ * @param packet
+ */
+const assertUploadPacketRequest = ({url, method, contentType}, uploadUrl) => {
+    expect(url).toEqual(uploadUrl);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/octet-stream');
+};
+
+const SESSION_1 = {
+    'uploadUrl': 'https://sample.com/up/abc123'
+};
+
+const SESSION_2 = {
+    'uploadUrl': 'https://sample.com/up/def789'
+};
+
+/**
+ * 4MBを超えるファイルのアップロードに失敗
+ * パケットアップロードのリクエストでエラー
+ */
+test('Fail to upload a large file - fail in uploading a packet', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1));
+    prepareConfigs(files, null, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // セッション作成
+            assertCreateSessionRequest(request, files.get(0), 'me/drive', 'root', false);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
+        }
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to upload');
+});
+
+/**
+ * 4MBを超えるファイルのアップロードに成功
+ * フォルダ指定なし
+ * 上書きしない
+ * パケットアップロードは1回のみ
+ */
+test('Succeed to upload a large file', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1));
+    const fileUrlDef = prepareConfigs(files, null, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // セッション作成
+            assertCreateSessionRequest(request, files.get(0), 'me/drive', 'root', false);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
+        }
+        // パケットのアップロード
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileUrlDef)).toEqual('https://sample.com/:f:/g/personal/test_user/uploaded_file_1');
+});
+
+/**
+ * 4MBを超えるファイルのアップロードに成功
+ * フォルダ指定あり (データ項目)
+ * 上書きする
+ * パケットアップロード複数回
+ */
+test('Succeed to upload a large file - several upload requests required', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('ファイル', PACKET_SIZE_LIMIT * 2 + 1)); // パケットアップロード3回
+    const fileUrlDef = prepareConfigs(files, FOLDER_URL_1, true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // フォルダ情報取得
+            assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_1);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(FOLDER_INFO_1));
+        }
+        if (reqCount === 1) { // セッション作成
+            assertCreateSessionRequest(request, files.get(0), 'drives/drive-id-1', 'folder-id-1', true);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_2));
+        }
+        // パケットのアップロード
+        assertUploadPacketRequest(request, SESSION_2.uploadUrl);
+        if (reqCount < 4) {
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{}');
+        }
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(fileUrlDef)).toEqual('https://sample.com/:f:/g/personal/test_user/uploaded_file_1');
+});
+
+/**
+ * アップロード成功
+ * 4MBを超えるファイルと超えないファイルが混在する場合
+ */
+test('Succeed to upload files - large file included', () => {
+    const files = new java.util.ArrayList();
+    const reqLimit = httpClient.getRequestingLimit();
+    const fileNum = reqLimit - 4;
+    for (let i = 0; i < fileNum - 1; i++) { // 小さいファイルを追加
+        files.add(createQfile(`ファイル${i}`, 0));
+    }
+    // リクエストが計4回必要なファイルを追加 (セッション作成1回、パケットアップロード3回)
+    files.add(createQfile(`ファイル${fileNum-1}`, PACKET_SIZE_LIMIT * 2 + 1));
+    const fileUrlDef = prepareConfigs(files, FOLDER_URL_2, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) { // フォルダ情報取得
+            assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_2);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(FOLDER_INFO_2));
+        }
+        if (reqCount < fileNum) { // 小さいファイルをアップロード
+            assertUploadSmallFileRequest(request, files.get(reqCount - 1), 'drives/drive-id-2', 'folder-id-2', false);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount - 1));
+        }
+        if (reqCount === fileNum) { // セッション作成
+            assertCreateSessionRequest(request, files.get(fileNum - 1), 'drives/drive-id-2', 'folder-id-2', false);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
+        }
+        // パケットのアップロード
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
+        if (reqCount < reqLimit - 1) {
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{}');
+        }
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileNum));
     });
 
     execute();
