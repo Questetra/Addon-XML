@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Upload File</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-    <last-modified>2022-04-25</last-modified>
+    <last-modified>2022-04-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>Upload files to the specified folder on OneDrive.</summary>
@@ -833,13 +833,17 @@ test('Fail to upload a large file - fail in creating session', () => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param request.contentType
  * @param uploadUrl
- * @param packet
+ * @param rangeFrom
+ * @param rangeTo
+ * @param fileSize
  */
-const assertUploadPacketRequest = ({url, method, contentType}, uploadUrl) => {
+const assertUploadPacketRequest = ({url, method, headers, contentType}, uploadUrl, rangeFrom, rangeTo, fileSize) => {
     expect(url).toEqual(uploadUrl);
     expect(method).toEqual('PUT');
+    expect(headers.get('Content-Range')).toEqual(`bytes ${rangeFrom}-${rangeTo}/${fileSize}`);
     expect(contentType).toEqual('application/octet-stream');
 };
 
@@ -857,7 +861,8 @@ const SESSION_2 = {
  */
 test('Fail to upload a large file - fail in uploading a packet', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1));
+    const fileSize = SMALL_FILE_SIZE_LIMIT + 1;
+    files.add(createQfile('ファイル', fileSize));
     prepareConfigs(files, null, false);
 
     let reqCount = 0;
@@ -867,7 +872,7 @@ test('Fail to upload a large file - fail in uploading a packet', () => {
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
         }
-        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl, 0, fileSize - 1, fileSize);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -882,7 +887,8 @@ test('Fail to upload a large file - fail in uploading a packet', () => {
  */
 test('Succeed to upload a large file', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile('ファイル', SMALL_FILE_SIZE_LIMIT + 1));
+    const fileSize = SMALL_FILE_SIZE_LIMIT + 1;
+    files.add(createQfile('ファイル', fileSize));
     const fileUrlDef = prepareConfigs(files, null, false);
 
     let reqCount = 0;
@@ -893,7 +899,7 @@ test('Succeed to upload a large file', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
         }
         // パケットのアップロード
-        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl, 0, fileSize - 1, fileSize);
         return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
     });
 
@@ -911,10 +917,12 @@ test('Succeed to upload a large file', () => {
  */
 test('Succeed to upload a large file - several upload requests required', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile('ファイル', PACKET_SIZE_LIMIT * 2 + 1)); // パケットアップロード3回
+    const fileSize = PACKET_SIZE_LIMIT * 2 + 1; // パケットアップロード3回
+    files.add(createQfile('ファイル', fileSize));
     const fileUrlDef = prepareConfigs(files, FOLDER_URL_1, true);
 
     let reqCount = 0;
+    let rangeFrom = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) { // フォルダ情報取得
             assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_1);
@@ -927,11 +935,13 @@ test('Succeed to upload a large file - several upload requests required', () => 
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_2));
         }
         // パケットのアップロード
-        assertUploadPacketRequest(request, SESSION_2.uploadUrl);
         if (reqCount < 4) {
+            assertUploadPacketRequest(request, SESSION_2.uploadUrl, rangeFrom, rangeFrom + PACKET_SIZE_LIMIT - 1, fileSize);
             reqCount++;
+            rangeFrom += PACKET_SIZE_LIMIT;
             return httpClient.createHttpResponse(202, 'application/json', '{}');
         }
+        assertUploadPacketRequest(request, SESSION_2.uploadUrl, rangeFrom, fileSize - 1, fileSize);
         return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(1));
     });
 
@@ -953,10 +963,12 @@ test('Succeed to upload files - large file included', () => {
         files.add(createQfile(`ファイル${i}`, 0));
     }
     // リクエストが計4回必要なファイルを追加 (セッション作成1回、パケットアップロード3回)
-    files.add(createQfile(`ファイル${fileNum-1}`, PACKET_SIZE_LIMIT * 2 + 1));
+    const fileSize = PACKET_SIZE_LIMIT * 2 + 1;
+    files.add(createQfile(`ファイル${fileNum-1}`, fileSize));
     const fileUrlDef = prepareConfigs(files, FOLDER_URL_2, false);
 
     let reqCount = 0;
+    let rangeFrom = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) { // フォルダ情報取得
             assertGetFolderInfoRequest(request, ENCODED_FOLDER_URL_2);
@@ -974,11 +986,13 @@ test('Succeed to upload files - large file included', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
         }
         // パケットのアップロード
-        assertUploadPacketRequest(request, SESSION_1.uploadUrl);
         if (reqCount < reqLimit - 1) {
+            assertUploadPacketRequest(request, SESSION_1.uploadUrl, rangeFrom, rangeFrom + PACKET_SIZE_LIMIT - 1, fileSize);
             reqCount++;
+            rangeFrom += PACKET_SIZE_LIMIT;
             return httpClient.createHttpResponse(202, 'application/json', '{}');
         }
+        assertUploadPacketRequest(request, SESSION_1.uploadUrl, rangeFrom, fileSize - 1, fileSize);
         return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileNum));
     });
 
