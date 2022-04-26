@@ -954,20 +954,25 @@ test('Succeed to upload a large file - several upload requests required', () => 
 /**
  * アップロード成功
  * 4MBを超えるファイルと超えないファイルが混在する場合
+ * リクエスト上限ぎりぎりのファイル数、ファイルサイズ
  */
-test('Succeed to upload files - large file included', () => {
+test('Succeed to upload files - both small files and large files', () => {
     const files = new java.util.ArrayList();
     const reqLimit = httpClient.getRequestingLimit();
-    const fileNum = reqLimit - 4;
-    for (let i = 0; i < fileNum - 1; i++) { // 小さいファイルを追加
-        files.add(createQfile(`ファイル${i}`, 0));
+    const smallFileNum = reqLimit - 7;
+    for (let i = 0; i < smallFileNum; i++) { // 小さいファイルを追加
+        files.add(createQfile(`ファイル${i+1}`, 0));
     }
-    // リクエストが計4回必要なファイルを追加 (セッション作成1回、パケットアップロード3回)
-    const fileSize = PACKET_SIZE_LIMIT * 2 + 1;
-    files.add(createQfile(`ファイル${fileNum-1}`, fileSize));
+    // リクエストが計2回必要なファイルを先頭に追加 (セッション作成1回、パケットアップロード1回)
+    const fileSize1 = SMALL_FILE_SIZE_LIMIT + 1;
+    files.add(0, createQfile('ファイル0', fileSize1));
+    // リクエストが計4回必要なファイルを末尾に追加 (セッション作成1回、パケットアップロード3回)
+    const fileSize2 = PACKET_SIZE_LIMIT * 2 + 1;
+    files.add(createQfile(`ファイル${smallFileNum + 1}`, fileSize2));
     const fileUrlDef = prepareConfigs(files, FOLDER_URL_2, false);
 
     let reqCount = 0;
+    let fileCount = 0;
     let rangeFrom = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) { // フォルダ情報取得
@@ -975,32 +980,45 @@ test('Succeed to upload files - large file included', () => {
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(FOLDER_INFO_2));
         }
-        if (reqCount < fileNum) { // 小さいファイルをアップロード
-            assertUploadSmallFileRequest(request, files.get(reqCount - 1), 'drives/drive-id-2', 'folder-id-2', false);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(reqCount - 1));
-        }
-        if (reqCount === fileNum) { // セッション作成
-            assertCreateSessionRequest(request, files.get(fileNum - 1), 'drives/drive-id-2', 'folder-id-2', false);
+        if (reqCount === 1) { // セッション作成
+            assertCreateSessionRequest(request, files.get(fileCount), 'drives/drive-id-2', 'folder-id-2', false);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
         }
+        if (reqCount === 2) { // パケットのアップロード
+            assertUploadPacketRequest(request, SESSION_1.uploadUrl, 0, fileSize1 - 1, fileSize1);
+            reqCount++;
+            fileCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileCount));
+        }
+        if (reqCount < smallFileNum + 3) { // 小さいファイルをアップロード
+            assertUploadSmallFileRequest(request, files.get(fileCount), 'drives/drive-id-2', 'folder-id-2', false);
+            reqCount++;
+            fileCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileCount));
+        }
+        if (reqCount === smallFileNum + 3) { // セッション作成
+            assertCreateSessionRequest(request, files.get(fileCount), 'drives/drive-id-2', 'folder-id-2', false);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_2));
+        }
         // パケットのアップロード
         if (reqCount < reqLimit - 1) {
-            assertUploadPacketRequest(request, SESSION_1.uploadUrl, rangeFrom, rangeFrom + PACKET_SIZE_LIMIT - 1, fileSize);
+            assertUploadPacketRequest(request, SESSION_2.uploadUrl, rangeFrom, rangeFrom + PACKET_SIZE_LIMIT - 1, fileSize2);
             reqCount++;
             rangeFrom += PACKET_SIZE_LIMIT;
             return httpClient.createHttpResponse(202, 'application/json', '{}');
         }
-        assertUploadPacketRequest(request, SESSION_1.uploadUrl, rangeFrom, fileSize - 1, fileSize);
-        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileNum));
+        assertUploadPacketRequest(request, SESSION_2.uploadUrl, rangeFrom, fileSize2 - 1, fileSize2);
+        fileCount++;
+        return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileCount));
     });
 
     execute();
 
     // 文字型データ項目の値をチェック
     const fileUrls = [];
-    for (let i = 0; i < fileNum; i++) {
+    for (let i = 0; i < smallFileNum + 2; i++) {
         fileUrls.push(`https://sample.com/:f:/g/personal/test_user/uploaded_file_${i+1}`);
     }
     expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
