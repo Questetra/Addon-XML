@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-04-26</last-modified>
+<last-modified>2022-04-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Bots)</label>
@@ -8,10 +8,6 @@
 <summary>Send a message to Slack with Bots.</summary>
 <summary locale="ja">Bots 機能を使って Slack にメッセージを投稿します。</summary>
 <configs>
-  <config name="Token" deprecated="true">
-    <label>C1-deprecated: Slack Bot Token</label>
-    <label locale="ja">C1-deprecated: Slack Bot のトークン</label>
-  </config>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://slack.com/oauth2/chat:write,files:write">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
@@ -50,7 +46,6 @@
 <script><![CDATA[
 main();
 function main() {
-  const token = configs.get("Token");
   const oauth2 = configs.get("conf_OAuth2");
   let text = "";
   if (configs.get("Text") !== "" && configs.get("Text") !== null){
@@ -72,18 +67,17 @@ function main() {
     throw "Message to send isn't set.";
   }
 
-  sendMessage(token, oauth2, channel, text, attachment);
+  sendMessage(oauth2, channel, text, attachment);
 }
 
 /**
   * Send Message with Bots  チャット投稿
-  * @param {String} token
   * @param {String} oauth2 
   * @param {String} channel
   * @param {String} text 
   * @param {String} attachment
   */  
-function sendMessage(token, oauth2, channel, text, attachment) {
+function sendMessage(oauth2, channel, text, attachment) {
   let jsonReq = {};
   jsonReq["text"] = text;
   jsonReq["channel"] = channel;
@@ -95,17 +89,12 @@ function sendMessage(token, oauth2, channel, text, attachment) {
   }
 
   jsonReq["attachments"] = attachArray;
-
  
-  let request = httpClient.begin()
-  if (oauth2 !== "" && oauth2 !== null || token === "" || token === null){
-    request = request.authSetting(oauth2);
-  }else {
-    request = request.bearer(token);
-  } 
-    request = request.body(JSON.stringify(jsonReq), "application/json; charset=UTF-8");
-    const response = request.post("https://slack.com/api/chat.postMessage");
-
+  const url = 'https://slack.com/api/chat.postMessage';
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+    .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
 
@@ -172,7 +161,6 @@ aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==</icon>
  * @return attachment
  */
 const prepareConfigs = (configs, channelName, text, fallback, color, title, titleLink, attachText) => {
-  configs.put('Token', 'Slack');
   configs.put('conf_OAuth2', 'Slack');
   configs.put('ChannelName', channelName);
   configs.put('Text', text);
@@ -225,7 +213,8 @@ const assertPostRequest = ({url, method, contentType, body}, channel, text, atta
 
 
 /**
- * テキストが空、attachmentタイトル未入力、attachmentテキスト未入力でエラーになる場合
+ * チャット投稿失敗の場合
+ * テキストが空、attachmentタイトル未入力、attachmentテキスト未入力
  */
 test('Message to send isn\'t set', () => {
   prepareConfigs(configs, 'channel1', '', 'fallback1', '#ff0000', '', 'https://titleLink1', '');
@@ -241,10 +230,29 @@ test('Message to send isn\'t set', () => {
 });
 
 
+
 /**
- * GET API リクエストでエラーになる場合
+ * チャット投稿失敗の場合
+ * チャンネル　Attachment 要約　Attachment 色　以外が未入力
  */
-test('GET Failed', () => {
+test('Failed - channel Attachment-fallback Attachment-color', () => {
+  prepareConfigs(configs, 'channel8', '', 'fallback8', '#ff0000', '', '', '');
+
+  const attachment = {
+    "fallback": "fallback8",
+    "color": "#ff0000"
+  }
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Message to send isn't set`);
+});
+
+
+
+/**
+ * POST API リクエストでエラーになる場合
+ */
+test('POST Failed', () => {
   const attachment = prepareConfigs(configs, 'channel2', 'text2', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
 
   httpClient.setRequestHandler((request) => {
@@ -283,13 +291,9 @@ const preparePostResponse = (channel,text) => {
 
 /**
  * チャット投稿成功の場合
- * oauth2を設定
  */
 test('Success', () => {
   const attachment = prepareConfigs(configs, 'channel3', 'text3', 'fallback3', '#ff0000', 'title3', 'https://titleLink3', 'attachText3');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
 
   httpClient.setRequestHandler((request) => {
     assertPostRequest(request, 'channel3', 'text3', attachment);
@@ -304,14 +308,10 @@ test('Success', () => {
 
 /**
  * チャット投稿成功の場合
- * Token を設定
  * Attachment 未入力
  */
 test('Success - no Attachments', () => {
   prepareConfigs(configs, 'channel4', 'text4', '', '', '', '', '');
-
-  //conf_OAuth2 を未設定の状態に上書き
-  configs.put('conf_OAuth2', '');
 
   const attachment = {};
 
@@ -327,115 +327,11 @@ test('Success - no Attachments', () => {
 
 
 /**
- * チャット投稿失敗の場合
- * oauth2を設定
- * 存在しないチャンネル
- */
-test('Failed - Non-existent channel', () => {
-  const attachment = prepareConfigs(configs, 'no-channel5', 'text5', 'fallback5', '#ff0000', 'title5', 'https://titleLink5', 'attachText5');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
-
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'no-channel5', 'text5', attachment);
-    const responseObj = {
-      "ok": false,
-      "error": "channel_not_found"
-    };
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);  
- });
- 
-
-   
-/**
- * チャット投稿失敗の場合
- * oauth2を設定
- * Botがjoinしていないチャンネル名
- */
-test('Failed - Channel that bot is not joining', () => {
-  const attachment = prepareConfigs(configs, 'no-join6', 'text6', 'fallback6', '#ff0000', 'title6', 'https://titleLink6', 'attachText6');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
-
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'no-join6', 'text6', attachment);
-    const responseObj = {
-      "ok": false,
-      "error": "not_in_channel"
-    };
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
-});
-
-
-
-/**
- * チャット投稿失敗の場合
- * oauth2を設定
- * Botがjoinしていないプライベートチャンネル
- */
-test('Failed - Private channel that bot is not joining', () => {
-  const attachment = prepareConfigs(configs, 'no-join7', 'text7', 'fallback7', '#ff0000', 'title7', 'https://titleLink7', 'attachText7');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
-
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'no-join7', 'text7', attachment);
-    const responseObj = {
-      "ok": false,
-      "error": "channel_not_found"
-    };
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
-});
-
-
-
-/**
- * チャット投稿失敗の場合
- * Token を設定
- * チャンネル　Attachment 要約　Attachment 色　以外が未入力
- */
-test('Failed - channel Attachment-fallback Attachment-color', () => {
-  prepareConfigs(configs, 'channel8', '', 'fallback8', '#ff0000', '', '', '');
-
-  //conf_OAuth2 を未設定の状態に上書き
-  configs.put('conf_OAuth2', '');
-
-  const attachment = {
-    "fallback": "fallback",
-    "color": "#ff0000"
-  }
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Message to send isn't set`);
-});
-
-
-
-/**
  * チャット投稿成功の場合
- * oauth2を設定
  * チャンネル　Attachment 色　Attachment テキスト　以外が未入力
  */
 test('Success - channel Attachment-color Attachment-text ', () => {
   prepareConfigs(configs, 'channel9', '', '', '#ff0000', '', '', 'attachText9');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
   
   const attachment = {
     "color": "#ff0000",
@@ -455,14 +351,10 @@ test('Success - channel Attachment-color Attachment-text ', () => {
 
 /**
  * チャット投稿成功の場合
- * oauth2を設定
  * Cannel Attachment タイトル　Attachment タイトルリンク　Attachment テキスト　を入力
  */
 test('Success - channel Attachment-title Attachment-titlelink Attachment-text ', () => {
   prepareConfigs(configs, 'channel10', '', '', '', 'title10', 'https://titleLink10', 'attachText10');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
   
   const attachment = {
     "title": "title10",
@@ -483,14 +375,10 @@ test('Success - channel Attachment-title Attachment-titlelink Attachment-text ',
 
 /**
  * チャット投稿成功の場合
- * oauth2を設定
  * Attachment 色が無効
  */
 test('Success - Invalid color setting', () => {
   const attachment = prepareConfigs(configs, 'channel11', 'text11', 'fallback11', '#qqq???', 'title11', 'https://titleLink11', 'attachText11');
-
-  //Token を未設定の状態に上書き
-  configs.put('Token', '');
 
   httpClient.setRequestHandler((request) => {
     assertPostRequest(request, 'channel11', 'text11', attachment);
@@ -499,6 +387,50 @@ test('Success - Invalid color setting', () => {
 
   // <script> のスクリプトを実行
   execute();
+});
+
+
+
+/**
+ * チャット投稿失敗の場合
+ * 存在しないチャンネル
+ */
+test('Failed - Non-existent channel', () => {
+  const attachment = prepareConfigs(configs, 'no-channel5', 'text5', 'fallback5', '#ff0000', 'title5', 'https://titleLink5', 'attachText5');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'no-channel5', 'text5', attachment);
+    const responseObj = {
+      "ok": false,
+      "error": "channel_not_found"
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);  
+ });
+ 
+
+   
+/**
+ * チャット投稿失敗の場合
+ * Botがjoinしていないチャンネル名
+ */
+test('Failed - Channel that bot is not joining', () => {
+  const attachment = prepareConfigs(configs, 'no-join6', 'text6', 'fallback6', '#ff0000', 'title6', 'https://titleLink6', 'attachText6');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'no-join6', 'text6', attachment);
+    const responseObj = {
+      "ok": false,
+      "error": "not_in_channel"
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);
 });
 
 ]]></test>
