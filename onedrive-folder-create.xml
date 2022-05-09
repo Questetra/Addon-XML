@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Create Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: フォルダ作成</label>
-<last-modified>2021-09-16</last-modified>
+<last-modified>2022-05-09</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
-<summary>Create a folder in the specified folder on OneDrive.</summary>
-<summary locale="ja">OneDrive の指定フォルダ内にフォルダを作成します。</summary>
+<summary>This item creates a folder in the specified folder on OneDrive.</summary>
+<summary locale="ja">この工程は、OneDrive の指定フォルダ内にフォルダを作成します。</summary>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
     <label>C1: OAuth2 Setting</label>
@@ -203,5 +203,276 @@ ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
 FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
 TkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param parentFolderUrl
+ * @param folderName
+ * @return folderUrlDef
+ */
+const prepareConfigs = (parentFolderUrl, folderName) => {
+  configs.put('conf_OAuth2', 'Microsoft');
+  configs.put('conf_folderName', folderName);
+  
+  // 作成するフォルダの親フォルダの URL を保存する文字型データ項目（単数行）を準備
+  const parentFolderUrlDef = engine.createDataDefinition('親フォルダの URL', 1, 'q_parent_folder_url', 'STRING_TEXTFIELD');
+  engine.setData(parentFolderUrlDef, parentFolderUrl);
+  configs.putObject('conf_parentFolderUrl', parentFolderUrlDef);
+  
+  // フォルダ URL を保存する文字型データ項目（単数行）を準備
+  const folderUrlDef = engine.createDataDefinition('フォルダ URL', 2, 'q_folder_url', 'STRING_TEXTFIELD');
+  engine.setData(folderUrlDef, '事前文字列');
+  configs.putObject('conf_folderUrl', folderUrlDef);
+  
+  return folderUrlDef;
+};
+
+/**
+ * フォルダ名が空でエラー
+ */
+test('Folder name is empty.', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent1', '');
+  
+  expect(execute).toThrow('Folder name is empty.');
+
+});
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param sharingUrl
+ */
+const assertGetRequest = ({url, method}, sharingUrl) => {
+  const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+  expect(url).toEqual(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * GET リクエストで失敗
+ */
+test('GET Failed', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent2', 'folder2');
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent2');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get drive item. status: 400');
+});
+
+/**
+ * POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param driveId
+ * @param folderId
+ * @param folderName
+ */
+const assertPostRequest = ({url, method, contentType, body}, driveId, folderId, folderName) => {
+  expect(url).toEqual(`${GRAPH_URI}${driveId}/items/${folderId}/children`);
+  expect(method).toEqual('POST');
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  expect(bodyObj.name).toEqual(folderName);
+};
+
+const SAMPLE_GET1 = {
+  "id":"Id001",
+  "parentReference":{
+    "driveId":"Drive001"
+  }
+};
+
+/**
+ * POST リクエストで失敗
+ */
+test('POST Failed', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent3', 'folder3');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent3');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    assertPostRequest(request, 'drives/Drive001', 'Id001', 'folder3');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to create: folder3. status: 400');
+});
+
+/**
+ * フォルダ作成成功
+ */
+test('201 Success', () => {
+  const folderUrlDef = prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent4', 'folder4');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent4');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    assertPostRequest(request, 'drives/Drive001', 'Id001', 'folder4');
+    return httpClient.createHttpResponse(201, 'application/json', `{"webUrl":"https://test-my.sharepoint.com/personal/aaa/Documents/parent4/folder4"}`);
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/parent4/folder4');
+});
+
+/**
+ * GET リクエストでエラー - 親フォルダURLを固定値で指定 
+ */
+test('GET Failed - Specify Parent Folder URL with a fixed value', () => {
+  prepareConfigs(null, 'folder5');
+  
+  configs.put('conf_parentFolderUrl', 'https://test-my.sharepoint.com/personal/aaa/Documents/parent5');
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent5');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get drive item. status: 400');
+});
+
+const SAMPLE_GET2 = {
+  "id":"Id002",
+  "parentReference":{
+    "driveId":"Drive002"
+  }
+};
+
+/**
+ * POST リクエストでエラー - 親フォルダURLを固定値で指定
+ */
+test('POST Failed - Specify Parent Folder URL with a fixed value', () => {
+  prepareConfigs(null, 'folder6');
+  
+  configs.put('conf_parentFolderUrl', 'https://test-my.sharepoint.com/personal/aaa/Documents/parent6');
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent6');
+      reqCount++;
+      return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(SAMPLE_GET2));
+    }
+    assertPostRequest(request, 'drives/Drive002', 'Id002', 'folder6');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to create: folder6. status: 400');
+});
+
+/**
+ * フォルダ作成成功 - 親フォルダURLを固定値で指定
+ */
+test('201 Success - Specify Parent Folder URL with a fixed value', () => {
+  const folderUrlDef = prepareConfigs(null, 'folder7');
+  
+  configs.put('conf_parentFolderUrl', 'https://test-my.sharepoint.com/personal/aaa/Documents/parent7');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent7');
+      reqCount++;
+      return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(SAMPLE_GET2));
+    }
+    assertPostRequest(request, 'drives/Drive002', 'Id002', 'folder7');
+    return httpClient.createHttpResponse(201, 'application/json', `{"webUrl":"https://test-my.sharepoint.com/personal/aaa/Documents/parent7/folder7"}`);
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/parent7/folder7');
+});
+
+/**
+ * POST リクエストでエラー - 親フォルダURLをデータ項目指定し、その値が空
+ */
+test('POST Failed - Specify Parent Folder URL as a data item and its value is blank', () => {
+  const folderUrlDef = prepareConfigs('', 'folder8');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'me/drive', 'root', 'folder8');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to create: folder8. status: 400');
+});
+
+/**
+ * フォルダ作成成功 - 親フォルダURLをデータ項目指定し、その値が空
+ */
+test('201 Success - Specify Parent Folder URL as a data item and its value is blank', () => {
+  const folderUrlDef = prepareConfigs(null, 'folder9');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'me/drive', 'root', 'folder9');
+    return httpClient.createHttpResponse(201, 'application/json', `{"webUrl":"https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/folder9"}`);
+    
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderUrlDef)).toEqual('https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/folder9');
+});
+
+/**
+ * POST リクエストでエラー - 親フォルダURLを固定値で指定し、その値が空
+ */
+test('POST Failed - Specify the parent folder URL with a fixed value, and that value is empty', () => {
+  const folderUrlDef = prepareConfigs(null, 'folder10');
+  
+  configs.put('conf_parentFolderUrl', '');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'me/drive', 'root', 'folder10');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to create: folder10. status: 400');
+});
+
+/**
+ * フォルダ作成成功 - 親フォルダURLを固定値で指定し、その値が空
+ */
+test('201 Success - Specify the parent folder URL with a fixed value, and that value is empty', () => {
+  const folderUrlDef = prepareConfigs(null, 'folder11');
+  
+  configs.put('conf_parentFolderUrl', '');
+  
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'me/drive', 'root', 'folder11');
+    return httpClient.createHttpResponse(201, 'application/json', `{"webUrl":"https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/folder11"}`);
+    
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(folderUrlDef)).toEqual('https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/folder11');
+});
+
+]]></test>
 
 </service-task-definition>
