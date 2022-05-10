@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-05-09</last-modified>
+<last-modified>2022-05-10</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Bots)</label>
@@ -20,25 +20,29 @@
     <label>C3: Sending Text</label>
     <label locale="ja">C3: 送信するテキスト</label>
   </config>
+  <config name="conf_Mention" form-type="SELECT" select-data-type="STRING_TEXTFIELD|QUSER" editable="true">
+    <label>C4: Mention</label>
+    <label locale="ja">C4: メンション</label>
+  </config>
   <config name="Fallback" form-type="TEXTAREA" el-enabled="true">
-    <label>C4: Attachment Summary (In notifications when no sending text)</label>
-    <label locale="ja">C4: Attachment の要約 (送信テキストが空の場合に、通知で使用される)</label>
+    <label>C5: Attachment Summary (In notifications when no sending text)</label>
+    <label locale="ja">C5: Attachment の要約 (送信テキストが空の場合に、通知で使用される)</label>
   </config>
   <config name="Color">
-    <label>C5: Attachment Color</label>
-    <label locale="ja">C5: Attachment の色</label>
+    <label>C6: Attachment Color</label>
+    <label locale="ja">C6: Attachment の色</label>
   </config>
   <config name="Title" el-enabled="true">
-    <label>C6: Attachment Title</label>
-    <label locale="ja">C6: Attachment のタイトル</label>
+    <label>C7: Attachment Title</label>
+    <label locale="ja">C7: Attachment のタイトル</label>
   </config>
   <config name="TitleLink" el-enabled="true">
-    <label>C7: Attachment Title Link</label>
-    <label locale="ja">C7: Attachment のタイトルリンク</label>
+    <label>C8: Attachment Title Link</label>
+    <label locale="ja">C8: Attachment のタイトルリンク</label>
   </config>
   <config name="AttachText" form-type="TEXTAREA" el-enabled="true">
-    <label>C8: Attachment Text</label>
-    <label locale="ja">C8: Attachment のテキスト</label>
+    <label>C9: Attachment Text</label>
+    <label locale="ja">C9: Attachment のテキスト</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/bpmn-icons/slack-chat-post-bots/</help-page-url>
@@ -46,11 +50,11 @@
 <script><![CDATA[
 main();
 function main() {
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.get("conf_OAuth2");  
   let text = "";
   if (configs.get("Text") !== "" && configs.get("Text") !== null){
     text = configs.get("Text");
-  }
+  }  
   const channel = configs.get("ChannelName");
   
   let attachment = {};
@@ -62,13 +66,91 @@ function main() {
     attachAdd(attachment, "TitleLink", "title_link");
   }
   attachAdd(attachment, "AttachText", "text");
+  
+  const email = decideMailAddress();
+  engine.log("email: " + email);
+  
+  let slackIdNum = '';  
+  if (email !== "" && email !== null){
+    slackIdNum = usersLookupByEmail(oauth2, email);
+  }
 
- if (attachment["title"] === undefined && attachment["text"] === undefined && text === ""){
+  if (slackIdNum !== "" && slackIdNum !== null && attachment["title"] !== undefined && attachment["title_link"] !== undefined){
+    text = `${text}\n\n<@${slackIdNum}>`;
+  }
+
+  if (attachment["title"] === undefined && attachment["text"] === undefined && text === ""){
     throw "Message to send isn't set.";
   }
 
   sendMessage(oauth2, channel, text, attachment);
 }
+
+
+/**
+  * メンション相手のメールアドレス（Slack アカウント）をconfigから読み出して出力する。
+  * @return {String} mailAddress  Slack アカウントのメールアドレス
+  */
+function decideMailAddress(){
+  let mailAddress = "";
+  mailAddressDef = configs.getObject("conf_Mention");
+
+  if ( mailAddressDef.matchDataType("QUSER") ) {
+    const quserNum = configs.get("conf_Mention");
+    mailAddress = engine.findDataByNumber( quserNum ).getEmail();
+  } else{  
+    if(mailAddressDef === null){
+      mailAddress = configs.get( "conf_Mention");
+    }else{
+      mailAddress = engine.findData(mailAddressDef);
+    }
+  }
+  
+  const pattern = /^[A-Za-z0-9]{1}[A-Za-z0-9_.-]*@{1}[A-Za-z0-9_.-]+.[A-Za-z0-9]+$/;  
+  if (!pattern.test(mailAddress)) {
+    throw "Invalid EmailAddress";
+  } 
+  
+  return mailAddress;
+}
+
+
+/**
+  * メールアドレスから Slack ID を取得する
+  * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
+  * @param {String} oauth2 
+  * @param {String} email
+  */  
+function usersLookupByEmail(oauth2, email) {
+
+  const url = 'https://slack.com/api/users.lookupByEmail';
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .queryParam( "email", email )
+    .post(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw `Failed to users lookup By email. status: ${status}`;
+  }
+
+  if (responseJson.ok !== true ) {
+    const error = `Failed to send`;
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw error;
+  }
+  engine.log('Slack Id:' + responseJson.user.id);
+  return responseJson.user.id;
+}
+
 
 /**
   * Send Message with Bots  チャット投稿
