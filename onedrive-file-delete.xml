@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Microsoft 365 OneDrive for Business: Delete File / Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダ削除</label>
-<last-modified>2021-09-16</last-modified>
+<last-modified>2022-05-16</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
-<summary>Delete files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one URL on each line.</summary>
-<summary locale="ja">OneDrive 上のファイル / フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつ URL を書くようにしてください。</summary>
+<summary>This item deletes files and folders on OneDrive. You can delete multiple ones at once. When you delete multiple ones, you should write one URL on each line.</summary>
+<summary locale="ja">この工程は、OneDrive 上のファイル / フォルダを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では1行につき1つずつ URL を書くようにしてください。</summary>
 <configs>
   <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
     <label>C1: OAuth2 Setting</label>
@@ -191,5 +191,176 @@ ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
 FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
 TkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param parentFolderUrl
+ * @param folderName
+ * @return folderUrlDef
+ */
+const prepareConfigs = (urls) => {
+  configs.put('conf_OAuth2', 'Microsoft');
+  
+  // 削除するファイル / フォルダの URL が保存されている文字型データ項目（複数行）を準備
+  const urlsDef = engine.createDataDefinition('削除するファイル / フォルダの URL', 1, 'q_urls', 'STRING_TEXTAREA');
+  engine.setData(urlsDef, urls);
+  configs.putObject('conf_urls', urlsDef);
+};
+
+/**
+ * 削除するファイル / フォルダの URL がnullでエラー
+ */
+test('urls is null.', () => {
+  prepareConfigs(null);
+  
+  expect(execute).toThrow('File / Folder URLs aren\'t set.');
+});
+
+/**
+ * 削除するファイル / フォルダの URL が空行でエラー
+ */
+test('urls is blank lines.', () => {
+  prepareConfigs('\n\n\n');
+  
+  expect(execute).toThrow('File / Folder URLs aren\'t set.');
+});
+
+/**
+ * 削除するファイル / フォルダがリクエストの制限数を超える
+ */
+test('Number of urls is over the limit', () => {
+  let urls = '';
+  for (let i = 0; i <= httpClient.getRequestingLimit() / 2; i++) {
+    urls += `https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/f${i}\n`;
+  }
+  prepareConfigs(urls);
+  
+  expect(execute).toThrow('Necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param deleteUrl
+ */
+const assertGetRequest = ({url, method}, deleteUrl) => {
+  const encodedUrl = encodeSharingUrl(deleteUrl);
+  expect(url).toEqual(`${GRAPH_URI}shares/${encodedUrl}/driveItem`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * GET リクエストでエラー
+ */
+test('GET Failed', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/f1');
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/f1');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get drive item. status: 400');
+});
+
+const SAMPLE_GET1 = {
+  "id":"Id001",
+  "parentReference":{
+    "driveId":"Drive001"
+  }
+};
+
+/**
+ * DELETE リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param driveId
+ * @param id
+ */
+const assertDeleteRequest = ({url, method}, driveId, id) => {
+  expect(url).toEqual(`${GRAPH_URI}drives/${driveId}/items/${id}`);
+  expect(method).toEqual('DELETE');
+};
+
+/**
+ * DELETE リクエストでエラー
+ */
+test('DELETE Failed', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/f2');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/f2');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    assertDeleteRequest(request, 'Drive001', 'Id001');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to delete. status: 400');
+});
+
+/**
+ * ファイル/フォルダ削除成功 - 1つのファイル/フォルダ
+ */
+test('201 Success - 1 file/folder', () => {
+  prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/f3');
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/f3');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET1));
+    }
+    assertDeleteRequest(request, 'Drive001', 'Id001');
+    return httpClient.createHttpResponse(204, 'application/json', '{}');
+  });
+  
+  execute();
+});
+
+/**
+ * ファイル/フォルダ削除成功 - 複数のファイル/フォルダ（最大リクエスト数）
+ */
+test('201 Success - multiple files/folders', () => {
+  let urls = '';
+  for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
+      urls += `https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/f${i}\n`;
+  }
+  prepareConfigs(urls);
+  
+  let reqCount = 0;
+  let fileCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount % 2 === 0) {
+      assertGetRequest(request, `https://test-my.sharepoint.com/personal/staff_questetra365_onmicrosoft_com/Documents/f${fileCount}`);
+      reqCount++;
+      const sample_get = {
+        "id":`Id${fileCount}`,
+        "parentReference":{
+          "driveId":`Drive${fileCount}`
+        }
+      }
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(sample_get));
+    } else {
+      assertDeleteRequest(request, `Drive${fileCount}`, `Id${fileCount}`);
+      reqCount++;
+      fileCount++;
+      return httpClient.createHttpResponse(204, 'application/json', '{}');
+    }
+  });
+  
+  execute();
+});
+
+]]></test>
 
 </service-task-definition>
