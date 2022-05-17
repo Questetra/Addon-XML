@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-05-16</last-modified>
+<last-modified>2022-05-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Bots)</label>
@@ -67,7 +67,7 @@ function main() {
   }
   attachAdd(attachment, "AttachText", "text");
   
-  const {email, slackIdNum} = decideMailAddress(oauth2);
+  const slackIdNum = decideSlackIdNum(oauth2);
 
   if (slackIdNum !== "" ){
     text = `${text}\n\n<@${slackIdNum}>`;
@@ -83,10 +83,11 @@ function main() {
 
 
 /**
-  * メンション相手のメールアドレス（Slack アカウント）をconfigから読み出して出力する。
-  * @return {String} mailAddress  Slack アカウントのメールアドレス
+  * メンション相手のメールアドレス（Slack アカウント）をconfigから読み出す
+  * メールアドレスから Slack ID を取得する関数を呼ぶ
+  * @return {String} slackIdNum  Slack ID
   */
-function decideMailAddress(oauth2){
+function decideSlackIdNum(oauth2){
   let mailAddress = "";
   let slackIdNum = '';
   mailAddressDef = configs.getObject("conf_Mention");
@@ -106,17 +107,10 @@ function decideMailAddress(oauth2){
 
     if (mailAddress !== "" && mailAddress !== null){ 
       engine.log("email: " + mailAddress);
-      const pattern = /^[A-Za-z0-9]{1}[A-Za-z0-9_.-]*@{1}[A-Za-z0-9_.-]+.[A-Za-z0-9]+$/;  
-      if (!pattern.test(mailAddress)) {
-        throw "Invalid EmailAddress";
-      }
       slackIdNum = usersLookupByEmail(oauth2, mailAddress);
     }  
 
-  return {
-    mailAddress,
-    slackIdNum
-  };
+  return slackIdNum;
 }
 
 
@@ -125,6 +119,7 @@ function decideMailAddress(oauth2){
   * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
   * @param {String} oauth2 
   * @param {String} email
+  * @return {String} responseJson.user.id  Slack ID
   */  
 function usersLookupByEmail(oauth2, email) {
 
@@ -338,20 +333,6 @@ test('Message to send isn\'t set', () => {
 
 
 /**
- * チャット投稿失敗の場合
- * メンションがメールアドレスの形式ではない
- */
-test('Invalid EmailAddress', () => {
-  prepareConfigs(configs, 'channel1', '', '@SouthPole@questetra.com', 'fallback1', '#ff0000', '', 'https://titleLink1', '');
-
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Invalid EmailAddress`);
-});
-
-
-
-/**
  * POST リクエストのレスポンスを準備（Slack ID 取得）
  * @param channel
  * @param text
@@ -396,7 +377,7 @@ const preparePostResponse = (channel,text) => {
  * POST API リクエストでエラーになる場合（Slack ID 取得）
  */
 test('POST GetId Failed', () => {
-  const attachment = prepareConfigs(configs, 'channel2', 'text2', 'SouthPole@questetra.com', 'SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
+  const attachment = prepareConfigs(configs, 'channel2', 'text2','SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
 
   httpClient.setRequestHandler((request) => {
     assertPostGetIdRequest(request, 'SouthPole@questetra.com');
@@ -409,11 +390,38 @@ test('POST GetId Failed', () => {
 
 
 
+
+/**
+ * チャット投稿失敗の場合
+ * メンションが Slack アカウントのメールアドレスでない
+ * （メンションがメールアドレスの形式ではない場合も同様）
+ */
+test('Not Slack account email address', () => {
+  const attachment = prepareConfigs(configs, 'channel1', 'text1', 'SouthPole@gmail.com', 'fallback1', '#ff0000', 'title1', 'https://titleLink1', 'attachText2');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostGetIdRequest(request, 'SouthPole@gmail.com');
+    const responsePostObj = {
+            "ok": false,
+            "error": "users_not_found"
+        };  
+    return httpClient.createHttpResponse(200,'application/json', JSON.stringify(responsePostObj));
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);
+});
+
+
+
+
+
+
 /**
  * POST API リクエストでエラーになる場合（チャット投稿）
  */
 test('POST Failed', () => {
-    const attachment = prepareConfigs(configs, 'channel2', 'text2', 'SouthPole@questetra.com', 'SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
+    const attachment = prepareConfigs(configs, 'channel2', 'text2', 'SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
