@@ -3,9 +3,9 @@
 <engine-type>2</engine-type>
 <label>Microsoft 365 OneDrive for Business: Copy File / Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダコピー</label>
-<last-modified>2021-09-16</last-modified>
-<summary>Creates a copy of a file/folder into the specified folder on OneDrive.</summary>
-<summary locale="ja">OneDrive 上のファイル / フォルダを複製し、指定フォルダに新規保存します。</summary>
+<last-modified>2022-05-24</last-modified>
+<summary>This item creates a copy of a file/folder into the specified folder on OneDrive.</summary>
+<summary locale="ja">この工程は、OneDrive 上のファイル / フォルダを複製し、指定フォルダに新規保存します。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/onedrive-file-copy/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/onedrive-file-copy/</help-page-url>
 
@@ -350,5 +350,405 @@ ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
 FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
 TkSuQmCC
 </icon>
+
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param sourceUrl
+ * @param destUrl
+ * @param newName
+ * @return dataForUrlDef
+ */
+const prepareConfigs = (sourceUrl, destUrl, newName) => {
+  configs.put('conf_OAuth2', 'Microsoft');
+  configs.put('conf_newName', newName);
+  
+  // コピー元ファイル / フォルダの URL を保存する文字型データ項目（単数行）を準備
+  const sourceUrlDef = engine.createDataDefinition('コピー元ファイル / フォルダの URL', 1, 'q_source_url', 'STRING_TEXTFIELD');
+  engine.setData(sourceUrlDef, sourceUrl);
+  configs.putObject('conf_sourceUrl', sourceUrlDef);
+  
+  // 保存先フォルダの URL  を保存する文字型データ項目（単数行）を準備
+  const destUrlDef = engine.createDataDefinition('保存先フォルダの URL', 2, 'q_dest_url', 'STRING_TEXTFIELD');
+  engine.setData(destUrlDef, destUrl);
+  configs.putObject('conf_destUrl', destUrlDef);
+  
+  // 新しいファイル / フォルダの URL を保存する文字型データ項目（単数行）を準備
+  const dataForUrlDef = engine.createDataDefinition('新しいファイル / フォルダの URL', 3, 'q_data_for_url', 'STRING_TEXTFIELD');
+  engine.setData(dataForUrlDef, '事前文字列');
+  configs.putObject('conf_dataForUrl', dataForUrlDef);
+  
+  return dataForUrlDef;
+};
+
+/**
+ * コピー元ファイル / フォルダの URLがnullでエラー
+ */
+test('Source file / folder URL is null', () => {
+  prepareConfigs(
+    null, 
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder1',
+    'file1'
+  );
+  expect(execute).toThrow('Source file / folder URL is empty.');
+});
+
+/**
+ * 新しいファイル / フォルダの名前が空でエラー
+ */
+test('New File / Folder Name is blank', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test2.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder2',
+    ''
+  );
+  expect(execute).toThrow('New file / folder name is empty.');
+});
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param deleteUrl
+ */
+const assertGetRequest = ({url, method}, sharingUrl) => {
+  const encodedUrl = encodeSharingUrl(sharingUrl);
+  expect(url).toEqual(`${GRAPH_URI}shares/${encodedUrl}/driveItem`);
+  expect(method).toEqual('GET');
+};
+
+/**
+ * GET リクエストでエラー - コピー元ファイル / フォルダの URL
+ */
+test('GET Failed - Source Url', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test3.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder3',
+    'copy3.txt'
+  );
+  
+  httpClient.setRequestHandler((request) => {
+    assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test3.txt');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get drive item. status: 400');
+});
+
+const SAMPLE_SRC_GET = {
+  "id":"SrcId001",
+  "parentReference":{
+    "driveId":"SrcDrive001"
+  }
+};
+
+/**
+ * GET リクエストでエラー - 保存先フォルダの URL
+ */
+test('GET Failed - Folder Url to save', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test4.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder4',
+    'copy3.txt'
+  );
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test4.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder4');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get drive item. status: 400');
+});
+
+/**
+ * POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param srcDriveId
+ * @param srcId
+ * @param destDriveId
+ * @param destId
+ * @param newName
+ */
+const assertPostRequest = ({url, method, contentType, body}, srcDriveId, srcId, destDriveId, destId, newName) => {
+  expect(url).toEqual(`${GRAPH_URI}drives/${srcDriveId}/items/${srcId}/copy`);
+  expect(method).toEqual('POST');
+  expect(contentType).toEqual("application/json; charset=UTF-8");
+  const bodyObj = JSON.parse(body);
+  if (destDriveId !==  null){ 
+    expect(bodyObj.parentReference.driveId).toEqual(destDriveId);
+  }
+  if (destId !==  null){ 
+    expect(bodyObj.parentReference.id).toEqual(destId);
+  }
+  expect(bodyObj.name).toEqual(newName);
+};
+
+const SAMPLE_DEST_GET = {
+  "id":"DestId001",
+  "parentReference":{
+    "driveId":"DestDrive001"
+  }
+};
+
+/**
+ * POST リクエストでエラー
+ */
+test('POST Failed', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test5.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder5',
+    'copy5.txt'
+  );
+  
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test5.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    if (reqCount === 1) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder5');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_DEST_GET));
+    }
+    assertPostRequest(request, 'SrcDrive001', 'SrcId001', 'DestDrive001', 'DestId001', 'copy5.txt');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to copy. status: 400');
+});
+
+/**
+ * GET リクエストでエラー - コピー状況
+ */
+test('GET Failed - Copy status', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test6.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder6',
+    'copy6.txt'
+  );
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test6.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    if (reqCount === 1) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder6');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_DEST_GET));
+    }
+    if (reqCount === 2) {
+      assertPostRequest(request, 'SrcDrive001', 'SrcId001', 'DestDrive001', 'DestId001', 'copy6.txt');
+      reqCount++;
+      const response = httpClient.createHttpResponse(202, 'application/json', '{}');
+      response.addHeader('Location', 'https://test-my.sharepoint.com/personal/aaa/_api/v2.0/drives/DestDrive001/items/resourceId001');
+      return response;
+    }
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get monitor. status: 400');
+});
+
+/**
+ * コピー状況が不明
+ */
+test('Copy status is unknown', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test7.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder7',
+    'copy7.txt'
+  );
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test7.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    if (reqCount === 1) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder7');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_DEST_GET));
+    }
+    if (reqCount === 2) {
+      assertPostRequest(request, 'SrcDrive001', 'SrcId001', 'DestDrive001', 'DestId001', 'copy7.txt');
+      reqCount++;
+      const response = httpClient.createHttpResponse(202, 'application/json', '{}');
+      response.addHeader('Location', 'https://test-my.sharepoint.com/personal/aaa/_api/v2.0/drives/DestDrive001/items/resourceId001');
+      return response;
+    }
+    reqCount++;
+    const responseObj = {"status":"unknown"};
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+  
+  expect(execute).toThrow('Copy is not in progress nor completed. status: unknown');
+});
+
+/**
+ * GET リクエストのテスト - 新しいファイル / フォルダのメタデータ
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param driveId
+ * @param itemId
+ */
+const assertGetNewItemRequest = ({url, method}, driveId, itemId) => {
+  expect(url).toEqual(`${GRAPH_URI}drives/${driveId}/items/${itemId}`);
+  expect(method).toEqual('GET');
+};
+
+const SAMPLE_STATUS_GET = {
+  "resourceId":"resourceId001",
+  "status":"completed"
+};
+
+/**
+ * GET リクエストでエラー - 新しいファイル / フォルダのURL
+ */
+test('GET Failed - New file / folder URL', () => {
+  prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test8.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder8',
+    'copy8.txt'
+  );
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test8.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    if (reqCount === 1) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder8');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_DEST_GET));
+    }
+    if (reqCount === 2) {
+      assertPostRequest(request, 'SrcDrive001', 'SrcId001', 'DestDrive001', 'DestId001', 'copy8.txt');
+      reqCount++;
+      const response = httpClient.createHttpResponse(202, 'application/json', '{}');
+      response.addHeader('Location', 'https://test-my.sharepoint.com/personal/aaa/_api/v2.0/drives/DestDrive001/items/resourceId001');
+      return response;
+    }
+    if (reqCount === 3) {
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_STATUS_GET));
+    }
+    assertGetNewItemRequest(request, 'DestDrive001', 'resourceId001');
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to get file. status: 400');
+});
+
+/**
+ * コピー成功 - 保存先フォルダの URL 指定
+ */
+test('201 Success - Specify Folder URL to store', () => {
+  const dataForUrlDef = prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/test9.txt',
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder9',
+    'copy9.txt'
+  );
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/test9.txt');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_SRC_GET));
+    }
+    if (reqCount === 1) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder9');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_DEST_GET));
+    }
+    if (reqCount === 2) {
+      assertPostRequest(request, 'SrcDrive001', 'SrcId001', 'DestDrive001', 'DestId001', 'copy9.txt');
+      reqCount++;
+      const response = httpClient.createHttpResponse(202, 'application/json', '{}');
+      response.addHeader('Location', 'https://test-my.sharepoint.com/personal/aaa/_api/v2.0/drives/DestDrive001/items/resourceId001');
+      return response;
+    }
+    if (reqCount === 3) {
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_STATUS_GET));
+    }
+    assertGetNewItemRequest(request, 'DestDrive001', 'resourceId001');
+    const responseObj = {"webUrl": "https://test-my.sharepoint.com/personal/aaa/Documents/folder9/test9.txt"};
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+//  expect(engine.findData(dataForUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/folder9/test9.txt');
+});
+
+/**
+ * コピー成功 - 保存先フォルダの URL がnull
+ */
+test('201 Success - Folder URL to store is null', () => {
+  const dataForUrlDef = prepareConfigs(
+    'https://test-my.sharepoint.com/personal/aaa/Documents/folder10/test10.txt',
+    null,
+    'copy10.txt'
+  );
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/folder10/test10.txt');
+      reqCount++;
+      const responseSrcGetObj = {
+        "id":"SrcId002",
+        "parentReference":{
+          "driveId":"SrcDrive002"
+        }
+      };
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseSrcGetObj));
+    }
+    if (reqCount === 1) {
+      assertPostRequest(request, 'SrcDrive002', 'SrcId002', null, null, 'copy10.txt');
+      reqCount++;
+      const response = httpClient.createHttpResponse(202, 'application/json', '{}');
+      response.addHeader('Location', 'https://test-my.sharepoint.com/personal/aaa/_api/v2.0/drives/SrcDrive001/items/resourceId002');
+      return response;
+    }
+    if (reqCount === 2) {
+      reqCount++;
+      const responseStatusGetObj = {
+        "resourceId":"resourceId002",
+        "status":"completed"
+      };
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseStatusGetObj));
+    }
+    const responseObj = {"webUrl": "https://test-my.sharepoint.com/personal/aaa/Documents/folder10/test10.txt"};
+    assertGetNewItemRequest(request, 'SrcDrive002', 'resourceId002');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+  });
+  
+  execute();
+  
+  // 文字型データ項目の値をチェック
+  expect(engine.findData(dataForUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/folder10/test10.txt');
+});
+
+]]></test>
 
 </service-task-definition>
