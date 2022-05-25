@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-05-09</last-modified>
+<last-modified>2022-05-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Bots)</label>
@@ -20,25 +20,29 @@
     <label>C3: Sending Text</label>
     <label locale="ja">C3: 送信するテキスト</label>
   </config>
+  <config name="conf_Mention" form-type="SELECT" select-data-type="STRING_TEXTFIELD|QUSER" editable="true">
+    <label>C4: Mention (user or email address)</label>
+    <label locale="ja">C4: メンション（ユーザ もしくは メールアドレス）</label>
+  </config>
   <config name="Fallback" form-type="TEXTAREA" el-enabled="true">
-    <label>C4: Attachment Summary (In notifications when no sending text)</label>
-    <label locale="ja">C4: Attachment の要約 (送信テキストが空の場合に、通知で使用される)</label>
+    <label>C5: Attachment Summary (In notifications when no sending text)</label>
+    <label locale="ja">C5: Attachment の要約 (送信テキストが空の場合に、通知で使用される)</label>
   </config>
   <config name="Color">
-    <label>C5: Attachment Color</label>
-    <label locale="ja">C5: Attachment の色</label>
+    <label>C6: Attachment Color</label>
+    <label locale="ja">C6: Attachment の色</label>
   </config>
   <config name="Title" el-enabled="true">
-    <label>C6: Attachment Title</label>
-    <label locale="ja">C6: Attachment のタイトル</label>
+    <label>C7: Attachment Title</label>
+    <label locale="ja">C7: Attachment のタイトル</label>
   </config>
   <config name="TitleLink" el-enabled="true">
-    <label>C7: Attachment Title Link</label>
-    <label locale="ja">C7: Attachment のタイトルリンク</label>
+    <label>C8: Attachment Title Link</label>
+    <label locale="ja">C8: Attachment のタイトルリンク</label>
   </config>
   <config name="AttachText" form-type="TEXTAREA" el-enabled="true">
-    <label>C8: Attachment Text</label>
-    <label locale="ja">C8: Attachment のテキスト</label>
+    <label>C9: Attachment Text</label>
+    <label locale="ja">C9: Attachment のテキスト</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/bpmn-icons/slack-chat-post-bots/</help-page-url>
@@ -46,11 +50,11 @@
 <script><![CDATA[
 main();
 function main() {
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.get("conf_OAuth2");  
   let text = "";
   if (configs.get("Text") !== "" && configs.get("Text") !== null){
     text = configs.get("Text");
-  }
+  }  
   const channel = configs.get("ChannelName");
   
   let attachment = {};
@@ -62,13 +66,90 @@ function main() {
     attachAdd(attachment, "TitleLink", "title_link");
   }
   attachAdd(attachment, "AttachText", "text");
+  
+  const slackIdNum = decideSlackIdNum(oauth2);
 
- if (attachment["title"] === undefined && attachment["text"] === undefined && text === ""){
+  if (slackIdNum !== "" ){
+    text = `${text}\n\n<@${slackIdNum}>`;
+    engine.log('Slack Id:' + slackIdNum);
+  }
+
+  if (attachment["title"] === undefined && attachment["text"] === undefined && text === ""){
     throw "Message to send isn't set.";
   }
 
   sendMessage(oauth2, channel, text, attachment);
 }
+
+
+/**
+  * メンション相手のメールアドレス（Slack アカウント）をconfigから読み出す
+  * メールアドレスから Slack ID を取得する関数を呼ぶ
+  * @return {String} slackIdNum  Slack ID
+  */
+function decideSlackIdNum(oauth2){
+  let mailAddress = "";
+  let slackIdNum = '';
+  mailAddressDef = configs.getObject("conf_Mention");
+
+  if(mailAddressDef === null){ //固定値
+    mailAddress = configs.get( "conf_Mention");
+  }else{
+    const user = engine.findData(mailAddressDef);  
+    if ( mailAddressDef.matchDataType("QUSER")) { //ユーザ型
+      if ( user !== null){   
+        mailAddress = user.getEmail();
+      }
+    }else{ //文字型
+        mailAddress = user;
+    }
+  }
+
+    if (mailAddress !== "" && mailAddress !== null){ 
+      engine.log("email: " + mailAddress);
+      slackIdNum = usersLookupByEmail(oauth2, mailAddress);
+    }  
+
+  return slackIdNum;
+}
+
+
+/**
+  * メールアドレスから Slack ID を取得する
+  * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
+  * @param {String} oauth2 
+  * @param {String} email
+  * @return {String} responseJson.user.id  Slack ID
+  */  
+function usersLookupByEmail(oauth2, email) {
+
+  const url = 'https://slack.com/api/users.lookupByEmail';
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .queryParam( "email", email )
+    .post(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw `Failed to users lookup By email. status: ${status}`;
+  }
+
+  if (responseJson.ok !== true ) {
+    const error = `Failed to send`;
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw error;
+  }
+  return responseJson.user.id;
+}
+
 
 /**
   * Send Message with Bots  チャット投稿
@@ -153,6 +234,7 @@ aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==</icon>
  * @param configs
  * @param ChannelName
  * @param Text
+ * @param Mention
  * @param Fallback
  * @param Color
  * @param Title
@@ -160,10 +242,17 @@ aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==</icon>
  * @param AttachText
  * @return attachment
  */
-const prepareConfigs = (configs, channelName, text, fallback, color, title, titleLink, attachText) => {
+const prepareConfigs = (configs, channelName, text, mention, fallback, color, title, titleLink, attachText) => {
   configs.put('conf_OAuth2', 'Slack');
   configs.put('ChannelName', channelName);
   configs.put('Text', text);
+
+  // 文字型データ項目を準備して、config に指定
+  const mentionDef = engine.createDataDefinition('メンション', 4, 'q_mention', 'STRING_TEXTFIELD');
+  configs.putObject('conf_Mention', mentionDef);
+  // 文字型データ項目の値（保存先フォルダID）を指定
+  engine.setData(mentionDef, mention);
+
   configs.put('Fallback', fallback);
   configs.put('Color', color);
   configs.put('Title', title);
@@ -183,7 +272,23 @@ const prepareConfigs = (configs, channelName, text, fallback, color, title, titl
 
 
 /**
- * リクエストのテスト
+ * POSTリクエストのテスト（Slack ID 取得）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param email
+ */
+const assertPostGetIdRequest = ({url, method}, email) => {
+
+    let newEmail = email.replace("@", "%40");
+
+    expect(url).toEqual(`https://slack.com/api/users.lookupByEmail?email=${newEmail}`);
+    expect(method).toEqual('POST');
+};
+
+
+/**
+ * POSTリクエストのテスト（チャット投稿）
  * @param {Object} request
  * @param request.url
  * @param request.method
@@ -218,7 +323,7 @@ const assertPostRequest = ({url, method, contentType, body}, channel, text, atta
  *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていないと、投稿失敗する
  */
 test('Message to send isn\'t set', () => {
-  prepareConfigs(configs, 'channel1', '', 'fallback1', '#ff0000', '', 'https://titleLink1', '');
+  prepareConfigs(configs, 'channel1', '', null, 'fallback1', '#ff0000', '', 'https://titleLink1', '');
 
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -228,24 +333,24 @@ test('Message to send isn\'t set', () => {
 
 
 /**
- * POST API リクエストでエラーになる場合
+ * POST リクエストのレスポンスを準備（Slack ID 取得）
+ * @param channel
+ * @param text
+ * @return responseObj
  */
-test('POST Failed', () => {
-  const attachment = prepareConfigs(configs, 'channel2', 'text2', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
-
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'channel2', 'text2', attachment);
-    return httpClient.createHttpResponse(400,'application/json', '{}');
-  });
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
-});
+const preparePostGetIdResponse = (id) => {
+  return {
+    "ok": true,
+    "user": {
+        "id": `${id}`
+    }
+  };
+};
 
 
 
 /**
- * POST リクエストのレスポンスを準備
+ * POST リクエストのレスポンスを準備（チャット投稿）
  * @param channel
  * @param text
  * @return responseObj
@@ -268,15 +373,85 @@ const preparePostResponse = (channel,text) => {
 
 
 /**
- * チャット投稿成功の場合
+ * POST API リクエストでエラーになる場合（Slack ID 取得）
  */
-test('Success', () => {
-  const attachment = prepareConfigs(configs, 'channel3', 'text3', 'fallback3', '#ff0000', 'title3', 'https://titleLink3', 'attachText3');
+test('POST GetId Failed', () => {
+  const attachment = prepareConfigs(configs, 'channel2', 'text2','SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
 
   httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'channel3', 'text3', attachment);
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel3', 'text3')));
+    assertPostGetIdRequest(request, 'SouthPole@questetra.com');
+    return httpClient.createHttpResponse(400,'application/json', '{}');
   });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);
+});
+
+
+
+/**
+ * チャット投稿失敗の場合
+ * メンションが Slack アカウントのメールアドレスでない
+ * （メンションがメールアドレスの形式ではない場合も同様）
+ */
+test('Not Slack account email address', () => {
+  const attachment = prepareConfigs(configs, 'channel1', 'text1', 'SouthPole@gmail.com', 'fallback1', '#ff0000', 'title1', 'https://titleLink1', 'attachText2');
+
+  httpClient.setRequestHandler((request) => {
+    assertPostGetIdRequest(request, 'SouthPole@gmail.com');
+    const responsePostObj = {
+            "ok": false,
+            "error": "users_not_found"
+        };  
+    return httpClient.createHttpResponse(200,'application/json', JSON.stringify(responsePostObj));
+  });
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);
+});
+
+
+
+/**
+ * POST API リクエストでエラーになる場合（チャット投稿）
+ */
+test('POST Failed', () => {
+    const attachment = prepareConfigs(configs, 'channel2', 'text2', 'SouthPole@questetra.com', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostGetIdRequest(request, 'SouthPole@questetra.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostGetIdResponse('01234ABCDE')));
+        }
+        assertPostRequest(request, 'channel2', 'text2\n\n<@01234ABCDE>', attachment);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+   // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send`);
+});
+
+
+
+/**
+ * チャット投稿成功の場合
+ * メンションは文字型データ項目
+ */
+test('Success - Mention is a string data item', () => {
+  const attachment = prepareConfigs(configs, 'channel3', 'text3', 'SouthPole@questetra.com', 'fallback3', '#ff0000', 'title3', 'https://titleLink3', 'attachText3');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostGetIdRequest(request, 'SouthPole@questetra.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostGetIdResponse('56789FGHIJ')));
+        }
+        assertPostRequest(request, 'channel3', 'text3\n\n<@56789FGHIJ>', attachment);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel3', 'text3')));
+    });
 
   // <script> のスクリプトを実行
   execute();
@@ -287,20 +462,29 @@ test('Success', () => {
 /**
  * チャット投稿成功の場合
  * チャンネル、 テキストを入力
+ * メンションは固定値
  * Message to send isn't set　のエラーにならない条件①
  *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
  * Attachmentタイトルリンクが設定されているが、Attachmentタイトルが未設定のため無視されるケース（チャット投稿は成功する）
  */
-test('Success - Channel,Text and Attachment-titlelink', () => {
-  prepareConfigs(configs, 'channel4', 'text4', '', '', '', 'https://titleLink4', '');
+test('Success - Mention is a fixed value', () => {
+  prepareConfigs(configs, 'channel4', 'text4','', '', '', '', 'https://titleLink4', '');
+  //conf_Mention の設定値を固定値で上書き
+  configs.put('conf_Mention', 'SouthPole@questetra.com');
 
   //Attachmentタイトルが未設定のため、Attachmentタイトルリンクは設定されず、オブジェクトは空
   const attachment = {};
 
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'channel4', 'text4', attachment);
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel4', 'text4')));
-  });
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostGetIdRequest(request, 'SouthPole@questetra.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostGetIdResponse('43210ABCDE')));
+        }
+        assertPostRequest(request, 'channel4', 'text4\n\n<@43210ABCDE>', attachment);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel4', 'text4')));
+    });
 
   // <script> のスクリプトを実行
   execute();
@@ -311,11 +495,12 @@ test('Success - Channel,Text and Attachment-titlelink', () => {
 /**
  * チャット投稿成功の場合
  * チャンネル、Attachmentテキスト を入力  （テキストは空）
+ * メンションは文字型データ項目を選択していて空
  * Message to send isn't set　のエラーにならない条件②
  *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
  */
 test('Success - Channel and Attachment-text ', () => {
-  prepareConfigs(configs, 'channel9', '', '', '', '', '', 'attachText9');
+  prepareConfigs(configs, 'channel9', '', null, '', '', '', '', 'attachText9');
   
   const attachment = {
     "text": "attachText9"
@@ -335,12 +520,16 @@ test('Success - Channel and Attachment-text ', () => {
 /**
  * チャット投稿成功の場合
  * チャンネル、Attachmentタイトルを入力 （テキストは空）
+ * メンションは固定値で空
  * Message to send isn't set　のエラーにならない条件③
  *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
  */
 test('Success - Channel and Attachment-title ', () => {
-  prepareConfigs(configs, 'channel10', '', '', '', 'title10', '', '');
-  
+  prepareConfigs(configs, 'channel10', '', null, '', '', 'title10', '', '');
+
+  //conf_Mention の設定値を固定値で上書き
+  configs.put('conf_Mention', '');
+
   const attachment = {
     "title": "title10"
   };
@@ -358,16 +547,58 @@ test('Success - Channel and Attachment-title ', () => {
 
 /**
  * チャット投稿成功の場合
+ * メンションはユーザ型データ項目を選択
+ * テキストは空であるが、メンションがあるため、メンションのみのテキストが投稿される
  * Attachment色が無効（無効であるが、チャット投稿は成功する）
  * AttachmentタイトルリンクがURLの形式でないため、Attachmentタイトルにリンクが無いケース（チャット投稿は成功する）
  */
-test('Success - Invalid color setting and Invalid title-link setting', () => {
-  const attachment = prepareConfigs(configs, 'channel11', 'text11', 'fallback11', '#qqq???', 'title11', 'titleLink11', 'attachText11');
+test('Success - Mention is a user-type data items - Invalid color setting and Invalid title-link setting', () => {
+  const attachment = prepareConfigs(configs, 'channel11', '', 'SouthPole@questetra.com', 'fallback11', '#ff0000', 'title11', 'https://titleLink11', 'attachText11');
 
-  httpClient.setRequestHandler((request) => {
-    assertPostRequest(request, 'channel11', 'text11', attachment);
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel11', 'text11')));
-  });
+  // ユーザ型データ項目を準備して、config に指定
+  const mentionDef = engine.createDataDefinition('メンション', 5, 'q_mention', 'QUSER');
+  //conf_Mention の設定値を上書き
+  configs.putObject('conf_Mention', mentionDef);
+  
+  const quser = engine.createQuser(6, 'サウスポール', 'SouthPole@questetra.com');
+
+  // ユーザ型データ項目の値を指定
+// engine.setDataByNumber("4", quser);
+  engine.setData(mentionDef, quser);  
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostGetIdRequest(request, 'SouthPole@questetra.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostGetIdResponse('AAAAA00000')));
+        }
+        assertPostRequest(request, 'channel11', '\n\n<@AAAAA00000>', attachment);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel11', '')));
+    });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+
+
+/**
+ * チャット投稿成功の場合
+ * メンションはユーザ型データ項目で空
+ */
+test('Success - Mention is a empty for user-type data items', () => {
+  const attachment = prepareConfigs(configs, 'channel7', 'text7', null, 'fallback7', '#ff0000', 'title7', 'https://titleLink7', 'attachText7');
+
+  // ユーザ型データ項目を準備して、config に指定
+  const mentionDef = engine.createDataDefinition('メンション', 5, 'q_mention', 'QUSER');
+  //conf_Mention の設定値を上書き
+  configs.putObject('conf_Mention', mentionDef);
+  engine.setData(mentionDef, null);
+
+    httpClient.setRequestHandler((request) => {
+      assertPostRequest(request, 'channel7', 'text7', attachment);
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel7', 'text7')));
+    });
 
   // <script> のスクリプトを実行
   execute();
@@ -377,10 +608,17 @@ test('Success - Invalid color setting and Invalid title-link setting', () => {
 
 /**
  * チャット投稿失敗の場合
+ * メンションはユーザ型データ項目を選択していて空
  * 存在しないチャンネル
  */
-test('Failed - Non-existent channel', () => {
-  const attachment = prepareConfigs(configs, 'no-channel5', 'text5', 'fallback5', '#ff0000', 'title5', 'https://titleLink5', 'attachText5');
+test('Failed - Mention is a empty for user-type data items - Non-existent channel', () => {
+  const attachment = prepareConfigs(configs, 'no-channel5', 'text5', null, 'fallback5', '#ff0000', 'title5', 'https://titleLink5', 'attachText5');
+
+  // ユーザ型データ項目を準備して、config に指定
+  const mentionDef = engine.createDataDefinition('メンション', 5, 'q_mention', 'QUSER');
+  //conf_Mention の設定値を上書き
+  configs.putObject('conf_Mention', mentionDef);
+  engine.setData(mentionDef, null);
 
   httpClient.setRequestHandler((request) => {
     assertPostRequest(request, 'no-channel5', 'text5', attachment);
@@ -399,10 +637,17 @@ test('Failed - Non-existent channel', () => {
    
 /**
  * チャット投稿失敗の場合
+ * メンションはユーザ型データ項目を選択していて空
  * Bot が join していないチャンネル
  */
-test('Failed - Channel that bot is not joining', () => {
-  const attachment = prepareConfigs(configs, 'no-join6', 'text6', 'fallback6', '#ff0000', 'title6', 'https://titleLink6', 'attachText6');
+test('Failed - Mention is a empty for user-type data items - Channel that bot is not joining', () => {
+  const attachment = prepareConfigs(configs, 'no-join6', 'text6', null, 'fallback6', '#ff0000', 'title6', 'https://titleLink6', 'attachText6');
+
+  // ユーザ型データ項目を準備して、config に指定
+  const mentionDef = engine.createDataDefinition('メンション', 5, 'q_mention', 'QUSER');
+  //conf_Mention の設定値を上書き
+  configs.putObject('conf_Mention', mentionDef);
+  engine.setData(mentionDef, null);
 
   httpClient.setRequestHandler((request) => {
     assertPostRequest(request, 'no-join6', 'text6', attachment);
