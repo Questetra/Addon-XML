@@ -220,7 +220,7 @@ function buildMetadataObj(metadataMap, fields) {
                 value = Array.of(value);
                 break;
              default: // 現状はありえないが、Box のメタデータのフィールド型が追加された場合に発生
-                throw `The type of "${fieldName}" is unknown: ${field.type}`;
+                throw `The type of "${fieldName}" is not supported: ${field.type}`;
         }
         // オブジェクトに追加
         metadataObj[field.key] = value;
@@ -718,6 +718,361 @@ test('Succeed to add metadata - no field values set', () => {
     });
 
     execute();
+});
+
+/** テンプレートのサンプル */
+const SAMPLE_TEMPLATE_2 = {
+    "templateKey": "template2",
+    "displayName": "テンプレート2",
+    "hidden": false,
+    "fields": [
+        {
+            "type": "float",
+            "key": "field-hidden",
+            "displayName": "数値",
+            "hidden": true
+        },
+        {
+            "type": "float",
+            "key": "field1",
+            "displayName": "数値",
+            "hidden": false
+        },
+        {
+            "type": "date",
+            "key": "field2",
+            "displayName": "日付",
+            "hidden": false
+        },
+        {
+            "type": "enum",
+            "key": "field3",
+            "displayName": "単一選択",
+            "hidden": false,
+            "options": [
+                {
+                  "key": "選択肢1"
+                },
+                {
+                  "key": "選択肢2"
+                }
+            ]
+        },
+        {
+            "type": "multiSelect",
+            "key": "field4",
+            "displayName": "複数選択",
+            "hidden": false,
+            "options": [
+                {
+                    "key": "選択肢A"
+                },
+                {
+                    "key": "選択肢B"
+                }
+            ]
+        },
+        {
+            "type": "string",
+            "key": "field5",
+            "displayName": "表示名が重複したフィールド",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field6",
+            "displayName": "表示名が重複したフィールド",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field7",
+            "displayName": "非表示のフィールド",
+            "hidden": true
+        },
+        {
+            "type": "newType",
+            "key": "field8",
+            "displayName": "新しい型のフィールド",
+            "hidden": false
+        }
+    ]
+};
+
+/**
+ * メタデータの追加に成功
+ * 一部のフィールドのみ設定
+ */
+test('Succeed to add metadata - Some fields are blank', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[2] = '数値';
+    fieldValues[2] = '9999.0000000001';
+    fieldNames[4] = '単一選択';
+    fieldValues[4] = '選択肢2';
+    fieldNames[5] = '複数選択';
+    fieldValues[5] = '選択肢A';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const metadataObj = {
+        'field1': 9999.0000000001,
+        'field3': '選択肢2',
+        'field4': ['選択肢A']
+    };
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE_2.templateKey, metadataObj);
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 数値型フィールドに数値として解釈できない文字列を入力し、エラー
+ */
+test('The float value is invalid - includes invalid characters', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[0] = '数値';
+    fieldValues[0] = 'abc123';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "数値" is float, but the value "abc123" is invalid as float.');
+});
+
+/**
+ * 数値型フィールドにカンマ区切りの数値を入力し、エラー
+ */
+test('The float value is invalid - includes comma', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[3] = '数値';
+    fieldValues[3] = '1,000';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "数値" is float, but the value "1,000" is invalid as float.');
+});
+
+/**
+ * 数値型フィールドに一の位のない文字列を入力し、エラー
+ */
+test('The float value is invalid - missing ones place', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[1] = '数値';
+    fieldValues[1] = '.1';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "数値" is float, but the value ".1" is invalid as float.');
+});
+
+/**
+ * 数値型フィールドにピリオドが複数個ある文字列を入力し、エラー
+ */
+test('The float value is invalid - multiple periods', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[7] = '数値';
+    fieldValues[7] = '1.00.1';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "数値" is float, but the value "1.00.1" is invalid as float.');
+});
+
+/**
+ * 日付型フィールドに yyyy-MM-dd 形式でない文字列を入力し、エラー
+ */
+test('The date value is invalid - not in yyyy-MM-dd format', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[6] = '日付';
+    fieldValues[6] = '2015/05/01';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "日付" is date, but the value "2015/05/01" is not in the format of "yyyy-MM-dd".');
+});
+
+/**
+ * 日付型フィールドに yyyy-MM-dd 形式だが日付として不正な文字列を入力し、エラー
+ */
+test('The date value is invalid - invalid date', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[5] = '日付';
+    fieldValues[5] = '2020-06-31';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "日付" is date, but the value "2020-06-31" is invalid as date.');
+});
+
+/**
+ * 単一選択型フィールドに選択肢の表示名として存在しない文字列を入力し、エラー
+ */
+test('The enum value is invalid - option not found', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[4] = '単一選択';
+    fieldValues[4] = '選択肢A';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The value "選択肢A" is not in the options of the field "単一選択".');
+});
+
+/**
+ * 複数選択型フィールドに選択肢の表示名として存在しない文字列を入力し、エラー
+ */
+test('The multiSelect value is invalid - option not found', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[3] = '複数選択';
+    fieldValues[3] = '選択肢1';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The value "選択肢1" is not in the options of the field "複数選択".');
+});
+
+/**
+ * 指定した表示名のフィールドが存在しない
+ */
+test('Field not found', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[2] = '存在しないフィールド';
+    fieldValues[2] = '文字列';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Field with display name "存在しないフィールド" not found.');
+});
+
+/**
+ * 指定した表示名のフィールドは存在するが、非表示に設定されている
+ */
+test('Field is hidden', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[1] = '非表示のフィールド';
+    fieldValues[1] = '文字列';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Field with display name "非表示のフィールド" not found.');
+});
+
+/**
+ * 指定した表示名のフィールドが複数存在する
+ */
+test('Multiple fields found', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[0] = '表示名が重複したフィールド';
+    fieldValues[0] = '文字列';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Multiple fields with display name "表示名が重複したフィールド" found.');
+});
+
+/**
+ * フィールドの型が非対応（現状はありえないが、Box のメタデータのフィールド型が追加された場合に発生）
+ */
+test('Field type not supported', () => {
+    const fileId = 'fileId-1';
+    const fieldNames = new Array(FIELD_SIZE).fill('');
+    const fieldValues = new Array(FIELD_SIZE).fill('');
+    fieldNames[0] = '新しい型のフィールド';
+    fieldValues[0] = '文字列';
+    prepareConfigs(fileId, 'テンプレート2', fieldNames, fieldValues);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE_2);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('The type of "新しい型のフィールド" is not supported: newType');
 });
 
     ]]></test>
