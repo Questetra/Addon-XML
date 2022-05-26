@@ -327,4 +327,399 @@ function addMetadata(oauth2, fileId, templateKey, metadataObj) {
         YII=
     </icon>
 
+    <test><![CDATA[
+
+/** 扱えるフィールドの数 */
+const FIELD_SIZE = 8;
+
+/**
+ * 設定の準備
+ * @param fileId
+ * @param templateName
+ * @param fieldNames
+ * @param fieldValues
+ */
+const prepareConfigs = (fileId, templateName, fieldNames, fieldValues) => {
+    configs.put('conf_OAuth2', 'Box');
+
+    // ファイル ID を保存した文字型データ項目（単一行）を準備し、設定
+    const fileIdDef = engine.createDataDefinition('ファイル ID', 1, 'q_FileId', 'STRING_TEXTFIELD');
+    engine.setData(fileIdDef, fileId);
+    configs.putObject('conf_FileId', fileIdDef);
+
+    configs.put('conf_TemplateName', templateName);
+
+    for (let i = 0; i < FIELD_SIZE; i++) {
+        configs.put(`conf_FieldName${i+1}`, fieldNames[i]);
+        configs.put(`conf_FieldValue${i+1}`, fieldValues[i]);
+    }
+}
+
+/** フィールド名一覧のサンプル */
+const SAMPLE_FIELD_NAMES = ['文字列1', '文字列2', '文字列3', '文字列4', '数値', '日付', '単一選択', '複数選択'];
+
+/** フィールドの値一覧のサンプル */
+const SAMPLE_FIELD_VALUES = ['文字列1の値', '文字列2の値', '文字列3の値', '文字列4の値', '1000', '2020-01-01', '単一選択の選択肢A', '複数選択の選択肢C'];
+
+/** テンプレートのサンプル */
+const SAMPLE_TEMPLATE = {
+    "templateKey": "template1",
+    "displayName": "テンプレート1",
+    "hidden": false,
+    "fields": [
+        {
+            "type": "string",
+            "key": "field1",
+            "displayName": "使用しないフィールド",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field2",
+            "displayName": "文字列1",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field3",
+            "displayName": "文字列2",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field4",
+            "displayName": "文字列3",
+            "hidden": false
+        },
+        {
+            "type": "string",
+            "key": "field5",
+            "displayName": "文字列4",
+            "hidden": false
+        },
+        {
+            "type": "float",
+            "key": "field6",
+            "displayName": "数値",
+            "hidden": false
+        },
+        {
+            "type": "date",
+            "key": "field7",
+            "displayName": "日付",
+            "hidden": false
+        },
+        {
+            "type": "enum",
+            "key": "field8",
+            "displayName": "単一選択",
+            "hidden": false,
+            "options": [
+                {
+                  "key": "単一選択の選択肢A"
+                },
+                {
+                  "key": "単一選択の選択肢B"
+                }
+            ]
+        },
+        {
+            "type": "multiSelect",
+            "key": "field9",
+            "displayName": "複数選択",
+            "hidden": false,
+            "options": [
+                {
+                    "key": "複数選択の選択肢A"
+                },
+                {
+                    "key": "複数選択の選択肢B"
+                },
+                {
+                    "key": "複数選択の選択肢C"
+                }
+            ]
+        }
+    ]
+};
+
+/** サンプルのフィールド名、値、テンプレートを指定した場合のメタデータオブジェクト */
+const SAMPLE_METADATA_OBJ = {
+    'field2': '文字列1の値',
+    'field3': '文字列2の値',
+    'field4': '文字列3の値',
+    'field5': '文字列4の値',
+    'field6': 1000,
+    'field7': '2020-01-01T00:00:00Z',
+    'field8': '単一選択の選択肢A',
+    'field9': [
+        '複数選択の選択肢C'
+    ]
+};
+
+/**
+ * ファイル ID の値が空でエラー
+ */
+test('File ID is blank', () => {
+    prepareConfigs(null, 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+    expect(execute).toThrow('File ID is blank.');
+});
+
+/**
+ * フィールド名が重複していてエラー（1番目と3番目が重複）
+ */
+test('Same field name set multiple times - 1st and 3rd', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+    configs.put('conf_FieldName3', '文字列1');
+    expect(execute).toThrow('The Field Name "文字列1" is set multiple times.');
+});
+
+/**
+ * フィールド名が重複していてエラー（5番目と8番目が重複）
+ */
+test('Same field name set multiple times - 5th and 8th', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+    configs.put('conf_FieldName5', '複数選択');
+    expect(execute).toThrow('The Field Name "複数選択" is set multiple times.');
+});
+
+/**
+ * テンプレート一覧を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ */
+const assertGetTemplatesRequest = ({url, method}) => {
+    expect(url).toEqual(`https://api.box.com/2.0/metadata_templates/enterprise?limit=500`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * テンプレート一覧を取得する API リクエストのレスポンスを作成する
+ * @param templates
+ * @return Object
+ */
+const buildGetTemplatesRes = (...templates) => {
+    const responseObj = {
+        "entries": []
+    };
+    templates.forEach(template => responseObj.entries.push(template));
+    return responseObj;
+};
+
+/**
+ * テンプレート一覧を取得する API リクエストで失敗
+ */
+test('Fail in API Request to get metadata templates', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to search template. status:400');
+});
+
+/**
+ * 企業内で定義されたテンプレートが 1 つも存在しない
+ */
+test('No templates found', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes();
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Template with display name "テンプレート1" not found.');
+});
+
+/**
+ * 指定した表示名のテンプレートが存在しない
+ */
+test('Template not found', () => {
+    prepareConfigs('fileId-1', 'テンプレート2', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Template with display name "テンプレート2" not found.');
+});
+
+/**
+ * 指定した表示名のテンプレートは存在するが、非表示に設定されている
+ */
+test('Template is hidden', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+
+    const template = JSON.parse(JSON.stringify(SAMPLE_TEMPLATE)); // ディープコピー
+    template.hidden = true;
+    const responseObj = buildGetTemplatesRes(template);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Template with display name "テンプレート1" not found.');
+});
+
+/**
+ * 指定した表示名のテンプレートが複数存在する
+ */
+test('Multiple templates found', () => {
+    prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE, SAMPLE_TEMPLATE);
+    httpClient.setRequestHandler((request) => {
+        assertGetTemplatesRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(execute).toThrow('Multiple templates with display name "テンプレート1" found.');
+});
+
+/**
+ * メタデータを追加する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param fileId
+ * @param templateKey
+ * @param metadataObj
+ */
+const assertPostMetadataRequest = ({url, method, contentType, body}, fileId, templateKey, metadataObj) => {
+    expect(url).toEqual(`https://api.box.com/2.0/files/${encodeURIComponent(fileId)}/metadata/enterprise/${encodeURIComponent(templateKey)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    expect(body).toEqual(JSON.stringify(metadataObj));
+};
+
+/**
+ * メタデータを追加する API リクエストで失敗
+ */
+test('Fail in API Request to add metadata', () => {
+    const fileId = 'fileId-1';
+    prepareConfigs(fileId, 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE.templateKey, SAMPLE_METADATA_OBJ);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to add metadata. status:400');
+});
+
+/**
+ * メタデータの追加に成功
+ */
+test('Succeed to add metadata', () => {
+    const fileId = 'fileId-1';
+    prepareConfigs(fileId, 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE.templateKey, SAMPLE_METADATA_OBJ);
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * メタデータの追加に成功
+ * 指定した表示名のテンプレートは複数存在するが、1 つを除き非表示の場合
+ */
+test('Succeed to add metadata - multiple templates found but only one visible', () => {
+    const fileId = 'fileId-2';
+    prepareConfigs(fileId, 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
+
+    const hiddenTemplate = JSON.parse(JSON.stringify(SAMPLE_TEMPLATE)); // ディープコピー
+    hiddenTemplate.hidden = true;
+    const responseObj = buildGetTemplatesRes(hiddenTemplate, SAMPLE_TEMPLATE, hiddenTemplate);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE.templateKey, SAMPLE_METADATA_OBJ);
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/** フィールド名、値に設定するための、すべて空文字列の配列 */
+const ALL_BLANK = new Array(FIELD_SIZE).fill('');
+
+/**
+ * メタデータの追加に成功
+ * フィールド名がすべて空の場合
+ */
+test('Succeed to add metadata - no field names set', () => {
+    const fileId = 'fileId-3';
+    prepareConfigs(fileId, 'テンプレート1', ALL_BLANK, SAMPLE_FIELD_VALUES);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE.templateKey, {}); // メタデータオブジェクトは空
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * メタデータの追加に成功
+ * フィールドの値がすべて空の場合
+ */
+test('Succeed to add metadata - no field values set', () => {
+    const fileId = 'fileId-3';
+    prepareConfigs(fileId, 'テンプレート1', SAMPLE_FIELD_NAMES, ALL_BLANK);
+
+    const responseObj = buildGetTemplatesRes(SAMPLE_TEMPLATE);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetTemplatesRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertPostMetadataRequest(request, fileId, SAMPLE_TEMPLATE.templateKey, {}); // メタデータオブジェクトは空
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
+
 </service-task-definition>
