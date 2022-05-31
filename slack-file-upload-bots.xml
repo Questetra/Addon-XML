@@ -75,7 +75,7 @@ function upload (oauth2,file,channel){
   }
   if (responseJson.ok !== true) {
     const filename = file.getName();
-    const error = `Failed to upload\n filename: ${filename}`;
+    const error = `Failed to upload\n filename: ${filename} error: ${responseJson.error}`;
     engine.log(`status: ${status}`);
     engine.log(responseTxt);
     throw error;
@@ -176,15 +176,15 @@ test('Number of Files is over the limit.', () => {
  * @param request.method
  * @param email
  */
-const assertPostRequest = ({url, method, contentType, body}, channels, files, filename, filesize) => {
+const assertPostRequest = ({url, method, contentType, body}, channels, filename, filesize) => {
     expect(url).toEqual(`https://slack.com/api/files.upload`);
     expect(method).toEqual('POST');
     expect(body.size()).toEqual(2);
 
     const channel = body.get('channels').get(0);
     const file = body.get('file').get(0);
-    expect(channel).toEqual(`${channels}`);
-    expect(file.getName()).toEqual(`${filename}`);
+    expect(channel).toEqual(channels);
+    expect(file.getName()).toEqual(filename);
     expect(file.getContentType()).startsWith('text/plain');
     expect(file.getLength()).toEqual(filesize);
 };
@@ -200,7 +200,7 @@ test('POST Failed', () => {
     prepareConfigs(configs, 'channel2', files);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel2', files, "file2.txt", 1 );
+      assertPostRequest(request, 'channel2', "file2.txt", 1 );
       return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -211,17 +211,17 @@ test('POST Failed', () => {
 
 /**
  * アップロード成功の場合
- * 1ファイル
+ * 1 ファイル　 2 つのチャンネル
  */
-test('Success - 1 file', () => {
+test('Success - 1 file　2 channels', () => {
     const files = new java.util.ArrayList();
     files.add(createQfile(`file3.txt`, 1));
-    prepareConfigs(configs, 'channel3', files);
+    prepareConfigs(configs, 'channel3, channel4', files);
 
     httpClient.setRequestHandler((request) => {    
       filename = [];
       filename.push("file3.txt");
-      assertPostRequest(request,  'channel3', files, `file3.txt`, 1 );
+      assertPostRequest(request,  'channel3, channel4', `file3.txt`, 1 );
       const responseObj = {
         "ok" : true
       }
@@ -247,7 +247,7 @@ test('Success - fileRequestingLimit', () => {
 
     let requestCount = 0;
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel4', files[requestCount], `file${requestCount}.txt` ,1 );
+      assertPostRequest(request, 'channel4', `file${requestCount}.txt` ,1 );
       const responseObj = {
         "ok" : true
       }
@@ -266,84 +266,15 @@ test('Success - fileRequestingLimit', () => {
 
 /**
  * アップロード失敗の場合
- * 存在しないチャンネル
+ * いずれかのチャンネル が存在ない
  */
-test('Failed - Non-existent channel', () => {
-    const files = new java.util.ArrayList();
-    files.add(createQfile(`file5.txt`, 1));
-    prepareConfigs(configs, 'channel5', files);
-
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request ,'channel5', files, "file5.txt", 1 );
-      const responseObj = {
-        "ok": false,
-        "error": "channel_not_found"
-      };
-    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    expect(execute).toThrow(`Failed to upload\n filename: file5.txt`);
-});
-
-
-
-/**
- * アップロード失敗の場合
- * joinしていないパブリックチャンネル
- */
-test('Failed - Public channels not joined', () => {
-    const files = new java.util.ArrayList();
-    files.add(createQfile(`file6.txt`, 1));
-    prepareConfigs(configs, 'channel6', files);
-
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel6', files, "file6.txt", 1 );
-      const responseObj = {
-        "ok": false,
-        "error": "not_in_channel"
-      };
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    expect(execute).toThrow(`Failed to upload\n filename: file6.txt`);
-});
-
-
-
-/**
- * アップロード成功の場合
- * チャンネルが2つ
- */
-test('Success - 2 channels', () => {
-    const files = new java.util.ArrayList();
-    files.add(createQfile(`file7.txt`, 1));
-    prepareConfigs(configs, 'channel7, channel8', files);
-
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel7, channel8', files, "file7.txt", 1 );
-      const responseObj = {
-        "ok" : true
-      }
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    // <script> のスクリプトを実行
-    execute();
-});
-
-
-
-/**
- * アップロード失敗の場合
- * 2つ目が存在しないチャンネル
- */
-test('Failed - Channel where the second does not exist', () => {
+test('Failed - One of the channels does not exist', () => {
     const file = new java.util.ArrayList();
     file.add(createQfile(`file9.txt`, 1));
     prepareConfigs(configs, 'channel9, channel10', file);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel9, channel10', file, "file9.txt", 1 );
+      assertPostRequest(request, 'channel9, channel10', "file9.txt", 1 );
       const responseObj = {
         "ok": false,
         "error": "channel_not_found"
@@ -351,22 +282,22 @@ test('Failed - Channel where the second does not exist', () => {
       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow(`Failed to upload\n filename: file9.txt`);
+    expect(execute).toThrow(`Failed to upload\n filename: file9.txt error: channel_not_found`);
 });
 
 
 
 /**
  * アップロード失敗の場合
- * 2つ目が join していないチャンネル
+ * いずれかのチャンネルに join していない
  */
-test('Failed - Channel where the second does not join', () => {
+test('Failed - Not joined to any channel', () => {
     const file = new java.util.ArrayList();
     file.add(createQfile(`file10.txt`, 1));
     prepareConfigs(configs, 'channel9, channel11', file);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel9, channel11', file, "file10.txt", 1 );
+      assertPostRequest(request, 'channel9, channel11', "file10.txt", 1 );
       const responseObj = {
         "ok": false,
         "error": "not_in_channel"
@@ -374,7 +305,7 @@ test('Failed - Channel where the second does not join', () => {
       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow(`Failed to upload\n filename: file10.txt`);
+    expect(execute).toThrow(`Failed to upload\n filename: file10.txt error: not_in_channel`);
 });
 
 
@@ -389,7 +320,7 @@ test('Failed - no data file', () => {
     prepareConfigs(configs, 'channel12', file);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel12', file, "kara.txt", 0  );
+      assertPostRequest(request, 'channel12', "kara.txt", 0  );
       const responseObj = {
         "ok": false,
         "error": "no_file_data"
@@ -397,7 +328,7 @@ test('Failed - no data file', () => {
       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow(`Failed to upload\n filename: kara.txt`);
+    expect(execute).toThrow(`Failed to upload\n filename: kara.txt error: no_file_data`);
 });
 ]]></test>    
 </service-task-definition>
