@@ -152,12 +152,21 @@ function chargeCustomer(auth, customerIds, amountStr, currency, description) {
             .post(apiUri);
         const status = response.getStatusCode();
         const responseStr = response.getResponseAsString();
-        if (status === 200) {
-            responseObj = JSON.parse(responseStr);
-            break; // ループから抜ける
+        if (status !== 200) {
+            engine.log(responseStr);
+            engine.log(`Failed to charge customer: ${customerId}, payment method: ${paymentMethodId}, status: ${status}`);
+            continue;
         }
-        engine.log(responseStr);
-        engine.log(`Failed to charge customer. customer: ${customerId}, payment method: ${paymentMethodId}, status: ${status}`);
+        responseObj = JSON.parse(responseStr);
+        const paymentIntentId = responseObj.id;
+        if (responseObj.status === 'requires_action') {
+            // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で課金が完了しない場合、課金をキャンセル
+            engine.log(`Payment method ${paymentMethodId} requires additional action by the customer. Canceling the payment: ${paymentIntentId}`);
+            cancelPaymentIntent(auth, paymentIntentId);
+            responseObj = null;
+            continue;
+        }
+        break;
     }
     if (responseObj === null) {
         throw 'No API request succeeded.';
@@ -180,7 +189,7 @@ function getDefaultPaymentMethodId(auth, customerId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get customer. customer: ${customerId}, Status: ${status}`;
+        throw `Failed to get customer: ${customerId}, status: ${status}`;
     }
     const responseObj = JSON.parse(responseStr);
     if (responseObj.deleted) { // 削除済みの顧客の場合
@@ -191,6 +200,24 @@ function getDefaultPaymentMethodId(auth, customerId) {
         paymentMethodId = responseObj.default_source;
     }
     return paymentMethodId;
+}
+
+/**
+  * PaymentIntent をキャンセルする POST リクエストを送信する
+  * @param {String} oauth 認証設定
+  * @param {String} paymentIntentId キャンセルする PaymentIntent の ID
+  */
+function cancelPaymentIntent(auth, paymentIntentId) {
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}/cancel`;
+    const response = httpClient.begin()
+            .authSetting(auth) // with "Authorization: Bearer XX"
+            .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to cancel the payment intent: ${paymentIntentId}, status: ${status}`;
+    }
 }
 
 /*
