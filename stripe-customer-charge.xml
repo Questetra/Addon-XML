@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-05-31</last-modified>
+    <last-modified>2022-06-02</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Charge Customer</label>
@@ -60,8 +60,6 @@
 
     <script><![CDATA[// GraalJS Script (engine type: 2)
 
-//////// START "main()" /////////////////////////////////////////////////////////////////
-
 main();
 
 function main(){ 
@@ -90,46 +88,13 @@ function main(){
     amountStr = amountInt.toString();
 
     //// == Calculating / 演算 ==
-    /// Create a PaymentIntent Object
-    /// POST /v1/payment_intents
-    // https://stripe.com/docs/api/payment_intents/create
-    // https://stripe.com/docs/api/authentication
-    // If you need to authenticate via bearer auth (e.g., for a cross-origin request),
-    // use -H "Authorization: Bearer sk_xxx" instead of -u sk_test_xxx.
-
-    const apiUri = "https://api.stripe.com/v1/payment_intents";
-    let responseObj = null;
-    for (let i = 0; i < customerIds.length; i++) {
-        // throwing Request to the API (POST)
-        const customerId = customerIds[i];
-        const response = httpClient.begin()
-            .authSetting(auth) // with "Authorization: Bearer XX"
-            .formParam('customer', customerId)
-            .formParam('amount', amountStr)
-            .formParam('currency', currency)
-            .formParam('description', description)
-            .formParam('confirm', 'true')
-            .post(apiUri);
-        const status = response.getStatusCode();
-        const responseStr = response.getResponseAsString();
-        if (status === 200) {
-            responseObj = JSON.parse(responseStr);
-            break; // ループから抜ける
-        }
-        engine.log(responseStr);
-        engine.log(`Failed to charge customer. Customer ID: ${customerId}, Status: ${status}`);
-    }
-
-    if (responseObj === null) {
-        throw 'No API request succeeded.';
-    }
+    const chargeObj = chargeCustomer(auth, customerIds, amountStr, currency, description);
 
     //// == Data Updating / ワークフローデータへの代入 ==
-    const charge = responseObj.charges.data[0];
-    const card = charge.payment_method_details.card;
     if (chargeIdDef !== null) { // STRING
-        engine.setData(chargeIdDef, charge.id);
+        engine.setData(chargeIdDef, chargeObj.id);
     }
+    const card = chargeObj.payment_method_details.card;
     if (cardBrandDef !== null) { // STRING
         engine.setData(cardBrandDef, card.brand);
     }
@@ -149,7 +114,84 @@ function main(){
         engine.setData(cardExpDef, cardExpDate);
     }
 
-} //////// END "main()" /////////////////////////////////////////////////////////////////
+}
+
+/**
+  * 顧客に課金する
+  * @param {String} oauth 認証設定
+  * @param {Array<String>} customerIds 顧客 ID 一覧
+  * @param {String} amountString 金額
+  * @param {String} currency 通貨コード
+  * @param {String} description 説明
+  * @return {Object} chargeObject 作成された課金オブジェクト
+  */
+function chargeCustomer(auth, customerIds, amountStr, currency, description) {
+    /// Create and Confirm a PaymentIntent Object
+    /// POST /v1/payment_intents
+    // https://stripe.com/docs/api/payment_intents/create
+    // https://stripe.com/docs/api/authentication
+
+    const apiUri = 'https://api.stripe.com/v1/payment_intents';
+    let responseObj = null;
+    for (let i = 0; i < customerIds.length; i++) {
+        // throwing Request to the API (POST)
+        const customerId = customerIds[i];
+        const paymentMethodId = getDefaultPaymentMethodId(auth, customerId);
+        if (paymentMethodId === null) {
+            engine.log(`Customer ${customerId} does not have a default payment method.`);
+            continue;
+        }
+        const response = httpClient.begin()
+            .authSetting(auth) // with "Authorization: Bearer XX"
+            .formParam('customer', customerId)
+            .formParam('payment_method', paymentMethodId)
+            .formParam('amount', amountStr)
+            .formParam('currency', currency)
+            .formParam('description', description)
+            .formParam('confirm', 'true')
+            .post(apiUri);
+        const status = response.getStatusCode();
+        const responseStr = response.getResponseAsString();
+        if (status === 200) {
+            responseObj = JSON.parse(responseStr);
+            break; // ループから抜ける
+        }
+        engine.log(responseStr);
+        engine.log(`Failed to charge customer. customer: ${customerId}, payment method: ${paymentMethodId}, status: ${status}`);
+    }
+    if (responseObj === null) {
+        throw 'No API request succeeded.';
+    }
+    return responseObj.charges.data[0]; // Charge Object
+}
+
+/**
+  * 顧客情報を取得する GET リクエストを送信し、デフォルトの支払方法の ID を取得する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @return {String} paymentMethodId 支払方法の ID
+  */
+function getDefaultPaymentMethodId(auth, customerId) {
+    const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`;
+    const response = httpClient.begin()
+            .authSetting(auth) // with "Authorization: Bearer XX"
+            .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get customer. customer: ${customerId}, Status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    if (responseObj.deleted) { // 削除済みの顧客の場合
+        throw `Customer ${customerId} is deleted.`;
+    }
+    let paymentMethodId = responseObj.invoice_settings.default_payment_method;
+    if (paymentMethodId === null) {
+        paymentMethodId = responseObj.default_source;
+    }
+    return paymentMethodId;
+}
 
 /*
 
