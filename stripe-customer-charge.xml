@@ -38,9 +38,9 @@
             <label>C5: Charge Description (Registration Num, Corp Name, etc)</label>
             <label locale="ja">C5: 課金説明（会員番号・法人名など）</label>
         </config>
-        <config name="conf_ChargeId" required="false" form-type="SELECT" select-data-type="STRING">
-            <label>C6: Data item to save Stripe Charge ID</label>
-            <label locale="ja">C6: Stripe の課金 ID を保存するデータ項目</label>
+        <config name="conf_PaymentId" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save ID of the payment object created on Stripe</label>
+            <label locale="ja">C6: Stripe 上に作成された支払オブジェクトの ID を保存するデータ項目</label>
         </config>
         <config name="conf_CardBrand" required="false" form-type="SELECT" select-data-type="STRING">
             <label>C7: Data item to save Card Brand</label>
@@ -68,7 +68,7 @@ function main(){
     let amountStr = configs.get('conf_Amount');               /// REQUIRED
     const currency = configs.get('conf_Currency');            /// REQUIRED
     const description = configs.get('conf_Description');      /// REQUIRED
-    const chargeIdDef = configs.getObject('conf_ChargeId');   // NotRequired
+    const paymentIdDef = configs.getObject('conf_PaymentId'); // NotRequired
     const cardBrandDef = configs.getObject('conf_CardBrand'); // NotRequired
     const cardLast4Def = configs.getObject('conf_CardLast4'); // NotRequired
     const cardExpDef = configs.getObject('conf_CardExp');     // NotRequired *STRING/YMDATE
@@ -91,20 +91,20 @@ function main(){
     amountStr = amountInt.toString();
 
     //// == Calculating / 演算 ==
-    let chargeObj = null;
+    let paymentIntentObj = null;
     const defaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId);
     if (defaultPaymentMethodId !== null) {
-        chargeObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+        paymentIntentObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
     }
-    if (chargeObj === null) {
-        chargeObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+    if (paymentIntentObj === null) {
+        paymentIntentObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
     }
 
     //// == Data Updating / ワークフローデータへの代入 ==
-    if (chargeIdDef !== null) { // STRING
-        engine.setData(chargeIdDef, chargeObj.id);
+    if (paymentIdDef !== null) { // STRING
+        engine.setData(paymentIdDef, paymentIntentObj.id);
     }
-    const card = chargeObj.payment_method_details.card;
+    const card = paymentIntentObj.charges.data[0].payment_method_details.card;
     if (cardBrandDef !== null) { // STRING
         engine.setData(cardBrandDef, card.brand);
     }
@@ -163,7 +163,7 @@ function getDefaultPaymentMethodId(auth, customerId) {
   * @param {String} amountString 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
-  * @return {Object} chargeObject 作成された課金オブジェクト
+  * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
 function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description) {
     /// Create and Confirm a PaymentIntent Object
@@ -192,16 +192,15 @@ function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, 
         engine.log(errorLog);
         return null;
     }
-    responseObj = JSON.parse(responseStr);
-    const paymentIntentId = responseObj.id;
-    if (responseObj.status === 'requires_action') {
+    const paymentIntentObj = JSON.parse(responseStr);
+    if (paymentIntentObj.status === 'requires_action') {
         // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で支払いが完了しない場合、支払いをキャンセル
-        engine.log(`Payment method ${paymentMethodId} requires additional action by the customer. Canceling the payment: ${paymentIntentId}`);
-        cancelPaymentIntent(auth, paymentIntentId);
+        engine.log(`Payment method ${paymentMethodId} requires additional action. Canceling the payment: ${paymentIntentObj.id}`);
+        cancelPaymentIntent(auth, paymentIntentObj.id);
         return null;
     }
-    engine.log(`Payment succeeded: ${paymentIntentId}`);
-    return responseObj.charges.data[0]; // Charge Object
+    engine.log(`Payment succeeded: ${paymentIntentObj.id}`);
+    return paymentIntentObj;
 }
 
 /**
@@ -230,15 +229,15 @@ function cancelPaymentIntent(auth, paymentIntentId) {
   * @param {String} amountString 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
-  * @return {Object} chargeObject 作成された課金オブジェクト
+  * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
 function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description) {
     const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId);
     for (let i = 0; i < otherPaymentMethodIds.length; i++) {
         const paymentMethodId = otherPaymentMethodIds[i];
-        const chargeObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description);
-        if (chargeObj !== null) {
-            return chargeObj;
+        const paymentIntentObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description);
+        if (paymentIntentObj !== null) {
+            return paymentIntentObj;
         }
     }
     throw 'No payment method succeeded.';
