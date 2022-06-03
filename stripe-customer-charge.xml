@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-02</last-modified>
+    <last-modified>2022-06-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Charge Customer</label>
@@ -10,13 +10,11 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-customer-charge/
     </help-page-url>
 
-    <summary>This item charges the customer on Stripe. If the primary payment method (Customer object) fails,
-        the backup payment method will be charged. If all method fails, no Charge object will be created and an
-        Abended Error log will be output.
+    <summary>This item charges the customer's card on Stripe. If the default payment method (card) fails, this item
+        tries to charge another card attached to the customer. An error occurs if all the payment methods fail.
     </summary>
-    <summary locale="ja">この工程は、Stripe 上で顧客に課金します。メインの支払方法（一行目の顧客オブジェクト）への課金が失敗した場合には、
-        予備の支払方法（二行目以降の顧客オブジェクト）に対して課金します。すべての課金に失敗した場合、"課金オブジェクト" は生成されず、
-        異常終了エラーログが出力されます。
+    <summary locale="ja">この工程は、Stripe 上で顧客のカードに課金します。デフォルトの支払方法（カード）への課金が失敗した場合には、
+        顧客に紐づけられている予備のカードに対して課金します。すべてのカードへの課金に失敗した場合、エラーになります。
     </summary>
 
     <configs>
@@ -24,9 +22,9 @@
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
-        <config name="conf_CustomerIds" required="true" el-enabled="true" form-type="TEXTAREA">
-            <label>C2: Set Customer ID on each line (first line is primary)</label>
-            <label locale="ja">C2: 各行に Customer ID をセットしてください（一行目がプライマリ）</label>
+        <config name="conf_CustomerId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Customer ID to charge</label>
+            <label locale="ja">C2: 課金する顧客の ID</label>
         </config>
         <config name="conf_Amount" required="true" el-enabled="true" form-type="TEXTFIELD">
             <label>C3: Set Charge Amount in positive integer.</label>
@@ -66,7 +64,7 @@ function main(){
 
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');                    /// REQUIRED
-    const customerIdsStr = configs.get('conf_CustomerIds');   /// REQUIRED
+    const customerId = configs.get('conf_CustomerId');        /// REQUIRED
     let amountStr = configs.get('conf_Amount');               /// REQUIRED
     const currency = configs.get('conf_Currency');            /// REQUIRED
     const description = configs.get('conf_Description');      /// REQUIRED
@@ -75,9 +73,8 @@ function main(){
     const cardLast4Def = configs.getObject('conf_CardLast4'); // NotRequired
     const cardExpDef = configs.getObject('conf_CardExp');     // NotRequired *STRING/YMDATE
 
-    const customerIds = customerIdsStr.split('\n').filter(id => id !== '');
-    if (customerIds.length === 0) {
-        throw 'No Customer ID is set.';
+    if (customerId === '') {
+        throw 'Customer ID is blank.';
     }
 
     amountStr = amountStr.replace(/,/g, '').replace(/\./g, '');
@@ -88,7 +85,14 @@ function main(){
     amountStr = amountInt.toString();
 
     //// == Calculating / 演算 ==
-    const chargeObj = chargeCustomer(auth, customerIds, amountStr, currency, description);
+    let chargeObj = null;
+    const defaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId);
+    if (defaultPaymentMethodId !== null) {
+        chargeObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+    }
+    if (chargeObj === null) {
+        chargeObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+    }
 
     //// == Data Updating / ワークフローデータへの代入 ==
     if (chargeIdDef !== null) { // STRING
@@ -117,68 +121,10 @@ function main(){
 }
 
 /**
-  * 顧客に課金する
-  * @param {String} oauth 認証設定
-  * @param {Array<String>} customerIds 顧客 ID 一覧
-  * @param {String} amountString 金額
-  * @param {String} currency 通貨コード
-  * @param {String} description 説明
-  * @return {Object} chargeObject 作成された課金オブジェクト
-  */
-function chargeCustomer(auth, customerIds, amountStr, currency, description) {
-    /// Create and Confirm a PaymentIntent Object
-    /// POST /v1/payment_intents
-    // https://stripe.com/docs/api/payment_intents/create
-    // https://stripe.com/docs/api/authentication
-
-    const apiUri = 'https://api.stripe.com/v1/payment_intents';
-    let responseObj = null;
-    for (let i = 0; i < customerIds.length; i++) {
-        // throwing Request to the API (POST)
-        const customerId = customerIds[i];
-        const paymentMethodId = getDefaultPaymentMethodId(auth, customerId);
-        if (paymentMethodId === null) {
-            engine.log(`Customer ${customerId} does not have a default payment method.`);
-            continue;
-        }
-        const response = httpClient.begin()
-            .authSetting(auth) // with "Authorization: Bearer XX"
-            .formParam('customer', customerId)
-            .formParam('payment_method', paymentMethodId)
-            .formParam('amount', amountStr)
-            .formParam('currency', currency)
-            .formParam('description', description)
-            .formParam('confirm', 'true')
-            .post(apiUri);
-        const status = response.getStatusCode();
-        const responseStr = response.getResponseAsString();
-        if (status !== 200) {
-            engine.log(responseStr);
-            engine.log(`Failed to charge customer: ${customerId}, payment method: ${paymentMethodId}, status: ${status}`);
-            continue;
-        }
-        responseObj = JSON.parse(responseStr);
-        const paymentIntentId = responseObj.id;
-        if (responseObj.status === 'requires_action') {
-            // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で課金が完了しない場合、課金をキャンセル
-            engine.log(`Payment method ${paymentMethodId} requires additional action by the customer. Canceling the payment: ${paymentIntentId}`);
-            cancelPaymentIntent(auth, paymentIntentId);
-            responseObj = null;
-            continue;
-        }
-        break;
-    }
-    if (responseObj === null) {
-        throw 'No API request succeeded.';
-    }
-    return responseObj.charges.data[0]; // Charge Object
-}
-
-/**
   * 顧客情報を取得する GET リクエストを送信し、デフォルトの支払方法の ID を取得する
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
-  * @return {String} paymentMethodId 支払方法の ID
+  * @return {String} defaultPaymentMethodId デフォルトの支払方法の ID
   */
 function getDefaultPaymentMethodId(auth, customerId) {
     const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`;
@@ -195,29 +141,127 @@ function getDefaultPaymentMethodId(auth, customerId) {
     if (responseObj.deleted) { // 削除済みの顧客の場合
         throw `Customer ${customerId} is deleted.`;
     }
-    let paymentMethodId = responseObj.invoice_settings.default_payment_method;
-    if (paymentMethodId === null) {
-        paymentMethodId = responseObj.default_source;
+    let defaultPaymentMethodId = responseObj.invoice_settings.default_payment_method;
+    if (defaultPaymentMethodId === null) {
+        // Source として登録されている場合もある
+        defaultPaymentMethodId = responseObj.default_source;
     }
-    return paymentMethodId;
+    return defaultPaymentMethodId;
 }
 
 /**
-  * PaymentIntent をキャンセルする POST リクエストを送信する
+  * 顧客のカードに課金する。課金に失敗した場合は null を返す
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} paymentMethodId 支払方法の ID
+  * @param {String} amountString 金額
+  * @param {String} currency 通貨コード
+  * @param {String} description 説明
+  * @return {Object} chargeObject 作成された課金オブジェクト
+  */
+function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description) {
+    /// Create and Confirm a PaymentIntent Object
+    /// POST /v1/payment_intents
+    // https://stripe.com/docs/api/payment_intents/create
+    // https://stripe.com/docs/api/authentication
+
+    const apiUri = 'https://api.stripe.com/v1/payment_intents';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId)
+        .formParam('payment_method', paymentMethodId)
+        .formParam('amount', amountStr)
+        .formParam('currency', currency)
+        .formParam('description', description)
+        .formParam('confirm', 'true')
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        engine.log(`Failed to charge customer: ${customerId}, payment method: ${paymentMethodId}, status: ${status}`);
+        return null;
+    }
+    responseObj = JSON.parse(responseStr);
+    const paymentIntentId = responseObj.id;
+    if (responseObj.status === 'requires_action') {
+        // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で支払いが完了しない場合、支払いをキャンセル
+        engine.log(`Payment method ${paymentMethodId} requires additional action by the customer. Canceling the payment: ${paymentIntentId}`);
+        cancelPaymentIntent(auth, paymentIntentId);
+        return null;
+    }
+    return responseObj.charges.data[0]; // Charge Object
+}
+
+/**
+  * 未完了の支払いをキャンセルする POST リクエストを送信する
   * @param {String} oauth 認証設定
   * @param {String} paymentIntentId キャンセルする PaymentIntent の ID
   */
 function cancelPaymentIntent(auth, paymentIntentId) {
     const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}/cancel`;
     const response = httpClient.begin()
-            .authSetting(auth) // with "Authorization: Bearer XX"
-            .post(apiUri);
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
         throw `Failed to cancel the payment intent: ${paymentIntentId}, status: ${status}`;
     }
+}
+
+/**
+  * 顧客のデフォルト以外のカードに課金する。すべての課金に失敗した場合はエラー
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} defaultPaymentMethodId デフォルトの支払方法の ID
+  * @param {String} amountString 金額
+  * @param {String} currency 通貨コード
+  * @param {String} description 説明
+  * @return {Object} chargeObject 作成された課金オブジェクト
+  */
+function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description) {
+    const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId);
+    let chargeObj = null;
+    for (let i = 0; i < otherPaymentMethodIds.length; i++) {
+        const paymentMethodId = otherPaymentMethodIds[i];
+        chargeObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description);
+        if (chargeObj !== null) {
+            return chargeObj;
+        }
+    }
+    throw 'No payment method succeeded.';
+}
+
+/**
+  * 顧客のデフォルト以外の支払方法（カード）の ID 一覧を取得する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} defaultPaymentMethodId デフォルトの支払方法の ID
+  * @return {Array<String>} paymentMethodIds デフォルト以外の支払方法（カード）の ID 一覧
+  */
+function getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId) {
+    const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}/payment_methods`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .queryParam('type', 'card') // required
+        .queryParam('limit', '100') // maximum limit
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get the customer's payment methods: ${customerId}, status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const paymentMethods = responseObj.data;
+    if (paymentMethods.length === 0) {
+        throw `The customer ${customerId} does not have any card-type payment method.`;
+    }
+    const paymentMethodIds = paymentMethods.map(paymentMethod => paymentMethod.id)
+        .filter(id => id !== defaultPaymentMethodId); // デフォルトの支払方法の ID を除く
+    return paymentMethodIds;
 }
 
 /*
