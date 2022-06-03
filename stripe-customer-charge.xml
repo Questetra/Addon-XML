@@ -118,13 +118,14 @@ function main(){
     amountStr = amountInt.toString();
 
     //// == Calculating / 演算 ==
+    const httpCounter = makeHttpCounter(); // HTTP リクエスト数のカウンタ
     let paymentIntentObj = null;
-    const defaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId);
+    const defaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId, httpCounter);
     if (defaultPaymentMethodId !== null) {
-        paymentIntentObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+        paymentIntentObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter);
     }
     if (paymentIntentObj === null) {
-        paymentIntentObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description);
+        paymentIntentObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter);
     }
 
     //// == Data Updating / ワークフローデータへの代入 ==
@@ -154,16 +155,33 @@ function main(){
 }
 
 /**
+  * HTTP リクエスト数のカウンタを作成する
+  */
+function makeHttpCounter() {
+    let httpCount = 0;
+    return {
+        increment: function() {
+            httpCount++;
+        },
+        value: function() {
+            return httpCount;
+        }
+    }
+};
+
+/**
   * 顧客情報を取得する GET リクエストを送信し、デフォルトの支払方法の ID を取得する
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {String} defaultPaymentMethodId デフォルトの支払方法の ID
   */
-function getDefaultPaymentMethodId(auth, customerId) {
+function getDefaultPaymentMethodId(auth, customerId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`;
     const response = httpClient.begin()
             .authSetting(auth) // with "Authorization: Bearer XX"
             .get(apiUri);
+    httpCounter.increment();
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
@@ -184,15 +202,17 @@ function getDefaultPaymentMethodId(auth, customerId) {
 
 /**
   * 顧客のカードに課金する。課金に失敗した場合は null を返す
+  * 顧客による認証が必要で支払いが完了しない場合、支払いをキャンセルして null を返す
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {String} paymentMethodId 支払方法の ID
   * @param {String} amountString 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
-function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description) {
+function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description, httpCounter) {
     /// Create and Confirm a PaymentIntent Object
     /// POST /v1/payment_intents
     // https://stripe.com/docs/api/payment_intents/create
@@ -208,6 +228,7 @@ function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, 
         .formParam('description', description)
         .formParam('confirm', 'true')
         .post(apiUri);
+    httpCounter.increment();
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
@@ -223,7 +244,7 @@ function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, 
     if (paymentIntentObj.status === 'requires_action') {
         // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で支払いが完了しない場合、支払いをキャンセル
         engine.log(`Payment method ${paymentMethodId} requires additional action. Canceling the payment: ${paymentIntentObj.id}`);
-        cancelPaymentIntent(auth, paymentIntentObj.id);
+        cancelPaymentIntent(auth, paymentIntentObj.id, httpCounter);
         return null;
     }
     engine.log(`Payment succeeded: ${paymentIntentObj.id}`);
@@ -234,12 +255,14 @@ function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, 
   * 未完了の支払いをキャンセルする POST リクエストを送信する
   * @param {String} oauth 認証設定
   * @param {String} paymentIntentId キャンセルする PaymentIntent の ID
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   */
-function cancelPaymentIntent(auth, paymentIntentId) {
+function cancelPaymentIntent(auth, paymentIntentId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}/cancel`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .post(apiUri);
+    httpCounter.increment();
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
@@ -256,13 +279,18 @@ function cancelPaymentIntent(auth, paymentIntentId) {
   * @param {String} amountString 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
-function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description) {
-    const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId);
+function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter) {
+    const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId, httpCounter);
+    const httpLimit = httpClient.getRequestingLimit();
     for (let i = 0; i < otherPaymentMethodIds.length; i++) {
+        if (httpCounter.value() + 2 > httpLimit) { // 各支払方法につき、課金とキャンセルとで最大2回のリクエストが発生する
+            throw `Number of HTTP requests exceeds the limit.`;
+        }
         const paymentMethodId = otherPaymentMethodIds[i];
-        const paymentIntentObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description);
+        const paymentIntentObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description, httpCounter);
         if (paymentIntentObj !== null) {
             return paymentIntentObj;
         }
@@ -275,15 +303,17 @@ function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, curr
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {String} defaultPaymentMethodId デフォルトの支払方法の ID
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {Array<String>} paymentMethodIds デフォルト以外の支払方法（カード）の ID 一覧
   */
-function getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId) {
+function getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}/payment_methods`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .queryParam('type', 'card') // required
         .queryParam('limit', '100') // maximum limit
         .get(apiUri);
+    httpCounter.increment();
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
@@ -301,7 +331,6 @@ function getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId) {
 }
 
     ]]></script>
-
 
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADaUlEQVRYR8WXSUwTYRTH/x9bS8tS
