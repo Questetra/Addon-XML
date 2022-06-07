@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-06</last-modified>
+    <last-modified>2022-06-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Charge Customer</label>
@@ -26,13 +26,9 @@
             <label>C2: Customer ID to charge</label>
             <label locale="ja">C2: 課金する顧客の ID</label>
         </config>
-        <config name="conf_Amount" required="true" el-enabled="true" form-type="TEXTFIELD">
-            <label>C3: Charge Amount (positive integer)</label>
-            <label locale="ja">C3: 課金する金額（正の整数）</label>
-        </config>
         <config name="conf_Currency" required="true" form-type="SELECT_ITEM">
-            <label>C4: Currency Code</label>
-            <label locale="ja">C4: 課金通貨コード</label>
+            <label>C3: Currency Code</label>
+            <label locale="ja">C3: 課金通貨コード</label>
             <item value="AUD">
                 <label>AUD</label>
             </item>
@@ -60,6 +56,10 @@
             <item value="USD">
                 <label>USD</label>
             </item>
+        </config>
+        <config name="conf_Amount" required="true" form-type="SELECT" select-data-type="DECIMAL" editable="true">
+            <label>C4: Charge Amount</label>
+            <label locale="ja">C4: 課金する金額</label>
         </config>
         <config name="conf_Description" required="true" el-enabled="true" form-type="TEXTFIELD">
             <label>C5: Charge Description (Registration Num, Corp Name, etc)</label>
@@ -94,45 +94,26 @@ main();
 function main(){ 
 
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');                      /// REQUIRED
-    const customerId = configs.get('conf_CustomerId');          /// REQUIRED
-    let amountStr = configs.get('conf_Amount');                 /// REQUIRED
-    const currency = configs.get('conf_Currency');              /// REQUIRED
-    const description = configs.get('conf_Description');        /// REQUIRED
+    const auth = configs.get('conf_Auth');
+    const customerId = getTextConfig('conf_CustomerId', 'Customer ID');
+    const currency = configs.get('conf_Currency');
+    const amount = decideChargeAmount(currency);
+    const description = getTextConfig('conf_Description', 'Charge description');
     const paymentIdDef = configs.getObject('conf_PaymentId');   // NotRequired
     const paymentUrlDef = configs.getObject('conf_PaymentUrl'); // NotRequired
     const cardBrandDef = configs.getObject('conf_CardBrand');   // NotRequired
     const cardLast4Def = configs.getObject('conf_CardLast4');   // NotRequired
     const cardExpDef = configs.getObject('conf_CardExp');       // NotRequired *STRING/YMDATE
 
-    if (customerId === '') {
-        throw 'Customer ID is blank.';
-    }
-    if (amountStr === '') {
-        throw 'Charge Amount is blank.';
-    }
-    if (description === '') {
-        throw 'Charge Description is blank.';
-    }
-
-    amountStr = amountStr.replace(/,/g, '').replace(/\./g, '');
-    // Stripe の制限で、最大8桁まで
-    // https://stripe.com/docs/currencies#minimum-and-maximum-charge-amounts
-    // 最小値は通貨と為替レートによって異なるため、API のバリデーションに任せる
-    const regex = /^[1-9]\d{0,7}$/;
-    if (!regex.test(amountStr)) {
-        throw `Charge amount must be positive integer smaller than 100000000.`;
-    }
-
     //// == Calculating / 演算 ==
     const httpCounter = makeHttpCounter(); // HTTP リクエスト数のカウンタ
     let paymentIntentObj = null;
     const defaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId, httpCounter);
     if (defaultPaymentMethodId !== null) {
-        paymentIntentObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter);
+        paymentIntentObj = chargeCustomer(auth, customerId, defaultPaymentMethodId, amount, currency, description, httpCounter);
     }
     if (paymentIntentObj === null) {
-        paymentIntentObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter);
+        paymentIntentObj = tryOtherCards(auth, customerId, defaultPaymentMethodId, amount, currency, description, httpCounter);
     }
 
     //// == Data Updating / ワークフローデータへの代入 ==
@@ -161,6 +142,68 @@ function main(){
         engine.setData(cardExpDef, cardExpDate);
     }
 
+}
+
+/**
+  * STRING の config から値を読み出す。空文字列の場合はエラー
+  * @param {String} confName config 名
+  * @param {String} label エラーメッセージ用のラベル
+  * @return {String} value 値
+  */
+function getTextConfig(confName, label) {
+    const value = configs.get(confName);
+    if (value === '') {
+        throw `${label} is blank.`;
+    }
+    return value;
+}
+
+/**
+  * API リクエストに設定する課金金額を決定する
+  * 課金金額として不正な場合はエラー
+  * @param {String} currency 通貨コード
+  * @return {String} amount 課金金額（正の整数）
+  */
+function decideChargeAmount(currency) {
+    const maxAmount = 99999999;
+    const amountDef = configs.getObject('conf_Amount');
+    if (amountDef !== null) { // 数値型データ項目を指定している場合
+        let bigDecimal = engine.findData(amountDef);
+        if (bigDecimal === null) {
+            throw 'Charge amount is blank.';
+        }
+        if (bigDecimal.signum() !== 1) {
+            throw 'Charge amount must be positive.'
+        }
+        if (currency !== 'JPY' && currency !== 'KRW') {
+            bigDecimal = bigDecimal.movePointRight(2);
+        }
+        let longValue;
+        try {
+            longValue = bigDecimal.longValueExact();
+        } catch (e) {
+            throw 'Charge amount must be integer (for JPY and KRW) or decimal with 2 decimal places (for the other currencies).';
+        }
+        if (longValue > maxAmount) {
+            throw `Charge amount to set to the HTTP request must be smaller than ${maxAmount + 1}.`;
+        }
+        return longValue.toString();
+    }
+    // 直接指定している場合
+    let amount = configs.get('conf_Amount');
+    if (currency === 'JPY' || currency === 'KRW') {
+        const regex = /^[1-9]\d{0,7}$/;
+        if (!regex.test(amount)) {
+            throw `Charge amount must be positive integer smaller than ${maxAmount + 1} for JPY and KRW.`;
+        }
+    } else {
+        const regex = /^[1-9]\d{0,5}(\.\d{1,2})?$/;
+        if (!regex.test(amount)) {
+            throw `Charge amount must be positive integer or decimal with 2 decimal places smaller than ${(maxAmount + 1) / 100}.`;
+        }
+        amount = amount.replace('.', '');
+    }
+    return amount;
 }
 
 /**
@@ -216,13 +259,13 @@ function getDefaultPaymentMethodId(auth, customerId, httpCounter) {
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {String} paymentMethodId 支払方法の ID
-  * @param {String} amountString 金額
+  * @param {String} amount 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
-function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description, httpCounter) {
+function chargeCustomer(auth, customerId, paymentMethodId, amount, currency, description, httpCounter) {
     /// Create and Confirm a PaymentIntent Object
     /// POST /v1/payment_intents
     // https://stripe.com/docs/api/payment_intents/create
@@ -233,7 +276,7 @@ function chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, 
         .authSetting(auth) // with "Authorization: Bearer XX"
         .formParam('customer', customerId)
         .formParam('payment_method', paymentMethodId)
-        .formParam('amount', amountStr)
+        .formParam('amount', amount)
         .formParam('currency', currency)
         .formParam('description', description)
         .formParam('confirm', 'true')
@@ -286,13 +329,13 @@ function cancelPaymentIntent(auth, paymentIntentId, httpCounter) {
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {String} defaultPaymentMethodId デフォルトの支払方法の ID
-  * @param {String} amountString 金額
+  * @param {String} amount 金額
   * @param {String} currency 通貨コード
   * @param {String} description 説明
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   * @return {Object} paymentIntentObj 作成された PaymentIntent オブジェクト
   */
-function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, currency, description, httpCounter) {
+function tryOtherCards(auth, customerId, defaultPaymentMethodId, amount, currency, description, httpCounter) {
     const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId, httpCounter);
     const httpLimit = httpClient.getRequestingLimit();
     for (let i = 0; i < otherPaymentMethodIds.length; i++) {
@@ -300,7 +343,7 @@ function tryOtherCards(auth, customerId, defaultPaymentMethodId, amountStr, curr
             throw `Number of HTTP requests exceeds the limit.`;
         }
         const paymentMethodId = otherPaymentMethodIds[i];
-        const paymentIntentObj = chargeCustomer(auth, customerId, paymentMethodId, amountStr, currency, description, httpCounter);
+        const paymentIntentObj = chargeCustomer(auth, customerId, paymentMethodId, amount, currency, description, httpCounter);
         if (paymentIntentObj !== null) {
             return paymentIntentObj;
         }
