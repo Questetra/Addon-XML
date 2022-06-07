@@ -255,7 +255,6 @@ function getDefaultPaymentMethodId(auth, customerId, httpCounter) {
 
 /**
   * 顧客のカードに課金する。課金に失敗した場合は null を返す
-  * 顧客による認証が必要で支払いが完了しない場合、支払いをキャンセルして null を返す
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {String} paymentMethodId 支払方法の ID
@@ -279,6 +278,7 @@ function chargeCustomer(auth, customerId, paymentMethodId, amount, currency, des
         .formParam('amount', amount)
         .formParam('currency', currency)
         .formParam('description', description)
+        .formParam('off_session', 'true') // 顧客による認証が必要な場合、課金が失敗する
         .formParam('confirm', 'true')
         .post(apiUri);
     httpCounter.increment();
@@ -294,34 +294,8 @@ function chargeCustomer(auth, customerId, paymentMethodId, amount, currency, des
         return null;
     }
     const paymentIntentObj = JSON.parse(responseStr);
-    if (paymentIntentObj.status === 'requires_action') {
-        // PaymentIntent オブジェクトは作成できたが、顧客による認証が必要で支払いが完了しない場合、支払いをキャンセル
-        engine.log(`Payment method ${paymentMethodId} requires additional action. Canceling the payment: ${paymentIntentObj.id}`);
-        cancelPaymentIntent(auth, paymentIntentObj.id, httpCounter);
-        return null;
-    }
     engine.log(`Payment succeeded: ${paymentIntentObj.id}`);
     return paymentIntentObj;
-}
-
-/**
-  * 未完了の支払いをキャンセルする POST リクエストを送信する
-  * @param {String} oauth 認証設定
-  * @param {String} paymentIntentId キャンセルする PaymentIntent の ID
-  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  */
-function cancelPaymentIntent(auth, paymentIntentId, httpCounter) {
-    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}/cancel`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .post(apiUri);
-    httpCounter.increment();
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to cancel the payment intent: ${paymentIntentId}, status: ${status}`;
-    }
 }
 
 /**
@@ -339,7 +313,7 @@ function tryOtherCards(auth, customerId, defaultPaymentMethodId, amount, currenc
     const otherPaymentMethodIds = getOtherPaymentMethodIds(auth, customerId, defaultPaymentMethodId, httpCounter);
     const httpLimit = httpClient.getRequestingLimit();
     for (let i = 0; i < otherPaymentMethodIds.length; i++) {
-        if (httpCounter.value() + 2 > httpLimit) { // 各支払方法につき、課金とキャンセルとで最大2回のリクエストが発生する
+        if (httpCounter.value() >= httpLimit) {
             throw `Number of HTTP requests exceeds the limit.`;
         }
         const paymentMethodId = otherPaymentMethodIds[i];
