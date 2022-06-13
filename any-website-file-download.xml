@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2021-09-29</last-modified>
+    <last-modified>2022-06-13</last-modified>
 
     <label>(Any Website): Download File</label>
     <label locale="ja">(任意Webサイト): ファイル ダウンロード</label>
 
-    <summary>Downloads a file and adds to file-type data. The GET request to the URL is thrown and the response is saved
+    <summary>This item downloads a file and adds to file-type data. The GET request to the URL is thrown and the response is saved
         as a file.
     </summary>
-    <summary locale="ja">ファイルをダウンロードし、ファイル型データに追加します。指定したURLへGETリクエストが投げられ、そのレスポンスがファイルとして保存されます。</summary>
+    <summary locale="ja">この工程は、ファイルをダウンロードし、ファイル型データに追加します。指定したURLへGETリクエストが投げられ、そのレスポンスがファイルとして保存されます。</summary>
 
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
@@ -17,17 +17,21 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/any-website-file-download/</help-page-url>
 
     <configs>
+  <config name="conf_OAuth2" form-type="OAUTH2">
+    <label>C1: Basic Auth Setting / OAuth2 Setting</label>
+    <label locale="ja">C1: Basic 認証設定 / OAuth2 設定</label>
+  </config>
         <config name="conf_DataIdA" required="true" form-type="TEXTFIELD" el-enabled="true">
-            <label>C1: File URL</label>
-            <label locale="ja">C1: ダウンロードファイルの URL</label>
+            <label>C2: File URL</label>
+            <label locale="ja">C2: ダウンロードファイルの URL</label>
         </config>
         <config name="conf_DataIdB" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>C2: Data Item to add the file (File)</label>
-            <label locale="ja">C2: ダウンロードファイルを追加保存するデータ項目 (ファイル)</label>
+            <label>C3: Data Item to add the file (File)</label>
+            <label locale="ja">C3: ダウンロードファイルを追加保存するデータ項目 (ファイル)</label>
         </config>
         <config name="conf_SaveAs" required="true" el-enabled="true" form-type="TEXTFIELD">
-            <label>C3: Downloaded File Name</label>
-            <label locale="ja">C3: 保存する際のファイル名</label>
+            <label>C4: Downloaded File Name</label>
+            <label locale="ja">C4: 保存する際のファイル名</label>
         </config>
     </configs>
 
@@ -35,6 +39,8 @@
 main();
 function main() {
   //// == Config Retrieving / 工程コンフィグの参照 ==
+  const oauth2 = configs.get("conf_OAuth2");
+  
   const fileUrl = configs.get( "conf_DataIdA" );
   const dataIdB = configs.get( "conf_DataIdB" );
   const saveAs  = configs.get( "conf_SaveAs" );
@@ -53,7 +59,8 @@ function main() {
   if ( ! fileUrl.startsWith('http') ) {
     throw "Invalid URL. URL must start with either http or https.";
   }
-  const response = accessToTheUrl( fileUrl );
+
+  const response = accessToTheUrl( oauth2, fileUrl );
 
   const qfile = saveFile( saveAs, response );
 
@@ -63,18 +70,31 @@ function main() {
 
 /**
   * ダウンロードファイルの URL に GET リクエストを送信し、ファイルを取得する
+  * @param {String} oauth2
   * @param {String} fileUrl  ダウンロードファイルの URL
   * @return {HttpResponseWrapper} response  レスポンス
   */
-function accessToTheUrl( fileUrl ) {
-  let httpRequest = httpClient.begin(); // HttpRequestWrapper
-  // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+function accessToTheUrl( oauth2, fileUrl ) {
   let response;
-  try {
-    response = httpRequest.get( fileUrl ); // HttpResponseWrapper
-  } catch (e) {
-    throw `Unable to access ${fileUrl}.`;
+
+  if (oauth2 !== "" && oauth2 !== null){
+    try {
+      response = httpClient.begin()
+     .authSetting(oauth2)
+     .get(fileUrl);
+    } catch (e) {
+      throw `Unable to access ${fileUrl}.`;
+    }   
+  } else {
+    let httpRequest = httpClient.begin(); // HttpRequestWrapper
+    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
+    try {
+      response = httpRequest.get( fileUrl ); // HttpResponseWrapper
+    } catch (e) {
+      throw `Unable to access ${fileUrl}.`;
+    }   
   }
+
   const httpStatus  = response.getStatusCode();
   engine.log( `STATUS: ${httpStatus}` );
   if (httpStatus >= 300) {
@@ -120,7 +140,8 @@ function updateData( processFiles, dataIdB, qfile ) {
  * @param fileName
  * @return {Object}
  */
-const prepareConfigs = (configs, url, files, fileName) => {
+const prepareConfigs = (configs,  url, files, fileName, auth) => {
+    configs.put('conf_OAuth2', auth);
     configs.put('conf_DataIdA', url);
 
     const fileDef = engine.createDataDefinition('ファイル', 1, 'q_file', 'FILE');
@@ -132,6 +153,8 @@ const prepareConfigs = (configs, url, files, fileName) => {
     return fileDef;
 };
 
+
+
 /**
  * リクエストのテスト
  * @param expectedUrl
@@ -141,6 +164,8 @@ const assertRequest = ({url, method}, expectedUrl) => {
     expect(url).toEqual(expectedUrl);
     expect(method).toEqual('GET');
 };
+
+
 
 /**
  * ファイルのテスト
@@ -157,8 +182,14 @@ const assertFile = (file, name, contentType, encoding, body) => {
     expect(text).toEqual(body);
 };
 
+
+
+/**
+ * ファイル名が空でエラーになる場合
+ * Auth 設定無し
+ */
 test('FileName is blank', () => {
-    prepareConfigs(configs, 'https://example.com/test.pdf', null, '');
+    prepareConfigs(configs, 'https://example.com/test.pdf', null, '', '');
 
     try {
         execute();
@@ -168,8 +199,14 @@ test('FileName is blank', () => {
     }
 });
 
+
+
+/**
+ * 不正な URL でエラーになる場合
+ * Box Oauth2 設定
+ */
 test('URL is invalid', () => {
-    prepareConfigs(configs, 'ftp://example.com', null, 'test.txt');
+    prepareConfigs(configs, 'ftp://example.com', null, 'test.txt', 'Box');
 
     try {
         execute();
@@ -179,8 +216,15 @@ test('URL is invalid', () => {
     }
 });
 
+
+
+/**
+ * ダウンロード成功
+ * Auth 設定無し　Basic 認証や OAuth2 が不要な URL 
+ * 添付ファイル無
+ */
 test('Success / File is null', () => {
-    const fileDef = prepareConfigs(configs, 'https://example.com/test.pdf', null, 'test.pdf');
+    const fileDef = prepareConfigs(configs, 'https://example.com/test.pdf', null, 'test.pdf', '');
 
     httpClient.setRequestHandler((request) => {
         assertRequest(request, 'https://example.com/test.pdf');
@@ -194,14 +238,21 @@ test('Success / File is null', () => {
     assertFile(files.get(0), 'test.pdf', 'text/plain', 'UTF-8', 'こんにちは\n');
 });
 
-test('Success / File is not null', () => {
+
+
+/**
+ * ダウンロード成功
+ * Box Oauth2 を設定  Basic 認証や OAuth2 が必要な URL
+ * 添付ファイル有
+ */
+test('Success / Box Oauth2', () => {
     let files = new java.util.ArrayList();
     files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
     files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
-    const fileDef = prepareConfigs(configs, 'https://example.com/simple.txt', files, ' ');
+    const fileDef = prepareConfigs(configs, 'https://api.box.com/2.0/files/12345/content', files, ' ', 'Box');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'https://example.com/simple.txt');
+        assertRequest(request, 'https://api.box.com/2.0/files/12345/content');
         return httpClient.createHttpResponse(200, 'text/plain; charset=EUC-JP', 'さようなら');
     });
 
@@ -211,6 +262,45 @@ test('Success / File is not null', () => {
     expect(files.size()).toEqual(3);
     assertFile(files.get(2), ' ', 'text/plain', 'EUC-JP', 'さようなら\n');
 });
+
+
+
+/**
+ * ダウンロード失敗
+ * Auth 設定無し　Basic 認証や OAuth2 が必要な URL 
+ * 添付ファイル無
+ */
+test('Success / not Auth', () => {
+    const fileDef = prepareConfigs(configs, 'https://api.box.com/2.0/files/12345/content', null, 'test.pdf', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'https://api.box.com/2.0/files/12345/content');
+        return httpClient.createHttpResponse(401, 'text/plain; charset=UTF-8', '{}');
+    });
+
+   // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to download. STATUS: 401`);
+});
+
+
+
+/**
+ * ダウンロード失敗
+ * Box Oauth2 を設定　Basic 認証やOAuth2 が不要な URL 
+ * 添付ファイル無
+ */
+test('Success / Box Oauth2 - URLs that do not require Auth', () => {
+    const fileDef = prepareConfigs(configs, 'https://raw.githubusercontent.com/Questetra/Addon-XML/release-2021-08-17/kintone-file-download.xml', null, 'kintone-file-download.xml', 'Box');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'https://raw.githubusercontent.com/Questetra/Addon-XML/release-2021-08-17/kintone-file-download.xml');
+        return httpClient.createHttpResponse(404, 'text/plain; charset=UTF-8', '{}');
+    });
+
+   // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to download. STATUS: 404`);
+});
+
 ]]></test>
 
     <icon>
