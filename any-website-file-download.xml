@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-13</last-modified>
+    <last-modified>2022-06-14</last-modified>
 
     <label>(Any Website): Download File</label>
     <label locale="ja">(任意Webサイト): ファイル ダウンロード</label>
@@ -17,13 +17,13 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/any-website-file-download/</help-page-url>
 
     <configs>
-  <config name="conf_OAuth2" form-type="OAUTH2">
-    <label>C1: Basic Auth Setting / OAuth2 Setting</label>
-    <label locale="ja">C1: Basic 認証設定 / OAuth2 設定</label>
-  </config>
         <config name="conf_DataIdA" required="true" form-type="TEXTFIELD" el-enabled="true">
-            <label>C2: File URL</label>
-            <label locale="ja">C2: ダウンロードファイルの URL</label>
+            <label>C1: File URL</label>
+            <label locale="ja">C1: ダウンロードファイルの URL</label>
+        </config>
+		<config name="conf_OAuth2" form-type="OAUTH2">
+            <label>C2: Basic Auth Setting / OAuth2 Setting</label>
+            <label locale="ja">C2: Basic 認証設定 / OAuth2 設定</label>
         </config>
         <config name="conf_DataIdB" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C3: Data Item to add the file (File)</label>
@@ -76,24 +76,16 @@ function main() {
   */
 function accessToTheUrl( oauth2, fileUrl ) {
   let response;
-
-  if (oauth2 !== "" && oauth2 !== null){
-    try {
-      response = httpClient.begin()
-     .authSetting(oauth2)
-     .get(fileUrl);
-    } catch (e) {
+  
+  try {
+    let httpRequest = httpClient.begin()
+    if ( oauth2 !== "" && oauth2 !== null ) {
+      httpRequest = httpRequest.authSetting(oauth2);
+    }
+    response = httpRequest.get( fileUrl );
+  } catch (e) {
       throw `Unable to access ${fileUrl}.`;
-    }   
-  } else {
-    let httpRequest = httpClient.begin(); // HttpRequestWrapper
-    // com.questetra.bpms.core.event.scripttask.HttpClientWrapper
-    try {
-      response = httpRequest.get( fileUrl ); // HttpResponseWrapper
-    } catch (e) {
-      throw `Unable to access ${fileUrl}.`;
-    }   
-  }
+  } 
 
   const httpStatus  = response.getStatusCode();
   engine.log( `STATUS: ${httpStatus}` );
@@ -131,7 +123,7 @@ function updateData( processFiles, dataIdB, qfile ) {
 }
 ]]></script>
 
-  <test><![CDATA[
+<test><![CDATA[
 /**
  * 設定の準備
  * @param configs
@@ -186,44 +178,35 @@ const assertFile = (file, name, contentType, encoding, body) => {
 
 /**
  * ファイル名が空でエラーになる場合
- * Auth 設定無し
  */
 test('FileName is blank', () => {
     prepareConfigs(configs, 'https://example.com/test.pdf', null, '', '');
 
-    try {
-        execute();
-        fail('not come here');
-    } catch (e) {
-        expect(e.message).endsWith('Downloaded File Name isn\'t set');
-    }
+
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    expect(execute).toThrow(`Downloaded File Name isn\'t set`);
 });
 
 
 
 /**
  * 不正な URL でエラーになる場合
- * Box Oauth2 設定
  */
 test('URL is invalid', () => {
     prepareConfigs(configs, 'ftp://example.com', null, 'test.txt', 'Box');
-
-    try {
-        execute();
-        fail('not come here');
-    } catch (e) {
-        expect(e.message).endsWith('Invalid URL. URL must start with either http or https.');
-    }
+	
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    expect(execute).toThrow(`Invalid URL. URL must start with either http or https.`);
 });
 
 
 
 /**
  * ダウンロード成功
- * Auth 設定無し　Basic 認証や OAuth2 が不要な URL 
- * 添付ファイル無
+ * HTTP 認証設定無し　 
+ * HTTP 認証設定 が不要な URL
  */
-test('Success / File is null', () => {
+test('Success / not Auth - URL that does not require HTTP authentication settings', () => {
     const fileDef = prepareConfigs(configs, 'https://example.com/test.pdf', null, 'test.pdf', '');
 
     httpClient.setRequestHandler((request) => {
@@ -242,10 +225,11 @@ test('Success / File is null', () => {
 
 /**
  * ダウンロード成功
- * Box Oauth2 を設定  Basic 認証や OAuth2 が必要な URL
+ * HTTP 認証設定を指定  
+ * Basic 認証や OAuth2 が必要な URL  
  * 添付ファイル有
  */
-test('Success / Box Oauth2', () => {
+test('Success / set Auth - URL that requires HTTP authentication settings', () => {
     let files = new java.util.ArrayList();
     files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
     files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
@@ -267,10 +251,10 @@ test('Success / Box Oauth2', () => {
 
 /**
  * ダウンロード失敗
- * Auth 設定無し　Basic 認証や OAuth2 が必要な URL 
- * 添付ファイル無
+ * HTTP 認証設定無し　 
+ * Basic 認証や OAuth2 が必要な URL
  */
-test('Success / not Auth', () => {
+test('Success / not Auth - URL that requires HTTP authentication settings', () => {
     const fileDef = prepareConfigs(configs, 'https://api.box.com/2.0/files/12345/content', null, 'test.pdf', '');
 
     httpClient.setRequestHandler((request) => {
@@ -278,18 +262,18 @@ test('Success / not Auth', () => {
         return httpClient.createHttpResponse(401, 'text/plain; charset=UTF-8', '{}');
     });
 
-   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to download. STATUS: 401`);
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    expect(execute).toThrow(`Failed to download. STATUS: 401`);
 });
 
 
 
 /**
  * ダウンロード失敗
- * Box Oauth2 を設定　Basic 認証やOAuth2 が不要な URL 
- * 添付ファイル無
+ * HTTP 認証設定を指定　 
+ * Basic 認証やOAuth2 が不要な URL
  */
-test('Success / Box Oauth2 - URLs that do not require Auth', () => {
+test('Success / set Auth - URL that does not require HTTP authentication settings', () => {
     const fileDef = prepareConfigs(configs, 'https://raw.githubusercontent.com/Questetra/Addon-XML/release-2021-08-17/kintone-file-download.xml', null, 'kintone-file-download.xml', 'Box');
 
     httpClient.setRequestHandler((request) => {
@@ -297,8 +281,8 @@ test('Success / Box Oauth2 - URLs that do not require Auth', () => {
         return httpClient.createHttpResponse(404, 'text/plain; charset=UTF-8', '{}');
     });
 
-   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to download. STATUS: 404`);
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    expect(execute).toThrow(`Failed to download. STATUS: 404`);
 });
 
 ]]></test>
