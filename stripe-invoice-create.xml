@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-06-16</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Create Draft Invoice</label>
+    <label locale="ja">Stripe: 請求書ドラフト作成</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-invoice-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-invoice-create/
+    </help-page-url>
+
+    <summary>This item creates a draft invoice on Stripe. The created invoice remains a draft until you finalize it,
+        which allows you to send the invoice or automatically charge the customer.
+    </summary>
+    <summary locale="ja">この工程は、Stripe 上に請求書のドラフト（下書き）を作成します。請求書の送信や自動課金を行うには、
+        別途、請求書ドラフトを確定させる必要があります。
+    </summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_CustomerId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Customer ID</label>
+            <label locale="ja">C2: 顧客 ID</label>
+        </config>
+        <config name="conf_Description" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C3: Description (Displayed to the customer as 'memo')</label>
+            <label locale="ja">C3: 説明（請求書の「メモ」として顧客に表示されます）</label>
+        </config>
+        <config name="conf_LineItems" required="true" form-type="SELECT" select-data-type="LIST">
+            <label>C4: List of line items (item name, unit amount, and quantity)</label>
+            <label locale="ja">C4: ラインアイテム（商品名、単価、数量）の一覧</label>
+        </config>
+        <config name="conf_InvoiceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save ID of the draft invoice</label>
+            <label locale="ja">C5: 請求書ドラフトの ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_InvoiceUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save URL of the draft invoice</label>
+            <label locale="ja">C6: 請求書ドラフトの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[// GraalJS Script (engine type: 2)
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const customerId = retrieveCustomerId();
+    const description = configs.get('conf_Description');
+    const items = retrieveItems();
+    const invoiceIdDef = configs.getObject('conf_InvoiceId');
+    const invoiceUrlDef = configs.getObject('conf_InvoiceUrl');
+
+    //// == Calculating / 演算 ==
+    const invoiceId = createInvoice(auth, customerId, description);
+    items.forEach(item => {
+        attachInvoiceItem(auth, customerId, invoiceId, item);
+    });
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    if (invoiceIdDef !== null) { // STRING
+        engine.setData(invoiceIdDef, invoiceId);
+    }
+    if (invoiceUrlDef !== null) { // STRING
+        engine.setData(invoiceUrlDef, `https://dashboard.stripe.com/invoices/${invoiceId}`);
+    }
+}
+
+/**
+  * config から顧客 ID を読み出す。空文字列の場合はエラー
+  * @return {String} customerId 顧客 ID
+  */
+function retrieveCustomerId() {
+    const customerId = configs.get('conf_CustomerId');
+    if (customerId === '') {
+        throw 'Customer ID is blank.';
+    }
+    return customerId;
+}
+
+/**
+  * config からラインアイテムの情報を読み出す
+  * @return {Object} item
+  * @return {String} item.description アイテム名
+  * @return {String} item.unitAmount 単価
+  * @return {String} item.quantity 数量
+  */
+function retrieveItems() {
+    const itemsDef = configs.getObject('conf_LineItems');
+    const table = engine.findData(itemsDef); // ScriptListArray
+
+    // テーブルのサイズをチェック
+    if (table === null) {
+        throw 'No line items are set.';
+    }
+    if (table.size > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
+        throw 'Too many line items. Number of necessary HTTP requests exceeds the limit.';
+    }
+
+    // サブデータ項目の数と型をチェック
+    const subDataDefs = itemsDef.getDubDataDefinitions(); // List<SubDataDefinitionView>
+    if (subDataDefs.size() < 3) {
+        throw 'The line items must include item description, unit amount, and quantity.';
+    }
+    if (!subDataDefs.get(0).matchDataType('STRING')) {
+        throw 'Line item name (1st column) must be STRING.';
+    }
+    if (!subDataDefs.get(1).matchDataType('DECIMAL')) {
+        throw 'Line item unit amount (2nd column) must be DECIMAL.';
+    }
+    if (!subDataDefs.get(2).matchDataType('DECIMAL')) {
+        throw 'Line item quantity (3rd column) must be DECIMAL.';
+    }
+
+    // オブジェクトの配列に整形
+    const items = [];
+    table.getRows().forEach((row, i) => {
+        const description = row.getObject(0);
+        if (description === null) {
+            throw `Line item ${i+1} is invalid. Item name must not be blank.`;
+        }
+        const unitAmount = parseBigDecimalToString(row.getObject(1), 'Unit amount', i);
+        const quantity = parseBigDecimalToString(row.getObject(2), 'Quantity', i);
+        const item = {description, Amount, quantity};
+        items.push(item);
+    });
+    return items;
+}
+
+/**
+  * BigDecimal が整数かどうかチェックし、String にパースして返す
+  * 小数点以下が0でない場合、負の数の場合はエラー
+  * @param {BigDecimal} bigDecimal 数値
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} i エラー出力用インデックス
+  * @return {String} string 変換後の数値
+  */
+function parseBigDecimalToString(bigDecimal, label, i) {
+    let longValue;
+    try {
+        longValue = bigDecimal.longValueExact();
+    } catch (e) {
+        throw `Line item ${i+1} is invalid. ${label} must be integer.`;
+    }
+    if (longValue < 0) {
+        throw `Line item ${i+1} is invalid. ${label} must not be negative.`;
+    }
+    return longValue.toString();
+}
+
+/**
+  * 請求書のドラフトを作成する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} description 説明
+  * @return {String} invoiceId 作成された請求書ドラフトの ID
+  */
+function createInvoice(auth, customerId, description) {
+    const apiUri = 'https://api.stripe.com/v1/invoices';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId)
+        .formParam('description', description)
+        .formParam('auto_advance', 'false') // ドラフトが自動で確定されないよう false に
+        .formParam('pending_invoice_items_behavior', 'exclude') // 顧客にひもづく他の invoice item が追加されないよう false に
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to create draft invoice. status: ${status}`;
+    }
+    return JSON.parse(responseStr).id;
+}
+
+/**
+  * 請求書ドラフトにラインアイテムを追加する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} invoiceId 請求書ドラフトの ID
+  * @param {Object} item
+  * @param {String} item.description アイテム名
+  * @param {String} item.unitAmount 単価
+  * @param {String} item.quantity 数量
+  */
+function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount, quantity}) {
+    const apiUri = 'https://api.stripe.com/v1/invoiceitems';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId)
+        .formParam('invoice', invoiceId)
+        .formParam('description', description)
+        .formParam('unit_amount', unitAmount)
+        .formParam('quantity', quantity)
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to attach an invoice item. status: ${status}`;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADaUlEQVRYR8WXSUwTYRTH/x9bS8tS
+        KCWIbLFElkgiICQdw2I0xujB6MGo0cRojOBJEy0HLyQmJlQDnoSLXDQYLibGNUoili0sAoKGICAE
+        LLKWRVpKW+YzHWiBtpQpYGau897//ea9973vDYHAD+EbP7O4TSKRLp0llBwBRToIEgCErfrPgGII
+        BB2U0M9Gg+jl1+JDRj7aWwLka1qiWGotAkEBADEfUQAmUFT4EL+SWnX2mCcfjwA5JU0FhNBHAKQ8
+        AzubGSgld+qKVBWb+W8KkKdpekJBC7cZeIMbASn/olbddKflFiBH01hFgAu7EdyuQYEXdWrmorOm
+        C8BufrlrMNdMbABYrXn5bn65sxalpHB9TzgAuG6HtX8HDceX2+ADv0T76XAA5JY0loHgFl+VHdlR
+        PNYWMbdtGhyAbchIJeZpL875juLb5oTBGCC3DSsOIOdhwyVCyTNvVRXBAYgKEaFb99dbV1BCL9fd
+        PfycA8jVND4FcNWTSt5+OaQiX7zrnnCY3T+dhMz4UJR++oWanilvISq1aubaCkBJYzsI0p0VVPvC
+        IAnwhb8fwY3ceOhmTahq1sHf1weWZRaRISLEhYtR3zeDYLEfDGYrWBZoH55DgjwQSoUUA5MGDE0v
+        usJRdGiLmAx7BvTrLhbO+N6pRBxLicCihcX0ghmx4YEwmZfRN2FAWkwILFYWUwtmyCT+6ByZh0oZ
+        BpalsCxTvP8+gaMpEfAhgMnCQvNhAM2Ds84QM1o1E24HoM5vH5xJhkop48Tr+vS4nhOHnj8LGJtf
+        wvFUBapbR5EaHYTkqCDOJitBhtahWWQlhGJYb0K8PBDD04uIlolR3TaKyvoRlyxo1QzZFCAjLhTn
+        s6M5wYb+Ga7WvWMLGJ1bAahq0eFAdDBS9qwBdI7M4WBsKAanjFAqJOj6PQ+90QLtTz1qe22HbOOz
+        HsClBKXnUrmgS1YWr7+NIz9JjoigAK6ee2ViFwBGubIazC9a8aZrHCfTIrnyGM3LKKsZxMcfkx5K
+        sEkT8m1r9QmlIyvuUu1Wx6kJtzyGnmCuMDFgEsPxtmscrzrH+XKvHcPtDiK+kdzZbRhEgo/i1WEk
+        3GVkAxD8OuYupZUlVJiFxN4ogq5kdghBl9L/kQmv13JHJoT8MbFDCPprtn6CCfZzupNxy8f3Hyxn
+        oTBfuPFrAAAAAElFTkSuQmCC
+    </icon>
+
+</service-task-definition>
