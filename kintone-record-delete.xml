@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Delete Record</label>
 <label locale="ja">kintone: レコード削除</label>
-<last-modified>2022-06-16</last-modified>
+<last-modified>2022-06-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>This item deletes records in a Kintone App. It can delete multiple ones at once. It must contain one record ID per line.</summary>
@@ -28,8 +28,8 @@
     <label locale="ja">C5: アプリ ID</label>
   </config>
   <config name="conf_recordId" required="true" form-type="SELECT" select-data-type="STRING">
-    <label>C6: String type data item with record IDs to delete</label>
-    <label locale="ja">C6: 削除するレコードの ID が保存されている文字型データ項目</label>
+    <label>C6: Record IDs to delete</label>
+    <label locale="ja">C6: 削除するレコードの ID</label>
   </config>
 </configs>
 <help-page-url>https://support.questetra.com/bpmn-icons/kintone-record-delete/</help-page-url>
@@ -240,7 +240,7 @@ test('domain is not {subdomain}.kintone.com or {subdomain}.cybozu.com', () => {
 });
 
 /**
- * サブドメインにアンダーバーが含まれていてエラー
+ * サブドメインに英数ハイフン以外が含まれていてエラー
  */
 test('subdomain contains an underscore', () => {
   prepareConfigs('', 'test_05.cybozu.com', '', '5', '55');
@@ -249,18 +249,20 @@ test('subdomain contains an underscore', () => {
 });
 
 /**
- * サブドメインの文字数が多くてエラー
+ * サブドメインが32文字以下でないのでエラー
  */
-test('subdomain is too long', () => {
-  prepareConfigs('', 'testtttttttttttttttttttttttttt-06.cybozu.com', '', '6', '66');
+test('subdomain is not 32 characters or less', () => {
+  const subdomain = 'test-06';
+  subdomain.padEnd(33, 'a')
+  prepareConfigs('', subdomain, '', '6', '66');
   
   expect(execute).toThrow('Invalid Kintone domain.');
 });
 
 /**
- * サブドメインの文字数が少なくてエラー
+ * サブドメインが3文字以上でないのでエラー
  */
-test('subdomain is too short', () => {
+test('subdomain is not 3 characters or more', () => {
   prepareConfigs('', 'te.cybozu.com', '', '7', '77');
   
   expect(execute).toThrow('Invalid Kintone domain.');
@@ -305,28 +307,14 @@ const assertDeleteRequest = ({url, method}, domain, guestSpaceId, appId, recordI
 };
 
 /**
- * DELETE リクエストでエラー
+ * レコード削除成功1件 - basic認証あり
+ * ドメインは{サブドメイン}.cybozu.com
  */
-test('DELETE Failed', () => {
-  prepareConfigs('', 'test-10.cybozu.com', '', '10', '110');
+test('200 Success - 1 record, with Basic Authentication', () => {
+  prepareConfigs('basic', 'test-10.cybozu.com', '', '10', '110');
   
   httpClient.setRequestHandler((request) => {
     assertDeleteRequest(request, 'test-10.cybozu.com', '', '10', '&ids%5B0%5D=110');
-    return httpClient.createHttpResponse(400, 'application/json', '{}');
-  });
-  
-  expect(execute).toThrow('Failed to delete records. status:');
-});
-
-/**
- * レコード削除成功1件 - basic認証
- * ドメインは{サブドメイン}.cybozu.com
- */
-test('200 Success - 1 record, Basic Authentication', () => {
-  prepareConfigs('basic', 'test-11.cybozu.com', '', '11', '111');
-  
-  httpClient.setRequestHandler((request) => {
-    assertDeleteRequest(request, 'test-11.cybozu.com', '', '11', '&ids%5B0%5D=111');
     return httpClient.createHttpResponse(200, 'application/json', '{}');
   });
   
@@ -338,10 +326,10 @@ test('200 Success - 1 record, Basic Authentication', () => {
  * ドメインは {サブドメイン}.kintone.com
  */
 test('200 Success - 2 records, reocord Ids with blank lines, specify guest space ID', () => {
-  prepareConfigs('', 'test-12.kintone.com', '120', '12', '\n112\n\n113\n');
+  prepareConfigs('', 'test-11.kintone.com', '110', '11', '\n111\n\n112\n');
   
   httpClient.setRequestHandler((request) => {
-    assertDeleteRequest(request, 'test-12.kintone.com', '120', '12', '&ids%5B0%5D=112&ids%5B1%5D=113');
+    assertDeleteRequest(request, 'test-11.kintone.com', '110', '11', '&ids%5B0%5D=111&ids%5B1%5D=112');
     return httpClient.createHttpResponse(200, 'application/json', '{}');
   });
   
@@ -350,6 +338,7 @@ test('200 Success - 2 records, reocord Ids with blank lines, specify guest space
 
 /**
  * レコード削除成功100件
+ * 削除上限100件は kintone API の制約
  * ドメインは {サブドメイン}.cybozu.com
  */
 
@@ -360,15 +349,37 @@ test('200 Success - 100 records', () => {
     ids += `${i+1}\n`;
     parameters += `&ids%5B${i}%5D=${i+1}`
   }
-  prepareConfigs('', 'test13.cybozu.com', '', '13', ids);
+  prepareConfigs('', 'test12.cybozu.com', '', '12', ids);
   
   httpClient.setRequestHandler((request) => {
-    assertDeleteRequest(request, 'test13.cybozu.com', '', '13', parameters);
+    assertDeleteRequest(request, 'test12.cybozu.com', '', '12', parameters);
     return httpClient.createHttpResponse(200, 'application/json', '{}');
   });
   
   execute();
 });
+
+/**
+ * DELETE リクエストでエラー - 100件より多い
+ * 削除上限100件は kintone API の制約
+ */
+test('DELETE Failed - more than 100', () => {
+  let ids = '';
+  let parameters = '';
+  for (let i = 0; i < 100; i++) {
+    ids += `${i+1}\n`;
+    parameters += `&ids%5B${i}%5D=${i+1}`
+  }
+  prepareConfigs('', 'test-13.cybozu.com', '', '13', ids);
+  
+  httpClient.setRequestHandler((request) => {
+    assertDeleteRequest(request, 'test-13.cybozu.com', '', '13', parameters);
+    return httpClient.createHttpResponse(400, 'application/json', '{}');
+  });
+  
+  expect(execute).toThrow('Failed to delete records. status:');
+});
+
 
 ]]></test>
 
