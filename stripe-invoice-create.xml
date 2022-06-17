@@ -26,21 +26,37 @@
             <label>C2: Customer ID</label>
             <label locale="ja">C2: 顧客 ID</label>
         </config>
+        <config name="conf_CollectionMethod" required="true" form-type="SELECT_ITEM">
+            <label>C3: Invoicing Method</label>
+            <label locale="ja">C3: 請求方法</label>
+            <item value="charge_automatically">
+                <label>Charge automatically to the customer's default payment method</label>
+                <label locale="ja">顧客のデフォルトの支払い方法に自動課金</label>
+            </item>
+            <item value="send_invoice">
+                <label>Send invoice with payment link by e-mail</label>
+                <label locale="ja">支払いリンク付き請求書をメール送付</label>
+            </item>
+        </config>
+        <config name="conf_DueDate" required="false" form-type="SELECT" select-data-type="DATE_YMD">
+            <label>C4: Due date for payment (required to send invoice by e-mail)</label>
+            <label locale="ja">C4: 支払い期限（請求書をメール送付する場合は必須）</label>
+        </config>
         <config name="conf_Description" required="false" el-enabled="true" form-type="TEXTFIELD">
-            <label>C3: Description (Displayed to the customer as 'memo')</label>
-            <label locale="ja">C3: 説明（請求書の「メモ」として顧客に表示されます）</label>
+            <label>C5: Description (Displayed to the customer as 'memo')</label>
+            <label locale="ja">C5: 説明（請求書の「メモ」として顧客に表示されます）</label>
         </config>
         <config name="conf_LineItems" required="true" form-type="SELECT" select-data-type="LIST">
-            <label>C4: List of line items (item name, unit amount, and quantity)</label>
-            <label locale="ja">C4: ラインアイテム（商品名、単価、数量）の一覧</label>
+            <label>C6: List of line items (item name, unit amount, and quantity)</label>
+            <label locale="ja">C6: ラインアイテム（商品名、単価、数量）の一覧</label>
         </config>
         <config name="conf_InvoiceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C5: Data item to save ID of the draft invoice</label>
-            <label locale="ja">C5: 請求書ドラフトの ID を保存するデータ項目</label>
+            <label>C7: Data item to save ID of the draft invoice</label>
+            <label locale="ja">C7: 請求書ドラフトの ID を保存するデータ項目</label>
         </config>
         <config name="conf_InvoiceUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C6: Data item to save URL of the draft invoice</label>
-            <label locale="ja">C6: 請求書ドラフトの URL を保存するデータ項目</label>
+            <label>C8: Data item to save URL of the draft invoice</label>
+            <label locale="ja">C8: 請求書ドラフトの URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -52,13 +68,15 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const customerId = retrieveCustomerId();
+    const collectionMethod = configs.get('conf_CollectionMethod');
+    const dueDateTimestamp = retrieveDueDate(collectionMethod);
     const description = configs.get('conf_Description');
     const items = retrieveItems();
     const invoiceIdDef = configs.getObject('conf_InvoiceId');
     const invoiceUrlDef = configs.getObject('conf_InvoiceUrl');
 
     //// == Calculating / 演算 ==
-    const invoiceId = createInvoice(auth, customerId, description);
+    const invoiceId = createInvoice(auth, customerId, collectionMethod, dueDateTimestamp, description);
     items.forEach(item => {
         attachInvoiceItem(auth, customerId, invoiceId, item);
     });
@@ -82,6 +100,41 @@ function retrieveCustomerId() {
         throw 'Customer ID is blank.';
     }
     return customerId;
+}
+
+/**
+  * config から請求期日を読み出す。以下の場合はエラー
+  * - 請求方法が charge_automatically で期日が設定されている
+  * - 請求方法が send_invoice で期日が設定されていない
+  * - 過去の日付が設定されている
+  * @param {String} collectionMethod 請求方法
+  * @return {String} dueDateTimestamp 請求期日の23時59分59秒のタイムスタンプ
+  */
+function retrieveDueDate(collectionMethod) {
+    const dueDateDef = configs.getObject('conf_DueDate');
+    if (collectionMethod === 'charge_automatically') {
+        if (dueDateDef !== null) {
+            throw 'Unable to set due date when collection method is charge_automatically.';
+        } else {
+            return null;
+        }
+    }
+    // send_invoice
+    if (dueDateDef === null) {
+        throw 'Due date is required to send invoice by e-mail.';
+    }
+    const dueDate = engine.findData(dueDateDef);
+    if (dueDate === null) {
+        throw 'Due date is required to send invoice by e-mail.';
+    }
+    // QBPMS のタイムゾーンにおける「その日の 23:59:99」のタイムスタンプを取得
+    const datetimeFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss');
+    const dueDateTimestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    if (dueDateTimestamp < now) {
+        throw 'Due date must be a future date.';
+    }
+    return dueDateTimestamp.toString();
 }
 
 /**
@@ -158,18 +211,24 @@ function parseBigDecimalToString(bigDecimal, label, i) {
   * 請求書のドラフトを作成する
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
+  * @param {String} collectionMethod 請求方法
+  * @param {String} dueDateTimestamp 請求期日のタイムスタンプ
   * @param {String} description 説明
   * @return {String} invoiceId 作成された請求書ドラフトの ID
   */
-function createInvoice(auth, customerId, description) {
+function createInvoice(auth, customerId, collectionMethod, dueDateTimestamp, description) {
     const apiUri = 'https://api.stripe.com/v1/invoices';
-    const response = httpClient.begin()
+    const request = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .formParam('customer', customerId)
+        .formParam('collection_method', collectionMethod)
         .formParam('description', description)
         .formParam('auto_advance', 'false') // ドラフトが自動で確定されないよう false に
-        .formParam('pending_invoice_items_behavior', 'exclude') // 顧客にひもづく他の invoice item が追加されないよう false に
-        .post(apiUri);
+        .formParam('pending_invoice_items_behavior', 'exclude'); // 保留中の invoice item が追加されないよう false に
+    if (collectionMethod === 'send_invoice') {
+        request.formParam('due_date', dueDateTimestamp);
+    }
+    const response = request.post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
