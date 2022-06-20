@@ -139,6 +139,7 @@ function retrieveDueDate(collectionMethod) {
 
 /**
   * config からラインアイテムの情報を読み出す
+  * 入力値が不正な場合や、請求額合計が 8 桁（Stripe の上限値）を超える場合はエラー
   * @return {Object} item
   * @return {String} item.description アイテム名
   * @return {String} item.unitAmount 単価
@@ -173,6 +174,7 @@ function retrieveItems() {
 
     // オブジェクトの配列に整形
     const items = [];
+    let totalAmount = 0;
     table.getRows().forEach((row, i) => {
         const description = row.getObject(0);
         if (description === null) {
@@ -180,6 +182,11 @@ function retrieveItems() {
         }
         const unitAmount = parseUnitAmount(row.getObject(1), i);
         const quantity = parseQuantity(row.getObject(2), i);
+        totalAmount += Math.ceil(unitAmount * quantity);
+        // 請求額は Stripe の制限で最大 8 桁まで。IDR のみ 12 桁までだが、ここでは一律で 8 桁までとする
+        if (totalAmount > 99999999) {
+            throw 'The total amount of line items must be less than 100000000.';
+        }
         const item = {description, unitAmount, quantity};
         items.push(item);
     });
@@ -191,22 +198,22 @@ function retrieveItems() {
   * 負の数の場合はエラー
   * @param {BigDecimal} bigDecimal 単価
   * @param {Number} i エラー出力用インデックス
-  * @return {String} string 変換後の単価
+  * @return {float} floatValue 変換後の単価
   */
 function parseUnitAmount(bigDecimal, i) {
     const floatValue = bigDecimal.floatValue();
     if (floatValue < 0) {
         throw `Line item ${i+1} is invalid. Unit amount must not be negative.`;
     }
-    return floatValue.toString();
+    return floatValue;
 }
 
 /**
-  * BigDecimal の数量が整数かどうかチェックし、String にパースして返す
+  * BigDecimal の数量が整数かどうかチェックし、long にパースして返す
   * 小数点以下が0でない場合、負の数の場合はエラー
   * @param {BigDecimal} bigDecimal 数量
   * @param {Number} i エラー出力用インデックス
-  * @return {String} string 変換後の数量
+  * @return {long} longValue 変換後の数量
   */
 function parseQuantity(bigDecimal, i) {
     let longValue;
@@ -218,7 +225,7 @@ function parseQuantity(bigDecimal, i) {
     if (longValue < 0) {
         throw `Line item ${i+1} is invalid. Quantity must not be negative.`;
     }
-    return longValue.toString();
+    return longValue;
 }
 
 /**
@@ -259,8 +266,8 @@ function createInvoice(auth, customerId, collectionMethod, dueDateTimestamp, des
   * @param {String} invoiceId 請求書ドラフトの ID
   * @param {Object} item
   * @param {String} item.description アイテム名
-  * @param {String} item.unitAmount 単価
-  * @param {String} item.quantity 数量
+  * @param {float} item.unitAmount 単価
+  * @param {long} item.quantity 数量
   */
 function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount, quantity}) {
     const apiUri = 'https://api.stripe.com/v1/invoiceitems';
@@ -269,8 +276,8 @@ function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount
         .formParam('customer', customerId)
         .formParam('invoice', invoiceId)
         .formParam('description', description)
-        .formParam('unit_amount_decimal', unitAmount)
-        .formParam('quantity', quantity)
+        .formParam('unit_amount_decimal', unitAmount.toString())
+        .formParam('quantity', quantity.toString())
         .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
