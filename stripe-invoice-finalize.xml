@@ -25,9 +25,9 @@
             <label>C2: Draft Invoice ID</label>
             <label locale="ja">C2: 請求書ドラフトの ID</label>
         </config>
-        <config name="conf_DueDate" required="true" form-type="SELECT" select-data-type="DATE_YMD">
-            <label>C4: Due date for payment</label>
-            <label locale="ja">C4: 支払い期限</label>
+        <config name="conf_DueDate" required="true" form-type="SELECT" select-data-type="DATE_YMD" editable="true">
+            <label>C4: Due date or number of days until due date for payment</label>
+            <label locale="ja">C4: 支払い期日または期日までの日数</label>
         </config>
     </configs>
 
@@ -39,10 +39,10 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
-    const dueDateTimestamp = retrieveDueDate();
+    const dueDateObj = retrieveDueDate();
 
     //// == Calculating / 演算 ==
-    updateInvoice(auth, invoiceId, dueDateTimestamp);
+    updateInvoice(auth, invoiceId, dueDateObj);
     finalizeInvoice(auth, invoiceId);
 }
 
@@ -59,22 +59,41 @@ function retrieveInvoiceId() {
 }
 
 /**
-  * config から請求期日を読み出す。過去の日付が設定されている場合はエラー
-  * @return {String} dueDateTimestamp 請求期日の23時59分59秒のタイムスタンプ
+  * config から請求期日を読み出す。以下の場合はエラー
+  * - 未設定
+  * - 固定値で、値が不正
+  * - データ項目を設定し、値が空
+  * - データ項目を設定し、過去の日付
+  * @return {Object} dueDateObj 以下いずれかのフィールドのみ値をもつ
+  * @return {String} dueDateObj.dueDateTimestamp 支払い期日の23時59分59秒のタイムスタンプ
+  * @return {String} dueDateObj.daysUntilDue 支払い期日までの日数
   */
 function retrieveDueDate() {
-    const dueDate = engine.findData(configs.getObject('conf_DueDate'));
+    const dueDateDef = configs.getObject('conf_DueDate');
+    if (dueDateDef === null) {
+        const daysUntilDue = configs.get('conf_DueDate');
+        if (daysUntilDue === '') {
+            throw 'Due date is not set.';
+        }
+        const regex = /^(\d|[1-9]\d+)$/;
+        if (!regex.test(daysUntilDue)) {
+            throw 'Number of days until due date must be non-negative integer.';
+        }
+        return {daysUntilDue};
+    }
+    const dueDate = engine.findData(dueDateDef);
     if (dueDate === null) {
-        throw 'Due date is required to send invoice by e-mail.';
+        throw 'Due date is not set.';
     }
     // QBPMS のタイムゾーンにおける「その日の 23:59:99」のタイムスタンプを取得
     const datetimeFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss');
-    const dueDateTimestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
+    const timestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
     const now = Math.floor(Date.now() / 1000);
-    if (dueDateTimestamp < now) {
+    if (timestamp < now) {
         throw 'Due date must be a future date.';
     }
-    return dueDateTimestamp.toString();
+    const dueDateTimestamp = timestamp.toString();
+    return {dueDateTimestamp};
 }
 
 /**
@@ -83,15 +102,21 @@ function retrieveDueDate() {
   * - 支払い期日を設定（send_invoice の場合は必須）
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書ドラフトの ID
-  * @param {String} dueDateTimestamp 請求期日のタイムスタンプ
+  * @param {Object} dueDateObj 以下いずれかのフィールドのみ値をもつ
+  * @param {String} dueDateObj.dueDateTimestamp 支払い期日の23時59分59秒のタイムスタンプ
+  * @param {String} dueDateObj.daysUntilDue 支払い期日までの日数
   */
-function updateInvoice(auth, invoiceId, dueDateTimestamp) {
+function updateInvoice(auth, invoiceId, {dueDateTimestamp, daysUntilDue}) {
     const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
-    const response = httpClient.begin()
+    const request = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('collection_method', 'send_invoice')
-        .formParam('due_date', dueDateTimestamp)
-        .post(apiUri);
+        .formParam('collection_method', 'send_invoice');
+    if (dueDateTimestamp) { // dueDateTimestamp が設定されている場合
+        request.formParam('due_date', dueDateTimestamp);
+    } else { // dueDateTimestamp が設定されていない場合、daysUntilDue を使用
+        request.formParam('days_until_due', daysUntilDue);
+    }
+    const response = request.post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
