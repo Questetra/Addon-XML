@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-20</last-modified>
+    <last-modified>2022-06-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Create Draft Invoice</label>
@@ -47,8 +47,8 @@
             <label locale="ja">C5: 説明（請求書の「メモ」として顧客に表示されます）</label>
         </config>
         <config name="conf_LineItems" required="true" form-type="SELECT" select-data-type="LIST">
-            <label>C6: List of line items (item name, unit amount, and quantity)</label>
-            <label locale="ja">C6: ラインアイテム（商品名、単価、数量）の一覧</label>
+            <label>C6: List of item names, unit amounts, and quantities</label>
+            <label locale="ja">C6: 商品名、単価、数量の一覧</label>
         </config>
         <config name="conf_InvoiceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
             <label>C7: Data item to save ID of the draft invoice</label>
@@ -180,9 +180,9 @@ function retrieveItems() {
         if (description === null) {
             throw `Line item ${i+1} is invalid. Item name must not be blank.`;
         }
-        const unitAmount = parseUnitAmount(row.getObject(1), i);
-        const quantity = parseQuantity(row.getObject(2), i);
-        totalAmount += Math.ceil(unitAmount * quantity);
+        const unitAmount = parseBigDecimalToLong(row.getObject(1), 'Unit amount', i);
+        const quantity = parseBigDecimalToLong(row.getObject(2), 'Quantity', i);
+        totalAmount += unitAmount * quantity;
         // 請求額は Stripe の制限で最大 8 桁まで。IDR のみ 12 桁までだが、ここでは一律で 8 桁までとする
         if (totalAmount > 99999999) {
             throw 'The total amount of line items must be less than 100000000.';
@@ -194,36 +194,22 @@ function retrieveItems() {
 }
 
 /**
-  * BigDecimal の単価を float にパースして返す
-  * 負の数の場合はエラー
-  * @param {BigDecimal} bigDecimal 単価
-  * @param {Number} i エラー出力用インデックス
-  * @return {float} floatValue 変換後の単価
-  */
-function parseUnitAmount(bigDecimal, i) {
-    const floatValue = bigDecimal.floatValue();
-    if (floatValue < 0) {
-        throw `Line item ${i+1} is invalid. Unit amount must not be negative.`;
-    }
-    return floatValue;
-}
-
-/**
-  * BigDecimal の数量が整数かどうかチェックし、long にパースして返す
+  * BigDecimal の数値を long にパースして返す
   * 小数点以下が0でない場合、負の数の場合はエラー
-  * @param {BigDecimal} bigDecimal 数量
+  * @param {BigDecimal} bigDecimal 数値
+  * @param {String} label エラー出力用ラベル
   * @param {Number} i エラー出力用インデックス
-  * @return {long} longValue 変換後の数量
+  * @return {long} longValue 変換後の数値
   */
-function parseQuantity(bigDecimal, i) {
+function parseBigDecimalToLong(bigDecimal, label, i) {
     let longValue;
     try {
         longValue = bigDecimal.longValueExact();
     } catch (e) {
-        throw `Line item ${i+1} is invalid. Quantity must be integer.`;
+        throw `Line item ${i+1} is invalid. ${label} must be integer.`;
     }
     if (longValue < 0) {
-        throw `Line item ${i+1} is invalid. Quantity must not be negative.`;
+        throw `Line item ${i+1} is invalid. ${label} must not be negative.`;
     }
     return longValue;
 }
@@ -266,7 +252,7 @@ function createInvoice(auth, customerId, collectionMethod, dueDateTimestamp, des
   * @param {String} invoiceId 請求書ドラフトの ID
   * @param {Object} item
   * @param {String} item.description アイテム名
-  * @param {float} item.unitAmount 単価
+  * @param {long} item.unitAmount 単価
   * @param {long} item.quantity 数量
   */
 function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount, quantity}) {
@@ -276,7 +262,7 @@ function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount
         .formParam('customer', customerId)
         .formParam('invoice', invoiceId)
         .formParam('description', description)
-        .formParam('unit_amount_decimal', unitAmount.toString())
+        .formParam('unit_amount', unitAmount.toString())
         .formParam('quantity', quantity.toString())
         .post(apiUri);
     const status = response.getStatusCode();
