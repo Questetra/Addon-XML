@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-20</last-modified>
+    <last-modified>2022-06-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Finalize Draft Invoice</label>
@@ -10,11 +10,10 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-invoice-finalize/
     </help-page-url>
 
-    <summary>This item finalizes a draft invoice on Stripe. When the invoice has been finalized, Stripe will either
-        send it to the customer by e-mail or charge the customer automatically, according to the invoice's setting.
+    <summary>This item finalizes a draft invoice on Stripe, which allows you to send the invoice or charge the customer.
     </summary>
-    <summary locale="ja">この工程は、Stripe 上の請求書のドラフト（下書き）を確定します。請求書が確定すると、Stripe は請求書の設定に
-        したがい、 顧客に請求書をメール送付、もしくは自動課金をおこないます。
+    <summary locale="ja">この工程は、Stripe 上の請求書のドラフト（下書き）を確定します。請求書が確定すると、顧客に請求書の送付や課金が
+        できるようになります。
     </summary>
 
     <configs>
@@ -26,6 +25,10 @@
             <label>C2: Draft Invoice ID</label>
             <label locale="ja">C2: 請求書ドラフトの ID</label>
         </config>
+        <config name="conf_DueDate" required="true" form-type="SELECT" select-data-type="DATE_YMD">
+            <label>C4: Due date for payment</label>
+            <label locale="ja">C4: 支払い期限</label>
+        </config>
     </configs>
 
     <script><![CDATA[// GraalJS Script (engine type: 2)
@@ -36,8 +39,10 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
+    const dueDateTimestamp = retrieveDueDate();
 
     //// == Calculating / 演算 ==
+    updateInvoice(auth, invoiceId, dueDateTimestamp);
     finalizeInvoice(auth, invoiceId);
 }
 
@@ -54,7 +59,49 @@ function retrieveInvoiceId() {
 }
 
 /**
-  * 請求書のドラフトを作成する
+  * config から請求期日を読み出す。過去の日付が設定されている場合はエラー
+  * @return {String} dueDateTimestamp 請求期日の23時59分59秒のタイムスタンプ
+  */
+function retrieveDueDate() {
+    const dueDate = engine.findData(configs.getObject('conf_DueDate'));
+    if (dueDate === null) {
+        throw 'Due date is required to send invoice by e-mail.';
+    }
+    // QBPMS のタイムゾーンにおける「その日の 23:59:99」のタイムスタンプを取得
+    const datetimeFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss');
+    const dueDateTimestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    if (dueDateTimestamp < now) {
+        throw 'Due date must be a future date.';
+    }
+    return dueDateTimestamp.toString();
+}
+
+/**
+  * 請求書のドラフトを更新する
+  * - collection_method を send_invoice に（メール送付、登録済み支払い方法への課金の両方をできるように）
+  * - 支払い期日を設定（send_invoice の場合は必須）
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書ドラフトの ID
+  * @param {String} dueDateTimestamp 請求期日のタイムスタンプ
+  */
+function updateInvoice(auth, invoiceId, dueDateTimestamp) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('collection_method', 'send_invoice')
+        .formParam('due_date', dueDateTimestamp)
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to update invoice. status: ${status}`;
+    }
+}
+
+/**
+  * 請求書のドラフトを確定する
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書ドラフトの ID
   */
@@ -62,7 +109,7 @@ function finalizeInvoice(auth, invoiceId) {
     const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}/finalize`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('auto_advance', 'true') // 確定後の処理が自動で進むよう true に
+        .formParam('auto_advance', 'false') // 確定後の処理が自動で進まないよう false に
         .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
