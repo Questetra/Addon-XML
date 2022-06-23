@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-21</last-modified>
+    <last-modified>2022-06-23</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Finalize Draft Invoice</label>
@@ -61,36 +61,48 @@ function retrieveInvoiceId() {
 /**
   * config から請求期日を読み出す。以下の場合はエラー
   * - 未設定
-  * - 固定値で、値が不正
+  * - 固定値で、値が不正（整数でない、もしくは5桁以上）
+  * - 固定値で、Stripe の制限による上限日数を超える
   * - データ項目を設定し、値が空
   * - データ項目を設定し、過去の日付
+  * - データ項目を設定し、日付が遠すぎる
   * @return {Object} dueDateObj 以下いずれかのフィールドのみ値をもつ
   * @return {String} dueDateObj.dueDateTimestamp 支払い期日の23時59分59秒のタイムスタンプ
   * @return {String} dueDateObj.daysUntilDue 支払い期日までの日数
   */
 function retrieveDueDate() {
+    const maxDays = 1826; // Stripe の制限による上限日数
     const dueDateDef = configs.getObject('conf_DueDate');
-    if (dueDateDef === null) {
+    if (dueDateDef === null) { // 固定値
         const daysUntilDue = configs.get('conf_DueDate');
         if (daysUntilDue === '') {
             throw 'Due date is not set.';
         }
-        const regex = /^(\d|[1-9]\d+)$/;
+        const regex = /^(\d|[1-9]\d{1,3})$/;
         if (!regex.test(daysUntilDue)) {
-            throw 'Number of days until due date must be non-negative integer.';
+            throw `Number of days until due date must be non-negative integer less than or equal to ${maxDays}.`;
+        }
+        if (parseInt(daysUntilDue, 10) > maxDays) {
+            throw `Number of days until due date must be less than or equal to ${maxDays}.`;
         }
         return {daysUntilDue};
     }
+    // 日付型
     const dueDate = engine.findData(dueDateDef);
     if (dueDate === null) {
         throw 'Due date is not set.';
     }
-    // QBPMS のタイムゾーンにおける「その日の 23:59:99」のタイムスタンプを取得
+    // QBPMS のタイムゾーンにおける「その日の 23:59:59」のタイムスタンプを取得
     const datetimeFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss');
     const timestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
     const now = Math.floor(Date.now() / 1000);
     if (timestamp < now) {
-        throw 'Due date must be a future date.';
+        throw 'Due date must be today or a future date.';
+    }
+    // Stripe の制限は「5 年後の 12 月 31 日まで」だが、ここでは固定値で指定する場合と制限を揃える
+    // timestamp のほうは 23:59:59 なので、上限日数に 1 日加算してチェック
+    if (timestamp - now > (maxDays + 1) * 24 * 60 * 60) {
+        throw `Number of days until due date must be less than or equal to ${maxDays}.`;
     }
     const dueDateTimestamp = timestamp.toString();
     return {dueDateTimestamp};
