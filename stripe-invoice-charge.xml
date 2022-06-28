@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-27</last-modified>
+    <last-modified>2022-06-28</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Charge by Invoice</label>
@@ -41,7 +41,7 @@ function main(){
     //// == Calculating / 演算 ==
     const httpCounter = makeHttpCounter(); // HTTP リクエスト数のカウンタ
     const {customerId, invoiceDefaultPaymentMethodId} = checkInvoice(auth, invoiceId, httpCounter);
-    const chargeId = chargeByInvoice(auth, invoiceId, customerId, invoiceDefaultPaymentMethodId, httpCounter);
+    chargeByInvoice(auth, invoiceId, customerId, invoiceDefaultPaymentMethodId, httpCounter);
 }
 
 /**
@@ -120,22 +120,21 @@ function checkInvoice(auth, invoiceId, httpCounter) {
   * @param {String} customerId 顧客 ID
   * @param {String} invoiceDefaultPaymentMethodId 請求書のデフォルトの支払方法の ID
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  * @return {String} chargeId 課金オブジェクトの ID
   */
 function chargeByInvoice(auth, invoiceId, customerId, invoiceDefaultPaymentMethodId, httpCounter) {
-    let chargeId = null;
+    let succeeded = false;
     if (invoiceDefaultPaymentMethodId !== null) {
-        chargeId = tryCharge(auth, invoiceId, invoiceDefaultPaymentMethodId, httpCounter);
+        succeeded = tryCharge(auth, invoiceId, invoiceDefaultPaymentMethodId, httpCounter);
     }
-    if (chargeId !== null) {
-        return chargeId;
+    if (succeeded) {
+        return;
     }
     const customerDefaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId, httpCounter);
     if (customerDefaultPaymentMethodId !== null && customerDefaultPaymentMethodId !== invoiceDefaultPaymentMethodId) {
-        chargeId = tryCharge(auth, invoiceId, customerDefaultPaymentMethodId, httpCounter);
+        succeeded = tryCharge(auth, invoiceId, customerDefaultPaymentMethodId, httpCounter);
     }
-    if (chargeId !== null) {
-        return chargeId;
+    if (succeeded) {
+        return;
     }
     const customerPaymentMethodIds = getCustomerPaymentMethodIds(auth, customerId, httpCounter);
     const otherPaymentMethodIds = customerPaymentMethodIds
@@ -145,9 +144,9 @@ function chargeByInvoice(auth, invoiceId, customerId, invoiceDefaultPaymentMetho
         if (httpCounter.value() >= httpLimit) {
             throw `Number of HTTP requests exceeds the limit.`;
         }
-        chargeId = tryCharge(auth, invoiceId, otherPaymentMethodIds[i], httpCounter);
-        if (chargeId !== null) {
-            return chargeId;
+        succeeded = tryCharge(auth, invoiceId, otherPaymentMethodIds[i], httpCounter);
+        if (succeeded) {
+            return;
         }
     }
     throw 'No payment method succeeded.';
@@ -159,7 +158,7 @@ function chargeByInvoice(auth, invoiceId, customerId, invoiceDefaultPaymentMetho
   * @param {String} invoiceId 請求書の ID
   * @param {String} paymentMethodId 支払方法の ID
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  * @return {String} chargeId 課金オブジェクトの ID。課金に失敗した場合は null
+  * @return {boolean} succeeded 課金が成功したかどうか
   */
 function tryCharge(auth, invoiceId, paymentMethodId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}/pay`;
@@ -177,10 +176,9 @@ function tryCharge(auth, invoiceId, paymentMethodId, httpCounter) {
             errorLog += `, message: ${error.message}`;
         }
         engine.log(errorLog);
-        return null;
+        return false;
     }
-    const invoiceObj = JSON.parse(responseStr);
-    return invoiceObj.charge;
+    return true;
 }
 
 /**
