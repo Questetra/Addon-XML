@@ -46,12 +46,9 @@ function main(){
     //// == Calculating / 演算 ==
     const httpCounter = makeHttpCounter(); // HTTP リクエスト数のカウンタ
     const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId, httpCounter);
-    let receiptEmail = '';
-    if (sendReceipt) {
-        receiptEmail = getCustomerEmail(auth, customerId, httpCounter);
-    }
-    updatePaymentIntent(auth, paymentIntentId, receiptEmail, httpCounter);
-    chargeByInvoice(auth, invoiceId, customerId, httpCounter);
+    const {customerEmail, defaultPaymentMethodId} = getCustomer(auth, customerId, httpCounter);
+    updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail, httpCounter);
+    chargeByInvoice(auth, invoiceId, defaultPaymentMethodId, customerId, httpCounter);
 }
 
 /**
@@ -121,15 +118,17 @@ function checkInvoice(auth, invoiceId, httpCounter) {
 }
 
 /**
-  * 顧客のメールアドレスを取得する
+  * 顧客オブジェクトを取得し、メールアドレスとデフォルトの支払方法の ID を返す
   * - 顧客が削除済みの場合、エラー
   * - 顧客のメールアドレスが設定されていない場合、エラー
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  * @return {String} customerEmail 顧客のメールアドレス
+  * @return {Object} returnObj
+  * @return {String} returnObj.customerEmail 顧客のメールアドレス。未設定の場合は null
+  * @return {String} returnObj.defaultPaymentMethodId 顧客のデフォルトの支払方法の ID。未設定の場合は null
   */
-function getCustomerEmail(auth, customerId, httpCounter) {
+function getCustomer(auth, customerId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/customers/${customerId}`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
@@ -145,23 +144,32 @@ function getCustomerEmail(auth, customerId, httpCounter) {
     if (customerObj.deleted) {
         throw 'The customer is deleted.';
     }
+    // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
     const customerEmail = customerObj.email;
-    if (customerEmail === null) {
-        // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
-        // 「請求先メールアドレス」の設定有無によらず、顧客のメールアドレスが設定されていない場合はエラーにする
-        throw "The customer's email is not set. Unable to send the receipt.";
+    let defaultPaymentMethodId = customerObj.invoice_settings.default_payment_method;
+    if (defaultPaymentMethodId === null) {
+        // Source として登録されている場合もある
+        defaultPaymentMethodId = customerObj.default_source;
     }
-    return customerEmail;
+    return {customerEmail, defaultPaymentMethodId};
 }
 
 /**
   * 支払オブジェクトを更新し、領収書送付先メールアドレスを設定する
   * @param {String} oauth 認証設定
   * @param {String} paymentIntentId 支払オブジェクトの ID
-  * @param {String} receiptEmail 領収書送付先メールアドレス。領収書を送らない場合は空文字列
+  * @param {boolean} sendReceipt 領収書をメール送付するかどうか
+  * @param {String} customerEmail 顧客のメールアドレス
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   */
-function updatePaymentIntent(auth, paymentIntentId, receiptEmail, httpCounter) {
+function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail, httpCounter) {
+    let receiptEmail = '';
+    if (sendReceipt) {
+        if (customerEmail === null) {
+            throw "The customer's email is not set. Unable to send the receipt.";
+        }
+        receiptEmail = customerEmail;
+    }
     const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
@@ -182,20 +190,20 @@ function updatePaymentIntent(auth, paymentIntentId, receiptEmail, httpCounter) {
   * 2. 顧客の予備の支払方法（カード）
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書の ID
-  * @param {String} customerId 顧客 ID
+  * @param {String} defaultPaymentMethodId 顧客のデフォルトの支払方法の ID
+  * @param {String} customerId 顧客 ID (デフォルトの支払方法に失敗した場合に使用)
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
   */
-function chargeByInvoice(auth, invoiceId, customerId, httpCounter) {
+function chargeByInvoice(auth, invoiceId, defaultPaymentMethodId, customerId, httpCounter) {
     let succeeded = false;
-    const customerDefaultPaymentMethodId = getDefaultPaymentMethodId(auth, customerId, httpCounter);
-    if (customerDefaultPaymentMethodId !== null) {
-        succeeded = tryCharge(auth, invoiceId, customerDefaultPaymentMethodId, httpCounter);
+    if (defaultPaymentMethodId !== null) {
+        succeeded = tryCharge(auth, invoiceId, defaultPaymentMethodId, httpCounter);
     }
     if (succeeded) {
         return;
     }
     const customerPaymentMethodIds = getCustomerPaymentMethodIds(auth, customerId, httpCounter);
-    const otherPaymentMethodIds = customerPaymentMethodIds.filter(id => id !== customerDefaultPaymentMethodId);
+    const otherPaymentMethodIds = customerPaymentMethodIds.filter(id => id !== defaultPaymentMethodId);
     const httpLimit = httpClient.getRequestingLimit();
     for (let i = 0; i < otherPaymentMethodIds.length; i++) {
         if (httpCounter.value() >= httpLimit) {
@@ -236,37 +244,6 @@ function tryCharge(auth, invoiceId, paymentMethodId, httpCounter) {
         return false;
     }
     return true;
-}
-
-/**
-  * 顧客情報を取得する GET リクエストを送信し、デフォルトの支払方法の ID を取得する
-  * @param {String} oauth 認証設定
-  * @param {String} customerId 顧客 ID
-  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  * @return {String} defaultPaymentMethodId デフォルトの支払方法の ID
-  */
-function getDefaultPaymentMethodId(auth, customerId, httpCounter) {
-    const apiUri = `https://api.stripe.com/v1/customers/${customerId}`;
-    const response = httpClient.begin()
-            .authSetting(auth) // with "Authorization: Bearer XX"
-            .get(apiUri);
-    httpCounter.increment();
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to get customer. status: ${status}`;
-    }
-    const responseObj = JSON.parse(responseStr);
-    if (responseObj.deleted) { // 削除済みの顧客の場合
-        throw 'The customer is deleted.';
-    }
-    let defaultPaymentMethodId = responseObj.invoice_settings.default_payment_method;
-    if (defaultPaymentMethodId === null) {
-        // Source として登録されている場合もある
-        defaultPaymentMethodId = responseObj.default_source;
-    }
-    return defaultPaymentMethodId;
 }
 
 /**
