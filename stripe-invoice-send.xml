@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-28</last-modified>
+    <last-modified>2022-07-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Send Invoice</label>
@@ -22,6 +22,10 @@
             <label>C2: Finalized Invoice ID</label>
             <label locale="ja">C2: 確定済み請求書の ID</label>
         </config>
+        <config name="conf_SendReceipt" form-type="TOGGLE">
+            <label>C3: Email the receipt to the customer</label>
+            <label locale="ja">C3: 顧客に領収書をメール送付する</label>
+        </config>
     </configs>
 
     <script><![CDATA[// GraalJS Script (engine type: 2)
@@ -32,11 +36,12 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
+    const sendReceipt = configs.getObject('conf_SendReceipt');
 
     //// == Calculating / 演算 ==
     const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId);
-    checkCustomer(auth, customerId);
-    updatePaymentIntent(auth, paymentIntentId);
+    const customerEmail = checkCustomer(auth, customerId);
+    updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail);
     sendInvoice(auth, invoiceId);
 }
 
@@ -94,11 +99,12 @@ function checkInvoice(auth, invoiceId) {
 }
 
 /**
-  * 顧客をチェックする
+  * 顧客をチェックし、顧客のメールアドレスを返す
   * - 顧客が削除済みの場合、エラー
   * - 顧客のメールアドレスが設定されていない場合、エラー
   * @param {String} oauth 認証設定
   * @param {String} customerId 顧客 ID
+  * @return {String} customerEmail 顧客のメールアドレス
   */
 function checkCustomer(auth, customerId) {
     const apiUri = `https://api.stripe.com/v1/customers/${customerId}`;
@@ -115,23 +121,34 @@ function checkCustomer(auth, customerId) {
     if (customerObj.deleted) {
         throw 'The customer is deleted.';
     }
-    if (customerObj.email === null) {
+    const customerEmail = customerObj.email;
+    if (customerEmail === null) {
         // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
         // 「請求先メールアドレス」の設定有無によらず、顧客のメールアドレスが設定されていない場合はエラーにする
         throw "The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.";
     }
+    return customerEmail;
 }
 
 /**
-  * 支払オブジェクトを更新し、今後の支払いのために支払方法が保存されるようにする
+  * 支払オブジェクトを更新し、
+  * - 今後の支払いのために支払方法が保存されるようにする
+  * - 領収書送付先メールアドレスを設定する
   * @param {String} oauth 認証設定
   * @param {String} paymentIntentId 支払オブジェクトの ID
+  * @param {boolean} sendReceipt 領収書をメール送付するかどうか
+  * @param {String} customerEmail 顧客のメールアドレス
   */
-function updatePaymentIntent(auth, paymentIntentId) {
+function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) {
+    let receiptEmail = '';
+    if (sendReceipt) {
+        receiptEmail = customerEmail;
+    }
     const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .formParam('setup_future_usage', 'off_session') // 今後のオフセッション支払いのために支払方法を保存
+        .formParam('receipt_email', receiptEmail)
         .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
