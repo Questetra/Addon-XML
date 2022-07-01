@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-28</last-modified>
+    <last-modified>2022-07-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Charge by Invoice</label>
@@ -27,6 +27,10 @@
             <label>C2: Finalized Invoice ID</label>
             <label locale="ja">C2: 確定済み請求書の ID</label>
         </config>
+        <config name="conf_SendReceipt" form-type="TOGGLE">
+            <label>C2: Email the receipt to the customer</label>
+            <label locale="ja">C2: 顧客に領収書をメール送付する</label>
+        </config>
     </configs>
 
     <script><![CDATA[// GraalJS Script (engine type: 2)
@@ -37,10 +41,16 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
+    const sendReceipt = configs.getObject('conf_SendReceipt');
 
     //// == Calculating / 演算 ==
     const httpCounter = makeHttpCounter(); // HTTP リクエスト数のカウンタ
-    const customerId = checkInvoice(auth, invoiceId, httpCounter);
+    const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId, httpCounter);
+    let receiptEmail = '';
+    if (sendReceipt) {
+        receiptEmail = getCustomerEmail(auth, customerId, httpCounter);
+    }
+    updatePaymentIntent(auth, paymentIntentId, receiptEmail, httpCounter);
     chargeByInvoice(auth, invoiceId, customerId, httpCounter);
 }
 
@@ -73,12 +83,14 @@ function makeHttpCounter() {
 };
 
 /**
-  * 請求書のステータスをチェックし、顧客 ID を返す
+  * 請求書のステータスをチェックし、顧客 ID と支払オブジェクトの ID を返す
   * - ステータスが open, uncollectible 以外の場合はエラー
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書の ID
   * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
-  * @return {String} customerId 顧客 ID
+  * @return {Object} returnObj
+  * @return {String} returnObj.customerId 顧客 ID
+  * @return {String} returnObj.paymentIntentId 支払オブジェクトの ID
   */
 function checkInvoice(auth, invoiceId, httpCounter) {
     const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
@@ -103,7 +115,65 @@ function checkInvoice(auth, invoiceId, httpCounter) {
         default: // open or uncollectible
             // do nothing
     }
-    return invoiceObj.customer;
+    const customerId = invoiceObj.customer;
+    const paymentIntentId = invoiceObj.payment_intent;
+    return {customerId, paymentIntentId};
+}
+
+/**
+  * 顧客のメールアドレスを取得する
+  * - 顧客が削除済みの場合、エラー
+  * - 顧客のメールアドレスが設定されていない場合、エラー
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
+  * @return {String} customerEmail 顧客のメールアドレス
+  */
+function getCustomerEmail(auth, customerId, httpCounter) {
+    const apiUri = `https://api.stripe.com/v1/customers/${customerId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    httpCounter.increment();
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to retrieve customer. status: ${status}`;
+    }
+    const customerObj = JSON.parse(responseStr);
+    if (customerObj.deleted) {
+        throw 'The customer is deleted.';
+    }
+    const customerEmail = customerObj.email;
+    if (customerEmail === null) {
+        // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
+        // 「請求先メールアドレス」の設定有無によらず、顧客のメールアドレスが設定されていない場合はエラーにする
+        throw "The customer's email is not set. Unable to send the receipt.";
+    }
+    return customerEmail;
+}
+
+/**
+  * 支払オブジェクトを更新し、領収書送付先メールアドレスを設定する
+  * @param {String} oauth 認証設定
+  * @param {String} paymentIntentId 支払オブジェクトの ID
+  * @param {String} receiptEmail 領収書送付先メールアドレス。領収書を送らない場合は空文字列
+  * @param {Closure} httpCounter HTTP リクエスト数のカウンタ
+  */
+function updatePaymentIntent(auth, paymentIntentId, receiptEmail, httpCounter) {
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('receipt_email', receiptEmail)
+        .post(apiUri);
+    httpCounter.increment();
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to update payment intent. status: ${status}`;
+    }
 }
 
 /**
