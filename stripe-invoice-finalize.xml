@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-23</last-modified>
+    <last-modified>2022-07-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Finalize Draft Invoice</label>
@@ -25,9 +25,9 @@
             <label>C2: Draft Invoice ID</label>
             <label locale="ja">C2: 請求書ドラフトの ID</label>
         </config>
-        <config name="conf_DueDate" required="true" form-type="SELECT" select-data-type="DATE_YMD" editable="true">
-            <label>C3: Number of days until due date (fixed value) or due date</label>
-            <label locale="ja">C3: 支払い期日までの日数（固定値）または支払い期日</label>
+        <config name="conf_DueDate" required="true" form-type="SELECT" select-data-type="DATETIME">
+            <label>C3: Due date for payment</label>
+            <label locale="ja">C3: 支払い期日</label>
         </config>
     </configs>
 
@@ -39,10 +39,10 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
-    const dueDateObj = retrieveDueDate();
+    const dueDateTimestamp = retrieveDueDate();
 
     //// == Calculating / 演算 ==
-    updateInvoice(auth, invoiceId, dueDateObj);
+    updateInvoice(auth, invoiceId, dueDateTimestamp);
     finalizeInvoice(auth, invoiceId);
 }
 
@@ -59,53 +59,27 @@ function retrieveInvoiceId() {
 }
 
 /**
-  * config から請求期日を読み出す。以下の場合はエラー
-  * - 未設定
-  * - 固定値で、値が不正（整数でない、もしくは5桁以上）
-  * - 固定値で、Stripe の制限による上限日数を超える
-  * - データ項目を設定し、値が空
-  * - データ項目を設定し、過去の日付
-  * - データ項目を設定し、日付が遠すぎる
-  * @return {Object} dueDateObj 以下いずれかのフィールドのみ値をもつ
-  * @return {String} dueDateObj.dueDateTimestamp 支払い期日の23時59分59秒のタイムスタンプ
-  * @return {String} dueDateObj.daysUntilDue 支払い期日までの日数
+  * config から支払い期日を読み出す。以下の場合はエラー
+  * - データ項目の値が空
+  * - 過去の日時
+  * - 日時が遠すぎる
+  * @return {String} dueDateTimestamp 支払い締め切り日時のタイムスタンプ
   */
 function retrieveDueDate() {
-    const maxDays = 1826; // Stripe の制限による上限日数
-    const dueDateDef = configs.getObject('conf_DueDate');
-    if (dueDateDef === null) { // 固定値
-        const daysUntilDue = configs.get('conf_DueDate');
-        if (daysUntilDue === '') {
-            throw 'Due date is not set.';
-        }
-        const regex = /^(\d|[1-9]\d{1,3})$/;
-        if (!regex.test(daysUntilDue)) {
-            throw `Number of days until due date must be non-negative integer less than or equal to ${maxDays}.`;
-        }
-        if (parseInt(daysUntilDue, 10) > maxDays) {
-            throw `Number of days until due date must be less than or equal to ${maxDays}.`;
-        }
-        return {daysUntilDue};
-    }
-    // 日付型
-    const dueDate = engine.findData(dueDateDef);
-    if (dueDate === null) {
+    const maxDays = 1826; // Stripe の制限は「5 年後の 12 月 31 日まで」だが、単純化のため 1826 日後（5年後）までとする
+    const dueDatetime = engine.findData(configs.getObject('conf_DueDate')); // AddableTimestamp
+    if (dueDatetime === null) {
         throw 'Due date is not set.';
     }
-    // QBPMS のタイムゾーンにおける「その日の 23:59:59」のタイムスタンプを取得
-    const datetimeFormatter = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss');
-    const timestamp = Math.floor(datetimeFormatter.parse(`${dueDate.toString()} 23:59:59`).getTime() / 1000);
+    const timestamp = Math.floor(dueDatetime.getTime() / 1000);
     const now = Math.floor(Date.now() / 1000);
     if (timestamp < now) {
-        throw 'Due date must be today or a future date.';
+        throw 'Due date must be future.';
     }
-    // Stripe の制限は「5 年後の 12 月 31 日まで」だが、ここでは固定値で指定する場合と制限を揃える
-    // timestamp のほうは 23:59:59 なので、上限日数に 1 日加算してチェック
-    if (timestamp - now > (maxDays + 1) * 24 * 60 * 60) {
+    if (timestamp - now > maxDays * 24 * 60 * 60) {
         throw `Number of days until due date must be less than or equal to ${maxDays}.`;
     }
-    const dueDateTimestamp = timestamp.toString();
-    return {dueDateTimestamp};
+    return timestamp.toString();
 }
 
 /**
@@ -114,21 +88,15 @@ function retrieveDueDate() {
   * - 支払い期日を設定（send_invoice の場合は必須）
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書ドラフトの ID
-  * @param {Object} dueDateObj 以下いずれかのフィールドのみ値をもつ
-  * @param {String} dueDateObj.dueDateTimestamp 支払い期日の23時59分59秒のタイムスタンプ
-  * @param {String} dueDateObj.daysUntilDue 支払い期日までの日数
+  * @param {String} dueDateTimestamp 支払い締め切り日時のタイムスタンプ
   */
-function updateInvoice(auth, invoiceId, {dueDateTimestamp, daysUntilDue}) {
+function updateInvoice(auth, invoiceId, dueDateTimestamp) {
     const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
-    const request = httpClient.begin()
+    const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('collection_method', 'send_invoice');
-    if (dueDateTimestamp) { // dueDateTimestamp が設定されている場合
-        request.formParam('due_date', dueDateTimestamp);
-    } else { // dueDateTimestamp が設定されていない場合、daysUntilDue を使用
-        request.formParam('days_until_due', daysUntilDue);
-    }
-    const response = request.post(apiUri);
+        .formParam('collection_method', 'send_invoice')
+        .formParam('due_date', dueDateTimestamp)
+        .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
