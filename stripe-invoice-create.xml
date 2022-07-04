@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-21</last-modified>
+    <last-modified>2022-07-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Create Draft Invoice</label>
@@ -100,7 +100,7 @@ function retrieveItems() {
     if (table === null) {
         throw 'No line items are set.';
     }
-    if (table.size > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
+    if (table.size() > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
         throw 'Too many line items. Number of necessary HTTP requests exceeds the limit.';
     }
 
@@ -122,7 +122,8 @@ function retrieveItems() {
     // オブジェクトの配列に整形
     const items = [];
     let totalAmount = 0;
-    table.getRows().forEach((row, i) => {
+    for (let i = 0; i < table.size(); i++) {
+        const row = table.getRow(i);
         const description = row.getObject(0);
         if (description === null) {
             throw `Line item ${i+1} is invalid. Item name must not be blank.`;
@@ -136,7 +137,7 @@ function retrieveItems() {
         }
         const item = {description, unitAmount, quantity};
         items.push(item);
-    });
+    }
     return items;
 }
 
@@ -235,5 +236,173 @@ function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount
         3GVkAxD8OuYupZUlVJiFxN4ogq5kdghBl9L/kQmv13JHJoT8MbFDCPprtn6CCfZzupNxy8f3Hyxn
         oTBfuPFrAAAAAElFTkSuQmCC
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param customerId
+ * @param description
+ * @param lineItems
+ * @return returnObj
+ * @return returnObj.invoiceIdDef
+ * @return returnObj.invoiceUrlDef
+ */
+const prepareConfigs = (customerId, description, lineItems) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_CustomerId', customerId);
+    configs.put('conf_Description', description);
+
+    // ラインアイテムの情報を保存したテーブル型データ項目を準備し、設定
+    const tableDef = engine.createDataDefinition('商品名、単価、数量の一覧', 1, 'q_lineItems', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'DECIMAL');
+    configs.putObject('conf_LineItems', tableDef);
+
+    if (lineItems.length > 0) {
+        const table = tableDef.createListArray(); // ScriptListArray
+        lineItems.forEach(lineItem => {
+            const newRow = table.addRow();
+            lineItem.forEach((cellString, i) => {
+                newRow.setCol(i, cellString);
+            });
+        });
+        engine.setData(tableDef, table);
+    }
+
+    // 請求書ドラフトの ID を保存する文字型データ項目（単一行）を準備し、設定
+    const invoiceIdDef = engine.createDataDefinition('請求書 ID', 2, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, '事前文字列');
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    // 請求書ドラフトの URL を保存する文字型データ項目（単一行）を準備し、設定
+    const invoiceUrlDef = engine.createDataDefinition('請求書 URL', 3, 'q_invoiceUrl', 'STRING_TEXTFIELD');
+    engine.setData(invoiceUrlDef, '事前文字列');
+    configs.putObject('conf_InvoiceUrl', invoiceUrlDef);
+
+    return {invoiceIdDef, invoiceUrlDef};
+}
+
+const SAMPLE_LINE_ITEMS = [
+    ['テスト商品', '50', '1']
+];
+
+/**
+ * 顧客 ID が空
+ */
+test('Customer ID is blank', () => {
+    prepareConfigs('', '請求書の説明', SAMPLE_LINE_ITEMS);
+    expect(execute).toThrow('Customer ID is blank.');
+});
+
+/**
+ * ラインアイテムが空
+ */
+test('No line items', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+    expect(execute).toThrow('No line items are set.');
+});
+
+/**
+ * ラインアイテムが多すぎて HTTP リクエスト数制限を超える
+ */
+test('Too many line items', () => {
+    const lineItems = [];
+    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+        lineItems.push([`テスト商品 ${i}`, '50', '1']);
+    }
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+    expect(execute).toThrow('Too many line items. Number of necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 2 列以下
+ */
+test('Invalid line items - too few columns', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    // 数量の列がない
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('The line items must include item description, unit amount, and quantity.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 1 列目が文字列型でない
+ */
+test('Invalid line items - 1st column is not STRING', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'DECIMAL'); // STRING でない
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'DECIMAL');
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, '0');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item name (1st column) must be STRING.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 2 列目が数値型でない
+ */
+test('Invalid line items - 2nd column is not DECIMAL', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'STRING'); // DECIMAL でない
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'DECIMAL');
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item unit amount (2nd column) must be DECIMAL.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 3 列目が数値型でない
+ */
+test('Invalid line items - 3rd column is not DECIMAL', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'STRING'); // DECIMAL でない
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item quantity (3rd column) must be DECIMAL.');
+});
+
+    ]]></test>
 
 </service-task-definition>
