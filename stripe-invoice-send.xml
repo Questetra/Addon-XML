@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-01</last-modified>
+    <last-modified>2022-07-05</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Send Invoice</label>
@@ -198,5 +198,390 @@ function sendInvoice(auth, invoiceId) {
         3GVkAxD8OuYupZUlVJiFxN4ogq5kdghBl9L/kQmv13JHJoT8MbFDCPprtn6CCfZzupNxy8f3Hyxn
         oTBfuPFrAAAAAElFTkSuQmCC
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param invoiceId
+ * @param sendReceipt
+ */
+const prepareConfigs = (invoiceId, sendReceipt) => {
+    configs.put('conf_Auth', 'Stripe');
+
+    // 請求書 ID が保存されている文字型データ項目（単一行）を準備
+    const invoiceIdDef = engine.createDataDefinition('確定済み請求書の ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, invoiceId);
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    configs.putObject('conf_SendReceipt', sendReceipt);
+};
+
+/**
+ * 請求書 ID が空
+ */
+test('Invoice ID is blank', () => {
+    prepareConfigs(null, true);
+    expect(execute).toThrow('Invoice ID is blank.');
+});
+
+/**
+ * 請求書を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param invoiceId
+ */
+const assertGetInvoiceRequest = ({url, method}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 請求書を取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve invoice', () => {
+    prepareConfigs('in_00001', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to retrieve invoice. status: 400');
+});
+
+/**
+ * 請求書のステータスが不正 - ドラフト状態
+ */
+test('Invalid status - draft', () => {
+    prepareConfigs('in_00002', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+    });
+
+    expect(execute).toThrow('The invoice is still draft. It needs to be finalized first.');
+});
+
+/**
+ * 請求書のステータスが不正 - 支払い済み
+ */
+test('Invalid status - paid', () => {
+    prepareConfigs('in_00003', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00003');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "paid"}');
+    });
+
+    expect(execute).toThrow('The invoice is already paid.');
+});
+
+/**
+ * 請求書のステータスが不正 - 無効
+ */
+test('Invalid status - void', () => {
+    prepareConfigs('in_00004', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00004');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "void"}');
+    });
+
+    expect(execute).toThrow('The invoice is void.');
+});
+
+/**
+ * 請求書の支払方法が send_invoice でない
+ */
+test('Invalid collection method', () => {
+    prepareConfigs('in_00005', true);
+
+    const invoiceObj = {
+        'status': 'open',
+        'collection_method': 'charge_automatically'
+    };
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00005');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(invoiceObj));
+    });
+
+    expect(execute).toThrow('The collection method of the invoice is not send_invoice.');
+});
+
+const SAMPLE_INVOICE_1 = {
+    'status': 'open',
+    'collection_method': 'send_invoice',
+    'customer': 'cus_00001',
+    'payment_intent': 'pi_00001'
+};
+
+const SAMPLE_INVOICE_2 = {
+    'status': 'uncollectible',
+    'collection_method': 'send_invoice',
+    'customer': 'cus_00002',
+    'payment_intent': 'pi_00002'
+};
+
+/**
+ * 顧客を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param customerId
+ */
+const assertGetCustomerRequest = ({url, method}, customerId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/${customerId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 顧客を取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve customer', () => {
+    prepareConfigs('in_00021', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00021');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        assertGetCustomerRequest(request, 'cus_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to retrieve customer. status: 400');
+});
+
+/**
+ * 顧客が削除済み
+ */
+test('Customer is deleted', () => {
+    prepareConfigs('in_00022', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00022');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_2));
+        }
+        assertGetCustomerRequest(request, 'cus_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{"deleted": true}');
+    });
+
+    expect(execute).toThrow('The customer is deleted.');
+});
+
+/**
+ * 顧客のメールアドレスが未設定
+ */
+test('Customer email is null', () => {
+    prepareConfigs('in_00023', false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00023');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        assertGetCustomerRequest(request, 'cus_00001');
+        return httpClient.createHttpResponse(200, 'application/json', '{"email": null}');
+    });
+
+    expect(execute)
+        .toThrow("The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.");
+});
+
+const SAMPLE_CUSTOMER_1 = {
+    'email': 'cus1@example.com'
+};
+
+const SAMPLE_CUSTOMER_2 = {
+    'email': 'cus2@example.com'
+};
+
+/**
+ * 支払オブジェクトを更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param paymentIntentId
+ * @param receiptEmail
+ */
+const assertUpdatePaymentIntentRequest = ({url, method, contentType, body}, paymentIntentId, receiptEmail) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/payment_intents/${paymentIntentId}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    // expect(body).toEqual(`set_up_future_usage=off_session&receipt_email=${receiptEmail}`);
+    // body が null になってしまう
+};
+
+/**
+ * 支払オブジェクトを更新する HTTP リクエストで失敗
+ */
+test('Fail to update payment intent', () => {
+    prepareConfigs('in_00031', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00031');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update payment intent. status: 400');
+});
+
+/**
+ * 請求書をメール送付する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param invoiceId
+ */
+const assertSendInvoiceRequest = ({url, method}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${invoiceId}/send`);
+    expect(method).toEqual('POST');
+};
+
+/**
+ * 請求書をメール送付する HTTP リクエストで失敗
+ */
+test('Fail to send invoice', () => {
+    prepareConfigs('in_00041', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00041');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSendInvoiceRequest(request, 'in_00041');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to send invoice. status: 400');
+});
+
+/**
+ * 成功 - open ステータスの請求書
+ */
+test('Success - open invoice', () => {
+    prepareConfigs('in_00042', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00042');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSendInvoiceRequest(request, 'in_00042');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - uncollectible ステータスの請求書
+ */
+test('Success - uncollectible invoice', () => {
+    prepareConfigs('in_00043', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00043');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_2));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_2));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSendInvoiceRequest(request, 'in_00043');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 領収書を送付しない
+ */
+test('Success - sendReceipt is false', () => {
+    prepareConfigs('in_00044', false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00044');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', null);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSendInvoiceRequest(request, 'in_00044');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
 
 </service-task-definition>
