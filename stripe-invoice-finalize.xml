@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-05</last-modified>
+    <last-modified>2022-07-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Finalize Draft Invoice</label>
@@ -145,5 +145,179 @@ function finalizeInvoice(auth, invoiceId) {
         3GVkAxD8OuYupZUlVJiFxN4ogq5kdghBl9L/kQmv13JHJoT8MbFDCPprtn6CCfZzupNxy8f3Hyxn
         oTBfuPFrAAAAAElFTkSuQmCC
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param invoiceId
+ * @param minutesUntilDueDate
+ * @return dueDateTimestamp
+ */
+const prepareConfigs = (invoiceId, minutesUntilDueDate) => {
+    configs.put('conf_Auth', 'Stripe');
+
+    // 請求書 ID が保存されている文字型データ項目（単一行）を準備
+    const invoiceIdDef = engine.createDataDefinition('確定済み請求書の ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, invoiceId);
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    // 支払い期日が保存されている日時型データ項目を準備
+    const dueDateDef = engine.createDataDefinition('支払い期日', 2, 'q_dueDatetime', 'DATETIME');
+    const millis = Date.now() + minutesUntilDueDate * 60 * 1000;
+    engine.setData(dueDateDef, new java.sql.Timestamp(millis));
+    configs.putObject('conf_DueDate', dueDateDef);
+
+    return Math.floor(millis / 1000).toString();
+};
+
+const ONE_DAY = 60 * 24; // minutes
+
+/**
+ * 請求書 ID が空
+ */
+test('Invoice ID is blank', () => {
+    prepareConfigs(null, ONE_DAY);
+    expect(execute).toThrow('Invoice ID is blank.');
+});
+
+/**
+ * 支払い期日が空
+ */
+test('Due date is not set', () => {
+    prepareConfigs('in_00001', ONE_DAY);
+    const dueDateDef = engine.createDataDefinition('新しい支払い期日', 3, 'q_newDueDatetime', 'DATETIME');
+    configs.putObject('conf_DueDate', dueDateDef);
+
+    expect(execute).toThrow('Due date is not set.');
+});
+
+/**
+ * 支払い期日が過去
+ */
+test('Due date is not in the future', () => {
+    prepareConfigs('in_00001', -1);
+    expect(execute).toThrow('Due date must be future.');
+});
+
+const MAX_DAYS = 1800;
+
+/**
+ * 支払い期日が遠すぎる
+ */
+test('Due date is too far in the future', () => {
+    const maxDays = 1800;
+    prepareConfigs('in_00001', ONE_DAY * MAX_DAYS + 1);
+    expect(execute).toThrow('Number of days until due date must be less than or equal to 1800.');
+});
+
+/**
+ * 請求書ドラフトを更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param invoiceId
+ * @param dueDateTimestamp
+ */
+const assertUpdateInvoiceRequest = ({url, method, contentType, body}, invoiceId, dueDateTimestamp) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`collection_method=send_invoice&due_date=${dueDateTimestamp}`);
+};
+
+/**
+ * 請求書ドラフトを更新する HTTP リクエストで失敗
+ */
+test('Fail to update invoice', () => {
+    const dueDateTimestamp = prepareConfigs('in_00021', ONE_DAY);
+
+    httpClient.setRequestHandler((request) => {
+        assertUpdateInvoiceRequest(request, 'in_00021', dueDateTimestamp);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update invoice. status: 400');
+});
+
+/**
+ * 請求書ドラフトを確定する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param invoiceId
+ */
+const assertFinalizeInvoiceRequest = ({url, method, contentType, body}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}/finalize`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual('auto_advance=false');
+};
+
+/**
+ * 請求書ドラフトを確定する HTTP リクエストで失敗
+ */
+test('Fail to finalize invoice', () => {
+    const dueDateTimestamp = prepareConfigs('in_00031', ONE_DAY);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpdateInvoiceRequest(request, 'in_00031', dueDateTimestamp);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertFinalizeInvoiceRequest(request, 'in_00031');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to finalize invoice. status: 400');
+});
+
+/**
+ * 成功 - 支払い期日まで 1 日
+ */
+test('Success - 1 day until due date', () => {
+    const dueDateTimestamp = prepareConfigs('in_00032', ONE_DAY);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpdateInvoiceRequest(request, 'in_00032', dueDateTimestamp);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertFinalizeInvoiceRequest(request, 'in_00032');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 支払い期日まで最大日数
+ */
+test('Success - maximum days until due date', () => {
+    const dueDateTimestamp = prepareConfigs('in_00033', ONE_DAY * MAX_DAYS);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpdateInvoiceRequest(request, 'in_00033', dueDateTimestamp);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertFinalizeInvoiceRequest(request, 'in_00033');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
 
 </service-task-definition>
