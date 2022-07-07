@@ -627,6 +627,39 @@ test('Success - default payment method, sendReceipt is false', () => {
 
 /**
  * デフォルトの支払方法への課金に成功
+ * 領収書をメール送付しない場合は、メールアドレスが未設定でもエラーにならない
+ */
+test('Success - default payment method, sendReceipt is false, customerEmail is null', () => {
+    prepareConfigs('in_00042', false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00042');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes(null, 'pm_00002', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', ''); // 領収書送付先メールアドレスが空に設定される
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00042', 'pm_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に成功
  * uncollectible な請求書の場合
  */
 test('Success - default payment method, uncollectible invoice', () => {
@@ -791,6 +824,7 @@ test('No payment method succeeded - without default payment method', () => {
     prepareConfigs('in_00061', true);
 
     let reqCount = 0;
+    let pmCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetInvoiceRequest(request, 'in_00061');
@@ -815,9 +849,9 @@ test('No payment method succeeded - without default payment method', () => {
             return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount));
         }
         // 各 Payment Method に課金を試み、すべて失敗
-        const paymentMethodId = `pm_${reqCount-3}`;
+        const paymentMethodId = `pm_${pmCount+1}`;
         assertChargeByInvoiceRequest(request, 'in_00061', paymentMethodId);
-        reqCount++;
+        pmCount++;
         return httpClient.createHttpResponse(401, 'application/json', '{}');
     });
 
@@ -831,6 +865,7 @@ test('Success - without default payment method, one of the cards succeeds', () =
     prepareConfigs('in_00062', true);
 
     let reqCount = 0;
+    let pmCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetInvoiceRequest(request, 'in_00062');
@@ -855,10 +890,11 @@ test('Success - without default payment method, one of the cards succeeds', () =
             return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount));
         }
         // 各 Payment Method に課金を試みる
-        const paymentMethodId = `pm_${reqCount-3}`;
+        const paymentMethodId = `pm_${pmCount + 1}`;
         assertChargeByInvoiceRequest(request, 'in_00062', paymentMethodId);
         if (reqCount < HTTP_LIMIT - 1) { // 最後から 1 つ前までは失敗
             reqCount++;
+            pmCount++;
             return httpClient.createHttpResponse(401, 'application/json', '{}');
         }
         // 最後の 1 つは成功
@@ -866,6 +902,303 @@ test('Success - without default payment method, one of the cards succeeds', () =
     });
 
     execute();
+});
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) への課金を試みているあいだに HTTP リクエスト数上限を超える
+ */
+test('Number of HTTP requests exceeds the limit - without default payment method', () => {
+    prepareConfigs('in_00063', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00063');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00003', 'pi_00003'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus3@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00003', 'cus3@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // 各 Payment Method に課金を試み、すべて失敗
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00063', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Number of HTTP requests exceeds the limit.');
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のすべてで課金に失敗
+ */
+test('No payment method succeeded - default payment method fails', () => {
+    prepareConfigs('in_00071', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 1;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00071');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00071', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // デフォルトの支払方法以外の各 Payment Method に課金を試み、すべて失敗
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00071', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('No payment method succeeded.');
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のうち一つで課金に成功
+ */
+test('Success - default payment method fails, one of the cards succeeds', () => {
+    prepareConfigs('in_00072', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 2;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00072');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus2@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00072', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // 各 Payment Method に課金を試みる
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00072', paymentMethodId);
+        if (reqCount < HTTP_LIMIT - 1) { // 最後から 1 つ前までは失敗
+            reqCount++;
+            pmCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        // 最後の 1 つは成功
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) への課金を試みているあいだに HTTP リクエスト数上限を超える
+ */
+test('Number of HTTP requests exceeds the limit - default payment method fails', () => {
+    prepareConfigs('in_00073', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 3;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00073');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00003', 'pi_00003'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus3@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00003', 'cus3@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00073', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 2));
+        }
+        // デフォルトの支払方法以外の各 Payment Method に課金を試み、すべて失敗
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00073', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Number of HTTP requests exceeds the limit.');
+});
+
+/**
+ * default_source として登録されているデフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のうち一つで課金に成功
+ */
+test('Success - default source fails, one of the cards succeeds', () => {
+    prepareConfigs('in_00074', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 2;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00074');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00004', 'pi_00004'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00004');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus4@example.com', null, defaultPmId));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00004', 'cus4@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00074', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00004');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(10));
+        }
+        // 各 Payment Method に課金を試みる
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00074', paymentMethodId);
+        if (pmCount < 5) { // 途中までは失敗
+            pmCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        // 途中で成功
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、他の支払方法 (カード) が登録されていない
+ */
+test('No payment method succeeded - only default payment method', () => {
+    prepareConfigs('in_00075', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00075');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00005', 'pi_00005'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00005');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus5@example.com', 'pm_1', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00005', 'cus5@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00075', 'pm_1');
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        assertGetCustomerPaymentMethodsRequest(request, 'cus_00005')
+        return httpClient
+            .createHttpResponse(200, 'application/json', paymentMethodsRes(1)); // デフォルトの支払方法のみ
+    });
+
+    expect(execute).toThrow('No payment method succeeded.');
 });
 
     ]]></test>
