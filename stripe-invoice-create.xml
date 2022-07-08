@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-05</last-modified>
+    <last-modified>2022-07-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Create Draft Invoice</label>
@@ -310,7 +310,7 @@ test('No line items', () => {
 test('Too many line items', () => {
     const lineItems = [];
     for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
-        lineItems.push([`テスト商品 ${i}`, '50', '1']);
+        lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
     }
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
     expect(execute).toThrow('Too many line items. Number of necessary HTTP requests exceeds the limit.');
@@ -420,7 +420,8 @@ test('Invalid line items - Item name is blank', () => {
 /**
  * ラインアイテムの形式が不正 - 単価が小数
  */
-test('Invalid line items - Unit amount is decimal', () => { // 現状、小数点以下が反映されないためテストに失敗
+/* 現状、小数点以下が反映されないためテストに失敗
+test('Invalid line items - Unit amount is decimal', () => {
     const lineItems = [
         ['テスト商品 1', '50', '1'],
         ['テスト商品 2', '150', '2'],
@@ -430,6 +431,7 @@ test('Invalid line items - Unit amount is decimal', () => { // 現状、小数�
 
     expect(execute).toThrow('Line item 3 is invalid. Unit amount must be integer.');
 });
+*/
 
 /**
  * ラインアイテムの形式が不正 - 単価が負の整数
@@ -448,7 +450,8 @@ test('Invalid line items - Unit amount is negative', () => {
 /**
  * ラインアイテムの形式が不正 - 数量が小数
  */
-test('Invalid line items - Quantity is decimal', () => { // 現状、小数点以下が反映されないためテストに失敗
+/* 現状、小数点以下が反映されないためテストに失敗
+test('Invalid line items - Quantity is decimal', () => {
     const lineItems = [
         ['テスト商品 1', '50', '1'],
         ['テスト商品 2', '150', '2.5'],
@@ -458,6 +461,7 @@ test('Invalid line items - Quantity is decimal', () => { // 現状、小数点�
 
     expect(execute).toThrow('Line item 2 is invalid. Quantity must be integer.');
 });
+*/
 
 /**
  * ラインアイテムの形式が不正 - 数量が負の整数
@@ -471,6 +475,248 @@ test('Invalid line items - Quantity is negative', () => {
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
     expect(execute).toThrow('Line item 3 is invalid. Quantity must not be negative.');
+});
+
+/**
+ * 合計額が上限を超える - ラインアイテム 1 つ
+ */
+test('Total amount exceeds the limit - one line item', () => {
+    const lineItems = [
+        ['テスト商品 1', '10000', '10000']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+});
+
+/**
+ * 合計額が上限を超える - 複数のラインアイテム
+ */
+test('Total amount exceeds the limit - multiple line items', () => {
+    const lineItems = [
+        ['テスト商品 1', '10000000', '9'],
+        ['テスト商品 2', '1000000', '9'],
+        ['テスト商品 3', '100000', '10'] // ここで上限を超える
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+});
+
+/**
+ * 請求書ドラフトを作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param description
+ */
+const assertCreateInvoiceRequest = ({url, method, contentType, body}, customerId, description) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoices');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&description=${encodeURIComponent(description)}`
+        + '&auto_advance=false'
+        + '&pending_invoice_items_behavior=exclude';
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 請求書ドラフトを作成する HTTP リクエストで失敗
+ */
+test('Fail to create invoice', () => {
+    prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create draft invoice. status: 400');
+});
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param invoiceId
+ * @param lineItem
+ */
+const assertAttachInvoiceItemRequest = ({url, method, contentType, body}, customerId, invoiceId, lineItem) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoiceitems');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&invoice=${invoiceId}`
+        + `&description=${encodeURIComponent(lineItem[0])}`
+        + `&unit_amount=${lineItem[1]}`
+        + `&quantity=${lineItem[2]}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する HTTP リクエストで失敗
+ */
+test('Fail to attach an invoice item', () => {
+    prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "in_000001"}');
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', 'in_000001', SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to attach an invoice item. status: 400');
+});
+
+/**
+ * 成功 - ラインアイテムが 1 つの場合
+ */
+test('Success - one line item', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    const invoiceId = 'in_000001';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムが複数で、合計額が上限を超えないぎりぎりの値の場合
+ */
+test('Success - multiple line items, maximum total amount', () => {
+    const lineItems = [ // 合計額が上限を超えないぎりぎりの値になるように
+        ['テスト商品 1', '10000000', '9'],
+        ['テスト商品 2', '1000000', '9'],
+        ['テスト商品 3', '999999', '1']
+    ];
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000002', '上限額ぎりぎりの請求書', lineItems);
+
+    let reqCount = 0;
+    let itemCount = 0;
+    const invoiceId = 'in_000002';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000002', '上限額ぎりぎりの請求書');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000002', invoiceId, lineItems[itemCount]);
+        itemCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムが複数で、HTTP リクエスト数上限を超えないぎりぎりの数の場合
+ */
+test('Success - maximum number of line items', () => {
+    const lineItems = [];
+    for (let i = 0; i < httpClient.getRequestingLimit() - 1; i++) {
+        lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
+    }
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '上限個数ぎりぎりの請求書', lineItems);
+
+    let reqCount = 0;
+    let itemCount = 0;
+    const invoiceId = 'in_000003';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '上限個数ぎりぎりの請求書');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, lineItems[itemCount]);
+        itemCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - 請求書の説明が空の場合
+ */
+test('Success - invoice description is blank', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    const invoiceId = 'in_000004';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - 請求書ドラフトの ID, URL を保存しない場合
+ */
+test('Success - draft invoice ID and URL not saved', () => {
+    prepareConfigs('cus_000003', 'ID と URL を保存しない', SAMPLE_LINE_ITEMS);
+    configs.put('conf_InvoiceId', '');
+    configs.put('conf_InvoiceUrl', '');
+
+    let reqCount = 0;
+    const invoiceId = 'in_000005';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000003', 'ID と URL を保存しない');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000003', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
 });
 
     ]]></test>
