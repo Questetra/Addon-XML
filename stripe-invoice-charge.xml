@@ -1,0 +1,1172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-07-11</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Charge by Invoice</label>
+    <label locale="ja">Stripe: 請求書で課金</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-invoice-charge/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-invoice-charge/
+    </help-page-url>
+
+    <summary>This item charges the customer based on a finalized invoice on Stripe. If the default payment method
+        fails, this item tries to charge other payment methods (card) attached to the customer.
+        An error occurs if no charge succeeded.
+    </summary>
+    <summary locale="ja">この工程は、Stripe 上の確定済み請求書にもとづき、顧客に課金します。デフォルトの支払方法への課金が失敗した場合は、顧客に紐づけられている予備の支払方法（カード）に対して課金します。すべての課金に失敗した場合、エラーになります。
+    </summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_InvoiceId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Finalized Invoice ID</label>
+            <label locale="ja">C2: 確定済み請求書の ID</label>
+        </config>
+        <config name="conf_SendReceipt" form-type="TOGGLE">
+            <label>C3: Email the receipt to the customer when the charge completed</label>
+            <label locale="ja">C3: 課金完了時、顧客に領収書をメール送付する</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const invoiceId = retrieveInvoiceId();
+    const sendReceipt = configs.getObject('conf_SendReceipt');
+
+    //// == Calculating / 演算 ==
+    const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId);
+    const {customerEmail, defaultPaymentMethodId} = getCustomer(auth, customerId);
+    updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail);
+    chargeByInvoice(auth, invoiceId, defaultPaymentMethodId, customerId);
+}
+
+/**
+  * config から請求書の ID を読み出す。空文字列の場合はエラー
+  * @return {String} invoiceId 請求書の ID
+  */
+function retrieveInvoiceId() {
+    const invoiceId = engine.findData(configs.getObject('conf_InvoiceId'));
+    if (invoiceId === null) {
+        throw 'Invoice ID is blank.';
+    }
+    return invoiceId;
+}
+
+/**
+  * 請求書のステータスをチェックし、顧客 ID と支払オブジェクトの ID を返す
+  * - ステータスが open, uncollectible 以外の場合はエラー
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @return {Object} returnObj
+  * @return {String} returnObj.customerId 顧客 ID
+  * @return {String} returnObj.paymentIntentId 支払オブジェクトの ID
+  */
+function checkInvoice(auth, invoiceId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) { // 削除済みの場合もエラーレスポンス
+        engine.log(responseStr);
+        throw `Failed to retrieve invoice. status: ${status}`;
+    }
+    const invoiceObj = JSON.parse(responseStr);
+    switch (invoiceObj.status) {
+        case 'draft':
+            throw 'The invoice is still draft. It needs to be finalized first.';
+        case 'paid':
+            throw 'The invoice is already paid.';
+        case 'void':
+            throw 'The invoice is void.';
+        default: // open or uncollectible
+            // do nothing
+    }
+    const customerId = invoiceObj.customer;
+    const paymentIntentId = invoiceObj.payment_intent;
+    return {customerId, paymentIntentId};
+}
+
+/**
+  * 顧客オブジェクトを取得し、メールアドレスとデフォルトの支払方法の ID を返す
+  * - 顧客が削除済みの場合、エラー
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @return {Object} returnObj
+  * @return {String} returnObj.customerEmail 顧客のメールアドレス。未設定の場合は null
+  * @return {String} returnObj.defaultPaymentMethodId 顧客のデフォルトの支払方法の ID。未設定の場合は null
+  */
+function getCustomer(auth, customerId) {
+    const apiUri = `https://api.stripe.com/v1/customers/${customerId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to retrieve customer. status: ${status}`;
+    }
+    const customerObj = JSON.parse(responseStr);
+    if (customerObj.deleted) {
+        throw 'The customer is deleted.';
+    }
+    // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
+    const customerEmail = customerObj.email;
+    let defaultPaymentMethodId = customerObj.invoice_settings.default_payment_method;
+    if (defaultPaymentMethodId === null) {
+        // 従来の登録方法で Source オブジェクトとして登録されている場合は default_source に設定される
+        defaultPaymentMethodId = customerObj.default_source;
+    }
+    return {customerEmail, defaultPaymentMethodId};
+}
+
+/**
+  * 支払オブジェクトを更新し、領収書送付先メールアドレスを設定する
+  * @param {String} oauth 認証設定
+  * @param {String} paymentIntentId 支払オブジェクトの ID
+  * @param {boolean} sendReceipt 領収書をメール送付するかどうか
+  * @param {String} customerEmail 顧客のメールアドレス
+  */
+function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) {
+    let receiptEmail = '';
+    if (sendReceipt) {
+        if (customerEmail === null) {
+            throw "The customer's email is not set. Unable to send the receipt.";
+        }
+        receiptEmail = customerEmail;
+    }
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('receipt_email', receiptEmail)
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to update payment intent. status: ${status}`;
+    }
+}
+
+/**
+  * 請求書で課金する。課金を試みる支払方法の順序は
+  * 1. 顧客のデフォルトの支払方法
+  * 2. 顧客の予備の支払方法（カード）
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @param {String} defaultPaymentMethodId 顧客のデフォルトの支払方法の ID
+  * @param {String} customerId 顧客 ID (デフォルトの支払方法に失敗した場合に使用)
+  */
+function chargeByInvoice(auth, invoiceId, defaultPaymentMethodId, customerId) {
+    let succeeded = false;
+    if (defaultPaymentMethodId !== null) {
+        succeeded = tryCharge(auth, invoiceId, defaultPaymentMethodId);
+    }
+    if (succeeded) {
+        return;
+    }
+    const customerPaymentMethodIds = getCustomerPaymentMethodIds(auth, customerId);
+    const otherPaymentMethodIds = customerPaymentMethodIds.filter(id => id !== defaultPaymentMethodId);
+    const httpLimit = httpClient.getRequestingLimit();
+    for (let i = 0; i < otherPaymentMethodIds.length; i++) {
+        succeeded = tryCharge(auth, invoiceId, otherPaymentMethodIds[i]);
+        if (succeeded) {
+            return;
+        }
+    }
+    throw 'No payment method succeeded.';
+}
+
+/**
+  * 指定した支払方法への課金を試みる
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @param {String} paymentMethodId 支払方法の ID
+  * @return {boolean} succeeded 課金が成功したかどうか
+  */
+function tryCharge(auth, invoiceId, paymentMethodId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}/pay`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('payment_method', paymentMethodId)
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        let errorLog = `Failed to charge by the payment method: ${paymentMethodId}, status: ${status}`;
+        const error = JSON.parse(responseStr).error;
+        if (error !== undefined && error.message !== undefined) {
+            errorLog += `, message: ${error.message}`;
+        }
+        engine.log(errorLog);
+        return false;
+    }
+    return true;
+}
+
+/**
+  * 顧客の支払方法（カード）の ID 一覧を取得する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @return {Array<String>} paymentMethodIds 支払方法（カード）の ID 一覧
+  */
+function getCustomerPaymentMethodIds(auth, customerId) {
+    const apiUri = `https://api.stripe.com/v1/customers/${customerId}/payment_methods`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .queryParam('type', 'card') // required
+        .queryParam('limit', '100') // maximum limit
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get the customer's payment methods. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const paymentMethods = responseObj.data;
+    if (paymentMethods.length === 0) {
+        throw 'The customer has no card-type payment methods.';
+    }
+    return paymentMethods.map(paymentMethod => paymentMethod.id);
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param invoiceId
+ * @param sendReceipt
+ */
+const prepareConfigs = (invoiceId, sendReceipt) => {
+    configs.put('conf_Auth', 'Stripe');
+
+    // 請求書 ID が保存されている文字型データ項目（単一行）を準備
+    const invoiceIdDef = engine.createDataDefinition('確定済み請求書の ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, invoiceId);
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    configs.putObject('conf_SendReceipt', sendReceipt);
+};
+
+/**
+ * 請求書 ID が空
+ */
+test('Invoice ID is blank', () => {
+    prepareConfigs(null, true);
+    expect(execute).toThrow('Invoice ID is blank.');
+});
+
+/**
+ * 請求書を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param invoiceId
+ */
+const assertGetInvoiceRequest = ({url, method}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 請求書を取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve invoice', () => {
+    prepareConfigs('in_00001', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to retrieve invoice. status: 400');
+});
+
+/**
+ * 請求書のステータスが不正 - ドラフト状態
+ */
+test('Invalid status - draft', () => {
+    prepareConfigs('in_00002', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+    });
+
+    expect(execute).toThrow('The invoice is still draft. It needs to be finalized first.');
+});
+
+/**
+ * 請求書のステータスが不正 - 支払い済み
+ */
+test('Invalid status - paid', () => {
+    prepareConfigs('in_00003', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00003');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "paid"}');
+    });
+
+    expect(execute).toThrow('The invoice is already paid.');
+});
+
+/**
+ * 請求書のステータスが不正 - 無効
+ */
+test('Invalid status - void', () => {
+    prepareConfigs('in_00004', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInvoiceRequest(request, 'in_00004');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "void"}');
+    });
+
+    expect(execute).toThrow('The invoice is void.');
+});
+
+/**
+ * 請求書を取得する API リクエストのレスポンスボディを作成する
+ * @param status
+ * @param customerId
+ * @param paymentIntentId
+ * @return invoiceRes
+ */
+const invoiceRes = (status, customerId, paymentIntentId) => {
+    const invoiceObj = {
+        'status': status,
+        'customer': customerId,
+        'payment_intent': paymentIntentId
+    };
+    return JSON.stringify(invoiceObj);
+};
+
+/**
+ * 顧客を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param customerId
+ */
+const assertGetCustomerRequest = ({url, method}, customerId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/${customerId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 顧客を取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve customer', () => {
+    prepareConfigs('in_00021', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00021');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        assertGetCustomerRequest(request, 'cus_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to retrieve customer. status: 400');
+});
+
+/**
+ * 顧客が削除済み
+ */
+test('Customer is deleted', () => {
+    prepareConfigs('in_00022', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00022');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        assertGetCustomerRequest(request, 'cus_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{"deleted": true}');
+    });
+
+    expect(execute).toThrow('The customer is deleted.');
+});
+
+/**
+ * 顧客を取得する API リクエストのレスポンスボディを作成する
+ * @param email
+ * @param defaultPaymentMethodId
+ * @param defaultSourceId
+ * @return customerRes
+ */
+const customerRes = (email, defaultPaymentMethodId, defaultSourceId) => {
+    const customerObj = {
+        'email': email,
+        'invoice_settings': {
+            'default_payment_method': defaultPaymentMethodId
+        },
+        'default_source': defaultSourceId
+    };
+    return JSON.stringify(customerObj);
+};
+
+/**
+ * 「顧客に領収書をメール送付する」が true なのに顧客のメールアドレスが未設定
+ */
+test('Customer email is null while sendReceipt is true', () => {
+    prepareConfigs('in_00023', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00023');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00003', 'pi_00003'));
+        }
+        assertGetCustomerRequest(request, 'cus_00003');
+        return httpClient.createHttpResponse(200, 'application/json', customerRes(null, 'pm_00001', null));
+    });
+
+    expect(execute).toThrow("The customer's email is not set. Unable to send the receipt.");
+});
+
+/**
+ * 支払オブジェクトを更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param paymentIntentId
+ * @param receiptEmail
+ */
+const assertUpdatePaymentIntentRequest = ({url, method, contentType, body}, paymentIntentId, receiptEmail) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/payment_intents/${paymentIntentId}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`receipt_email=${encodeURIComponent(receiptEmail)}`);
+};
+
+/**
+ * 支払オブジェクトを更新する HTTP リクエストで失敗
+ */
+test('Fail to update payment intent', () => {
+    prepareConfigs('in_00031', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00031');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', 'pm_00001', null));
+        }
+        assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update payment intent. status: 400');
+});
+
+/**
+ * 請求書で課金する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param invoiceId
+ * @param paymentMethodId
+ */
+const assertChargeByInvoiceRequest = ({url, method, contentType, body}, invoiceId, paymentMethodId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}/pay`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`payment_method=${paymentMethodId}`);
+};
+
+/**
+ * デフォルトの支払方法への課金に成功
+ */
+test('Success - default payment method', () => {
+    prepareConfigs('in_00041', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00041');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', 'pm_00001', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00041', 'pm_00001');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に成功
+ * 領収書をメール送付しない場合
+ */
+test('Success - default payment method, sendReceipt is false', () => {
+    prepareConfigs('in_00042', false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00042');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus2@example.com', 'pm_00002', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', ''); // 領収書送付先メールアドレスが空に設定される
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00042', 'pm_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に成功
+ * 領収書をメール送付しない場合は、メールアドレスが未設定でもエラーにならない
+ */
+test('Success - default payment method, sendReceipt is false, customerEmail is null', () => {
+    prepareConfigs('in_00042', false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00042');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes(null, 'pm_00002', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', ''); // 領収書送付先メールアドレスが空に設定される
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00042', 'pm_00002');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に成功
+ * uncollectible な請求書の場合
+ */
+test('Success - default payment method, uncollectible invoice', () => {
+    prepareConfigs('in_00043', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00043');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('uncollectible', 'cus_00003', 'pi_00003'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus3@example.com', 'pm_00003', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00003', 'cus3@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00043', 'pm_00003');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * default_source として登録されているデフォルトの支払方法への課金に成功
+ */
+test('Success - default payment method (default_source)', () => {
+    prepareConfigs('in_00044', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00044');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00004', 'pi_00004'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00004');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus4@example.com', null, 'source_00004'));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00004', 'cus4@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertChargeByInvoiceRequest(request, 'in_00044', 'source_00004');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 顧客の支払方法 (カード) の一覧を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param customerId
+ */
+const assertGetCustomerPaymentMethodsRequest = ({url, method}, customerId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/${customerId}/payment_methods?type=card&limit=100`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) の一覧を取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve payment methods', () => {
+    prepareConfigs('in_00051', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00051');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertGetCustomerPaymentMethodsRequest(request, 'cus_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow("Failed to get the customer's payment methods. status: 400");
+});
+
+/**
+ * 顧客の支払方法 (カード) の一覧を取得する API リクエストのレスポンスボディを作成する
+ * @param paymentMethodNum
+ * @return paymentMethodsRes
+ */
+const paymentMethodsRes = (paymentMethodNum) => {
+    const paymentMethodObjects = [];
+    for (let i = 0; i < paymentMethodNum; i++) {
+        const paymentMethodObj = {
+            'id': `pm_${i+1}`
+        };
+        paymentMethodObjects.push(paymentMethodObj);
+    }
+    return JSON.stringify({'data': paymentMethodObjects});
+};
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) の一覧が空
+ */
+test('No card-type payment methods', () => {
+    prepareConfigs('in_00052', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00052');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus2@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertGetCustomerPaymentMethodsRequest(request, 'cus_00002');
+        return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(0));
+    });
+
+    expect(execute).toThrow('The customer has no card-type payment methods.');
+});
+
+const HTTP_LIMIT = httpClient.getRequestingLimit();
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) のすべてで課金に失敗
+ */
+test('No payment method succeeded - without default payment method', () => {
+    prepareConfigs('in_00061', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00061');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount));
+        }
+        // 各 Payment Method に課金を試み、すべて失敗
+        const paymentMethodId = `pm_${pmCount+1}`;
+        assertChargeByInvoiceRequest(request, 'in_00061', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('No payment method succeeded.');
+});
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) のうち一つで課金に成功
+ */
+test('Success - without default payment method, one of the cards succeeds', () => {
+    prepareConfigs('in_00062', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00062');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus2@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount));
+        }
+        // 各 Payment Method に課金を試みる
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00062', paymentMethodId);
+        if (reqCount < HTTP_LIMIT - 1) { // 最後から 1 つ前までは失敗
+            reqCount++;
+            pmCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        // 最後の 1 つは成功
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法が未設定で、顧客の支払方法 (カード) への課金を試みているあいだに HTTP リクエスト数上限を超える
+ */
+test('Number of HTTP requests exceeds the limit - without default payment method', () => {
+    prepareConfigs('in_00063', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00063');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00003', 'pi_00003'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus3@example.com', null, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00003', 'cus3@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // 各 Payment Method に課金を試み、すべて失敗
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00063', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('org.graalvm.polyglot.PolyglotException'); // スクリプトエンジンのエラー
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のすべてで課金に失敗
+ */
+test('No payment method succeeded - default payment method fails', () => {
+    prepareConfigs('in_00071', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 1;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00071');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00001', 'pi_00001'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus1@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00071', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // デフォルトの支払方法以外の各 Payment Method に課金を試み、すべて失敗
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00071', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('No payment method succeeded.');
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のうち一つで課金に成功
+ */
+test('Success - default payment method fails, one of the cards succeeds', () => {
+    prepareConfigs('in_00072', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 2;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00072');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00002', 'pi_00002'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus2@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00072', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00002');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 1));
+        }
+        // 各 Payment Method に課金を試みる
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00072', paymentMethodId);
+        if (reqCount < HTTP_LIMIT - 1) { // 最後から 1 つ前までは失敗
+            reqCount++;
+            pmCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        // 最後の 1 つは成功
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) への課金を試みているあいだに HTTP リクエスト数上限を超える
+ */
+test('Number of HTTP requests exceeds the limit - default payment method fails', () => {
+    prepareConfigs('in_00073', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 3;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00073');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00003', 'pi_00003'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus3@example.com', defaultPmId, null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00003', 'cus3@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00073', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00003');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(HTTP_LIMIT - reqCount + 2));
+        }
+        // デフォルトの支払方法以外の各 Payment Method に課金を試み、すべて失敗
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00073', paymentMethodId);
+        pmCount++;
+        return httpClient.createHttpResponse(401, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('org.graalvm.polyglot.PolyglotException'); // スクリプトエンジンのエラー
+});
+
+/**
+ * default_source として登録されているデフォルトの支払方法への課金に失敗し、顧客の支払方法 (カード) のうち一つで課金に成功
+ */
+test('Success - default source fails, one of the cards succeeds', () => {
+    prepareConfigs('in_00074', true);
+
+    let reqCount = 0;
+    let pmCount = 0;
+    const defaultPmIndex = 2;
+    const defaultPmId = `pm_${defaultPmIndex}`;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00074');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00004', 'pi_00004'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00004');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus4@example.com', null, defaultPmId));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00004', 'cus4@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00074', defaultPmId);
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertGetCustomerPaymentMethodsRequest(request, 'cus_00004');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', paymentMethodsRes(10));
+        }
+        // 各 Payment Method に課金を試みる
+        if (pmCount + 1 === defaultPmIndex) { // デフォルトの支払方法と一致するものは飛ばす
+            pmCount++;
+        }
+        const paymentMethodId = `pm_${pmCount + 1}`;
+        assertChargeByInvoiceRequest(request, 'in_00074', paymentMethodId);
+        if (pmCount < 5) { // 途中までは失敗
+            pmCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        // 途中で成功
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * デフォルトの支払方法への課金に失敗し、他の支払方法 (カード) が登録されていない
+ */
+test('No payment method succeeded - only default payment method', () => {
+    prepareConfigs('in_00075', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00075');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', invoiceRes('open', 'cus_00005', 'pi_00005'));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00005');
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', customerRes('cus5@example.com', 'pm_1', null));
+        }
+        if (reqCount === 2) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00005', 'cus5@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 3) { // デフォルトの支払方法への課金に失敗
+            assertChargeByInvoiceRequest(request, 'in_00075', 'pm_1');
+            reqCount++;
+            return httpClient.createHttpResponse(401, 'application/json', '{}');
+        }
+        assertGetCustomerPaymentMethodsRequest(request, 'cus_00005')
+        return httpClient
+            .createHttpResponse(200, 'application/json', paymentMethodsRes(1)); // デフォルトの支払方法のみ
+    });
+
+    expect(execute).toThrow('No payment method succeeded.');
+});
+
+    ]]></test>
+
+</service-task-definition>
