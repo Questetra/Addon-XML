@@ -147,4 +147,212 @@ function createCustomer(auth, name, language, email, description) {
         O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
     </icon>
 
+    <test><![CDATA[
+
+const NAME_MAX_LENGTH = 256;
+const EMAIL_MAX_LENGTH = 512;
+const DESCRIPTION_MAX_LENGTH = 350;
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (name, language, email, description) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_Name', name);
+    configs.put('conf_Language', language);
+    configs.put('conf_Email', email);
+    configs.put('conf_Description', description);
+
+    // 顧客の ID を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('顧客 ID', 1, 'q_customerId', 'STRING_TEXTFIELD');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_CustomerId', idDef);
+
+    // 顧客詳細ページの URL を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('顧客 URL', 2, 'q_customerUrl', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_CustomerUrl', urlDef);
+
+    return {idDef, urlDef};
+}
+
+/**
+ * 顧客の名前が空
+ */
+test('Customer Name is blank', () => {
+    prepareConfigs('', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow('Customer Name is blank.');
+});
+
+/**
+ * 顧客の名前が長すぎる
+ */
+test('Customer Name is too long', () => {
+    const name = createString(NAME_MAX_LENGTH + 1);
+    prepareConfigs(name, 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 顧客のメールアドレスが空
+ */
+test('Customer Email is blank', () => {
+    prepareConfigs('テスト顧客 1', 'ja-JP', '', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow('Customer Email is blank.');
+});
+
+/**
+ * メールアドレスが長すぎる
+ */
+test('Customer Email is too long', () => {
+    const email = createString(EMAIL_MAX_LENGTH + 1);
+    prepareConfigs('テスト顧客 1', 'ja-JP', email, 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 説明が長すぎる
+ */
+test('Customer Description is too long', () => {
+    const description = createString(DESCRIPTION_MAX_LENGTH + 1);
+    prepareConfigs('テスト顧客 1', 'ja-JP', 'test1@example.com', description);
+    expect(execute).toThrow(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 顧客を作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ */
+const assertRequest = ({url, method, contentType, body}, name, language, email, description) => {
+    expect(url).toEqual('https://api.stripe.com/v1/customers');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `name=${encodeURIComponent(name)}`
+        + `&${encodeURIComponent('preferred_locales[0]')}=${language}`
+        + `&email=${encodeURIComponent(email)}`
+        + `&description=${encodeURIComponent(description)}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 顧客を作成する HTTP リクエストで失敗
+ */
+test('Fail to create customer', () => {
+    prepareConfigs('テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create customer. status: 400');
+});
+
+/**
+ * 成功 - 説明あり
+ */
+test('Success - with description', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00001"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('cus_00001');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/customers/cus_00001');
+});
+
+/**
+ * 成功 - 説明なし
+ */
+test('Success - without description', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト顧客 2', 'en-US', 'test2@example.com', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト顧客 2', 'en-US', 'test2@example.com', '');
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00002"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('cus_00002');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/customers/cus_00002');
+});
+
+/**
+ * 成功 - ID と URL を保存しない
+ */
+test('Success - ID and URL not saved', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト顧客 3', 'ja-JP', 'test3@example.com', 'これはテスト顧客 3 です。');
+    configs.put('conf_CustomerId', '');
+    configs.put('conf_CustomerUrl', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト顧客 3', 'ja-JP', 'test3@example.com', 'これはテスト顧客 3 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00003"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+/**
+ * 成功 - 名前、メールアドレス、説明を最大文字数で設定
+ */
+test('Success - maximum length', () => {
+    const name = createString(NAME_MAX_LENGTH);
+    const email = createString(EMAIL_MAX_LENGTH);
+    const description = createString(DESCRIPTION_MAX_LENGTH);
+    const {idDef, urlDef} = prepareConfigs(name, 'ja-JP', email, description);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, name, 'ja-JP', email, description);
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00004"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('cus_00004');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/customers/cus_00004');
+});
+
+    ]]></test>
+
 </service-task-definition>
