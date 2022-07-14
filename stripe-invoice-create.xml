@@ -29,7 +29,7 @@
             <label>C3: Description (Displayed in the invoice as 'memo')</label>
             <label locale="ja">C3: 説明（請求書に「メモ」として表示されます）</label>
         </config>
-        <config name="conf_LineItems" required="true" form-type="SELECT" select-data-type="LIST">
+        <config name="conf_LineItems" required="false" form-type="SELECT" select-data-type="LIST">
             <label>C4: List of item names, unit amounts, and quantities</label>
             <label locale="ja">C4: 商品名、単価、数量の一覧</label>
         </config>
@@ -86,18 +86,21 @@ function retrieveCustomerId() {
 /**
   * config からラインアイテムの情報を読み出す
   * 入力値が不正な場合や、請求額合計が 8 桁（Stripe の上限値）を超える場合はエラー
-  * @return {Object} item
-  * @return {String} item.description アイテム名
-  * @return {String} item.unitAmount 単価
-  * @return {String} item.quantity 数量
+  * @return {List<Object>} items
+  * @return {String} items[].description アイテム名
+  * @return {String} items[].unitAmount 単価
+  * @return {String} items[].quantity 数量
   */
 function retrieveItems() {
     const itemsDef = configs.getObject('conf_LineItems');
+    if (itemsDef === null) {
+        return [];
+    }
     const table = engine.findData(itemsDef); // ScriptListArray
 
     // テーブルのサイズをチェック
     if (table === null) {
-        throw 'No line items are set.';
+        return [];
     }
     if (table.size() > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
         throw 'Too many line items. Number of necessary HTTP requests exceeds the limit.';
@@ -292,14 +295,6 @@ const SAMPLE_LINE_ITEMS = [
 test('Customer ID is blank', () => {
     prepareConfigs('', '請求書の説明', SAMPLE_LINE_ITEMS);
     expect(execute).toThrow('Customer ID is blank.');
-});
-
-/**
- * ラインアイテムが空
- */
-test('No line items', () => {
-    prepareConfigs('cus_000001', '請求書の説明', []);
-    expect(execute).toThrow('No line items are set.');
 });
 
 /**
@@ -531,6 +526,45 @@ test('Fail to create invoice', () => {
     });
 
     expect(execute).toThrow('Failed to create draft invoice. status: 400');
+});
+
+/**
+ * 成功 - ラインアイテムが 1 行もない
+ */
+test('Success - No line items', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', []);
+
+    const invoiceId = 'in_000101';
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムをあらわすテーブル型データ項目の設定なし
+ */
+test('Success - No list-type data item is set', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+    configs.put('conf_LineItems', '');
+
+    const invoiceId = 'in_000102';
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
 });
 
 /**
