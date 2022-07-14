@@ -1,0 +1,752 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-07-14</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Create Draft Invoice</label>
+    <label locale="ja">Stripe: 請求書ドラフト作成</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-invoice-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-invoice-create/
+    </help-page-url>
+
+    <summary>This item creates a draft invoice on Stripe. The created invoice remains a draft until you finalize it,
+        which allows you to send the invoice or charge the customer.
+    </summary>
+    <summary locale="ja">この工程は、Stripe 上に請求書のドラフト（下書き）を作成します。顧客に請求書の送付やの課金を行うには、 別途、ドラフト状態の請求書を確定させる必要があります。
+    </summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_CustomerId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Customer ID</label>
+            <label locale="ja">C2: 顧客 ID</label>
+        </config>
+        <config name="conf_Description" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C3: Description (Displayed in the invoice as 'memo')</label>
+            <label locale="ja">C3: 説明（請求書に「メモ」として表示されます）</label>
+        </config>
+        <config name="conf_LineItems" required="false" form-type="SELECT" select-data-type="LIST">
+            <label>C4: List of item names, unit amounts, and quantities</label>
+            <label locale="ja">C4: 商品名、単価、数量の一覧</label>
+        </config>
+        <config name="conf_InvoiceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save ID of the invoice</label>
+            <label locale="ja">C5: 請求書の ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_InvoiceUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save URL of the invoice detail page</label>
+            <label locale="ja">C6: 請求書詳細ページの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const customerId = retrieveCustomerId();
+    const description = configs.get('conf_Description');
+    const items = retrieveItems();
+    const invoiceIdDef = configs.getObject('conf_InvoiceId');
+    const invoiceUrlDef = configs.getObject('conf_InvoiceUrl');
+
+    //// == Calculating / 演算 ==
+    const invoiceId = createInvoice(auth, customerId, description);
+    items.forEach(item => {
+        attachInvoiceItem(auth, customerId, invoiceId, item);
+    });
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    if (invoiceIdDef !== null) { // STRING
+        engine.setData(invoiceIdDef, invoiceId);
+    }
+    if (invoiceUrlDef !== null) { // STRING
+        engine.setData(invoiceUrlDef, `https://dashboard.stripe.com/invoices/${invoiceId}`);
+    }
+}
+
+/**
+  * config から顧客 ID を読み出す。空文字列の場合はエラー
+  * @return {String} customerId 顧客 ID
+  */
+function retrieveCustomerId() {
+    const customerId = configs.get('conf_CustomerId');
+    if (customerId === '') {
+        throw 'Customer ID is blank.';
+    }
+    return customerId;
+}
+
+/**
+  * config からラインアイテムの情報を読み出す
+  * 入力値が不正な場合や、請求額合計が 8 桁（Stripe の上限値）を超える場合はエラー
+  * @return {List<Object>} items
+  * @return {String} items[].description アイテム名
+  * @return {String} items[].unitAmount 単価
+  * @return {String} items[].quantity 数量
+  */
+function retrieveItems() {
+    const itemsDef = configs.getObject('conf_LineItems');
+    if (itemsDef === null) {
+        return [];
+    }
+    const table = engine.findData(itemsDef); // ScriptListArray
+
+    // テーブルのサイズをチェック
+    if (table === null) {
+        return [];
+    }
+    if (table.size() > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
+        throw 'Too many line items. Number of necessary HTTP requests exceeds the limit.';
+    }
+
+    // サブデータ項目の数と型をチェック
+    const subDataDefs = itemsDef.getSubDataDefinitions(); // List<SubDataDefinitionView>
+    if (subDataDefs.size() < 3) {
+        throw 'The line items must include item description, unit amount, and quantity.';
+    }
+    if (!subDataDefs.get(0).matchDataType('STRING')) {
+        throw 'Line item name (1st column) must be STRING.';
+    }
+    if (!subDataDefs.get(1).matchDataType('DECIMAL')) {
+        throw 'Line item unit amount (2nd column) must be DECIMAL.';
+    }
+    if (!subDataDefs.get(2).matchDataType('DECIMAL')) {
+        throw 'Line item quantity (3rd column) must be DECIMAL.';
+    }
+
+    // オブジェクトの配列に整形
+    const items = [];
+    let totalAmount = 0;
+    for (let i = 0; i < table.size(); i++) {
+        const row = table.getRow(i);
+        const description = row.getObject(0);
+        if (description === null) {
+            throw `Line item ${i+1} is invalid. Item name must not be blank.`;
+        }
+        const unitAmount = parseBigDecimalToLong(row.getObject(1), 'Unit amount', i);
+        const quantity = parseBigDecimalToLong(row.getObject(2), 'Quantity', i);
+        totalAmount += unitAmount * quantity;
+        // 請求額は Stripe の制限で最大 8 桁まで。IDR のみ 12 桁までだが、ここでは一律で 8 桁までとする
+        if (totalAmount > 99999999) {
+            throw 'The total amount of line items must be less than 100000000.';
+        }
+        const item = {description, unitAmount, quantity};
+        items.push(item);
+    }
+    return items;
+}
+
+/**
+  * BigDecimal の数値を long にパースして返す
+  * 小数点以下が0でない場合、負の数の場合はエラー
+  * @param {BigDecimal} bigDecimal 数値
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} i エラー出力用インデックス
+  * @return {long} longValue 変換後の数値
+  */
+function parseBigDecimalToLong(bigDecimal, label, i) {
+    let longValue;
+    try {
+        longValue = bigDecimal.longValueExact();
+    } catch (e) {
+        throw `Line item ${i+1} is invalid. ${label} must be integer.`;
+    }
+    if (longValue < 0) {
+        throw `Line item ${i+1} is invalid. ${label} must not be negative.`;
+    }
+    return longValue;
+}
+
+/**
+  * 請求書のドラフトを作成する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} description 説明
+  * @return {String} invoiceId 作成された請求書ドラフトの ID
+  */
+function createInvoice(auth, customerId, description) {
+    const apiUri = 'https://api.stripe.com/v1/invoices';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId)
+        .formParam('description', description)
+        .formParam('auto_advance', 'false') // ドラフトが自動で確定されないよう false に
+        .formParam('pending_invoice_items_behavior', 'exclude') // 保留中の invoice item が追加されないよう false に
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to create draft invoice. status: ${status}`;
+    }
+    return JSON.parse(responseStr).id;
+}
+
+/**
+  * 請求書ドラフトにラインアイテムを追加する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} invoiceId 請求書ドラフトの ID
+  * @param {Object} item
+  * @param {String} item.description アイテム名
+  * @param {long} item.unitAmount 単価
+  * @param {long} item.quantity 数量
+  */
+function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount, quantity}) {
+    const apiUri = 'https://api.stripe.com/v1/invoiceitems';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId)
+        .formParam('invoice', invoiceId)
+        .formParam('description', description)
+        .formParam('unit_amount', unitAmount.toString())
+        .formParam('quantity', quantity.toString())
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to attach an invoice item. status: ${status}`;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param customerId
+ * @param description
+ * @param lineItems
+ * @return returnObj
+ * @return returnObj.invoiceIdDef
+ * @return returnObj.invoiceUrlDef
+ */
+const prepareConfigs = (customerId, description, lineItems) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_CustomerId', customerId);
+    configs.put('conf_Description', description);
+
+    // ラインアイテムの情報を保存したテーブル型データ項目を準備し、設定
+    const tableDef = engine.createDataDefinition('商品名、単価、数量の一覧', 1, 'q_lineItems', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    // 単価、数量は DECIMAL 型、小数点以下の桁数 2、小数点ピリオド、桁区切りなしで設定
+    tableDef.addDecimalSubDataDefinition('単価', 'q_unitAmount', 2, true, false);
+    tableDef.addDecimalSubDataDefinition('数量', 'q_quantity', 2, true, false);
+    configs.putObject('conf_LineItems', tableDef);
+
+    if (lineItems.length > 0) {
+        const table = tableDef.createListArray(); // ScriptListArray
+        lineItems.forEach(lineItem => {
+            const newRow = table.addRow();
+            lineItem.forEach((cellString, i) => {
+                newRow.setCol(i, cellString);
+            });
+        });
+        engine.setData(tableDef, table);
+    }
+
+    // 請求書ドラフトの ID を保存する文字型データ項目（単一行）を準備し、設定
+    const invoiceIdDef = engine.createDataDefinition('請求書 ID', 2, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, '事前文字列');
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    // 請求書ドラフトの URL を保存する文字型データ項目（単一行）を準備し、設定
+    const invoiceUrlDef = engine.createDataDefinition('請求書 URL', 3, 'q_invoiceUrl', 'STRING_TEXTFIELD');
+    engine.setData(invoiceUrlDef, '事前文字列');
+    configs.putObject('conf_InvoiceUrl', invoiceUrlDef);
+
+    return {invoiceIdDef, invoiceUrlDef};
+}
+
+const SAMPLE_LINE_ITEMS = [
+    ['テスト商品', '50', '1']
+];
+
+/**
+ * 顧客 ID が空
+ */
+test('Customer ID is blank', () => {
+    prepareConfigs('', '請求書の説明', SAMPLE_LINE_ITEMS);
+    expect(execute).toThrow('Customer ID is blank.');
+});
+
+/**
+ * ラインアイテムが多すぎて HTTP リクエスト数制限を超える
+ */
+test('Too many line items', () => {
+    const lineItems = [];
+    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
+        lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
+    }
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+    expect(execute).toThrow('Too many line items. Number of necessary HTTP requests exceeds the limit.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 2 列以下
+ */
+test('Invalid line items - too few columns', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    // 数量の列がない
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('The line items must include item description, unit amount, and quantity.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 1 列目が文字列型でない
+ */
+test('Invalid line items - 1st column is not STRING', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'DECIMAL'); // STRING でない
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'DECIMAL');
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, '0');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item name (1st column) must be STRING.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 2 列目が数値型でない
+ */
+test('Invalid line items - 2nd column is not DECIMAL', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'STRING'); // DECIMAL でない
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'DECIMAL');
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item unit amount (2nd column) must be DECIMAL.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 3 列目が数値型でない
+ */
+test('Invalid line items - 3rd column is not DECIMAL', () => {
+    prepareConfigs('cus_000001', '請求書の説明', []);
+
+    // 新しいテーブル型データ項目を作成し、設定
+    const tableDef = engine.createDataDefinition('新しいテーブル', 4, 'q_newTable', 'LIST');
+    tableDef.addSubDataDefinition('商品名', 'q_description', 'STRING');
+    tableDef.addSubDataDefinition('単価', 'q_unitAmount', 'DECIMAL');
+    tableDef.addSubDataDefinition('数量', 'q_quantity', 'STRING'); // DECIMAL でない
+    const table = tableDef.createListArray(); // ScriptListArray
+    const newRow = table.addRow();
+    newRow.setCol(0, 'テスト商品');
+    newRow.setCol(1, '50');
+    newRow.setCol(2, '1');
+    engine.setData(tableDef, table);
+    configs.putObject('conf_LineItems', tableDef);
+
+    expect(execute).toThrow('Line item quantity (3rd column) must be DECIMAL.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 商品名が空の行がある
+ */
+test('Invalid line items - Item name is blank', () => {
+    const lineItems = [
+        ['テスト商品 1', '50', '1'],
+        ['', '150', '2'],
+        ['テスト商品 3', '100', '3']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('Line item 2 is invalid. Item name must not be blank.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 単価が小数
+ */
+test('Invalid line items - Unit amount is decimal', () => {
+    const lineItems = [
+        ['テスト商品 1', '50.00', '1'], // 小数点以下が 0 の行ではエラーにならない
+        ['テスト商品 2', '150', '2'],
+        ['テスト商品 3', '100.05', '3'] // この行でエラー
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('Line item 3 is invalid. Unit amount must be integer.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 単価が負の整数
+ */
+test('Invalid line items - Unit amount is negative', () => {
+    const lineItems = [
+        ['テスト商品 1', '-50', '1'],
+        ['テスト商品 2', '150', '2'],
+        ['テスト商品 3', '100', '3']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('Line item 1 is invalid. Unit amount must not be negative.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 数量が小数
+ */
+test('Invalid line items - Quantity is decimal', () => {
+    const lineItems = [
+        ['テスト商品 1', '50', '1.0'], // 小数点以下が 0 の行ではエラーにならない
+        ['テスト商品 2', '150', '2.5'], // この行でエラー
+        ['テスト商品 3', '100', '3']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('Line item 2 is invalid. Quantity must be integer.');
+});
+
+/**
+ * ラインアイテムの形式が不正 - 数量が負の整数
+ */
+test('Invalid line items - Quantity is negative', () => {
+    const lineItems = [
+        ['テスト商品 1', '50', '1'],
+        ['テスト商品 2', '150', '2'],
+        ['テスト商品 3', '100', '-3']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('Line item 3 is invalid. Quantity must not be negative.');
+});
+
+/**
+ * 合計額が上限を超える - ラインアイテム 1 つ
+ */
+test('Total amount exceeds the limit - one line item', () => {
+    const lineItems = [
+        ['テスト商品 1', '10000', '10000']
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+});
+
+/**
+ * 合計額が上限を超える - 複数のラインアイテム
+ */
+test('Total amount exceeds the limit - multiple line items', () => {
+    const lineItems = [
+        ['テスト商品 1', '10000000', '9'],
+        ['テスト商品 2', '1000000', '9'],
+        ['テスト商品 3', '100000', '10'] // ここで上限を超える
+    ];
+    prepareConfigs('cus_000001', '請求書の説明', lineItems);
+
+    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+});
+
+/**
+ * 請求書ドラフトを作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param description
+ */
+const assertCreateInvoiceRequest = ({url, method, contentType, body}, customerId, description) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoices');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&description=${encodeURIComponent(description)}`
+        + '&auto_advance=false'
+        + '&pending_invoice_items_behavior=exclude';
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 請求書ドラフトを作成する HTTP リクエストで失敗
+ */
+test('Fail to create invoice', () => {
+    prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create draft invoice. status: 400');
+});
+
+/**
+ * 成功 - ラインアイテムが 1 行もない
+ */
+test('Success - No line items', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', []);
+
+    const invoiceId = 'in_000101';
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムをあらわすテーブル型データ項目の設定なし
+ */
+test('Success - No list-type data item is set', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+    configs.put('conf_LineItems', '');
+
+    const invoiceId = 'in_000102';
+    httpClient.setRequestHandler((request) => {
+        assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+        return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param invoiceId
+ * @param lineItem
+ */
+const assertAttachInvoiceItemRequest = ({url, method, contentType, body}, customerId, invoiceId, lineItem) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoiceitems');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&invoice=${invoiceId}`
+        + `&description=${encodeURIComponent(lineItem[0])}`
+        + `&unit_amount=${lineItem[1]}`
+        + `&quantity=${lineItem[2]}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する HTTP リクエストで失敗
+ */
+test('Fail to attach an invoice item', () => {
+    prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "in_000001"}');
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', 'in_000001', SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to attach an invoice item. status: 400');
+});
+
+/**
+ * 成功 - ラインアイテムが 1 つの場合
+ */
+test('Success - one line item', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '請求書の説明', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    const invoiceId = 'in_000001';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '請求書の説明');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムが複数で、合計額が上限を超えないぎりぎりの値の場合
+ */
+test('Success - multiple line items, maximum total amount', () => {
+    const lineItems = [ // 合計額が上限を超えないぎりぎりの値になるように
+        ['テスト商品 1', '10000000', '9'],
+        ['テスト商品 2', '1000000', '9'],
+        ['テスト商品 3', '999999', '1']
+    ];
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000002', '上限額ぎりぎりの請求書', lineItems);
+
+    let reqCount = 0;
+    let itemCount = 0;
+    const invoiceId = 'in_000002';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000002', '上限額ぎりぎりの請求書');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000002', invoiceId, lineItems[itemCount]);
+        itemCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - ラインアイテムが複数で、HTTP リクエスト数上限を超えないぎりぎりの数の場合
+ */
+test('Success - maximum number of line items', () => {
+    const lineItems = [];
+    for (let i = 0; i < httpClient.getRequestingLimit() - 1; i++) {
+        lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
+    }
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '上限個数ぎりぎりの請求書', lineItems);
+
+    let reqCount = 0;
+    let itemCount = 0;
+    const invoiceId = 'in_000003';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '上限個数ぎりぎりの請求書');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, lineItems[itemCount]);
+        itemCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - 請求書の説明が空の場合
+ */
+test('Success - invoice description is blank', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '', SAMPLE_LINE_ITEMS);
+
+    let reqCount = 0;
+    const invoiceId = 'in_000004';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000001', '');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
+});
+
+/**
+ * 成功 - 請求書ドラフトの ID, URL を保存しない場合
+ */
+test('Success - draft invoice ID and URL not saved', () => {
+    prepareConfigs('cus_000003', 'ID と URL を保存しない', SAMPLE_LINE_ITEMS);
+    configs.put('conf_InvoiceId', '');
+    configs.put('conf_InvoiceUrl', '');
+
+    let reqCount = 0;
+    const invoiceId = 'in_000005';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequest(request, 'cus_000003', 'ID と URL を保存しない');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000003', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
+
+</service-task-definition>
