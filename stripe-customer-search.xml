@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-15</last-modified>
+    <last-modified>2022-07-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Search Customers</label>
@@ -30,6 +30,14 @@
             <label>C4: Data item to save URLs of the customer detail pages</label>
             <label locale="ja">C4: 顧客詳細ページの URL の一覧を保存するデータ項目</label>
         </config>
+        <config name="conf_CustomerNames" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C5: Data item to save customers' names</label>
+            <label locale="ja">C5: 顧客の名前の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_CustomerEmails" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save customers' email addresses</label>
+            <label locale="ja">C6: 顧客のメールアドレスの一覧を保存するデータ項目</label>
+        </config>
     </configs>
 
     <script><![CDATA[
@@ -45,31 +53,37 @@ function main(){
     }
     const customerIdsDef = configs.getObject('conf_CustomerIds');
     const customerUrlsDef = configs.getObject('conf_CustomerUrls');
+    const customerNamesDef = configs.getObject('conf_CustomerNames');
+    const customerEmailsDef = configs.getObject('conf_CustomerEmails');
 
     //// == Calculating / 演算 ==
-    const customerIds = searchCustomers(auth, query);
+    const {customerIds, customerNames, customerEmails} = searchCustomers(auth, query);
 
     //// == Data Updating / ワークフローデータへの代入 ==
-    engine.setData(customerIdsDef, customerIds.join('\n'));
-    if (customerUrlsDef !== null) {
-        const customerUrls = customerIds.map(id => `https://dashboard.stripe.com/customers/${id}`);
-        engine.setData(customerUrlsDef, customerUrls.join('\n'));
-    }
+    saveData(customerIdsDef, customerIds);
+    saveData(customerUrlsDef, customerIds.map(id => `https://dashboard.stripe.com/customers/${id}`));
+    saveData(customerNamesDef, customerNames);
+    saveData(customerEmailsDef, customerEmails);
 }
 
 /**
   * 顧客を検索する
   * @param {String} oauth 認証設定
   * @param {String} query 検索クエリ
-  * @return {List<String>} customerIds 顧客 ID の一覧
+  * @return {Object} returnObj
+  * @return {List<String>} returnObj.customerIds 顧客 ID の一覧
+  * @return {List<String>} returnObj.customerNames 顧客の名前の一覧
+  * @return {List<String>} returnObj.customerEmails 顧客のメールアドレスの一覧
   */
 function searchCustomers(auth, query) {
     const customerIds = [];
-    let nextPage = search(auth, query, null, customerIds);
+    const customerNames = [];
+    const customerEmails = [];
+    let nextPage = search(auth, query, null, customerIds, customerNames, customerEmails);
     while (nextPage !== null) {
-        nextPage = search(auth, query, nextPage, customerIds);
+        nextPage = search(auth, query, nextPage, customerIds, customerNames, customerEmails);
     }
-    return customerIds;
+    return {customerIds, customerNames, customerEmails};
 }
 
 /**
@@ -78,9 +92,11 @@ function searchCustomers(auth, query) {
   * @param {String} query 検索クエリ
   * @param {String} page 取得するページ。最初のリクエストの場合は null
   * @param {List<String>} customerIds 検索結果の顧客 ID を格納する配列
+  * @param {List<String>} customerNames 検索結果の顧客の名前を格納する配列
+  * @param {List<String>} customerEmails 検索結果の顧客のメールアドレスを格納する配列
   * @return {String} nextPage 次のページ
   */
-function search(auth, query, page, customerIds) {
+function search(auth, query, page, customerIds, customerNames, customerEmails) {
     const apiUri = 'https://api.stripe.com/v1/customers/search';
     const request = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
@@ -101,12 +117,27 @@ function search(auth, query, page, customerIds) {
     if (page === null && customers.length === 0) { // 1 回目の検索で、結果の件数が 0
         throw 'No customers found.';
     }
-    Array.prototype.push.apply(customerIds, customers.map(customer => customer.id)); // 結果を配列に追加
+    // 結果を配列に追加
+    Array.prototype.push.apply(customerIds, customers.map(customer => customer.id));
+    Array.prototype.push.apply(customerNames, customers.map(customer => customer.name));
+    Array.prototype.push.apply(customerEmails, customers.map(customer => customer.email));
     if (responseObj.has_more) { // 次のページがある場合
         return responseObj.next_page;
     }
     // 次のページがない場合
     return null;
+}
+
+/**
+  * データ項目に出力する
+  * @param {ProcessDataDefinitionView} dataDef 保存先データ項目
+  * @param {List<String>} dataList 保存するデータの配列
+  */
+function saveData(dataDef, dataList) {
+    if ( dataDef === null ) {
+      return;
+    }
+    engine.setData(dataDef, dataList.join("\n"));
 }
 
     ]]></script>
