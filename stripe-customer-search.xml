@@ -129,7 +129,7 @@ function search(auth, query, page, customerIds, customerNames, customerEmails) {
     const request = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .queryParam('query', query) // required
-        .queryParam('limit', 100); // maximum limit
+        .queryParam('limit', '100'); // maximum limit
     if (page !== null) {
         request.queryParam('page', page);
     }
@@ -225,14 +225,6 @@ const prepareConfigs = (query) => {
 
     return {idDef, urlDef, nameDef, emailDef};
 }
-
-/**
- * 検索クエリが空
- */
-test('Search query is blank', () => {
-    prepareConfigs('');
-    expect(execute).toThrow('Search query is blank.');
-});
 
 const SAMPLE_QUERY_1 = 'name~"テスト顧客"';
 const SAMPLE_QUERY_2 = 'created>946652400\nAND metadata["key"]:"value"'; // 複数行
@@ -689,6 +681,56 @@ test('Success - Some customers do not have their name or email address', () => {
         } else {
             expect(emails[i]).toEqual(`test${i+1}@example.com`);
         }
+    }
+});
+
+/**
+ * 検索クエリが空 - 全件取得
+ */
+test('Search query is blank - get all customers', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs('');
+
+    const customerNum = MAX_CUSTOMERS_PER_REQ * REQ_LIMIT;
+    const customers = prepareCustomers(customerNum);
+
+    let reqCount = 0;
+    const query = 'created>0';
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_CUSTOMERS_PER_REQ * reqCount;
+        const end = start + MAX_CUSTOMERS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, query, null);
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, query, `page_${reqCount}`);
+        if (reqCount < REQ_LIMIT - 1) {
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        const response = searchResponse(false, customers.slice(start, end), null);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const ids = engine.findData(idDef).split('\n');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    const emails = engine.findData(emailDef).split('\n');
+    expect(ids.length).toEqual(customerNum);
+    expect(urls.length).toEqual(customerNum);
+    expect(names.length).toEqual(customerNum);
+    expect(emails.length).toEqual(customerNum);
+
+    for (let i = 0; i < customerNum; i++) {
+        expect(ids[i]).toEqual(`cus_${i+1}`);
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/customers/cus_${i+1}`);
+        expect(names[i]).toEqual(`テスト顧客 ${i+1}`);
+        expect(emails[i]).toEqual(`test${i+1}@example.com`);
     }
 });
 
