@@ -18,7 +18,7 @@
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
-        <config name="conf_Query" required="true" el-enabled="true" form-type="TEXTAREA">
+        <config name="conf_Query" required="false" el-enabled="true" form-type="TEXTAREA">
             <label>C2: Search Query</label>
             <label locale="ja">C2: 検索クエリ</label>
         </config>
@@ -48,9 +48,6 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const query = configs.get('conf_Query');
-    if (query === '') {
-        throw 'Search query is blank.';
-    }
     const customerIdsDef = configs.getObject('conf_CustomerIds');
     const customerUrlsDef = configs.getObject('conf_CustomerUrls');
     const customerNamesDef = configs.getObject('conf_CustomerNames');
@@ -114,6 +111,9 @@ function searchCustomers(auth, query, singleLineFlag) {
     return {customerIds, customerNames, customerEmails};
 }
 
+/** 1 回のリクエストで取得できる顧客数の上限 */
+const MAXIMUM_LIMIT = 100;
+
 /**
   * 顧客を検索する API リクエストを送信する
   * @param {String} oauth 認証設定
@@ -125,11 +125,14 @@ function searchCustomers(auth, query, singleLineFlag) {
   * @return {String} nextPage 次のページ
   */
 function search(auth, query, page, customerIds, customerNames, customerEmails) {
+    if (query === '') { // 検索クエリが空の場合は顧客の一覧を取得する
+        return list(auth, page, customerIds, customerNames, customerEmails);
+    }
     const apiUri = 'https://api.stripe.com/v1/customers/search';
     const request = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .queryParam('query', query) // required
-        .queryParam('limit', '100'); // maximum limit
+        .queryParam('limit', MAXIMUM_LIMIT); // maximum limit
     if (page !== null) {
         request.queryParam('page', page);
     }
@@ -151,6 +154,46 @@ function search(auth, query, page, customerIds, customerNames, customerEmails) {
     Array.prototype.push.apply(customerEmails, customers.map(customer => customer.email));
     if (responseObj.has_more) { // 次のページがある場合
         return responseObj.next_page;
+    }
+    // 次のページがない場合
+    return null;
+}
+
+/**
+  * 顧客の一覧を取得する API リクエストを送信する
+  * @param {String} oauth 認証設定
+  * @param {String} page 取得するページ。指定した顧客 ID 以降の顧客一覧を取得する。最初のリクエストの場合は null
+  * @param {List<String>} customerIds 検索結果の顧客 ID を格納する配列
+  * @param {List<String>} customerNames 検索結果の顧客の名前を格納する配列
+  * @param {List<String>} customerEmails 検索結果の顧客のメールアドレスを格納する配列
+  * @return {String} nextPage 次のページ
+  */
+function list(auth, query, page, customerIds, customerNames, customerEmails) {
+    const apiUri = 'https://api.stripe.com/v1/customers';
+    const request = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .queryParam('limit', MAXIMUM_LIMIT); // maximum limit
+    if (page !== null) {
+        request.queryParam('starting_after', page);
+    }
+    const response = request.get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to list customers. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const customers = responseObj.data;
+    if (page === null && customers.length === 0) { // 1 回目の検索で、結果の件数が 0
+        throw 'No customers found.';
+    }
+    // 結果を配列に追加
+    Array.prototype.push.apply(customerIds, customers.map(customer => customer.id));
+    Array.prototype.push.apply(customerNames, customers.map(customer => customer.name));
+    Array.prototype.push.apply(customerEmails, customers.map(customer => customer.email));
+    if (responseObj.has_more) { // 次のページがある場合
+        return customers[customers.length - 1].id;
     }
     // 次のページがない場合
     return null;
