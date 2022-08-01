@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-11</last-modified>
+    <last-modified>2022-08-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Send Invoice</label>
@@ -44,6 +44,7 @@ function main(){
     //// == Calculating / 演算 ==
     const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId);
     const customerEmail = checkCustomer(auth, customerId);
+    checkPaymentMethodTypes(auth, invoiceId, paymentIntentId);
     updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail);
     sendInvoice(auth, invoiceId);
 }
@@ -99,6 +100,51 @@ function checkInvoice(auth, invoiceId) {
     const customerId = invoiceObj.customer;
     const paymentIntentId = invoiceObj.payment_intent;
     return {customerId, paymentIntentId};
+}
+
+/**
+  * 支払オブジェクトに設定されている支払方法をチェックし、
+  * card 以外のものが設定されている場合、card のみに更新する
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @param {String} paymentIntentId 支払オブジェクトの ID
+  */
+function checkPaymentMethodTypes(auth, invoiceId, paymentIntentId) {
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get payment intent. status: ${status}`;
+    }
+    const paymentIntentObj = JSON.parse(responseStr);
+    if (paymentIntentObj.payment_method_types.some(type => type !== 'card')) {
+        // 支払方法をカードのみに更新する
+        // カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
+        updateInvoice(auth, invoiceId);
+    }
+}
+
+/**
+  * 請求書を更新し、支払方法をカードのみにする
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  */
+function updateInvoice(auth, invoiceId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('payment_settings[payment_method_types][0]', 'card')
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) { // 請求書のステータスが uncollectible の場合、更新に失敗
+        engine.log(responseStr);
+        throw `Failed to update invoice. status: ${status}`;
+    }
 }
 
 /**
