@@ -1,0 +1,741 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-08-01</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Search Customers</label>
+    <label locale="ja">Stripe: 顧客を検索</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-customer-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-customer-search/
+    </help-page-url>
+
+    <summary>This item searches for customer objects on Stripe using a query.</summary>
+    <summary locale="ja">この工程は、検索クエリに合致する Stripe 上の顧客オブジェクトを検索します。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_Query" required="false" el-enabled="true" form-type="TEXTAREA">
+            <label>C2: Search Query</label>
+            <label locale="ja">C2: 検索クエリ</label>
+        </config>
+        <config name="conf_CustomerIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C3: Data item to save customer IDs</label>
+            <label locale="ja">C3: 顧客 ID の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_CustomerUrls" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C4: Data item to save URLs of the customer detail pages</label>
+            <label locale="ja">C4: 顧客詳細ページの URL の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_CustomerNames" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C5: Data item to save customers' names</label>
+            <label locale="ja">C5: 顧客の名前の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_CustomerEmails" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save customers' email addresses</label>
+            <label locale="ja">C6: 顧客のメールアドレスの一覧を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    let query = configs.get('conf_Query');
+    if (query === '') { // 検索クエリが空の場合、全件取得する
+        query = 'created>0';
+    }
+    const customerIdsDef = configs.getObject('conf_CustomerIds');
+    const customerUrlsDef = configs.getObject('conf_CustomerUrls');
+    const customerNamesDef = configs.getObject('conf_CustomerNames');
+    const customerEmailsDef = configs.getObject('conf_CustomerEmails');
+
+    //// == Calculating / 演算 ==
+    const singleLineFlag = checkDataDefs(customerIdsDef, customerUrlsDef, customerNamesDef, customerEmailsDef);
+    const {customerIds, customerNames, customerEmails} = searchCustomers(auth, query, singleLineFlag);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    saveData(customerIdsDef, customerIds);
+    saveData(customerUrlsDef, customerIds.map(id => `https://dashboard.stripe.com/customers/${id}`));
+    saveData(customerNamesDef, customerNames);
+    saveData(customerEmailsDef, customerEmails);
+}
+
+/**
+  * 保存先データ項目をチェックし、以下の場合にエラー
+  * - 保存先データ項目が一つも設定されていない
+  * - 保存先データ項目が重複
+  * @param {ProcessDataDefinitionView} customerIdsDef 顧客 ID を保存するデータ項目
+  * @param {ProcessDataDefinitionView} customerUrlsDef 顧客詳細ページの URL を保存するデータ項目
+  * @param {ProcessDataDefinitionView} customerNamesDef 顧客の名前を保存するデータ項目
+  * @param {ProcessDataDefinitionView} customerEmailsDef 顧客のメールアドレスを保存するデータ項目
+  * @return {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  */
+function checkDataDefs(customerIdsDef, customerUrlsDef, customerNamesDef, customerEmailsDef) {
+    const dataDefList = [customerIdsDef, customerUrlsDef, customerNamesDef, customerEmailsDef]
+        .filter(dataDef => dataDef !== null);
+    if (dataDefList.length === 0) { // 保存先データ項目が一つも設定されていない
+        throw 'No data item to save the search result is set.';
+    }
+    const dataNumSet = new Set(dataDefList.map(dataDef => dataDef.getNumber())); // 重複確認用
+    if (dataNumSet.size < dataDefList.length) { // 保存先データ項目が重複
+        throw 'Same data item is set multiple times.';
+    }
+    return dataDefList.some(dataDef => dataDef.matchDataType("STRING_TEXTFIELD"));
+}
+
+/**
+  * 顧客を検索する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  * @return {Object} returnObj
+  * @return {List<String>} returnObj.customerIds 顧客 ID の一覧
+  * @return {List<String>} returnObj.customerNames 顧客の名前の一覧
+  * @return {List<String>} returnObj.customerEmails 顧客のメールアドレスの一覧
+  */
+function searchCustomers(auth, query, singleLineFlag) {
+    const customerIds = [];
+    const customerNames = [];
+    const customerEmails = [];
+    let nextPage = search(auth, query, null, customerIds, customerNames, customerEmails);
+    if (singleLineFlag && customerIds.length > 1) { // 保存先データ項目が単一行なのに複数件あればエラー
+        throw 'More than one customers were found while the data item to save the result is Single-Line.';
+    }
+    while (nextPage !== null) {
+        engine.log(`Current search result: ${customerIds.length} customers found. Fetching next page...`);
+        nextPage = search(auth, query, nextPage, customerIds, customerNames, customerEmails);
+    }
+    engine.log(`Search result: ${customerIds.length} customers found.`);
+    return {customerIds, customerNames, customerEmails};
+}
+
+/**
+  * 顧客を検索する API リクエストを送信する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {String} page 取得するページ。最初のリクエストの場合は null
+  * @param {List<String>} customerIds 検索結果の顧客 ID を格納する配列
+  * @param {List<String>} customerNames 検索結果の顧客の名前を格納する配列
+  * @param {List<String>} customerEmails 検索結果の顧客のメールアドレスを格納する配列
+  * @return {String} nextPage 次のページ
+  */
+function search(auth, query, page, customerIds, customerNames, customerEmails) {
+    const apiUri = 'https://api.stripe.com/v1/customers/search';
+    const request = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .queryParam('query', query) // required
+        .queryParam('limit', '100'); // maximum limit
+    if (page !== null) {
+        request.queryParam('page', page);
+    }
+    const response = request.get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to search customers. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const customers = responseObj.data;
+    if (page === null && customers.length === 0) { // 1 回目の検索で、結果の件数が 0
+        throw 'No customers found.';
+    }
+    // 結果を配列に追加
+    Array.prototype.push.apply(customerIds, customers.map(customer => customer.id));
+    Array.prototype.push.apply(customerNames, customers.map(customer => customer.name));
+    Array.prototype.push.apply(customerEmails, customers.map(customer => customer.email));
+    if (responseObj.has_more) { // 次のページがある場合
+        return responseObj.next_page;
+    }
+    // 次のページがない場合
+    return null;
+}
+
+/**
+  * データ項目に出力する
+  * @param {ProcessDataDefinitionView} dataDef 保存先データ項目
+  * @param {List<String>} dataList 保存するデータの配列
+  */
+function saveData(dataDef, dataList) {
+    if ( dataDef === null ) {
+      return;
+    }
+    engine.setData(dataDef, dataList.join("\n"));
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param query
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ * @return returnObj.nameDef
+ * @return returnObj.emailDef
+ */
+const prepareConfigs = (query) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_Query', query);
+
+    // 顧客の ID 一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const idDef = engine.createDataDefinition('顧客 ID の一覧', 1, 'q_customerIds', 'STRING_TEXTAREA');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_CustomerIds', idDef);
+
+    // 顧客詳細ページの URL 一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const urlDef = engine.createDataDefinition('顧客 URL の一覧', 2, 'q_customerUrls', 'STRING_TEXTAREA');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_CustomerUrls', urlDef);
+
+    // 顧客名の一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const nameDef = engine.createDataDefinition('顧客名の一覧', 3, 'q_customerNames', 'STRING_TEXTAREA');
+    engine.setData(nameDef, '事前文字列');
+    configs.putObject('conf_CustomerNames', nameDef);
+
+    // 顧客メールアドレスの一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const emailDef = engine.createDataDefinition('顧客メールアドレスの一覧', 4, 'q_customerEmails', 'STRING_TEXTAREA');
+    engine.setData(emailDef, '事前文字列');
+    configs.putObject('conf_CustomerEmails', emailDef);
+
+    return {idDef, urlDef, nameDef, emailDef};
+}
+
+const SAMPLE_QUERY_1 = 'name~"テスト顧客"';
+const SAMPLE_QUERY_2 = 'created>946652400\nAND metadata["key"]:"value"'; // 複数行
+
+/**
+ * 保存先データ項目がひとつも設定されていない
+ */
+test('Search query is blank', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+    configs.put('conf_CustomerIds', '');
+    configs.put('conf_CustomerUrls', '');
+    configs.put('conf_CustomerNames', '');
+    configs.put('conf_CustomerEmails', '');
+    expect(execute).toThrow('No data item to save the search result is set.');
+});
+
+/**
+ * 保存先データ項目が重複 - ID と URL
+ */
+test('Same data item is set multiple times - ID and URL', () => {
+    const {idDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_CustomerUrls', idDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - URL と名前
+ */
+test('Same data item is set multiple times - URL and Name', () => {
+    const {urlDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_CustomerNames', urlDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - 名前とメールアドレス
+ */
+test('Same data item is set multiple times - Name and Email', () => {
+    const {nameDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_CustomerEmails', nameDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - メールアドレスと ID
+ */
+test('Same data item is set multiple times - Email and ID', () => {
+    const {emailDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_CustomerIds', emailDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/** 1 リクエストで取得できる顧客数 */
+const MAX_CUSTOMERS_PER_REQ = 100;
+
+/**
+ * 顧客を検索する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param query
+ * @param page
+ */
+const assertRequest = ({url, method}, query, page) => {
+    const encodedQuery = encodeURIComponent(query).replace(/~/g, '%7E').replace(/%20/g, '+');
+    let expectedQueryStr = `query=${encodedQuery}&limit=${MAX_CUSTOMERS_PER_REQ}`;
+    if (page !== null) {
+        expectedQueryStr += `&page=${page}`;
+    }
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/search?${expectedQueryStr}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 初回の顧客を検索する HTTP リクエストで失敗
+ */
+test('Fail to search customers', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to search customers. status: 400');
+});
+
+/**
+ * 検索結果が 0 件
+ */
+test('No customers found', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', '{"data": []}');
+    });
+
+    expect(execute).toThrow('No customers found.');
+});
+
+/**
+ * あたえられた数の顧客オブジェクトの配列を返す
+ * @param number
+ * @return customers
+ */
+const prepareCustomers = (number) => {
+    const customers = [];
+    for (let i = 0; i < number; i++) {
+        const customer = {
+            'id': `cus_${i+1}`,
+            'name': `テスト顧客 ${i+1}`,
+            'email': `test${i+1}@example.com`
+        };
+        customers.push(customer);
+    }
+    return customers;
+};
+
+/**
+ * 顧客を検索する API リクエストのレスポンスボディを返す
+ * @param hasMore
+ * @param customers
+ * @param nextPage
+ * @return response
+ */
+const searchResponse = (hasMore, customers, nextPage) => {
+    const responseObj = {
+        'has_more': hasMore,
+        'data': customers
+    };
+    if (nextPage !== null) {
+        responseObj['next_page'] = nextPage;
+    }
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 検索結果が 1 件
+ */
+test('Success - 1 customer found', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_1);
+
+    const customers = prepareCustomers(1);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('cus_1');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/customers/cus_1');
+    expect(engine.findData(nameDef)).toEqual('テスト顧客 1');
+    expect(engine.findData(emailDef)).toEqual('test1@example.com');
+});
+
+/**
+ * 成功 - 検索結果が 1 件、単一行データ項目に保存
+ */
+test('Success - 1 customer found, saved to single-line data items', () => {
+    prepareConfigs(SAMPLE_QUERY_2);
+
+    // 顧客の ID 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('顧客 ID の一覧', 5, 'q_customerId', 'STRING_TEXTFIELD');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_CustomerIds', idDef);
+
+    // 顧客詳細ページの URL 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('顧客 URL の一覧', 6, 'q_customerUrl', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_CustomerUrls', urlDef);
+
+    // 顧客名の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const nameDef = engine.createDataDefinition('顧客名の一覧', 7, 'q_customerName', 'STRING_TEXTFIELD');
+    engine.setData(nameDef, '事前文字列');
+    configs.putObject('conf_CustomerNames', nameDef);
+
+    // 顧客メールアドレスの一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const emailDef = engine.createDataDefinition('顧客メールアドレスの一覧', 8, 'q_customerEmail', 'STRING_TEXTFIELD');
+    engine.setData(emailDef, '事前文字列');
+    configs.putObject('conf_CustomerEmails', emailDef);
+
+    const customers = prepareCustomers(1);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('cus_1');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/customers/cus_1');
+    expect(engine.findData(nameDef)).toEqual('テスト顧客 1');
+    expect(engine.findData(emailDef)).toEqual('test1@example.com');
+});
+
+const REQ_LIMIT = httpClient.getRequestingLimit();
+
+/**
+ * 成功 - 検索結果が上限件
+ */
+test('Success - max number of customers found', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_2);
+
+    const customerNum = MAX_CUSTOMERS_PER_REQ * REQ_LIMIT;
+    const customers = prepareCustomers(customerNum);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_CUSTOMERS_PER_REQ * reqCount;
+        const end = start + MAX_CUSTOMERS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, SAMPLE_QUERY_2, null);
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, SAMPLE_QUERY_2, `page_${reqCount}`);
+        if (reqCount < REQ_LIMIT - 1) {
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        const response = searchResponse(false, customers.slice(start, end), null);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const ids = engine.findData(idDef).split('\n');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    const emails = engine.findData(emailDef).split('\n');
+    expect(ids.length).toEqual(customerNum);
+    expect(urls.length).toEqual(customerNum);
+    expect(names.length).toEqual(customerNum);
+    expect(emails.length).toEqual(customerNum);
+
+    for (let i = 0; i < customerNum; i++) {
+        expect(ids[i]).toEqual(`cus_${i+1}`);
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/customers/cus_${i+1}`);
+        expect(names[i]).toEqual(`テスト顧客 ${i+1}`);
+        expect(emails[i]).toEqual(`test${i+1}@example.com`);
+    }
+});
+
+/**
+ * 検索結果が多すぎて HTTP リクエスト数の上限を超える
+ */
+test('Number of HTTP requests exceeds the limit', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_1);
+
+    const customerNum = MAX_CUSTOMERS_PER_REQ * REQ_LIMIT;
+    const customers = prepareCustomers(customerNum);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_CUSTOMERS_PER_REQ * reqCount;
+        const end = start + MAX_CUSTOMERS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, SAMPLE_QUERY_1, null);
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, SAMPLE_QUERY_1, `page_${reqCount}`);
+        reqCount++;
+        // 最後のリクエストでも hasMore が true
+        const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    expect(execute).toThrow('org.graalvm.polyglot.PolyglotException'); // スクリプトエンジンのエラー
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - ID
+ */
+test('Cannot save multiple results to single-line data item - ID', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    // 顧客の ID 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('顧客 ID の一覧', 5, 'q_customerId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_CustomerIds', idDef);
+
+    const customers = prepareCustomers(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - URL
+ */
+test('Cannot save multiple results to single-line data item - URL', () => {
+    prepareConfigs(SAMPLE_QUERY_2);
+
+    // 顧客詳細ページの URL 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('顧客 URL の一覧', 6, 'q_customerUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_CustomerUrls', urlDef);
+
+    const customersNum = MAX_CUSTOMERS_PER_REQ + 1;
+    const customers = prepareCustomers(customersNum);
+    httpClient.setRequestHandler((request) => { // リクエストは 1 回のみ
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        const response = searchResponse(true, customers.slice(0, MAX_CUSTOMERS_PER_REQ), 'next_page')
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - 名前
+ */
+test('Cannot save multiple results to single-line data item - Name', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    // 顧客名の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const nameDef = engine.createDataDefinition('顧客名の一覧', 7, 'q_customerName', 'STRING_TEXTFIELD');
+    configs.putObject('conf_CustomerNames', nameDef);
+
+    const customers = prepareCustomers(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - メールアドレス
+ */
+test('Cannot save multiple results to single-line data item - Email', () => {
+    prepareConfigs(SAMPLE_QUERY_2);
+
+    // 顧客メールアドレスの一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const emailDef = engine.createDataDefinition('顧客メールアドレスの一覧', 8, 'q_customerEmail', 'STRING_TEXTFIELD');
+    configs.putObject('conf_CustomerEmails', emailDef);
+
+    const customers = prepareCustomers(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 成功 - ID とメールアドレスの保存先データ項目が未設定
+ */
+test('Success - Data item to save IDs and Emails are not set', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.put('conf_CustomerIds', '');
+    configs.put('conf_CustomerEmails', '');
+
+    const customerNum = MAX_CUSTOMERS_PER_REQ;
+    const customers = prepareCustomers(customerNum);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(emailDef)).toEqual('事前文字列');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    expect(urls.length).toEqual(customerNum);
+    expect(names.length).toEqual(customerNum);
+    for (let i = 0; i < customerNum; i++) {
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/customers/cus_${i+1}`);
+        expect(names[i]).toEqual(`テスト顧客 ${i+1}`);
+    }
+});
+
+/**
+ * 成功 - URL と名前の保存先データ項目が未設定
+ */
+test('Success - Data item to save URLs and Names are not set', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_2);
+    configs.put('conf_CustomerUrls', '');
+    configs.put('conf_CustomerNames', '');
+
+    const customerNum = 10;
+    const customers = prepareCustomers(customerNum);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+    expect(engine.findData(nameDef)).toEqual('事前文字列');
+    const ids = engine.findData(idDef).split('\n');
+    const emails = engine.findData(emailDef).split('\n');
+    expect(ids.length).toEqual(customerNum);
+    expect(emails.length).toEqual(customerNum);
+    for (let i = 0; i < customerNum; i++) {
+        expect(ids[i]).toEqual(`cus_${i+1}`);
+        expect(emails[i]).toEqual(`test${i+1}@example.com`);
+    }
+});
+
+/**
+ * 成功 - 名前やメールアドレスが未設定の顧客がいる
+ */
+test('Success - Some customers do not have their name or email address', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs(SAMPLE_QUERY_1);
+
+    const customerNum = 5;
+    const customers = prepareCustomers(customerNum);
+    customers[2].name = null;
+    customers[3].email = null;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const ids = engine.findData(idDef).split('\n');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    const emails = engine.findData(emailDef).split('\n');
+    expect(ids.length).toEqual(customerNum);
+    expect(urls.length).toEqual(customerNum);
+    expect(names.length).toEqual(customerNum);
+    expect(emails.length).toEqual(customerNum);
+    for (let i = 0; i < customerNum; i++) {
+        expect(ids[i]).toEqual(`cus_${i+1}`);
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/customers/cus_${i+1}`);
+        if (i === 2) {
+            expect(names[i]).toEqual(''); // 空行
+        } else {
+            expect(names[i]).toEqual(`テスト顧客 ${i+1}`);
+        }
+        if (i === 3) {
+            expect(emails[i]).toEqual(''); // 空行
+        } else {
+            expect(emails[i]).toEqual(`test${i+1}@example.com`);
+        }
+    }
+});
+
+/**
+ * 検索クエリが空 - 全件取得
+ */
+test('Search query is blank - get all customers', () => {
+    const {idDef, urlDef, nameDef, emailDef} = prepareConfigs('');
+
+    const customerNum = MAX_CUSTOMERS_PER_REQ * REQ_LIMIT;
+    const customers = prepareCustomers(customerNum);
+
+    let reqCount = 0;
+    const query = 'created>0';
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_CUSTOMERS_PER_REQ * reqCount;
+        const end = start + MAX_CUSTOMERS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, query, null);
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, query, `page_${reqCount}`);
+        if (reqCount < REQ_LIMIT - 1) {
+            reqCount++;
+            const response = searchResponse(true, customers.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        const response = searchResponse(false, customers.slice(start, end), null);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const ids = engine.findData(idDef).split('\n');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    const emails = engine.findData(emailDef).split('\n');
+    expect(ids.length).toEqual(customerNum);
+    expect(urls.length).toEqual(customerNum);
+    expect(names.length).toEqual(customerNum);
+    expect(emails.length).toEqual(customerNum);
+
+    for (let i = 0; i < customerNum; i++) {
+        expect(ids[i]).toEqual(`cus_${i+1}`);
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/customers/cus_${i+1}`);
+        expect(names[i]).toEqual(`テスト顧客 ${i+1}`);
+        expect(emails[i]).toEqual(`test${i+1}@example.com`);
+    }
+});
+
+    ]]></test>
+
+</service-task-definition>
