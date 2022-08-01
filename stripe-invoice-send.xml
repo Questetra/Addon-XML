@@ -103,51 +103,6 @@ function checkInvoice(auth, invoiceId) {
 }
 
 /**
-  * 支払オブジェクトに設定されている支払方法をチェックし、
-  * card 以外のものが設定されている場合、card のみに更新する
-  * @param {String} oauth 認証設定
-  * @param {String} invoiceId 請求書の ID
-  * @param {String} paymentIntentId 支払オブジェクトの ID
-  */
-function checkPaymentMethodTypes(auth, invoiceId, paymentIntentId) {
-    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .get(apiUri);
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to get payment intent. status: ${status}`;
-    }
-    const paymentIntentObj = JSON.parse(responseStr);
-    if (paymentIntentObj.payment_method_types.some(type => type !== 'card')) {
-        // 支払方法をカードのみに更新する
-        // カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
-        updateInvoice(auth, invoiceId);
-    }
-}
-
-/**
-  * 請求書を更新し、支払方法をカードのみにする
-  * @param {String} oauth 認証設定
-  * @param {String} invoiceId 請求書の ID
-  */
-function updateInvoice(auth, invoiceId) {
-    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('payment_settings[payment_method_types][0]', 'card')
-        .post(apiUri);
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) { // 請求書のステータスが uncollectible の場合、更新に失敗
-        engine.log(responseStr);
-        throw `Failed to update invoice. status: ${status}`;
-    }
-}
-
-/**
   * 顧客をチェックし、顧客のメールアドレスを返す
   * - 顧客が削除済みの場合、エラー
   * - 顧客のメールアドレスが設定されていない場合、エラー
@@ -177,6 +132,51 @@ function checkCustomer(auth, customerId) {
         throw "The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.";
     }
     return customerEmail;
+}
+
+/**
+  * 支払オブジェクトに設定されている支払方法をチェックし、
+  * card 以外のものが設定されている場合、card のみに更新する
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @param {String} paymentIntentId 支払オブジェクトの ID
+  */
+function checkPaymentMethodTypes(auth, invoiceId, paymentIntentId) {
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to retrieve payment intent. status: ${status}`;
+    }
+    const paymentIntentObj = JSON.parse(responseStr);
+    if (paymentIntentObj.payment_method_types.some(type => type !== 'card')) {
+        // 支払方法をカードのみに更新する
+        // カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
+        updateInvoice(auth, invoiceId);
+    }
+}
+
+/**
+  * 請求書を更新し、支払方法をカードのみにする
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  */
+function updateInvoice(auth, invoiceId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('payment_settings[payment_method_types][0]', 'card')
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) { // 請求書のステータスが uncollectible の場合、更新に失敗
+        engine.log(responseStr);
+        throw `Failed to update invoice. status: ${status}`;
+    }
 }
 
 /**
@@ -455,6 +455,47 @@ const SAMPLE_CUSTOMER_2 = {
 };
 
 /**
+ * 支払オブジェクトを取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param customerId
+ */
+const assertGetPaymentIntentRequest = ({url, method}, paymentIntentId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/payment_intents/${paymentIntentId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 支払オブジェクトを取得する HTTP リクエストで失敗
+ */
+test('Fail to retrieve payment intent', () => {
+    prepareConfigs('in_00021', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00021');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        assertGetPaymentIntentRequest(request, 'pi_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to retrieve payment intent. status: 400');
+});
+
+const SAMPLE_PAYMENT_INTENT_1 = {
+    'payment_method_types': ['card']
+};
+
+/**
  * 支払オブジェクトを更新する API リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -488,6 +529,11 @@ test('Fail to update payment intent', () => {
             assertGetCustomerRequest(request, 'cus_00001');
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_1));
         }
         assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
         return httpClient.createHttpResponse(400, 'application/json', '{}');
@@ -527,6 +573,11 @@ test('Fail to send invoice', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
         }
         if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_1));
+        }
+        if (reqCount === 3) {
             assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
@@ -557,6 +608,11 @@ test('Success - open invoice', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
         }
         if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_1));
+        }
+        if (reqCount === 3) {
             assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
@@ -587,6 +643,11 @@ test('Success - uncollectible invoice', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_2));
         }
         if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00002');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_1));
+        }
+        if (reqCount === 3) {
             assertUpdatePaymentIntentRequest(request, 'pi_00002', 'cus2@example.com');
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
@@ -617,11 +678,107 @@ test('Success - sendReceipt is false', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
         }
         if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_1));
+        }
+        if (reqCount === 3) {
             assertUpdatePaymentIntentRequest(request, 'pi_00001', ''); // 領収書送付先メールアドレスが空に設定される
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
         assertSendInvoiceRequest(request, 'in_00044');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 請求書を更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param invoiceId
+ */
+const assertUpdateInvoiceRequest = ({url, method, contentType, body}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`${encodeURIComponent('payment_settings[payment_method_types][0]')}=card`);
+};
+
+const SAMPLE_PAYMENT_INTENT_2 = {
+    'payment_method_types': ['card', 'wechat_pay']
+};
+
+/**
+ * 請求書を更新する HTTP リクエストで失敗
+ */
+test('Fail to update invoice', () => {
+    prepareConfigs('in_00051', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00051');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_2));
+        }
+        assertUpdateInvoiceRequest(request, 'in_00051');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update invoice. status: 400');
+});
+
+
+/**
+ * 成功 - open ステータスの請求書。支払オブジェクトに card 以外の支払方法が設定されている場合
+ */
+test('Success - open invoice, payment_method_types includes other types than card', () => {
+    prepareConfigs('in_00052', true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInvoiceRequest(request, 'in_00052');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_INVOICE_1));
+        }
+        if (reqCount === 1) {
+            assertGetCustomerRequest(request, 'cus_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_CUSTOMER_1));
+        }
+        if (reqCount === 2) {
+            assertGetPaymentIntentRequest(request, 'pi_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PAYMENT_INTENT_2));
+        }
+        if (reqCount === 3) {
+            assertUpdateInvoiceRequest(request, 'in_00052');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 4) {
+            assertUpdatePaymentIntentRequest(request, 'pi_00001', 'cus1@example.com');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSendInvoiceRequest(request, 'in_00052');
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
