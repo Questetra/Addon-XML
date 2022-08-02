@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-08-02</last-modified>
+    <last-modified>2022-08-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Send Invoice</label>
@@ -44,6 +44,7 @@ function main(){
     //// == Calculating / 演算 ==
     const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId);
     const customerEmail = checkCustomer(auth, customerId);
+    checkPaymentMethodTypes(auth, invoiceId, paymentIntentId);
     updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail);
     sendInvoice(auth, invoiceId);
 }
@@ -82,8 +83,6 @@ function checkInvoice(auth, invoiceId) {
         throw `Failed to retrieve invoice. status: ${status}`;
     }
     const invoiceObj = JSON.parse(responseStr);
-    const customerId = invoiceObj.customer;
-    const paymentIntentId = invoiceObj.payment_intent;
     switch (invoiceObj.status) {
         case 'draft':
             throw 'The invoice is still draft. It needs to be finalized first.';
@@ -91,64 +90,16 @@ function checkInvoice(auth, invoiceId) {
             throw 'The invoice is already paid.';
         case 'void':
             throw 'The invoice is void.';
-        case 'uncollectible':
-            // uncollectible ステータスの請求書は更新不可
-            // payment_method_types をチェックし、card のみでない場合はエラー
-            checkPaymentMethodTypes(auth, paymentIntentId);
-            break;
-        default: // open
-            // payment_method_types を card のみに設定
-            updatePaymentMethodTypes(auth, invoiceId);
+        default: // open or uncollectible
+            // do nothing
     }
     if (invoiceObj.collection_method !== 'send_invoice') {
         // collection_method が send_invoice でない場合は、Stripe の仕様で請求書をメール送付できない
         throw 'The collection method of the invoice is not send_invoice.';
     }
+    const customerId = invoiceObj.customer;
+    const paymentIntentId = invoiceObj.payment_intent;
     return {customerId, paymentIntentId};
-}
-
-/**
-  * 支払オブジェクトに設定されている支払方法をチェックし、card 以外のものが設定されている場合はエラー
-  * 請求書が uncollectible ステータスの場合にのみ呼ばれる
-  * @param {String} oauth 認証設定
-  * @param {String} paymentIntentId 支払オブジェクトの ID
-  */
-function checkPaymentMethodTypes(auth, paymentIntentId) {
-    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .get(apiUri);
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to retrieve payment intent. status: ${status}`;
-    }
-    const paymentIntentObj = JSON.parse(responseStr);
-    if (paymentIntentObj.payment_method_types.some(type => type !== 'card')) {
-        throw 'Payment method types includes types other than card, and uncollectible invoice cannot be updated.';
-    }
-}
-
-/**
-  * 請求書を更新し、支払方法をカードのみにする
-  * カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
-  * 請求書が open ステータスの場合にのみ呼ばれる
-  * @param {String} oauth 認証設定
-  * @param {String} invoiceId 請求書の ID
-  */
-function updatePaymentMethodTypes(auth, invoiceId) {
-    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('payment_settings[payment_method_types][0]', 'card')
-        .post(apiUri);
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to update invoice. status: ${status}`;
-    }
 }
 
 /**
@@ -181,6 +132,51 @@ function checkCustomer(auth, customerId) {
         throw "The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.";
     }
     return customerEmail;
+}
+
+/**
+  * 支払オブジェクトに設定されている支払方法をチェックし、
+  * card 以外のものが設定されている場合、card のみに更新する
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @param {String} paymentIntentId 支払オブジェクトの ID
+  */
+function checkPaymentMethodTypes(auth, invoiceId, paymentIntentId) {
+    const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to retrieve payment intent. status: ${status}`;
+    }
+    const paymentIntentObj = JSON.parse(responseStr);
+    if (paymentIntentObj.payment_method_types.some(type => type !== 'card')) {
+        // 支払方法をカードのみに更新する
+        // カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
+        updateInvoice(auth, invoiceId);
+    }
+}
+
+/**
+  * 請求書を更新し、支払方法をカードのみにする
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  */
+function updateInvoice(auth, invoiceId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('payment_settings[payment_method_types][0]', 'card')
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) { // 請求書のステータスが uncollectible の場合、更新に失敗
+        engine.log(responseStr);
+        throw `Failed to update invoice. status: ${status}`;
+    }
 }
 
 /**
