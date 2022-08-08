@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2021-08-26</last-modified>
+<last-modified>2022-08-08</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Slack: Post Chat (Incoming Webhook)</label>
 <label locale="ja">Slack: チャット投稿 (Incoming Webhook)</label>
-<summary>Send a message to Slack with Incoming Webhook.</summary>
-<summary locale="ja">Incoming Webhook を使って Slack にメッセージを投稿します。</summary>
+<summary>This item sends a message to Slack with Incoming Webhook.</summary>
+<summary locale="ja">この工程は、Incoming Webhook を使って Slack にメッセージを投稿します。</summary>
 <configs>
   <config name="Url" required="true">
     <label>C1: Incoming Webhook URL</label>
@@ -102,4 +102,204 @@ snKy8OOVGwo3lXdOVCNS24rlAKSz4ObVm7BttiuGQ/IiuhWzF2qG0Z6ju1FpqRT19B/rR421Bto0
 rfAfc/tLBdVJAeKGUbgUk4/j5UXL4bx+UuiOLK6NpRZhMFVUV4iJaq/fnwxAfhwLEOElNOFGwUpu
 U91zuPLlIGYD4c2bTci0dC2uf3MjmXHlhSQiqWYlS25FIfFkltP/31L6X3jivtfyCMSSfpiIEEv5
 aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==</icon>
+    
+<test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param configs
+ * @param Text
+ * @param Fallback
+ * @param Color
+ * @param Title
+ * @param TitleLink
+ * @param AttachText
+ * @return attachment
+ */
+const prepareConfigs = (configs, WebhookUrl, text, fallback, color, title, titleLink, attachText) => {
+  configs.put('Url', WebhookUrl);
+  configs.put('Text', text);
+  configs.put('Fallback', fallback);
+  configs.put('Color', color);
+  configs.put('Title', title);
+  configs.put('TitleLink', titleLink);
+  configs.put('AttachText', attachText);
+
+  const attachment = {
+    "fallback": fallback,
+    "color": color,
+    "title": title,
+    "title_link": titleLink,
+    "text": attachText
+  }
+
+  return attachment;
+};
+
+
+/**
+ * POSTリクエストのテスト（チャット投稿）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param text
+ * @param attachment
+ */
+const assertPostRequest = ({url, method, contentType, body}, WebhookUrl, text, attachment) => {
+    expect(url).toEqual(WebhookUrl);	
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.text).toEqual(text);
+    expect(bodyObj.attachments).toEqual([attachment]);
+};
+
+
+/**
+ * チャット投稿失敗の場合
+ * テキストが空、attachmentタイトル未入力、attachmentテキスト未入力
+ *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていないと、投稿失敗する
+ */
+test('Message to send isn\'t set', () => {
+  prepareConfigs(configs, 'https://hooks.slack.com/services/ABCDE', '', 'fallback1', '#ff0000', '', 'https://titleLink1', '');
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Message to send isn\'t set.`);
+});
+
+
+/**
+ * POST リクエストのレスポンスを準備
+ * @param text
+ * @return responseObj
+ */
+const preparePostResponse = (text) => {
+  return {
+    "ok": true,
+    "channel": `channel`,
+    "ts": "1650857142.223299",
+    "message": {
+        "type": "message",
+        "subtype": "bot_message",
+        "text": `${text}`,
+        "ts": "1650857142.223299",
+        "bot_id": "B01JPAT1P4J"
+    }
+  };
+};
+
+
+
+/**
+ * POST API リクエストでエラーになる場合
+ */
+test('POST Failed', () => {
+    const attachment = prepareConfigs(configs, 'https://hooks.slack.com/services/ZZZZZ', 'text2', 'fallback2', '#ff0000', 'title2', 'https://titleLink2', 'attachText2');
+
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, 'https://hooks.slack.com/services/ZZZZZ', 'text2', attachment);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+   // <script> のスクリプトを実行し、エラーがスローされることを確認
+   expect(execute).toThrow(`Failed to send. status: 400`);
+});
+
+
+
+/**
+ * チャット投稿成功の場合
+ * 全てを設定
+ */
+test('Success', () => {
+  const attachment = prepareConfigs(configs, 'https://hooks.slack.com/services/ABCDE', 'text3','fallback3', '#ff0000', 'title3', 'https://titleLink3', 'attachText3');
+
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, 'https://hooks.slack.com/services/ABCDE', 'text3', attachment);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('text3')));
+    });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+
+
+/**
+ * チャット投稿成功の場合
+ * テキストを入力
+ * Message to send isn't set　のエラーにならない条件①
+ *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
+ * Attachmentタイトルリンクが設定されているが、Attachmentタイトルが未設定のため無視されるケース（チャット投稿は成功する）
+ */
+test('Success - text', () => {
+  prepareConfigs(configs, 'https://hooks.slack.com/services/ABCDE', 'text4', '', '', '', 'https://titleLink4', '');
+
+  //Attachmentタイトルが未設定のため、Attachmentタイトルリンクは設定されず、オブジェクトは空
+  const attachment = {};
+
+    httpClient.setRequestHandler((request) => {
+       assertPostRequest(request, 'https://hooks.slack.com/services/ABCDE', 'text4', attachment);
+       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('text4')));
+    });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+
+/**
+ * チャット投稿成功の場合
+ * Attachmentテキスト を入力  （テキストは空）
+ * Message to send isn't set　のエラーにならない条件②
+ *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
+ */
+test('Success - Attachment-text ', () => {
+  prepareConfigs(configs, 'https://hooks.slack.com/services/ABCDE', null, '', '', '', '', 'attachText5');
+  
+  const attachment = {
+    "text": "attachText5"
+  };
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'https://hooks.slack.com/services/ABCDE', null, attachment);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+
+
+/**
+ * チャット投稿成功の場合
+ * チャンネル、Attachmentタイトルを入力 （テキストは空）
+ * Message to send isn't set　のエラーにならない条件③
+ *「テキスト」「Attachment タイトル」「Attachment テキスト」のいずれかが設定されていると、投稿成功する
+ * Attachment色が無効（無効であるが、チャット投稿は成功する）
+ * AttachmentタイトルリンクがURLの形式でないため、Attachmentタイトルにリンクが無いケース（チャット投稿は成功する）
+ */
+test('Success - Attachment-title ', () => {
+  prepareConfigs(configs, 'https://hooks.slack.com/services/ABCDE', null, '', '#ZZZZZZ', 'title6', '12345', '');
+
+  const attachment = {
+    "title_link": "12345",
+    "color": "#ZZZZZZ",
+    "title": "title6"
+  };
+
+  httpClient.setRequestHandler((request) => {
+    assertPostRequest(request, 'https://hooks.slack.com/services/ABCDE', null, attachment);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('')));
+  });
+
+  // <script> のスクリプトを実行
+  execute();
+});
+
+
+]]></test>
 </service-task-definition>
