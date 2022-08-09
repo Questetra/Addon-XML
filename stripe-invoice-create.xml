@@ -276,7 +276,7 @@ function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount
     <test><![CDATA[
 
 /**
- * 設定の準備
+ * 設定の準備 - 通貨を指定しない場合
  * @param customerId
  * @param description
  * @param lineItems
@@ -288,6 +288,7 @@ const prepareConfigs = (customerId, description, lineItems) => {
     configs.put('conf_Auth', 'Stripe');
     configs.put('conf_CustomerId', customerId);
     configs.put('conf_Description', description);
+    configs.put('conf_Currency', '');
 
     // ラインアイテムの情報を保存したテーブル型データ項目を準備し、設定
     const tableDef = engine.createDataDefinition('商品名、単価、数量の一覧', 1, 'q_lineItems', 'LIST');
@@ -529,7 +530,7 @@ test('Total amount exceeds the limit - multiple line items', () => {
 });
 
 /**
- * 請求書ドラフトを作成する API リクエストのテスト
+ * 請求書ドラフトを作成する API リクエストのテスト - 通貨を指定しない場合
  * @param {Object} request
  * @param request.url
  * @param request.method
@@ -781,6 +782,56 @@ test('Success - draft invoice ID and URL not saved', () => {
     });
 
     execute();
+});
+
+/**
+ * 請求書ドラフトを作成する API リクエストのテスト - 通貨を指定する場合
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param description
+ * @param currency
+ */
+const assertCreateInvoiceRequestWithCurrency = ({url, method, contentType, body}, customerId, description, currency) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoices');
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&description=${encodeURIComponent(description)}`
+        + '&auto_advance=false'
+        + '&pending_invoice_items_behavior=exclude'
+        + `&currency=${currency}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 成功 - 通貨を指定する場合
+ */
+test('Success - currency is selected', () => {
+    const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('cus_000001', '通貨を指定', SAMPLE_LINE_ITEMS);
+    configs.put('conf_Currency', 'USD');
+
+    let reqCount = 0;
+    const invoiceId = 'in_000006';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateInvoiceRequestWithCurrency(request, 'cus_000001', '通貨を指定', 'USD');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
+        }
+        assertAttachInvoiceItemRequest(request, 'cus_000001', invoiceId, SAMPLE_LINE_ITEMS[0]);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
+    expect(engine.findData(invoiceUrlDef)).toEqual(`https://dashboard.stripe.com/invoices/${invoiceId}`);
 });
 
     ]]></test>
