@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-08-02</last-modified>
+    <last-modified>2022-08-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Send Invoice</label>
@@ -25,9 +25,13 @@
             <label>C2: Finalized Invoice ID</label>
             <label locale="ja">C2: 確定済み請求書の ID</label>
         </config>
+        <config name="conf_NotSetupFutureUsage" form-type="TOGGLE">
+            <label>C3: Not configure card payment details for future usage</label>
+            <label locale="ja">C3: カード情報を再利用するための設定を行わない</label>
+        </config>
         <config name="conf_SendReceipt" form-type="TOGGLE">
-            <label>C3: Email the receipt to the customer when the payment completed</label>
-            <label locale="ja">C3: 支払い完了時、顧客に領収書をメール送付する</label>
+            <label>C4: Email the receipt to the customer when the payment completed</label>
+            <label locale="ja">C4: 支払い完了時、顧客に領収書をメール送付する</label>
         </config>
     </configs>
 
@@ -39,13 +43,16 @@ function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
     const invoiceId = retrieveInvoiceId();
+    const notSetupFutureUsage = configs.getObject('conf_NotSetupFutureUsage');
     const sendReceipt = configs.getObject('conf_SendReceipt');
 
     //// == Calculating / 演算 ==
     const {customerId, paymentIntentId} = checkInvoice(auth, invoiceId);
     const customerEmail = checkCustomer(auth, customerId);
-    updatePaymentMethodTypes(auth, invoiceId);
-    updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail);
+    if (!notSetupFutureUsage) { // カード情報を再利用するための設定を行う場合、支払方法をカードのみに設定する
+        updatePaymentMethodTypes(auth, invoiceId);
+    }
+    updatePaymentIntent(auth, paymentIntentId, notSetupFutureUsage, sendReceipt, customerEmail);
     sendInvoice(auth, invoiceId);
 }
 
@@ -136,7 +143,6 @@ function checkCustomer(auth, customerId) {
 
 /**
   * 請求書を更新し、支払方法をカードのみにする
-  * カード以外の支払方法があると、支払オブジェクトの setup_future_usage を設定できずエラーになる場合があるため
   * @param {String} oauth 認証設定
   * @param {String} invoiceId 請求書の ID
   */
@@ -156,14 +162,19 @@ function updatePaymentMethodTypes(auth, invoiceId) {
 
 /**
   * 支払オブジェクトを更新し、
-  * - 今後の支払いのために支払方法が保存されるようにする
+  * - カード情報を再利用するための設定を行うかどうかを設定する
   * - 領収書送付先メールアドレスを設定する
   * @param {String} oauth 認証設定
   * @param {String} paymentIntentId 支払オブジェクトの ID
+  * @param {boolean} notSetupFutureUsage カード情報を再利用するための設定を行わないかどうか
   * @param {boolean} sendReceipt 領収書をメール送付するかどうか
   * @param {String} customerEmail 顧客のメールアドレス
   */
-function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) {
+function updatePaymentIntent(auth, paymentIntentId, notSetupFutureUsage, sendReceipt, customerEmail) {
+    let setupFutureUsage = '';
+    if (!notSetupFutureUsage) {
+        setupFutureUsage = 'off_session';
+    }
     let receiptEmail = '';
     if (sendReceipt) {
         receiptEmail = customerEmail;
@@ -171,7 +182,8 @@ function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) 
     const apiUri = `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`;
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
-        .formParam('setup_future_usage', 'off_session') // 今後のオフセッション支払いのために支払方法を保存
+        .formParam('setup_future_usage', setupFutureUsage)
+        .formParam('payment_method_options[card][setup_future_usage]', 'none') // カード固有の設定を解除
         .formParam('receipt_email', receiptEmail)
         .post(apiUri);
     const status = response.getStatusCode();
