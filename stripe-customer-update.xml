@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-08-16</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Update Customer</label>
+    <label locale="ja">Stripe: 顧客を更新</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-customer-update/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-customer-update/
+    </help-page-url>
+
+    <summary>This item updates a customer object on Stripe. Fields with blank value remain unchanged.</summary>
+    <summary locale="ja">この工程は、Stripe 上の顧客オブジェクトを更新します。値が設定されていない項目は変更されません。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_CustomerId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Customer ID</label>
+            <label locale="ja">C2: 顧客 ID</label>
+        </config>
+        <config name="conf_Name" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C3: Customer's New Name</label>
+            <label locale="ja">C3: 顧客の新しい名前</label>
+        </config>
+        <config name="conf_Language" required="false" form-type="SELECT_ITEM">
+            <label>C4: Language of invoice</label>
+            <label locale="ja">C4: 請求書の言語</label>
+            <item value="en-US">
+                <label>English</label>
+                <label locale="ja">英語</label>
+            </item>
+            <item value="ja-JP">
+                <label>Japanese</label>
+                <label locale="ja">日本語</label>
+            </item>
+        </config>
+        <config name="conf_Email" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C5: Customer's New Email Address</label>
+            <label locale="ja">C5: 顧客の新しいメールアドレス</label>
+        </config>
+        <config name="conf_Description" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C6: New Description on customer</label>
+            <label locale="ja">C6: 顧客に関する新しいメモ</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const customerId = retrieveCustomerId();
+    const name = retrieveConfig('conf_Name', 'Customer Name', 256);
+    const language = configs.get('conf_Language');
+    const email = retrieveConfig('conf_Email', 'Customer Email', 512);
+    const description = retrieveConfig('conf_Description', 'Customer Description', 350);
+
+    //// == Calculating / 演算 ==
+    updateCustomer(auth, customerId, name, language, email, description);
+}
+
+/**
+  * config から顧客 ID を読み出す。空文字列の場合はエラー
+  * @return {String} customerId 顧客 ID
+  */
+function retrieveCustomerId() {
+    const customerId = configs.get('conf_CustomerId');
+    if (customerId === '') {
+        throw 'Customer ID is blank.';
+    }
+    return customerId;
+}
+
+/**
+  * config から設定値を読み出す。長さが maxLength を超える場合、エラー
+  * @param {String} confName config 名
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} maxLength 最大文字数
+  * @return {String} value 設定値
+  */
+function retrieveConfig(confName, label, maxLength) {
+    const value = configs.get(confName);
+    if (value.length > maxLength) {
+        throw `${label} must be at most ${maxLength} characters.`;
+    }
+    return value;
+}
+
+/**
+  * 顧客を更新する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} name 名前
+  * @param {String} language 言語
+  * @param {String} email メールアドレス
+  * @param {String} description 説明
+  */
+function updateCustomer(auth, customerId, name, language, email, description) {
+    const formParams = prepareFormParams(name, language, email, description);
+    const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`;
+    const request = httpClient.begin()
+        .authSetting(auth); // with "Authorization: Bearer XX"
+    Object.keys(formParams).forEach(key => {
+        request.formParam(key, formParams[key]);
+    });
+    const response = request.post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to update customer. status: ${status}`;
+    }
+}
+
+/**
+  * 顧客更新のためのフォームパラメータを準備する。値がすべて空の場合はエラー
+  * @param {String} name 名前
+  * @param {String} language 言語
+  * @param {String} email メールアドレス
+  * @param {String} description 説明
+  * @return {Object} formParams フォームパラメータを格納したオブジェクト
+  */
+function prepareFormParams(name, language, email, description) {
+    const formParams = {};
+    addParamIfNotBlank(formParams, 'name', name);
+    addParamIfNotBlank(formParams, 'preferred_locales[0]', language);
+    addParamIfNotBlank(formParams, 'email', email);
+    addParamIfNotBlank(formParams, 'description', description);
+    if (Object.keys(formParams).length === 0) {
+        throw 'No fields to update.';
+    }
+    return formParams;
+}
+
+/**
+  * 値が空でない場合のみ、フォームパラメータを格納するオブジェクトに値を追加する
+  * @param {Object} formParams フォームパラメータを格納するオブジェクト
+  * @param {String} paramName パラメータ名
+  * @param {String} value パラメータにセットする値
+  */
+function addParamIfNotBlank(formParams, paramName, value) {
+    if (value !== '') {
+        formParams[paramName] = value;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+</service-task-definition>
