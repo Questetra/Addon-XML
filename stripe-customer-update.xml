@@ -170,4 +170,210 @@ function addParamIfNotBlank(formParams, paramName, value) {
         O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
     </icon>
 
+    <test><![CDATA[
+
+const NAME_MAX_LENGTH = 256;
+const EMAIL_MAX_LENGTH = 512;
+const DESCRIPTION_MAX_LENGTH = 350;
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備
+ * @param customerId
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ */
+const prepareConfigs = (customerId, name, language, email, description) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_CustomerId', customerId);
+    configs.put('conf_Name', name);
+    configs.put('conf_Language', language);
+    configs.put('conf_Email', email);
+    configs.put('conf_Description', description);
+}
+
+/**
+ * 顧客 ID が空
+ */
+test('Customer ID is blank', () => {
+    prepareConfigs('', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow('Customer ID is blank.');
+});
+
+/**
+ * 顧客の名前が長すぎる
+ */
+test('Customer Name is too long', () => {
+    const name = createString(NAME_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', name, 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
+});
+
+/**
+ * メールアドレスが長すぎる
+ */
+test('Customer Email is too long', () => {
+    const email = createString(EMAIL_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', email, 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 説明が長すぎる
+ */
+test('Customer Description is too long', () => {
+    const description = createString(DESCRIPTION_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', description);
+    expect(execute).toThrow(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 更新すべき項目がない
+ */
+test('No fields to update', () => {
+    prepareConfigs('cus_00001', '', '', '', '');
+    expect(execute).toThrow('No fields to update.');
+});
+
+/**
+ * 顧客を更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ */
+const assertRequest = ({url, method, contentType, body}, customerId, name, language, email, description) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const formParamList = [];
+    pushToListIfNotBlank(formParamList, 'name', name);
+    pushToListIfNotBlank(formParamList, 'preferred_locales[0]', language);
+    pushToListIfNotBlank(formParamList, 'email', email);
+    pushToListIfNotBlank(formParamList, 'description', description);
+    const expectedBody = formParamList.join('&')
+        .replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+  * 値が空でない場合のみ、key=value 形式の文字列を list に追加する
+  * @param list
+  * @param key
+  * @param value
+  */
+const pushToListIfNotBlank = (list, key, value) => {
+    if (value !== '') {
+        list.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+    }
+};
+
+/**
+ * 顧客を更新する HTTP リクエストで失敗
+ */
+test('Fail to update customer', () => {
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update customer. status: 400');
+});
+
+/**
+ * 成功 - すべての項目を更新
+ */
+test('Success - update all fields', () => {
+    const name = createString(NAME_MAX_LENGTH);
+    const email = createString(EMAIL_MAX_LENGTH);
+    const description = createString(DESCRIPTION_MAX_LENGTH);
+    prepareConfigs('cus_00001', name, 'ja-JP', email, description);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00001', name, 'ja-JP', email, description);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 名前なし
+ */
+test('Success - without name', () => {
+    prepareConfigs('cus_00002', '', 'en-US', 'test2@example.com', 'これはテスト顧客 2 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00002', '', 'en-US', 'test2@example.com', 'これはテスト顧客 2 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - メールアドレスなし
+ */
+test('Success - without email', () => {
+    prepareConfigs('cus_00003', 'テスト顧客 3', 'en-US', '', 'これはテスト顧客 3 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00003', 'テスト顧客 3', 'en-US', '', 'これはテスト顧客 3 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 言語なし
+ */
+test('Success - without language', () => {
+    prepareConfigs('cus_00004', 'テスト顧客 4', '', 'test4@example.com', 'これはテスト顧客 4 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00004', 'テスト顧客 4', '', 'test4@example.com', 'これはテスト顧客 4 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 説明なし
+ */
+test('Success - without description', () => {
+    prepareConfigs('cus_00005', 'テスト顧客 5', 'en-US', 'test5@example.com', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00005', 'テスト顧客 5', 'en-US', 'test5@example.com', '');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+    ]]></test>
+
 </service-task-definition>
