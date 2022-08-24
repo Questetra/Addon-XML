@@ -1,0 +1,379 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-08-23</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Update Customer</label>
+    <label locale="ja">Stripe: 顧客を更新</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-customer-update/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-customer-update/
+    </help-page-url>
+
+    <summary>This item updates a customer object on Stripe. Fields with blank value remain unchanged.</summary>
+    <summary locale="ja">この工程は、Stripe 上の顧客オブジェクトを更新します。値が設定されていない項目は変更されません。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_CustomerId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Customer ID</label>
+            <label locale="ja">C2: 顧客 ID</label>
+        </config>
+        <config name="conf_Name" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C3: Customer's New Name</label>
+            <label locale="ja">C3: 顧客の新しい名前</label>
+        </config>
+        <config name="conf_Language" required="false" form-type="SELECT_ITEM">
+            <label>C4: Language of invoice</label>
+            <label locale="ja">C4: 請求書の言語</label>
+            <item value="en-US">
+                <label>English</label>
+                <label locale="ja">英語</label>
+            </item>
+            <item value="ja-JP">
+                <label>Japanese</label>
+                <label locale="ja">日本語</label>
+            </item>
+        </config>
+        <config name="conf_Email" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C5: Customer's New Email Address</label>
+            <label locale="ja">C5: 顧客の新しいメールアドレス</label>
+        </config>
+        <config name="conf_Description" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C6: New Description on customer</label>
+            <label locale="ja">C6: 顧客に関する新しいメモ</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const customerId = retrieveCustomerId();
+    const name = retrieveConfig('conf_Name', 'Customer Name', 256);
+    const language = configs.get('conf_Language');
+    const email = retrieveConfig('conf_Email', 'Customer Email', 512);
+    const description = retrieveConfig('conf_Description', 'Customer Description', 350);
+
+    //// == Calculating / 演算 ==
+    updateCustomer(auth, customerId, name, language, email, description);
+}
+
+/**
+  * config から顧客 ID を読み出す。空文字列の場合はエラー
+  * @return {String} customerId 顧客 ID
+  */
+function retrieveCustomerId() {
+    const customerId = configs.get('conf_CustomerId');
+    if (customerId === '') {
+        throw 'Customer ID is blank.';
+    }
+    return customerId;
+}
+
+/**
+  * config から設定値を読み出す。長さが maxLength を超える場合、エラー
+  * @param {String} confName config 名
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} maxLength 最大文字数
+  * @return {String} value 設定値
+  */
+function retrieveConfig(confName, label, maxLength) {
+    const value = configs.get(confName);
+    if (value.length > maxLength) {
+        throw `${label} must be at most ${maxLength} characters.`;
+    }
+    return value;
+}
+
+/**
+  * 顧客を更新する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} name 名前
+  * @param {String} language 言語
+  * @param {String} email メールアドレス
+  * @param {String} description 説明
+  */
+function updateCustomer(auth, customerId, name, language, email, description) {
+    const formParams = prepareFormParams(name, language, email, description);
+    const apiUri = `https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`;
+    let request = httpClient.begin()
+        .authSetting(auth); // with "Authorization: Bearer XX"
+    Object.keys(formParams).forEach(key => {
+        request = request.formParam(key, formParams[key]);
+    });
+    const response = request.post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to update customer. status: ${status}`;
+    }
+}
+
+/**
+  * 顧客更新のためのフォームパラメータを準備する。値がすべて空の場合はエラー
+  * @param {String} name 名前
+  * @param {String} language 言語
+  * @param {String} email メールアドレス
+  * @param {String} description 説明
+  * @return {Object} formParams フォームパラメータを格納したオブジェクト
+  */
+function prepareFormParams(name, language, email, description) {
+    const formParams = {};
+    addParamIfNotBlank(formParams, 'name', name);
+    addParamIfNotBlank(formParams, 'preferred_locales[0]', language);
+    addParamIfNotBlank(formParams, 'email', email);
+    addParamIfNotBlank(formParams, 'description', description);
+    if (Object.keys(formParams).length === 0) {
+        throw 'No fields to update.';
+    }
+    return formParams;
+}
+
+/**
+  * 値が空でない場合のみ、フォームパラメータを格納するオブジェクトに値を追加する
+  * @param {Object} formParams フォームパラメータを格納するオブジェクト
+  * @param {String} paramName パラメータ名
+  * @param {String} value パラメータにセットする値
+  */
+function addParamIfNotBlank(formParams, paramName, value) {
+    if (value !== '') {
+        formParams[paramName] = value;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+const NAME_MAX_LENGTH = 256;
+const EMAIL_MAX_LENGTH = 512;
+const DESCRIPTION_MAX_LENGTH = 350;
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備
+ * @param customerId
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ */
+const prepareConfigs = (customerId, name, language, email, description) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_CustomerId', customerId);
+    configs.put('conf_Name', name);
+    configs.put('conf_Language', language);
+    configs.put('conf_Email', email);
+    configs.put('conf_Description', description);
+}
+
+/**
+ * 顧客 ID が空
+ */
+test('Customer ID is blank', () => {
+    prepareConfigs('', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow('Customer ID is blank.');
+});
+
+/**
+ * 顧客の名前が長すぎる
+ */
+test('Customer Name is too long', () => {
+    const name = createString(NAME_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', name, 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
+});
+
+/**
+ * メールアドレスが長すぎる
+ */
+test('Customer Email is too long', () => {
+    const email = createString(EMAIL_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', email, 'これはテスト顧客 1 です。');
+    expect(execute).toThrow(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 説明が長すぎる
+ */
+test('Customer Description is too long', () => {
+    const description = createString(DESCRIPTION_MAX_LENGTH + 1);
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', description);
+    expect(execute).toThrow(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 更新すべき項目がない
+ */
+test('No fields to update', () => {
+    prepareConfigs('cus_00001', '', '', '', '');
+    expect(execute).toThrow('No fields to update.');
+});
+
+/**
+ * 顧客を更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param name
+ * @param language
+ * @param email
+ * @param description
+ */
+const assertRequest = ({url, method, contentType, body}, customerId, name, language, email, description) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/customers/${encodeURIComponent(customerId)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const formParamList = [];
+    pushToListIfNotBlank(formParamList, 'name', name);
+    pushToListIfNotBlank(formParamList, 'preferred_locales[0]', language);
+    pushToListIfNotBlank(formParamList, 'email', email);
+    pushToListIfNotBlank(formParamList, 'description', description);
+    const expectedBody = formParamList.join('&')
+        .replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+  * 値が空でない場合のみ、key=value 形式の文字列を list に追加する
+  * @param list
+  * @param key
+  * @param value
+  */
+const pushToListIfNotBlank = (list, key, value) => {
+    if (value !== '') {
+        list.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+    }
+};
+
+/**
+ * 顧客を更新する HTTP リクエストで失敗
+ */
+test('Fail to update customer', () => {
+    prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update customer. status: 400');
+});
+
+/**
+ * 成功 - すべての項目を更新
+ */
+test('Success - update all fields', () => {
+    const name = createString(NAME_MAX_LENGTH);
+    const email = createString(EMAIL_MAX_LENGTH);
+    const description = createString(DESCRIPTION_MAX_LENGTH);
+    prepareConfigs('cus_00001', name, 'ja-JP', email, description);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00001', name, 'ja-JP', email, description);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 名前なし
+ */
+test('Success - without name', () => {
+    prepareConfigs('cus_00002', '', 'en-US', 'test2@example.com', 'これはテスト顧客 2 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00002', '', 'en-US', 'test2@example.com', 'これはテスト顧客 2 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - メールアドレスなし
+ */
+test('Success - without email', () => {
+    prepareConfigs('cus_00003', 'テスト顧客 3', 'en-US', '', 'これはテスト顧客 3 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00003', 'テスト顧客 3', 'en-US', '', 'これはテスト顧客 3 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 言語なし
+ */
+test('Success - without language', () => {
+    prepareConfigs('cus_00004', 'テスト顧客 4', '', 'test4@example.com', 'これはテスト顧客 4 です。');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00004', 'テスト顧客 4', '', 'test4@example.com', 'これはテスト顧客 4 です。');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 説明なし
+ */
+test('Success - without description', () => {
+    prepareConfigs('cus_00005', 'テスト顧客 5', 'en-US', 'test5@example.com', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'cus_00005', 'テスト顧客 5', 'en-US', 'test5@example.com', '');
+        return httpClient.createHttpResponse(200, 'application/json', '');
+    });
+
+    execute();
+});
+
+    ]]></test>
+
+</service-task-definition>
