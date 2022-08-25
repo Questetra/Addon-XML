@@ -146,7 +146,7 @@ function decideApiUri(id) {
         case 'in':
             return `${baseUrl}invoices/${encodeURIComponent(id)}`;
         default:
-            throw 'ID must start with "cus_" or "in_".';
+            throw 'Customer/Invoice ID must start with "cus_" or "in_".';
     }
 }
 
@@ -242,5 +242,313 @@ function updateMetadata(auth, apiUri, metadataMap) {
         rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
         O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
     </icon>
+
+    <test><![CDATA[
+
+const FIELD_SIZE = 8; // 扱うフィールドの数
+const KEY_MAX_LENGTH = 40; // key の最大長
+const VALUE_MAX_LENGTH = 500; // value の最大長
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備
+ * @param id
+ * @param deleteAll
+ * @param keys
+ * @param values
+ */
+const prepareConfigs = (id, deleteAll, keys, values) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_Id', id);
+    configs.putObject('conf_DeleteAll', deleteAll);
+
+    for (let i = 0; i < FIELD_SIZE; i++) {
+        configs.put(`conf_Key${i+1}`, keys[i]);
+        configs.put(`conf_Value${i+1}`, values[i]);
+    }
+}
+
+const SAMPLE_KEYS = new Array(FIELD_SIZE).fill('').map((_, i) => `フィールド ${i+1}`);
+const SAMPLE_VALUES = new Array(FIELD_SIZE).fill('').map((_, i) => `フィールド ${i+1} の値`);
+
+/**
+ * 顧客/請求書 ID が空
+ */
+test('Customer/Invoice ID is blank', () => {
+    prepareConfigs('', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    expect(execute).toThrow('Customer/Invoice ID is blank.');
+});
+
+/**
+ * 顧客/請求書 ID が不正な形式 - アンダーバーを含まない
+ */
+test('Customer/Invoice ID is invalid - no underscore', () => {
+    prepareConfigs('No-Underscore', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    expect(execute).toThrow('Customer/Invoice ID must start with "cus_" or "in_".');
+});
+
+/**
+ * 顧客/請求書 ID が不正な形式 - アンダーバーより前の prefix が cus または in でない
+ */
+test('Customer/Invoice ID is invalid - prefix not supported', () => {
+    prepareConfigs('pi_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    expect(execute).toThrow('Customer/Invoice ID must start with "cus_" or "in_".');
+});
+
+/**
+ * 値が指定されているのにキーが空
+ */
+test('Key is blank while its value is set', () => {
+    prepareConfigs('cus_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    configs.put('conf_Key1', '');
+    expect(execute).toThrow('Value for Field 1 is set but its key is blank.');
+});
+
+/**
+ * キーが重複
+ */
+test('Same key is set multiple times', () => {
+    prepareConfigs('cus_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    configs.put('conf_Key2', SAMPLE_KEYS[7]); // 2 番目と 8 番目が重複
+    expect(execute).toThrow('Field Key "フィールド 8" is set multiple times.');
+});
+
+/**
+ * キーが長すぎる
+ */
+test('Key is too long', () => {
+    prepareConfigs('cus_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    configs.put('conf_Key3', createString(KEY_MAX_LENGTH + 1));
+    expect(execute).toThrow(`Key for Field 3 exceeds the limit of ${KEY_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 値が長すぎる
+ */
+test('Value is too long', () => {
+    prepareConfigs('cus_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+    configs.put('conf_Value4', createString(VALUE_MAX_LENGTH + 1));
+    expect(execute).toThrow(`Value for Field 4 exceeds the limit of ${VALUE_MAX_LENGTH} characters.`);
+});
+
+const ALL_BLANK = new Array(FIELD_SIZE).fill('');
+
+/**
+ * 削除フラグが false でメタデータの key, value がすべて空の場合、エラー
+ */
+test('No fields to update', () => {
+    prepareConfigs('cus_00001', false, ALL_BLANK, ALL_BLANK);
+    expect(execute).toThrow('No metadata fields to update.');
+});
+
+/**
+ * メタデータを更新する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param expectedUrl
+ * @param keys
+ * @param values
+ */
+const assertUpdateMetadataRequest = ({url, method, contentType, body}, expectedUrl, keys, values) => {
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const formParamList = [];
+    for (let i = 0; i < FIELD_SIZE; i++) {
+        pushToListIfNotBlank(formParamList, keys[i], values[i]);
+    }
+    const expectedBody = formParamList.join('&')
+        .replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+  * key が空でない場合のみ、metadata[key]=value 形式の文字列を list に追加する
+  * @param list
+  * @param key
+  * @param value
+  */
+const pushToListIfNotBlank = (list, key, value) => {
+    if (key !== '') {
+        const encodedParamName = encodeURIComponent(`metadata[${key}]`);
+        list.push(`${encodedParamName}=${encodeURIComponent(value)}`);
+    }
+};
+
+/**
+ * 成功 - 削除フラグが false で、顧客 ID を指定した場合
+ * キー、値は最大文字数でテスト
+ */
+test('Success - Not delete existing fields, Customer ID', () => {
+    const keys = JSON.parse(JSON.stringify(SAMPLE_KEYS)); // ディープコピー
+    keys[6] = createString(KEY_MAX_LENGTH);
+    const values = JSON.parse(JSON.stringify(SAMPLE_VALUES)); // ディープコピー
+    values[7] = createString(VALUE_MAX_LENGTH);
+    prepareConfigs('cus_00001', false, keys, values);
+
+    const expectedUrl = 'https://api.stripe.com/v1/customers/cus_00001';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, keys, values);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 削除フラグが false で、請求書 ID を指定した場合
+ */
+test('Success - Not delete existing fields, Invoice ID', () => {
+    prepareConfigs('in_00001', false, SAMPLE_KEYS, SAMPLE_VALUES);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00001';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * メタデータを更新する HTTP リクエストで失敗
+ */
+test('Fail to update metadata', () => {
+    prepareConfigs('cus_00002', false, SAMPLE_KEYS, SAMPLE_VALUES);
+
+    const expectedUrl = 'https://api.stripe.com/v1/customers/cus_00002';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to update metadata. status: 400');
+});
+
+/**
+ * 成功 - key, value が空のものがある場合
+ */
+test('Success - Some keys and values are blank', () => {
+    const keys = JSON.parse(JSON.stringify(SAMPLE_KEYS)); // ディープコピー
+    keys[1] = '';
+    keys[3] = '';
+    const values = JSON.parse(JSON.stringify(SAMPLE_VALUES)); // ディープコピー
+    values[1] = ''; // key が空のものは値も空にする
+    values[3] = '';
+    values[5] = ''; // value だけ空のものがあってもよい
+    prepareConfigs('in_00002', false, keys, values);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00002';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, keys, values);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 既存のメタデータをすべて削除する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param expectedUrl
+ */
+const assertDeleteAllMetadataRequest = ({url, method, contentType, body}, expectedUrl) => {
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual('metadata=');
+};
+
+/**
+ * 成功 - 削除フラグが true で、顧客 ID を指定した場合
+ */
+test('Success - Delete existing fields, Customer ID', () => {
+    prepareConfigs('cus_00011', true, SAMPLE_KEYS, SAMPLE_VALUES);
+
+    const expectedUrl = 'https://api.stripe.com/v1/customers/cus_00011';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertDeleteAllMetadataRequest(request, expectedUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 削除フラグが true で、請求書 ID を指定した場合
+ */
+test('Success - Delete existing fields, Invoice ID', () => {
+    prepareConfigs('in_00011', true, SAMPLE_KEYS, SAMPLE_VALUES);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00011';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertDeleteAllMetadataRequest(request, expectedUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 既存のメタデータを削除する HTTP リクエストで失敗
+ */
+test('Fail to delete all metadata', () => {
+    prepareConfigs('in_00012', true, SAMPLE_KEYS, SAMPLE_VALUES);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00012';
+    httpClient.setRequestHandler((request) => {
+        assertDeleteAllMetadataRequest(request, expectedUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to delete all metadata. status: 400');
+});
+
+/**
+ * 成功 - 削除フラグが true の場合、key と value がすべて空でもエラーにならない
+ */
+test('Success - Only delete existing fields', () => {
+    prepareConfigs('in_00013', true, ALL_BLANK, ALL_BLANK);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00013';
+    httpClient.setRequestHandler((request) => {
+        assertDeleteAllMetadataRequest(request, expectedUrl);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
 
 </service-task-definition>
