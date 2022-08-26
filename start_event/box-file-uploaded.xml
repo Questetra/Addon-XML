@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <last-modified>2022-08-25</last-modified>
+    <last-modified>2022-08-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Start: Box: File Uploaded</label>
@@ -182,4 +182,376 @@ const formatFile = (file) => {
         vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
         l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param folderId
+ */
+const prepareConfigs = (folderId) => {
+    configs.put('conf_OAuth2', 'Box');
+    configs.put('conf_FolderId', folderId);
+};
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param folderId
+ */
+const assertGetRequest = ({url, method}, folderId) => {
+    const expectedUrl = `https://api.box.com/2.0/folders/${folderId}/items`
+        + `?fields=${encodeURIComponent('id,type,name,created_at')}`
+        + '&sort=date'
+        + '&direction=DESC'
+        + '&limit=1000' // Box API のリクエスト上限
+        + '&usemarker=true';
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 返り値の file のテスト
+ * @param file
+ * @param id
+ * @param timestamp
+ */
+const assertFile = (file, id, timestamp) => {
+    expect(file.id).toEqual(id);
+    expect(file.timestamp).toEqual(timestamp);
+};
+
+const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
+
+/**
+ * 正常系のテストケース
+ */
+test('Success', () => {
+    const response = {
+        "entries": [ // 更新日の降順で並ぶので、作成日順とは限らない
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            },
+            {
+                "id": "23456",
+                "type": "file",
+                "name": "ファイル2.pdf",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567",
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    const folderId = '1234567';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // 作成日の降順で返される
+    assertFile(result[0], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'));
+    assertFile(result[1], '12345', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T12:00:00+09;00'));
+    assertFile(result[2], '23456', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T10:30:00+09:00'));
+});
+
+/**
+ * 正常系のテストケース
+ * レスポンスにファイル以外のアイテムが含まれる
+ */
+test('Success - response includes an item which is not a file', () => {
+    const response = {
+        "entries": [ // 更新日の降順で並ぶので、作成日順とは限らない
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            },
+            {
+                "id": "23456",
+                "type": "folder",
+                "name": "フォルダ",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567",
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    const folderId = '7654321';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2); // ファイル以外のアイテムは除かれる
+
+    // 作成日の降順で返される
+    assertFile(result[0], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'));
+    assertFile(result[1], '12345', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T12:00:00+09;00'));
+});
+
+/**
+ * 正常系のテストケース
+ * レスポンスに timestampLowerLimit より前に作成されたファイルを含む
+ */
+test('Success - response includes an item created before timestampLowerLimit ', () => {
+    const response = {
+        "entries": [ // 更新日の降順で並ぶので、作成日順とは限らない
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-10T12:00:00+09;00"  // timestampLowerLimit より前
+            },
+            {
+                "id": "23456",
+                "type": "file",
+                "name": "ファイル2.pdf",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567",
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    const folderId = '567890';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2); // timestampLowerLimit より前のファイルは除かれる
+
+    // 作成日の降順で返される
+    assertFile(result[0], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'));
+    assertFile(result[1], '23456', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T10:30:00+09:00'));
+});
+
+/**
+ * 正常系のテストケース
+ * レスポンスに含まれるファイル件数が limit を超える
+ */
+test('Success - response includes more files than limit', () => {
+    const response = {
+        "entries": [ // 更新日の降順で並ぶので、作成日順とは限らない
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            },
+            {
+                "id": "23456",
+                "type": "file",
+                "name": "ファイル2.pdf",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567",
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            },
+            {
+                "id": "45678",
+                "type": "file",
+                "name": "ファイル4.pdf",
+                "created_at": "2012-12-31T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    const folderId = '0123';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 2;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2); // limit 件数までしか返されない
+
+    // 作成日の降順で返される
+    assertFile(result[0], '45678', dateFormatter.parse(DATETIME_FORMAT, '2012-12-31T10:00:00+09:00'));
+    assertFile(result[1], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'));
+});
+
+/**
+ * 正常系のテストケース
+ * フォルダ ID が空
+ */
+test('Success - folderId is blank', () => {
+    const response = {
+        "entries": [ // 更新日の降順で並ぶので、作成日順とは限らない
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            },
+            {
+                "id": "23456",
+                "type": "file",
+                "name": "ファイル2.pdf",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567",
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    prepareConfigs(''); // folderId を空にする
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, '0', limit); // ルートフォルダにリクエスト
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // 作成日の降順で返される
+    assertFile(result[0], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'));
+    assertFile(result[1], '12345', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T12:00:00+09;00'));
+    assertFile(result[2], '23456', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T10:30:00+09:00'));
+});
+
+/**
+ * 異常系のテストケース
+ * GET リクエストで 403 エラー
+ */
+test('Fail in GET request', () => {
+    const folderId = '13579';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get files. status: 403');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * レスポンスに next_marker がある
+ */
+test('Fail - response includes next_marker', () => {
+    const response = {
+        "entries": [ // 実際には 1000 件のアイテムを含むが、省略
+            {
+                "id": "12345",
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            }
+        ],
+        "next_marker": "00000" // next_marker が設定されている
+    };
+
+    const folderId = '13579';
+    prepareConfigs(folderId);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('More than 1000 items are in the specified folder');
+    }
+});
+
+]]></test>
+
 </service-task-definition>
