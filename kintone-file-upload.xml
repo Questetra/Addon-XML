@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Upload File</label>
 <label locale="ja">kintone: ファイルアップロード</label>
-<last-modified>2022-08-26</last-modified>
+<last-modified>2022-08-29</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>This item uploads and add files to an Attachment field of a record in a Kintone App.</summary>
@@ -533,41 +533,13 @@ const assertPutRequest = ({url, method, body}, domain, guestSpaceId, appId, reco
 
 /**
  * GET リクエストのレスポンスを準備
- * フィールドコードに既にファイルが添付されている
+ * @param attachFileFieldCode
+ * @param num 添付されているファイル数
  * @return responseObj
  */
-const prepareGetResponseAttached = (attachFileFieldCode) => {
-  return {
-    "record": {
-      [attachFileFieldCode]: {
-        "type": "FILE",
-        "value": [
-          {
-            "contentType": "text/plain",
-            "fileKey":"201202061155587E339F9067544F1A92C743460E3D12B3297",
-            "name": "test1.txt",
-            "size": "23175"
-          },
-          {
-            "contentType": "text/plain",
-            "fileKey": "201202061155583C763E30196F419E83E91D2E4A03746C273",
-            "name": "test2.txt",
-            "size": "23175"
-          }
-        ]
-      }
-    }
-  };
-};
+const prepareGetResponse = (attachFileFieldCode, num) => {
 
-
-/**
- * GET リクエストのレスポンスを準備
- * フィールドコードにファイルが添付されていない
- * @return responseObj
- */
-const prepareGetResponse = (attachFileFieldCode) => {
-  return {
+  const responseObj = {
     "record": {
       [attachFileFieldCode]: {
         "type": "FILE",
@@ -576,6 +548,19 @@ const prepareGetResponse = (attachFileFieldCode) => {
       }
     }
   };
+
+  if (num !== 0){
+    for (let i =1; i <= num ; i ++){
+      responseObj.record[attachFileFieldCode].value.push({
+            "contentType": "text/plain",
+            "fileKey":`key-${i}`,
+            "name": `test${i}.txt`,
+            "size": "23175"
+      })
+    }
+  }
+
+  return responseObj;
 };
 
 
@@ -594,47 +579,39 @@ const preparePostResponse = (fileKey) => {
 
 /**
  * PUT リクエストのレスポンスを準備
- * フィールドコードに既にファイルが添付されている
+ * @param app
+ * @param id
+ * @param attachFileFieldCode
+ * @param num 添付されているファイル数
  * @return responseObj
  */
-const preparePutResponseAttached = (app, id, attachFileFieldCode) => {
-  return {
+const preparePutResponse = (app, id, attachFileFieldCode, num) => {
+
+  const responseObj = {
     app,
     id,
     "record": {
-      [attachFileFieldCode] : {
-        "value": [
-          {
-            "fileKey":"201202061155587E339F9067544F1A92C743460E3D12B3297"
-          },
-          {
-            "fileKey": "201202061155583C763E30196F419E83E91D2E4A03746C273"
-          }
-        ]
-      }
-    }
-  };
-};
-
-
-/**
- * PUT リクエストのレスポンスを準備
- * フィールドコードにファイルが添付されていない
- * @return responseObj
- */
-const preparePutResponse = (app, id, attachFileFieldCode) => {
-  return {
-    app,
-    id,
-    "record": {
-      [attachFileFieldCode] : {
+      [attachFileFieldCode]: {
+        "type": "FILE",
         "value": [
         ]
       }
     }
   };
-};
 
+  if (num !== 0){
+    for (let i =1; i <= num ; i ++){
+      responseObj.record[attachFileFieldCode].value.push({
+            "contentType": "text/plain",
+            "fileKey":`key-${i}`,
+            "name": `test${i}.txt`,
+            "size": "23175"
+      })
+    }
+  }
+
+  return responseObj;
+};
 
 
 /**
@@ -677,7 +654,7 @@ test('fieldCode does not exist in the record', () => {
 
     httpClient.setRequestHandler((request) => {
       assertGetRequest(request, domain, '', appId, recordId );
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode)));
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode, 0)));
     });
 
     expect(execute).toThrow(`添付ファイル2 does not exist in the record.`);
@@ -736,7 +713,7 @@ test('Necessary HTTP requests exceeds the limit', () => {
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, domain, '', appId, recordId );
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode)));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode, 0)));
     });
 
     expect(execute).toThrow(`Necessary HTTP requests exceeds the limit.`);
@@ -766,7 +743,7 @@ test('POST Failed', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, '', appId, recordId );
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode)));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode, 0)));
         }
         assertPostRequest(request, domain, '', appId, recordId, files, fileName, fileSize);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
@@ -794,21 +771,26 @@ test('PUT Failed', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル";
+    let attachments;
+    let postResponseObj;
 
     httpClient.setRequestHandler((request) => {
+        
         if (reqCount === 0) {
             assertGetRequest(request, domain, '', appId, recordId );
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode)));
+            attachments = prepareGetResponse(attachFileFieldCode, 0);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(attachments));
         }
+        
         if (reqCount === 1) {
             assertPostRequest(request, domain, '', appId, recordId, files, fileName, fileSize);
             reqCount++;
-            const postResponseObj = preparePostResponse('fileKey-01234-56789')
+            postResponseObj = preparePostResponse('fileKey-01234-56789')
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(postResponseObj));
         }
-        const attachments = prepareGetResponse(attachFileFieldCode);
-        attachments.record[attachFileFieldCode].value.push(preparePostResponse('fileKey-01234-56789'));
+        
+        attachments.record[attachFileFieldCode].value.push(postResponseObj);
         valueAttachments = attachments.record[attachFileFieldCode].value;
         assertPutRequest(request, domain, '', appId, recordId, valueAttachments, attachFileFieldCode);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
@@ -840,27 +822,30 @@ test('Sucsess - basic and guestSpaseId', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル";
+    let attachments;
+    let postResponseObj;
 
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId );
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(attachFileFieldCode)));
+            attachments = prepareGetResponse(attachFileFieldCode, 0);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(attachments));
         }
         if (reqCount === 1) {
             assertPostRequest(request, domain, guestSpaceId, appId, recordId, files, fileName, fileSize);
             reqCount++;
-            const postResponseObj = preparePostResponse('fileKey-11111-22222');
+            postResponseObj = preparePostResponse('fileKey-11111-22222');
+            attachments.record[attachFileFieldCode].value.push(postResponseObj);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(postResponseObj));
         }
-        const attachments = prepareGetResponse(attachFileFieldCode);
+        
         engine.log("ファイルアップロード成功1")
-        engine.log(JSON.stringify(attachments));
-        attachments.record[attachFileFieldCode].value.push(preparePostResponse('fileKey-11111-22222'));        
+        engine.log(JSON.stringify(attachments));        
         valueAttachments = attachments.record[attachFileFieldCode].value;
         assertPutRequest(request, domain, guestSpaceId, appId, recordId, valueAttachments, attachFileFieldCode);
 
-        const putResponseObj = preparePutResponse(appId, recordId, attachFileFieldCode);
+        const putResponseObj = preparePutResponse(appId, recordId, attachFileFieldCode, 0);
         engine.log("ファイルアップロード成功1-2")
         engine.log(JSON.stringify(putResponseObj));
         putResponseObj.record[attachFileFieldCode].value.push({"fileKey":"fileKey-11111-22222"});
@@ -878,7 +863,7 @@ test('Sucsess - basic and guestSpaseId', () => {
 /**
  * ファイルアップロード成功
  * 複数ファイル（ファイル最大値）
- * 既にファイルが添付されているフィールドコードにアップロードする
+ * 既に 2 ファイル添付されているフィールドコードにアップロードする
  */
 test('Sucsess - Max-files', () => {
 
@@ -898,19 +883,19 @@ test('Sucsess - Max-files', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル";
+    let attachments;
+    let postResponseObj;
 	
-    const attachments = prepareGetResponseAttached(attachFileFieldCode);    
-    const putResponseObj = preparePutResponseAttached(appId, recordId, attachFileFieldCode);
-
     httpClient.setRequestHandler((request) => {
     
         engine.log("ファイルアップロード成功2")
         engine.log(JSON.stringify(attachments));
-        engine.log("ファイルアップロード成功2-2")
-        engine.log(JSON.stringify(putResponseObj)); 
 
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId );
+            attachments = prepareGetResponse(attachFileFieldCode, 2);
+            engine.log("ファイルアップロード成功2-1")
+            engine.log(JSON.stringify(attachments));
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(attachments));
         }
@@ -921,17 +906,12 @@ test('Sucsess - Max-files', () => {
             engine.log(fileName);
             const fileSize = 1;
             assertPostRequest(request, domain, guestSpaceId, appId, recordId, files, fileName, fileSize);
-            const postResponseObj = preparePostResponse(`fileKey-${reqCount}-01234-56789`);
+            const fileKey = `fileKey-${reqCount}-01234-56789`;
+            postResponseObj = preparePostResponse(fileKey);
             attachments.record[attachFileFieldCode].value.push(postResponseObj);
 
-            engine.log("ファイルアップロード成功2-2-0");
+            engine.log("ファイルアップロード成功2-2");
             engine.log(JSON.stringify(attachments));
-
-            const fileKey = `fileKey-${reqCount}-01234-56789`;
-            putResponseObj.record[attachFileFieldCode].value.push({fileKey});
-            engine.log("ファイルアップロード成功2-2-1");
-            engine.log(JSON.stringify(putResponseObj));
-
             reqCount++
 
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(postResponseObj));			
@@ -939,6 +919,14 @@ test('Sucsess - Max-files', () => {
 	
         valueAttachments = attachments.record[attachFileFieldCode].value;
         assertPutRequest(request, domain, guestSpaceId, appId, recordId, valueAttachments, attachFileFieldCode);
+
+        const putResponseObj = preparePutResponse(appId, recordId, attachFileFieldCode, 2);
+
+        for (let j = 1; j < httpClient.getRequestingLimit() - 2; j++) {
+            const fileKeyPut = `fileKey-${j}-01234-56789`;
+            putResponseObj.record[attachFileFieldCode].value.push({fileKeyPut});
+        }
+
         engine.log("ファイルアップロード成功2-3")
         engine.log(JSON.stringify(putResponseObj));
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(putResponseObj));
@@ -947,8 +935,6 @@ test('Sucsess - Max-files', () => {
     // <script> のスクリプトを実行
     execute();
 });
-
-
 ]]></test>
 
 </service-task-definition>
