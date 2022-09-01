@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: Gmail: Email Message Received</label>
     <label locale="ja">開始: Gmail: メール受信時</label>
-    <last-modified>2022-08-29</last-modified>
+    <last-modified>2022-09-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>This item starts a process when Gmail has received a new message.</summary>
@@ -295,7 +295,7 @@ const assertGetMessageRequest = ({url, method}, messageId) => {
  * @param timestamp
  * @param rfc822msgId
  */
-const assertMessage = (file, id, timestamp, rfc822msgId) => {
+const assertMessage = (message, id, timestamp, rfc822msgId) => {
     expect(message.id).toEqual(id);
     expect(message.timestamp).toEqual(timestamp);
     expect(message.rfc822msgId).toEqual(rfc822msgId);
@@ -486,30 +486,31 @@ const MESSAGE_METADATA_3 = {
     "internalDate": "1659322800000" // 2022-08-01T12:00:00+09:00
 };
 
+const SAMPLE_MESSAGE_LIST_RES = {
+    "messages": [
+        {
+            "id": "abc123"
+        },
+        {
+            "id": "def456"
+        },
+        {
+            "id": "efg789"
+        }
+    ]
+};
+
+const MESSAGE_DETAILS = [
+    MESSAGE_METADATA_1,
+    MESSAGE_METADATA_2,
+    MESSAGE_METADATA_3
+];
+
 /**
  * 正常系のテストケース
+ * ラベルを 1 つだけ指定した場合
  */
-test('Success', () => {
-    const messageListRes = {
-        "messages": [
-            {
-                "id": "abc123"
-            },
-            {
-                "id": "def456"
-            },
-            {
-                "id": "efg789"
-            }
-        ]
-    };
-
-    const messageDetails = [
-        MESSAGE_METADATA_1,
-        MESSAGE_METADATA_2,
-        MESSAGE_METADATA_3
-    ];
-
+test('Success - one label', () => {
     const label = 'ラベル 1';
     const labelIds = ['Label_1234567'];
     prepareConfigs(label);
@@ -530,13 +531,13 @@ test('Success', () => {
         if (reqCount === 1) {
             assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(messageListRes));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
         }
         // message ごとにリクエスト
         const messageCount = reqCount-2;
-        assertGetMessageRequest(request, messageListRes.messages[messageCount].id);
+        assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[messageCount].id);
         reqCount++;
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(messageDetails[messageCount]));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_DETAILS[messageCount]));
     });
 
     const result = list(limit, timestampLowerLimit);
@@ -558,6 +559,366 @@ test('Success', () => {
         dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T12:00:00+09:00'),
         'rfc822msgId-7890123'
     );
+});
+
+/**
+ * 正常系のテストケース
+ * ラベルを指定しなかった場合
+ */
+test('Success - no label', () => {
+    prepareConfigs('');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 2;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    const messageListRes = {
+        "messages": [ // limit が 2 の場合、2件までしか返らない
+            {
+                "id": "abc123"
+            },
+            {
+                "id": "def456"
+            }
+        ]
+    };
+
+    const messageDetails = [
+        MESSAGE_METADATA_1,
+        MESSAGE_METADATA_2
+    ];
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        // ラベル一覧取得のリクエストはなし。
+        if (reqCount === 0) {
+            assertGetMessageListRequest(request, ['INBOX'], limit, timestampLowerLimit);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(messageListRes));
+        }
+        // message ごとにリクエスト
+        const messageCount = reqCount-1;
+        assertGetMessageRequest(request, messageListRes.messages[messageCount].id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(messageDetails[messageCount]));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2);
+
+    // 一覧取得のままの順序で返る
+    assertMessage(result[0],
+        'abc123',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-26T12:00:00+09:00'),
+        'rfc822msgId-1234567'
+    );
+    assertMessage(result[1],
+        'def456',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-10T12:00:00+09:00'),
+        'rfc822msgId-4567890'
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * ラベルを複数件指定した場合
+ */
+test('Success - more than one labels', () => {
+    const label = 'ラベル 3 \n'
+        + ' INBOX \n'
+        + '\n\n'
+        + 'STARRED  \n'
+        + 'ラベル 2\n'
+        + 'ラベル 1';
+    const labelIds = [ // LABEL_LIST_RES に含まれる順になる
+        'INBOX',
+        'STARRED',
+        'Label_1234567',
+        'Label_2345678',
+        'Label_3456789'
+    ];
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetLabelListRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+        }
+        if (reqCount === 1) {
+            assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+        }
+        // message ごとにリクエスト
+        const messageCount = reqCount-2;
+        assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[messageCount].id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_DETAILS[messageCount]));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // 一覧取得のままの順序で返る
+    assertMessage(result[0],
+        'abc123',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-26T12:00:00+09:00'),
+        'rfc822msgId-1234567'
+    );
+    assertMessage(result[1],
+        'def456',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-10T12:00:00+09:00'),
+        'rfc822msgId-4567890'
+    );
+    assertMessage(result[2],
+        'efg789',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T12:00:00+09:00'),
+        'rfc822msgId-7890123'
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * プロセス開始済みのメールは一覧から除かれる
+ */
+test('Success - filtered by isProcessStarted', () => {
+    const label = 'ラベル 1';
+    const labelIds = ['Label_1234567'];
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    engine.addProcessStartedSet('def456'); // 2 件目のメールをプロセス開始済みにセット
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetLabelListRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+        }
+        if (reqCount === 1) {
+            assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+        }
+        // 1 件目、3件目のメールのみ詳細取得のリクエストが送付される
+        if (reqCount === 2) {
+            assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[0].id);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_DETAILS[0]));
+        }
+        assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[2].id);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_DETAILS[2]));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2); // 2件のみ
+
+    // 一覧取得のままの順序で返る
+    assertMessage(result[0],
+        'abc123',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-26T12:00:00+09:00'),
+        'rfc822msgId-1234567'
+    );
+    assertMessage(result[1],
+        'efg789',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T12:00:00+09:00'),
+        'rfc822msgId-7890123'
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * timestampLowerLimit より前のメールは一覧から除かれる
+ */
+test('Success - filtered by timestampLowerLimit', () => {
+    const label = 'ラベル 1';
+    const labelIds = ['Label_1234567'];
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    // 1 件目のメールのみプロセス開始対象となるように timestampLowerLimit を設定
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-10T12:00:01+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetLabelListRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+        }
+        if (reqCount === 1) {
+            assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+        }
+        // message ごとにリクエスト
+        const messageCount = reqCount-2;
+        assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[messageCount].id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_DETAILS[messageCount]));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(1); // 1件のみ
+
+    assertMessage(result[0],
+        'abc123',
+        dateFormatter.parse(DATETIME_FORMAT, '2022-08-26T12:00:00+09:00'),
+        'rfc822msgId-1234567'
+    );
+});
+
+/**
+ * 異常系のテストケース
+ * ラベル一覧を取得する GET リクエストで 403 エラー
+ */
+test('Fail - 403 error in getting labels', () => {
+    prepareConfigs('ラベル 1');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetLabelListRequest(request);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get labels. status: 403');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * 存在しないラベルを指定した場合
+ */
+test('Fail - label does not exist', () => {
+    const label = 'IMPORTANT\n'
+        + '存在しないラベル 1\n'
+        + '存在しないラベル 2';
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetLabelListRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('label ids of 存在しないラベル 1, 存在しないラベル 2 not found');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * メッセージ一覧を取得する GET リクエストで 403 エラー
+ */
+test('Fail - 403 error in getting messages', () => {
+    const label = 'ラベル 1';
+    const labelIds = ['Label_1234567'];
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetLabelListRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+        }
+        assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get messages. status: 403');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * メッセージの詳細を取得する GET リクエストで 403 エラー
+ */
+test('Fail - 403 error in getting a message', () => {
+    const label = 'ラベル 1';
+    const labelIds = ['Label_1234567'];
+    prepareConfigs(label);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2022-08-01T00:00:00+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetLabelListRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(LABEL_LIST_RES));
+        }
+        if (reqCount === 1) {
+            assertGetMessageListRequest(request, labelIds, limit, timestampLowerLimit);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+        }
+        if (reqCount === 2) { // 1 つ目のメッセージ詳細を取得
+            assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[0].id);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(MESSAGE_METADATA_1));
+        }
+        // 2 つ目のメッセージ詳細の取得で失敗
+        assertGetMessageRequest(request, SAMPLE_MESSAGE_LIST_RES.messages[1].id);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get message def456. status: 403');
+    }
 });
 
 ]]></test>
