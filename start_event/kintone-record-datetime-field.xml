@@ -297,4 +297,205 @@ const getRecords = (apiUri, apiToken, basic, {
         mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
     </icon>
 
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ */
+const prepareConfigs = (domain, guestSpaceId, appId, datetimeField, query) => {
+    configs.put('conf_auth', 'Kintone');
+    configs.put('conf_domain', domain);
+    configs.put('conf_guestSpaceId', guestSpaceId);
+    configs.put('conf_appId', appId);
+    configs.put('conf_datetimeField', datetimeField);
+    configs.put('conf_query', query);
+};
+
+/**
+ * 異常系のテストケース
+ * ドメインが不正な文字列
+ */
+test('Fail - invalid domain', () => {
+    prepareConfigs('invalidDomain.com', '', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid Kintone domain.');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * ゲストスペース ID が不正な文字列
+ */
+test('Fail - invalid guest space ID', () => {
+    prepareConfigs('xxxxx.kintone.com', '1a', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid Guest Space ID.');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * アプリ ID が不正な文字列
+ */
+test('Fail - invalid App ID', () => {
+    prepareConfigs('xxxxx.kintone.com', '', '2b', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid App ID.');
+    }
+});
+
+const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param domain
+ * @param guestSpaceId
+ * @param appId
+ * @param query
+ * @param datetimeField
+ * @param limit
+ * @param timestampLowerLimit
+ */
+const assertGetRequest = ({url, method}, domain, guestSpaceId, appId, datetimeField, query, limit, timestampLowerLimit) => {
+    let expectedUrl = `https://${domain}/k/v1/records.json`;
+    if (guestSpaceId !== '') {
+        expectedUrl = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json`;
+    }
+
+    let queryString = `${datetimeField} >= "${dateFormatter.format(DATETIME_FORMAT, timestampLowerLimit)}"`
+        + ` and ${datetimeField} <= NOW()`
+        + ` order by ${datetimeField} desc, $id desc limit ${limit}`;
+    if (query !== '') {
+        queryString = `(${query}) and ${queryString}`;
+    }
+
+    expectedUrl += `?app=${appId}`
+        + `&query=${encodeURIComponent(queryString)}`
+        + `&${encodeURIComponent('fields[0]')}=${encodeURIComponent('$id')}`
+        + `&${encodeURIComponent('fields[1]')}=${encodeURIComponent(datetimeField)}`;
+    expectedUrl = expectedUrl.replace(/%20/g, '+') // HttpRequestWrapper#queryParam() はスペースを + に置き換える
+        .replace(/\(/g, '%28') // HttpRequestWrapper#queryParam() は丸括弧をエンコードする
+        .replace(/\)/g, '%29');
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 返り値の record のテスト
+ * @param record
+ * @param recordId
+ * @param timestamp
+ */
+const assertRecord = (record, recordId, timestamp) => {
+    expect(record.recordId).toEqual(recordId);
+    expect(record.timestamp).toEqual(timestamp);
+    expect(record.id).toEqual(`${recordId}_${timestamp.getTime()}`);
+};
+
+/**
+ * 正常系のテストケース
+ */
+test('Success', () => {
+    const SAMPLE_RESPONSE = {
+        "records": [
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "3"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-12T15:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "2"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-11T20:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "1"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-10T18:00:00Z"
+                }
+            }
+        ]
+    };
+
+    prepareConfigs('xxxxx.kintone.com', '', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'xxxxx.kintone.com', '', '1', '作成日時', '', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_RESPONSE));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // レスポンスのままの順序で返される
+    assertRecord(result[0],
+        '3',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T15:00:00Z')
+    );
+    assertRecord(result[1],
+        '2',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-11T20:00:00Z')
+    );
+    assertRecord(result[2],
+        '1',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-10T18:00:00Z')
+    );
+});
+
+]]></test>
+
 </service-task-definition>
