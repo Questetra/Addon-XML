@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-09-05</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Add Item to Draft Invoice</label>
+    <label locale="ja">Stripe: 請求書ドラフトに項目を追加</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-invoice-item-add/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-invoice-item-add/
+    </help-page-url>
+
+    <summary>This item adds an invoice item to a draft invoice on Stripe.</summary>
+    <summary locale="ja">この工程は、Stripe 上のドラフト状態の請求書に請求項目を追加します。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_InvoiceId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Draft Invoice ID</label>
+            <label locale="ja">C2: ドラフト状態の請求書の ID</label>
+        </config>
+        <config name="conf_PriceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3-A: Price ID</label>
+            <label locale="ja">C3-A: 価格オブジェクトの ID</label>
+        </config>
+        <config name="conf_ProductName" required="false" el-enabled="true" form-type="TEXTFIELD">
+            <label>C3-B1: Product Name (ignored when Price ID is set)</label>
+            <label locale="ja">C3-B1: 商品名（価格オブジェクトの ID を指定した場合は無視されます）</label>
+        </config>
+        <config name="conf_UnitAmount" required="false" form-type="SELECT" select-data-type="DECIMAL">
+            <label>C3-B2: Unit amount (ignored when Price ID is set)</label>
+            <label locale="ja">C3-B2: 単価（価格オブジェクトの ID を指定した場合は無視されます）</label>
+        </config>
+        <config name="conf_Quantity" required="true" form-type="SELECT" select-data-type="DECIMAL">
+            <label>C4: Quantity</label>
+            <label locale="ja">C4: 数量</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const invoiceId = retrieveInvoiceId();
+    const itemPropertyMap = retrieveItemPropertyMap();
+
+    //// == Calculating / 演算 ==
+    const customerId = getCustomerFromInvoice(auth, invoiceId);
+    attachInvoiceItem(auth, customerId, invoiceId, itemPropertyMap); // customerId の指定が必須
+}
+
+/**
+  * config から請求書ドラフトの ID を読み出す。空文字列の場合はエラー
+  * @return {String} invoiceId 請求書ドラフトの ID
+  */
+function retrieveInvoiceId() {
+    const invoiceId = engine.findData(configs.getObject('conf_InvoiceId'));
+    if (invoiceId === null) {
+        throw 'Invoice ID is blank.';
+    }
+    return invoiceId;
+}
+
+/**
+  * config からラインアイテムのプロパティを読み出し、Map に格納して返す
+  * @return {Map<String, String>} itemPropertyMap ラインアイテムのプロパティの Map
+  */
+function retrieveItemPropertyMap() {
+    const itemPropertyMap = new Map();
+    const priceIdDef = configs.getObject('conf_PriceId');
+    if (priceIdDef !== null) { // 価格 ID が指定されている場合
+        const priceId = engine.findData(priceIdDef);
+        if (priceId === null) {
+            throw 'Price ID is blank.';
+        }
+        itemPropertyMap.set('price', priceId);
+    } else { // 価格 ID が指定されていない場合
+        itemPropertyMap.set('description', retrieveConfig('conf_ProductName', 'Product Name', 250));
+        itemPropertyMap.set('unit_amount', retrieveUnitAmount());
+    }
+    itemPropertyMap.set('quantity', retrieveQuantity());
+    return itemPropertyMap;
+}
+
+/**
+  * config から設定値を読み出す。以下の場合はエラー
+  * - 空文字列の場合
+  * - 長さが maxLength を超える場合
+  * @param {String} confName config 名
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} maxLength 最大文字数
+  * @return {String} value 設定値
+  */
+function retrieveConfig(confName, label, maxLength) {
+    const value = configs.get(confName);
+    if (value === '') {
+        throw `${label} is blank.`;
+    }
+    if (value.length > maxLength) {
+        throw `${label} must be at most ${maxLength} characters.`;
+    }
+    return value;
+}
+
+/**
+  * config から商品単価を取得する
+  * 商品単価の上限値を超える場合はエラー
+  * @return {String} unitAmount 商品単価（0 以上の整数）
+  */
+function retrieveUnitAmount() {
+    const longValue = retrieveDecimalConfig('conf_UnitAmount', 'Unit amount');
+    const maxAmount = 99999999;
+    if (longValue > maxAmount) {
+        throw `Unit amount must be smaller than ${maxAmount + 1}.`;
+    }
+    return longValue.toString();
+}
+
+/**
+  * config から数量を取得する
+  * @return {String} quantity 数量（0 以上の整数）
+  */
+function retrieveQuantity() {
+    const longValue = retrieveDecimalConfig('conf_Quantity', 'Quantity');
+    return longValue.toString();
+}
+
+/**
+  * config から数値型データ項目の値を読み出し、 long にパースして返す
+  * 以下の場合はエラー
+  * - データ項目が選択されていない
+  * - データ項目が選択されているが、値が空
+  * - 小数点以下が0でない
+  * - 負の数
+  * @param {String} confName config 名
+  * @param {String} label エラー出力用ラベル
+  * @return {long} longValue 変換後の数値
+  */
+function retrieveDecimalConfig(confName, label) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        throw `${label} is not set.`;
+    }
+    const bigDecimal = engine.findData(dataDef);
+    if (bigDecimal === null) {
+        throw `${label} is blank.`;
+    }
+    let longValue;
+    try {
+        longValue = bigDecimal.longValueExact();
+    } catch (e) {
+        throw `${label} must be integer.`;
+    }
+    if (longValue < 0) {
+        throw `${label} must not be negative.`;
+    }
+    return longValue;
+}
+
+/**
+  * 請求書オブジェクトを取得し、請求書に設定されている顧客の ID を返す
+  * 顧客が未設定の場合はエラー
+  * @param {String} oauth 認証設定
+  * @param {String} invoiceId 請求書の ID
+  * @return {String} customerId 顧客 ID
+  */
+function getCustomerFromInvoice(auth, invoiceId) {
+    const apiUri = `https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`;
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get invoice. status: ${status}`;
+    }
+    const invoiceObj = JSON.parse(responseStr);
+    const customerId = invoiceObj.customer;
+    if (customerId === null) {
+        throw 'The invoice is not attached to a customer yet.';
+    }
+    return customerId;
+}
+
+/**
+  * 請求書ドラフトにラインアイテムを追加する
+  * @param {String} oauth 認証設定
+  * @param {String} customerId 顧客 ID
+  * @param {String} invoiceId 請求書ドラフトの ID
+  * @param {Map<String, String>} itemPropertyMap ラインアイテムのプロパティの Map
+  */
+function attachInvoiceItem(auth, customerId, invoiceId, itemPropertyMap) {
+    const apiUri = 'https://api.stripe.com/v1/invoiceitems';
+    let request = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('customer', customerId) // Stripe API の仕様上、必須
+        .formParam('invoice', invoiceId);
+    itemPropertyMap.forEach((value, key) => {
+        request = request.formParam(key, value);
+    });
+    const response = request.post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to attach an invoice item. status: ${status}`;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+</service-task-definition>
