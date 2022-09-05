@@ -3,13 +3,16 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: kintone: Record's Datetime Field</label>
     <label locale="ja">開始: kintone: レコード 日時フィールド</label>
-    <last-modified>2021-04-09</last-modified>
+    <last-modified>2022-09-05</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
-    <summary>Start Process when time in Record's datetime field has passed, on a kintone App. It is able to specify
-        record "Created datetime" "Updated datetime" as datetime field.
+    <summary>
+        This item starts a process when the time in a record's datetime field has passed in a Kintone App.
+        It is also possible to specify "Created datetime" or "Updated datetime" as the datetime field.
     </summary>
-    <summary locale="ja">kintone アプリで、レコードの日時フィールドの時刻を経過すると、プロセスが開始します。日時フィールドとして、「作成日時」「更新日時」を指定することも可能です。</summary>
+    <summary locale="ja">
+        このアイテムは、kintone アプリでレコードの日時フィールドの時刻を経過すると、プロセスが開始します。日時フィールドとして、「作成日時」「更新日時」を指定することも可能です。
+    </summary>
     <configs>
         <config name="conf_auth" required="true" form-type="OAUTH2">
             <label>C1: Authorization Setting in which API Token is set</label>
@@ -293,5 +296,350 @@ const getRecords = (apiUri, apiToken, basic, {
         j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
         mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
     </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ */
+const prepareConfigs = (domain, guestSpaceId, appId, datetimeField, query) => {
+    configs.put('conf_auth', 'Kintone');
+    configs.put('conf_domain', domain);
+    configs.put('conf_guestSpaceId', guestSpaceId);
+    configs.put('conf_appId', appId);
+    configs.put('conf_datetimeField', datetimeField);
+    configs.put('conf_query', query);
+};
+
+/**
+ * 異常系のテストケース
+ * ドメインが不正な文字列
+ */
+test('Fail - invalid domain', () => {
+    prepareConfigs('invalidDomain.com', '', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid Kintone domain.');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * ゲストスペース ID が不正な文字列
+ */
+test('Fail - invalid guest space ID', () => {
+    prepareConfigs('xxxxx.kintone.com', '1a', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid Guest Space ID.');
+    }
+});
+
+/**
+ * 異常系のテストケース
+ * アプリ ID が不正な文字列
+ */
+test('Fail - invalid App ID', () => {
+    prepareConfigs('xxxxx.kintone.com', '', '2b', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Invalid App ID.');
+    }
+});
+
+const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
+
+/**
+ * GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param domain
+ * @param guestSpaceId
+ * @param appId
+ * @param query
+ * @param datetimeField
+ * @param limit
+ * @param timestampLowerLimit
+ */
+const assertGetRequest = ({url, method}, domain, guestSpaceId, appId, datetimeField, query, limit, timestampLowerLimit) => {
+    let expectedUrl = `https://${domain}/k/v1/records.json`;
+    if (guestSpaceId !== '') {
+        expectedUrl = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json`;
+    }
+
+    let queryString = `${datetimeField} >= "${dateFormatter.format(DATETIME_FORMAT, timestampLowerLimit)}"`
+        + ` and ${datetimeField} <= NOW()`
+        + ` order by ${datetimeField} desc, $id desc limit ${limit}`;
+    if (query !== '') {
+        queryString = `(${query}) and ${queryString}`;
+    }
+
+    expectedUrl += `?app=${appId}`
+        + `&query=${encodeURIComponent(queryString)}`
+        + `&${encodeURIComponent('fields[0]')}=${encodeURIComponent('$id')}`
+        + `&${encodeURIComponent('fields[1]')}=${encodeURIComponent(datetimeField)}`;
+    expectedUrl = expectedUrl.replace(/%20/g, '+') // HttpRequestWrapper#queryParam() はスペースを + に置き換える
+        .replace(/\(/g, '%28') // HttpRequestWrapper#queryParam() は丸括弧をエンコードする
+        .replace(/\)/g, '%29');
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 返り値の record のテスト
+ * @param record
+ * @param recordId
+ * @param timestamp
+ */
+const assertRecord = (record, recordId, timestamp) => {
+    expect(record.recordId).toEqual(recordId);
+    expect(record.timestamp).toEqual(timestamp);
+    expect(record.id).toEqual(`${recordId}_${timestamp.getTime()}`);
+};
+
+/**
+ * 正常系のテストケース
+ * ゲストスペース ID 指定なし
+ * 検索クエリ指定なし
+ */
+test('Success', () => {
+    const SAMPLE_RESPONSE = {
+        "records": [
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "3"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-12T15:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "2"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-11T20:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "1"
+                },
+                "作成日時": {
+                    "type": "CREATED_TIME",
+                    "value": "2012-12-10T18:00:00Z"
+                }
+            }
+        ]
+    };
+
+    prepareConfigs('xxxxx.kintone.com', '', '1', '作成日時', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'xxxxx.kintone.com', '', '1', '作成日時', '', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_RESPONSE));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // レスポンスのままの順序で返される
+    assertRecord(result[0],
+        '3',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T15:00:00Z')
+    );
+    assertRecord(result[1],
+        '2',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-11T20:00:00Z')
+    );
+    assertRecord(result[2],
+        '1',
+        dateFormatter.parse(DATETIME_FORMAT, '2012-12-10T18:00:00Z')
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * ゲストスペース ID を指定する場合
+ */
+test('Success - with guest space ID', () => {
+    const SAMPLE_RESPONSE = {
+        "records": [
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "109"
+                },
+                "Updated datetime": {
+                    "type": "UPDATED_TIME",
+                    "value": "2020-12-25T15:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "108"
+                },
+                "Updated datetime": {
+                    "type": "UPDATED_TIME",
+                    "value": "2019-12-11T20:00:00Z"
+                }
+            }
+        ]
+    };
+
+    prepareConfigs('xxxxx.cybozu.com', '9', '19', 'Updated datetime', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 2;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'xxxxx.cybozu.com', '9', '19', 'Updated datetime', '', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_RESPONSE));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2);
+
+    // レスポンスのままの順序で返される
+    assertRecord(result[0],
+        '109',
+        dateFormatter.parse(DATETIME_FORMAT, '2020-12-25T15:00:00Z')
+    );
+    assertRecord(result[1],
+        '108',
+        dateFormatter.parse(DATETIME_FORMAT, '2019-12-11T20:00:00Z')
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * 検索クエリを指定する場合
+ */
+test('Success - with search query', () => {
+    const SAMPLE_RESPONSE = {
+        "records": [
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "93"
+                },
+                "日時型データ項目": {
+                    "type": "DATETIME",
+                    "value": "2020-12-25T10:00:00Z"
+                }
+            },
+            {
+                "$id": {
+                    "type": "__ID__",
+                    "value": "501"
+                },
+                "日時型データ項目": {
+                    "type": "DATETIME",
+                    "value": "2019-12-11T19:00:00Z"
+                }
+            }
+        ]
+    };
+
+    const query = `更新日時 > "2012-02-03T09:00:00+0900"
+        and 更新日時 < "2012-02-03T10:00:00+0900"`;
+    prepareConfigs('xxxxx.cybozu.com', '', '55', '日時型データ項目', query);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 2;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'xxxxx.cybozu.com', '', '55', '日時型データ項目', query, limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_RESPONSE));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2);
+
+    // レスポンスのままの順序で返される
+    assertRecord(result[0],
+        '93',
+        dateFormatter.parse(DATETIME_FORMAT, '2020-12-25T10:00:00Z')
+    );
+    assertRecord(result[1],
+        '501',
+        dateFormatter.parse(DATETIME_FORMAT, '2019-12-11T19:00:00Z')
+    );
+});
+
+/**
+ * 異常系のテストケース
+ * レコードの一覧取得で 403 エラー
+ */
+test('Fail - 403 error in GET request', () => {
+    prepareConfigs('xxxxx.cybozu.com', '', '103', '日時型データ項目', '');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'xxxxx.cybozu.com', '', '103', '日時型データ項目', '', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get records. status: 403');
+    }
+});
+
+]]></test>
 
 </service-task-definition>
