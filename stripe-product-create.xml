@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-09-05</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Create Product</label>
+    <label locale="ja">Stripe: 商品を作成</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-product-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-product-create/
+    </help-page-url>
+
+    <summary>This item creates a product object on Stripe, with a price object attached to it.</summary>
+    <summary locale="ja">この工程は、Stripe 上に商品オブジェクトを作成します。商品に設定した価格は価格オブジェクトとして保存されます。
+    </summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_Name" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Product Name</label>
+            <label locale="ja">C2: 商品名</label>
+        </config>
+        <config name="conf_Currency" required="true" form-type="SELECT_ITEM">
+            <label>C3: Currency</label>
+            <label locale="ja">C3: 通貨</label>
+            <item value="AUD">
+                <label>AUD</label>
+            </item>
+            <item value="CAD">
+                <label>CAD</label>
+            </item>
+            <item value="CNY">
+                <label>CNY</label>
+            </item>
+            <item value="EUR">
+                <label>EUR</label>
+            </item>
+            <item value="GBP">
+                <label>GBP</label>
+            </item>
+            <item value="HKD">
+                <label>HKD</label>
+            </item>
+            <item value="JPY">
+                <label>JPY</label>
+            </item>
+            <item value="KRW">
+                <label>KRW</label>
+            </item>
+            <item value="USD">
+                <label>USD</label>
+            </item>
+        </config>
+        <config name="conf_UnitAmount" required="true" form-type="SELECT" select-data-type="DECIMAL">
+            <label>C4: Unit amount</label>
+            <label locale="ja">C4: 単価</label>
+        </config>
+        <config name="conf_PriceId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save ID of the price object</label>
+            <label locale="ja">C6: 価格オブジェクトの ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_PriceUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C7: Data item to save URL of the price object detail page</label>
+            <label locale="ja">C7: 価格オブジェクト詳細ページの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const name = retrieveConfig('conf_Name', 'Product Name', 250);
+    const currency = configs.get('conf_Currency');
+    const unitAmount = retrieveUnitAmount();
+    const priceIdDef = configs.getObject('conf_PriceId');
+    const priceUrlDef = configs.getObject('conf_PriceUrl');
+
+    //// == Calculating / 演算 ==
+    const priceId = createPrice(auth, name, currency, unitAmount);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    if (priceIdDef !== null) {
+        engine.setData(priceIdDef, priceId);
+    }
+    if (priceUrlDef !== null) {
+        engine.setData(priceUrlDef, `https://dashboard.stripe.com/prices/${priceId}`);
+    }
+}
+
+/**
+  * config から設定値を読み出す。以下の場合はエラー
+  * - 空文字列の場合
+  * - 長さが maxLength を超える場合
+  * @param {String} confName config 名
+  * @param {String} label エラー出力用ラベル
+  * @param {Number} maxLength 最大文字数
+  * @return {String} value 設定値
+  */
+function retrieveConfig(confName, label, maxLength) {
+    const value = configs.get(confName);
+    if (value === '') {
+        throw `${label} is blank.`;
+    }
+    if (value.length > maxLength) {
+        throw `${label} must be at most ${maxLength} characters.`;
+    }
+    return value;
+}
+
+/**
+  * config から商品単価を取得する
+  * 商品単価として不正な場合はエラー
+  * @return {String} unitAmount 商品単価（正の整数）
+  */
+function retrieveUnitAmount() {
+    const maxAmount = 99999999;
+    const bigDecimal = engine.findData(configs.getObject('conf_UnitAmount'));
+    if (bigDecimal === null) {
+        throw 'Unit amount is blank.';
+    }
+    let longValue;
+    try {
+        longValue = bigDecimal.longValueExact();
+    } catch (e) {
+        throw 'Unit amount must be integer.';
+    }
+    if (longValue < 0) {
+        throw 'Unit amount must not be negative.';
+    }
+    if (longValue > maxAmount) {
+        throw `Unit amount must be smaller than ${maxAmount + 1}.`;
+    }
+    return longValue.toString();
+}
+
+/**
+  * 価格オブジェクトを作成する
+  * @param {String} oauth 認証設定
+  * @param {String} name 商品名
+  * @param {String} currency 通貨
+  * @param {String} unitAmount 単価
+  * @return {String} priceId 価格オブジェクトの ID
+  */
+function createPrice(auth, name, currency, unitAmount) {
+    const apiUri = 'https://api.stripe.com/v1/prices';
+    const response = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .formParam('product_data[name]', name)
+        .formParam('currency', currency)
+        .formParam('unit_amount', unitAmount)
+        .post(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to create price. status: ${status}`;
+    }
+    const priceObj = JSON.parse(responseStr);
+    return priceObj.id;
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+</service-task-definition>
