@@ -74,47 +74,57 @@ function retrieveInvoiceId() {
 function retrieveItemPropertyMap() {
     const itemPropertyMap = new Map();
     const priceIdDef = configs.getObject('conf_PriceId');
+    const itemName = configs.get('conf_ItemName');
+    const unitAmountDef = configs.getObject('conf_UnitAmount');
     if (priceIdDef !== null) { // 価格 ID が指定されている場合
+        if (itemName !== '') {
+            throw 'Price ID and item name cannot be set at the same time.';
+        }
+        if (unitAmountDef !== null) {
+            throw 'Price ID and unit amount cannot be set at the same time.';
+        }
         const priceId = engine.findData(priceIdDef);
         if (priceId === null) {
             throw 'Price ID is blank.';
         }
         itemPropertyMap.set('price', priceId);
     } else { // 価格 ID が指定されていない場合
-        itemPropertyMap.set('description', retrieveConfig('conf_ItemName', 'Item name', 250));
-        itemPropertyMap.set('unit_amount', retrieveUnitAmount());
+        checkItemName(itemName);
+        const unitAmount = findAndParseUnitAmount(unitAmountDef);
+        itemPropertyMap.set('description', itemName);
+        itemPropertyMap.set('unit_amount', unitAmount);
     }
     itemPropertyMap.set('quantity', retrieveQuantity());
     return itemPropertyMap;
 }
 
 /**
-  * config から設定値を読み出す。以下の場合はエラー
+  * 商品名をチェックし、以下の場合はエラー
   * - 空文字列の場合
   * - 長さが maxLength を超える場合
-  * @param {String} confName config 名
-  * @param {String} label エラー出力用ラベル
-  * @param {Number} maxLength 最大文字数
-  * @return {String} value 設定値
+  * @param {String} itemName 商品名
   */
-function retrieveConfig(confName, label, maxLength) {
-    const value = configs.get(confName);
-    if (value === '') {
-        throw `${label} is blank.`;
+function checkItemName(itemName) {
+    if (itemName === '') {
+        throw 'Item name is blank. It is required when Price ID is not set.';
     }
-    if (value.length > maxLength) {
-        throw `${label} must be at most ${maxLength} characters.`;
+    const maxLength = 250;
+    if (itemName.length > maxLength) {
+        throw `Item name must be at most ${maxLength} characters.`;
     }
-    return value;
 }
 
 /**
-  * config から商品単価を取得する
+  * スクリプトエンジンから商品単価を取得し、String にパースして返す
   * 商品単価の上限値を超える場合はエラー
-  * @return {String} unitAmount 商品単価（0 以上の整数）
+  * @param {DataDefinitionView} dataDef
+  * @return {String} unitAmount 商品単価（非負整数）
   */
-function retrieveUnitAmount() {
-    const longValue = retrieveDecimalConfig('conf_UnitAmount', 'Unit amount');
+function findAndParseUnitAmount(dataDef) {
+    if (dataDef === null) {
+        throw 'Unit amount is not set. It is required when Price ID is not set.';
+    }
+    const longValue = findAndParseDecimal(dataDef, 'Unit amount');
     const maxAmount = 99999999;
     if (longValue > maxAmount) {
         throw `Unit amount must be smaller than ${maxAmount + 1}.`;
@@ -124,29 +134,25 @@ function retrieveUnitAmount() {
 
 /**
   * config から数量を取得する
-  * @return {String} quantity 数量（0 以上の整数）
+  * @return {String} quantity 数量（非負整数）
   */
 function retrieveQuantity() {
-    const longValue = retrieveDecimalConfig('conf_Quantity', 'Quantity');
+    const dataDef = configs.getObject('conf_Quantity'); // 必須項目なので null はありえない
+    const longValue = findAndParseDecimal(dataDef, 'Quantity');
     return longValue.toString();
 }
 
 /**
-  * config から数値型データ項目の値を読み出し、 long にパースして返す
+  * スクリプトエンジンから数値型データ項目の値を読み出し、long にパースして返す
   * 以下の場合はエラー
-  * - データ項目が選択されていない
-  * - データ項目が選択されているが、値が空
+  * - 値が空
   * - 小数点以下が0でない
   * - 負の数
-  * @param {String} confName config 名
+  * @param {DataDefinitionView} dataDef
   * @param {String} label エラー出力用ラベル
   * @return {long} longValue 変換後の数値
   */
-function retrieveDecimalConfig(confName, label) {
-    const dataDef = configs.getObject(confName);
-    if (dataDef === null) {
-        throw `${label} is not set.`;
-    }
+function findAndParseDecimal(dataDef, label) {
     const bigDecimal = engine.findData(dataDef);
     if (bigDecimal === null) {
         throw `${label} is blank.`;
