@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-06</last-modified>
+    <last-modified>2022-09-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Create Product</label>
@@ -185,5 +185,221 @@ function createPrice(auth, name, currency, unitAmount) {
         rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
         O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
     </icon>
+
+    <test><![CDATA[
+
+const NAME_MAX_LENGTH = 250;
+const MAX_UNIT_AMOUNT = 99999999;
+const STRIPE_VERSION = '2022-08-01';
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備
+ * @param name
+ * @param currency
+ * @param unitAmount
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (name, currency, unitAmount) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_Name', name);
+    configs.put('conf_Currency', currency);
+
+    // 単価を保存した数値型データ項目を準備し、設定
+    const unitAmountDef = engine.createDataDefinition('単価', 1, 'q_unitAmount', 'DECIMAL');
+    configs.putObject('conf_UnitAmount', unitAmountDef);
+    if (unitAmount !== null) {
+        engine.setData(unitAmountDef, java.math.BigDecimal.valueOf(unitAmount));
+    }
+
+    // 価格オブジェクトの ID を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('価格 ID', 2, 'q_priceId', 'STRING_TEXTFIELD');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_PriceId', idDef);
+
+    // 価格オブジェクトの URL を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('価格 URL', 3, 'q_priceUrl', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_PriceUrl', urlDef);
+
+    return {idDef, urlDef};
+}
+
+/**
+ * 商品名が空
+ */
+test('Product Name is blank', () => {
+    prepareConfigs('', 'JPY', 100);
+    expect(execute).toThrow('Product Name is blank.');
+});
+
+/**
+ * 商品名が長すぎる
+ */
+test('Product Name is too long', () => {
+    const name = createString(NAME_MAX_LENGTH + 1);
+    prepareConfigs(name, 'JPY', 100);
+    expect(execute).toThrow(`Product Name must be at most ${NAME_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 単価が空
+ */
+test('Unit amount is blank', () => {
+    prepareConfigs('テスト商品 1', 'JPY', null);
+    expect(execute).toThrow('Unit amount is blank.');
+});
+
+/**
+ * 単価が整数でない
+ */
+test('Unit amount is not integer', () => {
+    prepareConfigs('テスト商品 1', 'JPY', 100.01);
+    expect(execute).toThrow('Unit amount must be integer.');
+});
+
+/**
+ * 単価が負の整数
+ */
+test('Unit amount is negative', () => {
+    prepareConfigs('テスト商品 1', 'JPY', -100);
+    expect(execute).toThrow('Unit amount must not be negative.');
+});
+
+/**
+ * 単価が上限値を超える
+ */
+test('Unit amount exceeds the limit', () => {
+    prepareConfigs('テスト商品 1', 'JPY', MAX_UNIT_AMOUNT + 1);
+    expect(execute).toThrow(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
+});
+
+/**
+ * 価格オブジェクトを作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param name
+ * @param currency
+ * @param unitAmount
+ */
+const assertRequest = ({url, method, headers, contentType, body}, name, currency, unitAmount) => {
+    expect(url).toEqual('https://api.stripe.com/v1/prices');
+    expect(method).toEqual('POST');
+    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `${encodeURIComponent('product_data[name]')}=${encodeURIComponent(name)}`
+        + `&currency=${currency}`
+        + `&unit_amount=${unitAmount}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 価格オブジェクトを作成する HTTP リクエストで失敗
+ */
+test('Fail to create price', () => {
+    prepareConfigs('テスト商品 1', 'JPY', 100);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト商品 1', 'JPY', 100);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create price. status: 400');
+});
+
+/**
+ * 成功 - JPY, 単価に小数点以下なし
+ */
+test('Success - JPY, Unit amount does not have numbers after the decimal point', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト商品 1', 'JPY', 100);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト商品 1', 'JPY', 100);
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "price_00001"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('price_00001');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/prices/price_00001');
+});
+
+/**
+ * 成功 - USD, 単価の小数点以下が 0
+ */
+test('Success - USD, Unit amount is decimal but its numbers after the decimal point is zero', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト商品 2', 'USD', 500.00);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト商品 2', 'USD', 500);
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "price_00002"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('price_00002');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/prices/price_00002');
+});
+
+/**
+ * 成功 - KRW, 商品名の長さが最大, 単価が最大値
+ */
+test('Success - KRW, Product Name has its longest length, Unit amount is at its maximum', () => {
+    const name = createString(NAME_MAX_LENGTH);
+    const {idDef, urlDef} = prepareConfigs(name, 'KRW', MAX_UNIT_AMOUNT);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, name, 'KRW', MAX_UNIT_AMOUNT);
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "price_00003"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('price_00003');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/prices/price_00003');
+});
+
+/**
+ * 成功 - ID と URL を保存しない
+ */
+test('Success - ID and URL not saved', () => {
+    const {idDef, urlDef} = prepareConfigs('テスト商品 4', 'JPY', 100);
+    configs.put('conf_PriceId', '');
+    configs.put('conf_PriceUrl', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'テスト商品 4', 'JPY', 100);
+        return httpClient.createHttpResponse(200, 'application/json', '{"id": "price_00004"}');
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+    ]]></test>
 
 </service-task-definition>
