@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-06</last-modified>
+    <last-modified>2022-09-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Add Item to Draft Invoice</label>
@@ -77,7 +77,7 @@ function retrieveItemPropertyMap() {
     const itemName = configs.get('conf_ItemName');
     const unitAmountDef = configs.getObject('conf_UnitAmount');
     if (priceIdDef !== null) { // 価格 ID が指定されている場合
-        if (itemName !== '') {
+        if (itemName !== null && itemName !== '') {
             throw 'Price ID and item name cannot be set at the same time.';
         }
         if (unitAmountDef !== null) {
@@ -105,7 +105,7 @@ function retrieveItemPropertyMap() {
   * @param {String} itemName 商品名
   */
 function checkItemName(itemName) {
-    if (itemName === '') {
+    if (itemName === null || itemName === '') {
         throw 'Item name is blank. It is required when Price ID is not set.';
     }
     const maxLength = 250;
@@ -236,5 +236,389 @@ function attachInvoiceItem(auth, customerId, invoiceId, itemPropertyMap) {
         rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
         O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
     </icon>
+
+    <test><![CDATA[
+
+const STRIPE_VERSION = '2022-08-01';
+
+/// 商品価格 ID を指定する場合
+
+/**
+ * 設定の準備 - 商品価格 ID を指定する場合
+ * @param invoiceId
+ * @param priceId
+ * @param quantity
+ */
+const prepareConfigsWithPriceId = (invoiceId, priceId, quantity) => {
+    configs.put('conf_Auth', 'Stripe');
+
+    // 請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
+    const invoiceIdDef = engine.createDataDefinition('請求書 ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, invoiceId);
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    // 商品価格 ID が保存されている文字型データ項目（単一行）を準備し、設定
+    const priceIdDef = engine.createDataDefinition('商品価格 ID', 2, 'q_priceId', 'STRING_TEXTFIELD');
+    engine.setData(priceIdDef, priceId);
+    configs.putObject('conf_PriceId', priceIdDef);
+
+    // 数量が保存されている数値型データ項目を準備し、設定
+    const quantityDef = engine.createDataDefinition('数量', 4, 'q_quantity', 'DECIMAL');
+    configs.putObject('conf_Quantity', quantityDef);
+    if (quantity !== null) {
+        engine.setData(quantityDef, java.math.BigDecimal.valueOf(quantity));
+    }
+};
+
+/**
+ * 請求書 ID が空
+ */
+test('Invoice ID is blank', () => {
+    prepareConfigsWithPriceId(null, 'price_00001', 1);
+    expect(execute).toThrow('Invoice ID is blank.');
+});
+
+/**
+ * 価格 ID が空
+ */
+test('Price ID is blank', () => {
+    prepareConfigsWithPriceId('in_00001', null, 1);
+    expect(execute).toThrow('Price ID is blank.');
+});
+
+/**
+ * 価格 ID が設定されているのに、商品名も設定されている
+ */
+test('Both Price ID and item name are set', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00001', 1);
+    configs.put('conf_ItemName', '商品名');
+    expect(execute).toThrow('Price ID and item name cannot be set at the same time.');
+});
+
+/**
+ * 価格 ID が設定されているのに、単価も設定されている
+ */
+test('Both Price ID and unit amount are set', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00001', 1);
+    const unitAmountDef = engine.createDataDefinition('単価', 3, 'q_unitAmount', 'DECIMAL');
+    configs.putObject('conf_UnitAmount', unitAmountDef);
+    expect(execute).toThrow('Price ID and unit amount cannot be set at the same time.');
+});
+
+/**
+ * 数量が空
+ */
+test('Quantity is blank', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00001', null);
+    expect(execute).toThrow('Quantity is blank.');
+});
+
+/**
+ * 数量が整数でない
+ */
+test('Quantity is not integer', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00001', 1.5);
+    expect(execute).toThrow('Quantity must be integer.');
+});
+
+/**
+ * 数量が負の整数
+ */
+test('Quantity is not integer', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00001', -1);
+    expect(execute).toThrow('Quantity must not be negative.');
+});
+
+/**
+ * 請求書オブジェクトを取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param invoiceId
+ */
+const assertGet = ({url, method, headers}, invoiceId) => {
+    expect(url).toEqual(`https://api.stripe.com/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    expect(method).toEqual('GET');
+    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
+};
+
+/**
+ * 請求書オブジェクトを取得する HTTP リクエストで失敗
+ */
+test('Fail to get invoice', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_0011', 1);
+
+    httpClient.setRequestHandler((request) => {
+        assertGet(request, 'in_00001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to get invoice. status: 400');
+});
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する API リクエストのテスト - 商品価格 ID を指定する場合
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param invoiceId
+ * @param priceId
+ * @param quantity
+ */
+const assertPostWithPriceId = ({url, method, headers, contentType, body}, customerId, invoiceId, priceId, quantity) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoiceitems');
+    expect(method).toEqual('POST');
+    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&invoice=${encodeURIComponent(invoiceId)}`
+        + `&price=${encodeURIComponent(priceId)}`
+        + `&quantity=${quantity}`;
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する HTTP リクエストで失敗
+ */
+test('Fail to attach an invoice item', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00011', 1);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGet(request, 'in_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"customer": "cus_00111"}');
+        }
+        assertPostWithPriceId(request, 'cus_00111', 'in_00001', 'price_00011', 1);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to attach an invoice item. status: 400');
+});
+
+/**
+ * 成功 - 商品価格 ID を指定した場合
+ */
+test('Success - With Price ID', () => {
+    prepareConfigsWithPriceId('in_00001', 'price_00011', 1);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGet(request, 'in_00001');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"customer": "cus_00111"}');
+        }
+        assertPostWithPriceId(request, 'cus_00111', 'in_00001', 'price_00011', 1);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/// 商品名と単価を設定する場合
+
+const NAME_MAX_LENGTH = 250;
+const MAX_UNIT_AMOUNT = 99999999;
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 設定の準備 - 商品名と単価を指定する場合
+ * @param invoiceId
+ * @param itemName
+ * @param unitAmount
+ * @param quantity
+ */
+const prepareConfigsWithTempItem = (invoiceId, itemName, unitAmount, quantity) => {
+    configs.put('conf_Auth', 'Stripe');
+
+    // 請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
+    const invoiceIdDef = engine.createDataDefinition('請求書 ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
+    engine.setData(invoiceIdDef, invoiceId);
+    configs.putObject('conf_InvoiceId', invoiceIdDef);
+
+    configs.put('conf_ItemName', itemName);
+
+    // 単価が保存されている数値型データ項目を準備し、設定
+    const unitAmountDef = engine.createDataDefinition('単価', 3, 'q_unitAmount', 'DECIMAL');
+    configs.putObject('conf_UnitAmount', unitAmountDef);
+    if (unitAmount !== null) {
+        engine.setData(unitAmountDef, java.math.BigDecimal.valueOf(unitAmount));
+    }
+
+    // 数量が保存されている数値型データ項目を準備し、設定
+    const quantityDef = engine.createDataDefinition('数量', 4, 'q_quantity', 'DECIMAL');
+    configs.putObject('conf_Quantity', quantityDef);
+    if (quantity !== null) {
+        engine.setData(quantityDef, java.math.BigDecimal.valueOf(quantity));
+    }
+};
+
+/**
+ * 商品名が空
+ */
+test('Item name is blank', () => {
+    prepareConfigsWithTempItem('in_00001', '', 100, 1);
+    expect(execute).toThrow('Item name is blank. It is required when Price ID is not set.');
+});
+
+/**
+ * 商品名が長すぎる
+ */
+test('Item name is too long', () => {
+    const name = createString(NAME_MAX_LENGTH + 1);
+    prepareConfigsWithTempItem('in_00001', name, 100, 1);
+    expect(execute).toThrow(`Item name must be at most ${NAME_MAX_LENGTH} characters.`);
+});
+
+/**
+ * 単価が設定されていない
+ */
+test('Unit amount is blank', () => {
+    prepareConfigsWithTempItem('in_00001', '商品名', null, 1);
+    configs.put('conf_UnitAmount', ''); // 単価の設定を解除
+    expect(execute).toThrow('Unit amount is not set. It is required when Price ID is not set.');
+});
+
+/**
+ * 単価の値が空
+ */
+test('Unit amount is blank', () => {
+    prepareConfigsWithTempItem('in_00001', '商品名', null, 1);
+    expect(execute).toThrow('Unit amount is blank.');
+});
+
+/**
+ * 単価が整数でない
+ */
+test('Unit amount is not integer', () => {
+    prepareConfigsWithTempItem('in_00001', '商品名', 100.1, 1);
+    expect(execute).toThrow('Unit amount must be integer.');
+});
+
+/**
+ * 単価が負の整数
+ */
+test('Unit amount is not integer', () => {
+    prepareConfigsWithTempItem('in_00001', '商品名', -100, 1);
+    expect(execute).toThrow('Unit amount must not be negative.');
+});
+
+/**
+ * 単価が上限値を超える
+ */
+test('Unit amount exceeds the limit', () => {
+    prepareConfigsWithTempItem('in_00001', '商品名', MAX_UNIT_AMOUNT + 1, 1);
+    expect(execute).toThrow(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
+});
+
+/**
+ * 請求書ドラフトにラインアイテムを追加する API リクエストのテスト - 商品名と単価を指定する場合
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param customerId
+ * @param invoiceId
+ * @param itemName
+ * @param unitAmount
+ * @param quantity
+ */
+const assertPostWithTempItem = ({url, method, headers, contentType, body},
+                                customerId, invoiceId, itemName, unitAmount, quantity) => {
+    expect(url).toEqual('https://api.stripe.com/v1/invoiceitems');
+    expect(method).toEqual('POST');
+    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    let expectedBody = `customer=${encodeURIComponent(customerId)}`
+        + `&invoice=${encodeURIComponent(invoiceId)}`
+        + `&description=${encodeURIComponent(itemName)}`
+        + `&unit_amount=${unitAmount}`
+        + `&quantity=${quantity}`;
+    expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
+    expect(body).toEqual(expectedBody);
+};
+
+/**
+ * 成功 - 商品名と単価を指定した場合
+ */
+test('Success - With item name and unit amount', () => {
+    prepareConfigsWithTempItem('in_00010', 'テスト商品 1', 500, 2);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGet(request, 'in_00010');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"customer": "cus_00112"}');
+        }
+        assertPostWithTempItem(request, 'cus_00112', 'in_00010', 'テスト商品 1', 500, 2);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 商品名を最大文字数で、単価を最大値で指定
+ */
+test('Success - With item name at its max length and unit amount at its max value', () => {
+    const name = createString(NAME_MAX_LENGTH);
+    prepareConfigsWithTempItem('in_00011', name, MAX_UNIT_AMOUNT, 10);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGet(request, 'in_00011');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"customer": "cus_00122"}');
+        }
+        assertPostWithTempItem(request, 'cus_00122', 'in_00011', name, MAX_UNIT_AMOUNT, 10);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 単価と数量の小数点以下が 0
+ */
+test('Success - Unit amount and quantity are decimal but the numbers after the decimal points are zeros', () => {
+    prepareConfigsWithTempItem('in_00100', 'テスト商品 2', 900.00, 100.0);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGet(request, 'in_00100');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"customer": "cus_00113"}');
+        }
+        assertPostWithTempItem(request, 'cus_00113', 'in_00100', 'テスト商品 2', 900, 100);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+    ]]></test>
 
 </service-task-definition>
