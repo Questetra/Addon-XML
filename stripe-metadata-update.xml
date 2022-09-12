@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-08</last-modified>
+    <last-modified>2022-09-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <label>Stripe: Update Metadata of Customer/Invoice</label>
@@ -20,7 +20,8 @@
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
-        <config name="conf_Id" required="true" el-enabled="true" form-type="TEXTFIELD">
+        <config name="conf_Id" required="true" form-type="SELECT" editable="true"
+                select-data-type="SELECT_SINGLE|STRING_TEXTFIELD">
             <label>C2: ID of Customer or Invoice</label>
             <label locale="ja">C2: 顧客または請求書の ID</label>
         </config>
@@ -115,8 +116,20 @@ function main(){
   * @return {String} id 顧客/請求書 ID
   */
 function retrieveId() {
-    const id = configs.get('conf_Id');
-    if (id === '') {
+    let id = configs.get('conf_Id'); // 固定値の場合
+    const idDef = configs.getObject('conf_Id');
+    if (idDef !== null) {
+        if (idDef.matchDataType('SELECT_SINGLE')) { // 選択型データ項目の場合
+            const select = engine.findData(idDef);
+            if (select === null || select.size() === 0) { // 未選択
+              throw 'Customer/Invoice ID is not selected.';
+            }
+            id = select.get(0).getValue();
+        } else { // 文字型データ項目の場合
+            id = engine.findData(idDef);
+        }
+    }
+    if (id === null || id === '') {
         throw 'Customer/Invoice ID is blank.';
     }
     return id;
@@ -240,14 +253,18 @@ const createString = (length) => {
 }
 
 /**
- * 設定の準備
+ * 設定の準備 - 顧客/請求書 ID を文字型データ項目で指定
  * @param id
  * @param keys
  * @param values
  */
 const prepareConfigs = (id, keys, values) => {
     configs.put('conf_Auth', 'Stripe');
-    configs.put('conf_Id', id);
+
+    // 顧客/請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('顧客/請求書 ID', 1, 'q_id', 'STRING_TEXTFIELD');
+    engine.setData(idDef, id);
+    configs.putObject('conf_Id', idDef);
 
     for (let i = 0; i < FIELD_SIZE; i++) {
         configs.put(`conf_Key${i+1}`, keys[i]);
@@ -368,10 +385,10 @@ const pushToListIfNotBlank = (list, key, value) => {
 };
 
 /**
- * 成功 - 顧客 ID を指定した場合
+ * 成功 - 顧客 ID を文字型データ項目で指定した場合
  * キー、値は最大文字数でテスト
  */
-test('Success - Customer ID', () => {
+test('Success - Customer ID set by string-type data item', () => {
     const keys = JSON.parse(JSON.stringify(SAMPLE_KEYS)); // ディープコピー
     keys[6] = createString(KEY_MAX_LENGTH);
     const values = JSON.parse(JSON.stringify(SAMPLE_VALUES)); // ディープコピー
@@ -388,9 +405,9 @@ test('Success - Customer ID', () => {
 });
 
 /**
- * 成功 - 請求書 ID を指定した場合
+ * 成功 - 請求書 ID を文字型データ項目で指定した場合
  */
-test('Success - Invoice ID', () => {
+test('Success - Invoice ID set by string-type data item', () => {
     prepareConfigs('in_00001', SAMPLE_KEYS, SAMPLE_VALUES);
 
     const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00001';
@@ -433,6 +450,67 @@ test('Success - Some keys and values are blank', () => {
     const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00002';
     httpClient.setRequestHandler((request) => {
         assertUpdateMetadataRequest(request, expectedUrl, keys, values);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 成功 - 顧客 ID を選択型データ項目で指定した場合
+ */
+test('Success - Customer ID set by select-type data item', () => {
+    prepareConfigs('', SAMPLE_KEYS, SAMPLE_VALUES);
+
+    // 選択型データ項目を準備し、設定
+    const customerId = 'cus_00010';
+    const idDef = engine.createDataDefinition('顧客 ID を選択', 2, 'q_customerIdSelect', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(customerId, `${customerId} を選択`);
+    select.add(item);
+    engine.setData(idDef, select);
+    configs.putObject('conf_Id', idDef);
+
+    const expectedUrl = 'https://api.stripe.com/v1/customers/cus_00010';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+});
+
+/**
+ * 顧客/請求書 ID を選択型データ項目で指定し、選択されていない場合
+ */
+test('Customer/Invoice ID set by select-type data item and not selected', () => {
+    prepareConfigs('cus_00011', SAMPLE_KEYS, SAMPLE_VALUES);
+
+    // 選択型データ項目を準備し、未選択のまま設定
+    const idDef = engine.createDataDefinition('顧客/請求書 ID を選択', 2, 'q_idSelect', 'SELECT_SINGLE');
+    configs.putObject('conf_Id', idDef);
+
+    expect(execute).toThrow('Customer/Invoice ID is not selected.');
+});
+
+/**
+ * 成功 - 請求書 ID を固定で指定した場合
+ */
+test('Success - Invoice ID set as fixed value', () => {
+    prepareConfigs('', SAMPLE_KEYS, SAMPLE_VALUES);
+
+    // 選択型データ項目を準備し、設定
+    const invoiceId = 'in_00011';
+    const idDef = engine.createDataDefinition('請求書 ID を選択', 2, 'q_invoiceIdSelect', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(invoiceId, `${invoiceId} を選択`);
+    select.add(item);
+    engine.setData(idDef, select);
+    configs.putObject('conf_Id', idDef);
+
+    const expectedUrl = 'https://api.stripe.com/v1/invoices/in_00011';
+    httpClient.setRequestHandler((request) => {
+        assertUpdateMetadataRequest(request, expectedUrl, SAMPLE_KEYS, SAMPLE_VALUES);
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
