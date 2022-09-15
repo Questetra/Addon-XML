@@ -94,8 +94,7 @@ function main(){
     const priceUrlDef = configs.getObject('conf_PriceUrl');
 
     //// == Calculating / 演算 ==
-    const {priceId, productId} = createPrice(auth, name, currency, unitAmount);
-    setAsDefaultPrice(auth, productId, priceId);
+    const {productId, priceId} = createProduct(auth, name, currency, unitAmount);
 
     //// == Data Updating / ワークフローデータへの代入 ==
     setData(productIdDef, productId);
@@ -151,55 +150,34 @@ function retrieveUnitAmount() {
 }
 
 /**
-  * 価格オブジェクトを作成する
+  * 商品オブジェクトを作成する
   * @param {String} oauth 認証設定
   * @param {String} name 商品名
   * @param {String} currency 通貨
   * @param {String} unitAmount 単価
   * @return {Object} returnObj
-  * @return {String} returnObj.priceId 価格オブジェクトの ID
   * @return {String} returnObj.productId 商品オブジェクトの ID
+  * @return {String} returnObj.priceId 価格オブジェクトの ID
   */
-function createPrice(auth, name, currency, unitAmount) {
-    const apiUri = 'https://api.stripe.com/v1/prices';
+function createProduct(auth, name, currency, unitAmount) {
+    const apiUri = 'https://api.stripe.com/v1/products';
     const response = httpClient.begin()
         .authSetting(auth) // with "Authorization: Bearer XX"
         .header('Stripe-Version', STRIPE_API_VERSION)
-        .formParam('product_data[name]', name)
-        .formParam('currency', currency)
-        .formParam('unit_amount', unitAmount)
+        .formParam('name', name)
+        .formParam('default_price_data[currency]', currency)
+        .formParam('default_price_data[unit_amount]', unitAmount)
         .post(apiUri);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to create price. status: ${status}`;
+        throw `Failed to create product. status: ${status}`;
     }
-    const priceObj = JSON.parse(responseStr);
-    const priceId = priceObj.id;
-    const productId = priceObj.product;
-    return {priceId, productId};
-}
-
-/**
-  * 価格オブジェクトを商品オブジェクトのデフォルト価格に設定する
-  * @param {String} oauth 認証設定
-  * @param {String} productId 商品オブジェクトの ID
-  * @param {String} priceId 価格オブジェクトの ID
-  */
-function setAsDefaultPrice(auth, productId, priceId) {
-    const apiUri = `https://api.stripe.com/v1/products/${productId}`;
-    const response = httpClient.begin()
-        .authSetting(auth) // with "Authorization: Bearer XX"
-        .header('Stripe-Version', STRIPE_API_VERSION)
-        .formParam('default_price', priceId)
-        .post(apiUri);
-    const status = response.getStatusCode();
-    const responseStr = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseStr);
-        throw `Failed to set the price as default_price of the product. status: ${status}`;
-    }
+    const productObj = JSON.parse(responseStr);
+    const productId = productObj.id;
+    const priceId = productObj.default_price;
+    return {productId, priceId};
 }
 
 /**
@@ -347,7 +325,7 @@ test('Unit amount exceeds the limit', () => {
 });
 
 /**
- * 価格オブジェクトを作成する API リクエストのテスト
+ * 商品オブジェクトを作成する API リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
@@ -359,21 +337,21 @@ test('Unit amount exceeds the limit', () => {
  * @param unitAmount
  */
 const assertRequest = ({url, method, headers, contentType, body}, name, currency, unitAmount) => {
-    expect(url).toEqual('https://api.stripe.com/v1/prices');
+    expect(url).toEqual('https://api.stripe.com/v1/products');
     expect(method).toEqual('POST');
     expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
     expect(contentType).startsWith('application/x-www-form-urlencoded');
-    let expectedBody = `${encodeURIComponent('product_data[name]')}=${encodeURIComponent(name)}`
-        + `&currency=${currency}`
-        + `&unit_amount=${unitAmount}`;
+    let expectedBody = `name=${encodeURIComponent(name)}`
+        + `&${encodeURIComponent('default_price_data[currency]')}=${currency}`
+        + `&${encodeURIComponent('default_price_data[unit_amount]')}=${unitAmount}`;
     expectedBody = expectedBody.replace(/%20/g, '+'); // HttpRequestWrapper#formParam() はスペースを + に置き換える
     expect(body).toEqual(expectedBody);
 };
 
 /**
- * 価格オブジェクトを作成する HTTP リクエストで失敗
+ * 商品オブジェクトを作成する HTTP リクエストで失敗
  */
-test('Fail to create price', () => {
+test('Fail to create product', () => {
     prepareConfigs('テスト商品 1', 'JPY', 100);
 
     httpClient.setRequestHandler((request) => {
@@ -381,50 +359,7 @@ test('Fail to create price', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create price. status: 400');
-});
-
-/**
- * 価格オブジェクトを商品オブジェクトのデフォルト価格に設定する API リクエストのテスト
- * @param {Object} request
- * @param request.url
- * @param request.method
- * @param request.headers
- * @param request.contentType
- * @param request.body
- * @param productId
- * @param priceId
- */
-const assertSetAsDefaultRequest = ({url, method, headers, contentType, body}, productId, priceId) => {
-    expect(url).toEqual(`https://api.stripe.com/v1/products/${productId}`);
-    expect(method).toEqual('POST');
-    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
-    expect(contentType).startsWith('application/x-www-form-urlencoded');
-    expect(body).toEqual(`default_price=${priceId}`);
-};
-
-/**
- * デフォルト価格を設定する HTTP リクエストで失敗
- */
-test('Fail to set as default_price', () => {
-    prepareConfigs('テスト商品 1', 'JPY', 100);
-
-    const priceObj = {
-        'id': 'price_00001',
-        'product': 'prod_10001'
-    };
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, 'テスト商品 1', 'JPY', 100);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_10001', 'price_00001');
-        return httpClient.createHttpResponse(400, 'application/json', '{}');
-    });
-
-    expect(execute).toThrow('Failed to set the price as default_price of the product. status: 400');
+    expect(execute).toThrow('Failed to create product. status: 400');
 });
 
 /**
@@ -433,19 +368,13 @@ test('Fail to set as default_price', () => {
 test('Success - JPY, Unit amount does not have numbers after the decimal point', () => {
     const {productIdDef, productUrlDef, priceIdDef, priceUrlDef} = prepareConfigs('テスト商品 1', 'JPY', 100);
 
-    const priceObj = {
-        'id': 'price_00001',
-        'product': 'prod_10001'
+    const productObj = {
+        'id': 'prod_10001',
+        'default_price': 'price_00001'
     };
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, 'テスト商品 1', 'JPY', 100);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_10001', 'price_00001');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, 'テスト商品 1', 'JPY', 100);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
     execute();
@@ -463,19 +392,13 @@ test('Success - JPY, Unit amount does not have numbers after the decimal point',
 test('Success - USD, Unit amount is decimal but its numbers after the decimal point is zero', () => {
     const {productIdDef, productUrlDef, priceIdDef, priceUrlDef} = prepareConfigs('テスト商品 2', 'USD', 500.00);
 
-    const priceObj = {
-        'id': 'price_00002',
-        'product': 'prod_10002'
+    const productObj = {
+        'id': 'prod_10002',
+        'default_price': 'price_00002'
     };
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, 'テスト商品 2', 'USD', 500);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_10002', 'price_00002');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, 'テスト商品 2', 'USD', 500);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
     execute();
@@ -494,19 +417,13 @@ test('Success - KRW, Product Name has its longest length, Unit amount is at its 
     const name = createString(NAME_MAX_LENGTH);
     const {productIdDef, productUrlDef, priceIdDef, priceUrlDef} = prepareConfigs(name, 'KRW', MAX_UNIT_AMOUNT);
 
-    const priceObj = {
-        'id': 'price_00003',
-        'product': 'prod_10003'
+    const productObj = {
+        'id': 'prod_10003',
+        'default_price': 'price_00003'
     };
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, name, 'KRW', MAX_UNIT_AMOUNT);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_10003', 'price_00003');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, name, 'KRW', MAX_UNIT_AMOUNT);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
     execute();
@@ -526,19 +443,13 @@ test('Success - Price ID and URL not saved', () => {
     configs.put('conf_PriceId', '');
     configs.put('conf_PriceUrl', '');
 
-    const priceObj = {
-        'id': 'price_00004',
-        'product': 'prod_20001'
+    const productObj = {
+        'id': 'prod_20001',
+        'default_price': 'price_00004'
     };
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, 'テスト商品 4', 'JPY', 100);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_20001', 'price_00004');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, 'テスト商品 4', 'JPY', 100);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
     execute();
@@ -558,19 +469,13 @@ test('Success - Product ID and URL not saved', () => {
     configs.put('conf_ProductId', '');
     configs.put('conf_ProductUrl', '');
 
-    const priceObj = {
-        'id': 'price_00005',
-        'product': 'prod_20002'
+    const productObj = {
+        'id': 'prod_20002',
+        'default_price': 'price_00005'
     };
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertRequest(request, 'テスト商品 5', 'AUD', 700);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(priceObj));
-        }
-        assertSetAsDefaultRequest(request, 'prod_20002', 'price_00005');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        assertRequest(request, 'テスト商品 5', 'AUD', 700);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
     execute();
