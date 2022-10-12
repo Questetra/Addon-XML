@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-01-26</last-modified>
+<last-modified>2022-10-11</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Create Shared Link to Folder</label>
 <label locale="ja">Box: フォルダ共有リンク作成</label>
-<summary>Create a URL to access the specified folder on Box. Created indefinitely if blank, Created without a password request if blank.</summary>
-<summary locale="ja">Box 上のフォルダにアクセスできる URL を作成します。有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します。</summary>
+<summary>This item creates a URL to access the specified folder on Box. If no expiration date is specified, the URL will be created indefinitely. 
+  If no password is specified, the URL will be created without requiring a password.</summary>
+<summary locale="ja">この工程は、Box 上のフォルダにアクセスできる URL を作成します。有効期限の指定が無い場合は無期限で、パスワードの指定が無い場合はパスワード要求無しで作成します。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/box-folder-link-create</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/box-folder-link-create</help-page-url>
 <configs>
@@ -14,7 +15,11 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="FolderId" required="true" el-enabled="true">
+  <config name="FolderId" deprecated="true" el-enabled="true">
+    <label>C2-deprecated: Folder ID to share</label>
+    <label locale="ja">C2-deprecated: 共有するフォルダ ID</label>
+  </config>
+  <config name="FolderId_V2" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Folder ID to share</label>
     <label locale="ja">C2: 共有するフォルダ ID</label>
   </config>
@@ -35,11 +40,7 @@
 <script><![CDATA[
 main();
 function main(){
-  const folderId = configs.get("FolderId");
-
-  if (folderId === "" || folderId === null) {
-    throw "Folder ID is blank";
-  }
+  const folderId = retrieveFolderId();
   const dateItem = configs.get("unsharedAt");
   const passwordItem = configs.get("DownloadPass");
   
@@ -72,6 +73,26 @@ function main(){
 }
 
 /**
+  * config からフォルダ ID を読み出す。空文字列の場合はエラー
+  * @return {String} folderId フォルダ ID
+  */
+function retrieveFolderId() {
+  const folderIdV1 = configs.get("FolderId");
+  if (folderIdV1 !== null && folderIdV1 !== "") {
+    return folderIdV1;
+  }
+  let folderId = configs.get("FolderId_V2"); // 固定値の場合
+  const folderIdDef = configs.getObject("FolderId_V2");
+  if (folderIdDef !== null) { // 文字型データ項目が選択されている場合
+    folderId = engine.findData(folderIdDef);
+  }
+  if (folderId === null || folderId === "") {
+    throw "Folder ID is blank";
+  }
+  return folderId;
+}
+
+/**
   * Get Folder Information on Box  フォルダが既に共有リンク作成されているか調べる
   * @return {String}  フォルダの共有リンクオブジェクト
   */
@@ -83,8 +104,6 @@ function getFolderInformation(oauth2, folderId) {
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  engine.log(`status: ${status}`)
-
   if (status !== 200) {
     engine.log(responseTxt);
     throw "Failed to get folder information";
@@ -123,8 +142,6 @@ function createSharedLink(oauth2, folderId, unsharedDate, password) {
 
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
-  engine.log(`status: ${status}`)
-
   if (status !== 200) {
     engine.log(responseTxt);
     throw "Failed to create Shared Link";
@@ -165,7 +182,6 @@ YII=</icon>
  * @param unsharedDate
  * @param password
  * @return {{
- *     folderId: {Object},
  *     unsharedDateDef: {Object},
  *     passwordDef: {Object},
  *     urlDef: {Object}
@@ -173,7 +189,17 @@ YII=</icon>
  */
 const prepareConfigs = (configs,folderId, unsharedDate, password) => {
   configs.put("OAuth2", "Box");
-  configs.put("FolderId", folderId);
+
+  // 文字型データ項目を準備して、config に指定
+  const folderIdDef = engine.createDataDefinition(
+    "フォルダ ID",
+    1,
+    "q_folderId",
+    "STRING_TEXTFIELD"
+  );
+  configs.putObject("FolderId_V2", folderIdDef);
+  // 文字型データ項目の値（フォルダ ID）を指定
+  engine.setData(folderIdDef, folderId);
 
   // 日時型データ項目を準備して、config に指定
   const unsharedDateDef = engine.createDataDefinition(
@@ -277,7 +303,7 @@ const assertPutRequest = (
  * folderId が空の場合
  */
 test("folder ID is blank", () => {
-  prepareConfigs(configs, "","2021-04-15 10:00:00", "word2");
+  prepareConfigs(configs, null, "2021-04-15 10:00:00", "word2");
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
   try {
@@ -494,15 +520,18 @@ test("200 Success", () => {
 
 /**
  * ファイル共有リンク作成成功
+ * フォルダ ID を固定値で指定
  * 有効期限、パスワード共に空
  */
-test("200 Success - no unsharedDate and no password", () => {
+test("200 Success - Folder ID set as fixed value, no unsharedDate and no password", () => {
   const { unsharedDateDef, passwordDef, urlDef } = prepareConfigs(
     configs,
-    "12345",
+    null,
     null,
     null
   );
+  // フォルダ ID を固定値で指定
+  configs.put("FolderId_V2", "12345");
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -569,10 +598,13 @@ test("200 Success - no unsharedDate and no password", () => {
 
 /**
  * ファイル共有リンク作成成功
+ * フォルダ ID を deprecated の設定で指定
  * 有効期限、パスワード共に指定しない
  */
-test("200 Success - Not specified both unsharedDate and password", () => {
-  const {urlDef} = prepareConfigs(configs, "22222", null, null);
+test("200 Success - Folder ID set by deprecated config, neither unsharedDate nor password is specified", () => {
+  const {urlDef} = prepareConfigs(configs, "dummyString", null, null);
+  // フォルダ ID を deprecated の設定で指定
+  configs.put("FolderId", "22222");
   // 有効期限／パスワードの設定を、未設定の状態に戻す
   configs.put("unsharedAt", "");
   configs.put("DownloadPass", "");
