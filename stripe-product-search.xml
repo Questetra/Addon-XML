@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-10-13</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Search Products</label>
+    <label locale="ja">Stripe: 商品を検索</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-product-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-product-search/
+    </help-page-url>
+
+    <summary>This item searches for product objects on Stripe using a query.</summary>
+    <summary locale="ja">この工程は、検索クエリに合致する Stripe 上の商品オブジェクトを検索します。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_Query" required="false" el-enabled="true" form-type="TEXTAREA">
+            <label>C2: Search Query</label>
+            <label locale="ja">C2: 検索クエリ</label>
+        </config>
+        <config name="conf_ProductIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C3: Data item to save product IDs</label>
+            <label locale="ja">C3: 商品 ID の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_ProductUrls" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C4: Data item to save URLs of the product detail pages</label>
+            <label locale="ja">C4: 商品詳細ページの URL の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_ProductNames" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C5: Data item to save product names</label>
+            <label locale="ja">C5: 商品名の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_DefaultPriceIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save default price IDs</label>
+            <label locale="ja">C6: デフォルトの商品価格 ID の一覧を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const STRIPE_API_VERSION = '2022-08-01';
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    let query = configs.get('conf_Query');
+    if (query === '') { // 検索クエリが空の場合、全件取得する
+        query = 'active:"true" OR active:"false"'; // 商品オブジェクトは created フィールドで検索不可
+    }
+    const productIdsDef = configs.getObject('conf_ProductIds');
+    const productUrlsDef = configs.getObject('conf_ProductUrls');
+    const productNamesDef = configs.getObject('conf_ProductNames');
+    const defaultPriceIdsDef = configs.getObject('conf_DefaultPriceIds');
+
+    //// == Calculating / 演算 ==
+    const singleLineFlag = checkDataDefs(productIdsDef, productUrlsDef, productNamesDef, defaultPriceIdsDef);
+    const {productIds, productNames, defaultPriceIds} = searchProducts(auth, query, singleLineFlag);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    saveData(productIdsDef, productIds);
+    saveData(productUrlsDef, productIds.map(id => `https://dashboard.stripe.com/products/${id}`));
+    saveData(productNamesDef, productNames);
+    saveData(defaultPriceIdsDef, defaultPriceIds);
+}
+
+/**
+  * 保存先データ項目をチェックし、以下の場合にエラー
+  * - 保存先データ項目が一つも設定されていない
+  * - 保存先データ項目が重複
+  * @param {List<ProcessDataDefinitionView>} dataDefs 保存先データ項目
+  * @return {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  */
+function checkDataDefs(...dataDefs) {
+    const dataDefList = dataDefs.filter(dataDef => dataDef !== null);
+    if (dataDefList.length === 0) { // 保存先データ項目が一つも設定されていない
+        throw 'No data item to save the search result is set.';
+    }
+    const dataNumSet = new Set(dataDefList.map(dataDef => dataDef.getNumber())); // 重複確認用
+    if (dataNumSet.size < dataDefList.length) { // 保存先データ項目が重複
+        throw 'Same data item is set multiple times.';
+    }
+    return dataDefList.some(dataDef => dataDef.matchDataType("STRING_TEXTFIELD"));
+}
+
+/**
+  * 商品を検索する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  * @return {Object} returnObj
+  * @return {List<String>} returnObj.productIds 商品 ID の一覧
+  * @return {List<String>} returnObj.productNames 商品名の一覧
+  * @return {List<String>} returnObj.defaultPriceIds デフォルトの商品価格 ID の一覧
+  */
+function searchProducts(auth, query, singleLineFlag) {
+    const productIds = [];
+    const productNames = [];
+    const defaultPriceIds = [];
+    let nextPage = search(auth, query, null, productIds, productNames, defaultPriceIds);
+    if (singleLineFlag && productIds.length > 1) { // 保存先データ項目が単一行なのに複数件あればエラー
+        throw 'More than one products were found while the data item to save the result is Single-Line.';
+    }
+    while (nextPage !== null) {
+        engine.log(`Current search result: ${productIds.length} products found. Fetching next page...`);
+        nextPage = search(auth, query, nextPage, productIds, productNames, defaultPriceIds);
+    }
+    engine.log(`Search result: ${productIds.length} products found.`);
+    return {productIds, productNames, defaultPriceIds};
+}
+
+/**
+  * 商品を検索する API リクエストを送信する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {String} page 取得するページ。最初のリクエストの場合は null
+  * @param {List<String>} productIds 検索結果の商品 ID を格納する配列
+  * @param {List<String>} productNames 検索結果の商品名を格納する配列
+  * @param {List<String>} defaultPriceIds 検索結果のデフォルトの商品価格 ID を格納する配列
+  * @return {String} nextPage 次のページ
+  */
+function search(auth, query, page, productIds, productNames, defaultPriceIds) {
+    const apiUri = 'https://api.stripe.com/v1/products/search';
+    let request = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .header('Stripe-Version', STRIPE_API_VERSION)
+        .queryParam('query', query) // required
+        .queryParam('limit', '100'); // maximum limit
+    if (page !== null) {
+        request = request.queryParam('page', page);
+    }
+    const response = request.get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to search products. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const products = responseObj.data;
+    if (page === null && products.length === 0) { // 1 回目の検索で、結果の件数が 0
+        throw 'No products found.';
+    }
+    // 結果を配列に追加
+    Array.prototype.push.apply(productIds, products.map(product => product.id));
+    Array.prototype.push.apply(productNames, products.map(product => product.name));
+    Array.prototype.push.apply(defaultPriceIds, products.map(product => product.default_price));
+    if (responseObj.has_more) { // 次のページがある場合
+        return responseObj.next_page;
+    }
+    // 次のページがない場合
+    return null;
+}
+
+/**
+  * データ項目に出力する
+  * @param {ProcessDataDefinitionView} dataDef 保存先データ項目
+  * @param {List<String>} dataList 保存するデータの配列
+  */
+function saveData(dataDef, dataList) {
+    if ( dataDef === null ) {
+        return;
+    }
+    engine.setData(dataDef, dataList.join("\n"));
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+</service-task-definition>
