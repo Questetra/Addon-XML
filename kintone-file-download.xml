@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download File</label>
 <label locale="ja">kintone: ファイルダウンロード</label>
-<last-modified>2022-10-11</last-modified>
+<last-modified>2022-10-13</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>This item downloads files from an Attachment field of a record in a Kintone App.</summary>
@@ -260,7 +260,7 @@ mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
 
 <test><![CDATA[
 
-const CONTENTTYPE = "text/plain";
+const CONTENT_TYPE = "text/plain";
 
 /**
  * 設定の準備
@@ -436,12 +436,28 @@ const assertDownloadRequest = ({ url, method, body }, domain, guestSpaceId, file
 
 
 /**
+ * レコードに添付されているファイルの fileKey を決定する
+ * @param i
+ * @return fileKey
+ */
+const getFileKey = i => `key-${i}`;
+
+
+/**
+ * レコードに添付されているファイルの fileKey を決定する
+ * @param i
+ * @return name
+ */
+const getName = i => `test${i}.txt`;
+
+
+
+/**
  * GET リクエストのレスポンスを準備 レコード取得
  * @param attachFileFieldCode
  * @param num 添付されているファイル数
  * @param contentType
  * @return responseObj
- * @return responseObj.record[attachFileFieldCode].value
  */
 const prepareGetResponse = (attachFileFieldCode, num) => {
 
@@ -457,21 +473,14 @@ const prepareGetResponse = (attachFileFieldCode, num) => {
 
     for (let i = 1; i <= num; i++) {
         responseObj.record[attachFileFieldCode].value.push({
-            "contentType": CONTENTTYPE,
-            "fileKey": `key-${i}`,
-            "name": `test${i}.txt`,
+            "contentType": CONTENT_TYPE,
+            "fileKey": getFileKey(i),
+            "name": getName(i),
             "size": "23175"
         })
     }
 
-    if (num !== 0) {
-        return {
-            getResponseObj: responseObj,
-            value: responseObj.record[attachFileFieldCode].value
-        };
-    } else {
-        return responseObj;
-    }
+    return responseObj;
 };
 
 
@@ -486,7 +495,7 @@ const prepareGetResponse = (attachFileFieldCode, num) => {
  */
 const assertFile = (file, name, encoding, body) => {
     expect(file.getName()).toEqual(name);
-    expect(file.getContentType()).toEqual(CONTENTTYPE);
+    expect(file.getContentType()).toEqual(CONTENT_TYPE);
     let text = '';
     if (body.indexOf('\n') !== -1) {
         fileRepository.readFile(file, encoding, line => text += line + '\n');
@@ -584,7 +593,7 @@ test('Necessary HTTP requests exceeds the limit', () => {
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, domain, '', appId, recordId);
-        const { getResponseObj, value } = prepareGetResponse(attachFileFieldCode, httpClient.getRequestingLimit());
+        const getResponseObj = prepareGetResponse(attachFileFieldCode, httpClient.getRequestingLimit());
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
     });
 
@@ -600,6 +609,7 @@ test('DownLoad Failed', () => {
     const domain = 'test.kintone.com';
     const appId = '5';
     const recordId = '5';
+    const num = 1; //レコードに添付されているファイル数
 
     prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル", null);
 
@@ -611,8 +621,8 @@ test('DownLoad Failed', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, '', appId, recordId);
             reqCount++;
-            const { getResponseObj, value } = prepareGetResponse(attachFileFieldCode, 1);
-            fileKey = value[0].fileKey;
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
+            fileKey = getFileKey(num);
             engine.log(JSON.stringify(getResponseObj));
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
@@ -643,6 +653,7 @@ test('Success - basic and guestSpaseId - File is not null', () => {
     const domain = 'test.cybozu.com';
     const appId = '7';
     const recordId = '7';
+    const num = 1; //レコードに添付されているファイル数
 
     const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル7", files);
 
@@ -655,10 +666,10 @@ test('Success - basic and guestSpaseId - File is not null', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
-            const { getResponseObj, value } = prepareGetResponse(attachFileFieldCode, 1);
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
 
-            fileKey = value[0].fileKey;
-            name = value[0].name;
+            fileKey = getFileKey(num);
+            name = getName(num);
 
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
@@ -672,7 +683,7 @@ test('Success - basic and guestSpaseId - File is not null', () => {
     execute();
 
     const files_data = engine.findData(fileDef);
-    expect(files_data.size()).toEqual(2);
+    expect(files_data.size()).toEqual(num + 1);
     assertFile(files_data.get(1), name, 'UTF-8', 'testcase-7');
 });
 
@@ -689,6 +700,7 @@ test('Success - max-files - File is null', () => {
     const domain = 'test.kintone.com';
     const appId = '8';
     const recordId = '8';
+    const num = httpClient.getRequestingLimit() - 1; //レコードに添付されているファイル数
 
     const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル8", null);
 
@@ -702,10 +714,10 @@ test('Success - max-files - File is null', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
-            const { getResponseObj, value } = prepareGetResponse(attachFileFieldCode, httpClient.getRequestingLimit() - 1);
-            for (let i = 1; i <= httpClient.getRequestingLimit() - 1; i++) {
-                fileKey[i - 1] = value[i - 1].fileKey;
-                name[i - 1] = value[i - 1].name;
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
+            for (let i = 1; i <= num; i++) {
+                fileKey[i - 1] = getFileKey(i);
+                name[i - 1] = getName(i);
             }
             engine.log("max-test");
             engine.log(JSON.stringify(getResponseObj));
@@ -723,9 +735,9 @@ test('Success - max-files - File is null', () => {
     execute();
 
     const files_data = engine.findData(fileDef);
-    expect(files_data.size()).toEqual(httpClient.getRequestingLimit() - 1);
+    expect(files_data.size()).toEqual(num);
 
-    for (let j = 1; j <= httpClient.getRequestingLimit() - 1; j++) {
+    for (let j = 1; j <= num; j++) {
         engine.log("max-test3");
         engine.log(`file-${j}\n`);
         assertFile(files_data.get(j - 1), name[j - 1], 'UTF-8', `file-${j}\n`);
