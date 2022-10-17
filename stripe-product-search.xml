@@ -1,0 +1,642 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2022-10-17</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>2</engine-type>
+    <label>Stripe: Search Products</label>
+    <label locale="ja">Stripe: 商品を検索</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-stripe-product-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-stripe-product-search/
+    </help-page-url>
+
+    <summary>This item searches for product objects on Stripe using a query.</summary>
+    <summary locale="ja">この工程は、検索クエリに合致する Stripe 上の商品オブジェクトを検索します。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Secret Key is set</label>
+            <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
+        </config>
+        <config name="conf_Query" required="false" el-enabled="true" form-type="TEXTAREA">
+            <label>C2: Search Query</label>
+            <label locale="ja">C2: 検索クエリ</label>
+        </config>
+        <config name="conf_ProductIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C3: Data item to save product IDs</label>
+            <label locale="ja">C3: 商品 ID の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_ProductUrls" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C4: Data item to save URLs of the product detail pages</label>
+            <label locale="ja">C4: 商品詳細ページの URL の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_ProductNames" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C5: Data item to save product names</label>
+            <label locale="ja">C5: 商品名の一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_DefaultPriceIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save default price IDs</label>
+            <label locale="ja">C6: デフォルトの商品価格 ID の一覧を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const STRIPE_API_VERSION = '2022-08-01';
+
+main();
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    let query = configs.get('conf_Query');
+    if (query === '') { // 検索クエリが空の場合、全件取得する
+        query = 'active:"true" OR active:"false"'; // 商品オブジェクトは created フィールドで検索不可
+    }
+    const productIdsDef = configs.getObject('conf_ProductIds');
+    const productUrlsDef = configs.getObject('conf_ProductUrls');
+    const productNamesDef = configs.getObject('conf_ProductNames');
+    const defaultPriceIdsDef = configs.getObject('conf_DefaultPriceIds');
+
+    //// == Calculating / 演算 ==
+    const singleLineFlag = checkDataDefs(productIdsDef, productUrlsDef, productNamesDef, defaultPriceIdsDef);
+    const {productIds, productNames, defaultPriceIds} = searchProducts(auth, query, singleLineFlag);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    saveData(productIdsDef, productIds);
+    saveData(productUrlsDef, productIds.map(id => `https://dashboard.stripe.com/products/${id}`));
+    saveData(productNamesDef, productNames);
+    saveData(defaultPriceIdsDef, defaultPriceIds);
+}
+
+/**
+  * 保存先データ項目をチェックし、以下の場合にエラー
+  * - 保存先データ項目が一つも設定されていない
+  * - 保存先データ項目が重複
+  * @param {List<ProcessDataDefinitionView>} dataDefs 保存先データ項目
+  * @return {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  */
+function checkDataDefs(...dataDefs) {
+    const dataDefList = dataDefs.filter(dataDef => dataDef !== null);
+    if (dataDefList.length === 0) { // 保存先データ項目が一つも設定されていない
+        throw 'No data item to save the search result is set.';
+    }
+    const dataNumSet = new Set(dataDefList.map(dataDef => dataDef.getNumber())); // 重複確認用
+    if (dataNumSet.size < dataDefList.length) { // 保存先データ項目が重複
+        throw 'Same data item is set multiple times.';
+    }
+    return dataDefList.some(dataDef => dataDef.matchDataType("STRING_TEXTFIELD"));
+}
+
+/**
+  * 商品を検索する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
+  * @return {Object} returnObj
+  * @return {List<String>} returnObj.productIds 商品 ID の一覧
+  * @return {List<String>} returnObj.productNames 商品名の一覧
+  * @return {List<String>} returnObj.defaultPriceIds デフォルトの商品価格 ID の一覧
+  */
+function searchProducts(auth, query, singleLineFlag) {
+    const productIds = [];
+    const productNames = [];
+    const defaultPriceIds = [];
+    let nextPage = search(auth, query, null, productIds, productNames, defaultPriceIds);
+    if (singleLineFlag && productIds.length > 1) { // 保存先データ項目が単一行なのに複数件あればエラー
+        throw 'More than one products were found while the data item to save the result is Single-Line.';
+    }
+    while (nextPage !== null) {
+        engine.log(`Current search result: ${productIds.length} products found. Fetching next page...`);
+        nextPage = search(auth, query, nextPage, productIds, productNames, defaultPriceIds);
+    }
+    engine.log(`Search result: ${productIds.length} products found.`);
+    return {productIds, productNames, defaultPriceIds};
+}
+
+/**
+  * 商品を検索する API リクエストを送信する
+  * @param {String} oauth 認証設定
+  * @param {String} query 検索クエリ
+  * @param {String} page 取得するページ。最初のリクエストの場合は null
+  * @param {List<String>} productIds 検索結果の商品 ID を格納する配列
+  * @param {List<String>} productNames 検索結果の商品名を格納する配列
+  * @param {List<String>} defaultPriceIds 検索結果のデフォルトの商品価格 ID を格納する配列
+  * @return {String} nextPage 次のページ
+  */
+function search(auth, query, page, productIds, productNames, defaultPriceIds) {
+    const apiUri = 'https://api.stripe.com/v1/products/search';
+    let request = httpClient.begin()
+        .authSetting(auth) // with "Authorization: Bearer XX"
+        .header('Stripe-Version', STRIPE_API_VERSION)
+        .queryParam('query', query) // required
+        .queryParam('limit', '100'); // maximum limit
+    if (page !== null) {
+        request = request.queryParam('page', page);
+    }
+    const response = request.get(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to search products. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const products = responseObj.data;
+    if (page === null && products.length === 0) { // 1 回目の検索で、結果の件数が 0
+        throw 'No products found.';
+    }
+    // 結果を配列に追加
+    products.forEach(product => {
+        productIds.push(product.id);
+        productNames.push(product.name);
+        defaultPriceIds.push(product.default_price);
+    });
+    if (responseObj.has_more) { // 次のページがある場合
+        return responseObj.next_page;
+    }
+    // 次のページがない場合
+    return null;
+}
+
+/**
+  * データ項目に出力する
+  * @param {ProcessDataDefinitionView} dataDef 保存先データ項目
+  * @param {List<String>} dataList 保存するデータの配列
+  */
+function saveData(dataDef, dataList) {
+    if ( dataDef === null ) {
+        return;
+    }
+    engine.setData(dataDef, dataList.join("\n"));
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAvJJREFUWEfF
+        l19I01EUxz/XKZqWNbVS6cH+UfSUGQlCD0EQRCkoFDkDUzENi6IgkB4sKEgjDStFnVlzalC9+BBR
+        IEFBEeVbFP3R/lhRpLRpKHO78dtv021u+pszfnv87Zzv+dxzzj33XoHOP6E1fvleGe9KJF/CDiSZ
+        CDIAo8d/BMkggn4BfVE27rX0ir9atOcEKC6WqdEOTkuoAOK0iALjAponY7jY0SF+zOYzK0CJSVYI
+        uAQkaAwcaDYm4VS7VTSH8g8JUFokryOpnGdgfzdBk7lTHAmmFRSgxCS7BBxYkOAeEQnd7VZRGKg5
+        A2BBVz4z2oxM+AF4at60kCsP1JJQ6dsTUwBKtxscvI+g4bRyjzljWOfdHVMAZSZZL+G4VpVI7AQ0
+        tFnFCUXDDaAMGWciv8PY55HEV3zHDTaSlWHlBigzySIJlvmoxsbBxHj4ngIOtllFpxug1CTNQMls
+        MjnbIS0d7t6etmpshe9DcKEmfACg3WwVpSpAoXyFIDNQZuMm2J2rfk1Ng6XL4NlTSE4Blwt6LOB0
+        QtEhkBKGvsCdHli9FnLzoe8h9L8MASfpN3eJLd4MDPscLFMeTTcgOhocDjXNi5fAr5+wYqUa+NOA
+        ClF9FiYnVdtHD2DnLpiYgNhYqKmGr5+DQoyYrSLJCyCDmdQ1gtEIdpv6r7LKbgscroKr9ZC/Dzpa
+        VIBr9VBeBYYoiDKotkLA/V7/svnGMVuFYuLugaAAx05C+ipIWa4KShe8eA7ZOdB4GQr2TwMMfoSM
+        NfDuLazfALY/YLdD9y148zp4GXwBgpag9goYk2BkGJ48hj15MDoK8QnQUAtZ26DrJrRaVMBRO9Sd
+        h7wC2JylAp87A9+G5ipBiCbU0ttbs6HiqFqCkA0XTCigCefchqFgFsWrO2TggxZcP5vpbRjJIAo7
+        rMfBbxDpPoo941i/w0gB0P04ViB0vZB4m0nXK5kXQtdL6X/JRLjXcp9M6Pcw8ULo+jTznXK6PU7n
+        O2q1+v0D2nRCMMki7aoAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+const STRIPE_VERSION = '2022-08-01';
+
+/**
+ * 設定の準備
+ * @param query
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ * @return returnObj.nameDef
+ * @return returnObj.priceIdDef
+ */
+const prepareConfigs = (query) => {
+    configs.put('conf_Auth', 'Stripe');
+    configs.put('conf_Query', query);
+
+    // 商品の ID 一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const idDef = engine.createDataDefinition('商品 ID の一覧', 1, 'q_productIds', 'STRING_TEXTAREA');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_ProductIds', idDef);
+
+    // 商品詳細ページの URL 一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const urlDef = engine.createDataDefinition('商品 URL の一覧', 2, 'q_productUrls', 'STRING_TEXTAREA');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_ProductUrls', urlDef);
+
+    // 商品名の一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const nameDef = engine.createDataDefinition('商品名の一覧', 3, 'q_productNames', 'STRING_TEXTAREA');
+    engine.setData(nameDef, '事前文字列');
+    configs.putObject('conf_ProductNames', nameDef);
+
+    // デフォルトの商品価格 ID の一覧を保存する文字型データ項目（複数行）を準備し、設定
+    const priceIdDef = engine.createDataDefinition('商品価格 ID の一覧', 4, 'q_priceIds', 'STRING_TEXTAREA');
+    engine.setData(priceIdDef, '事前文字列');
+    configs.putObject('conf_DefaultPriceIds', priceIdDef);
+
+    return {idDef, urlDef, nameDef, priceIdDef};
+}
+
+const SAMPLE_QUERY_1 = 'name~"テスト商品"';
+const SAMPLE_QUERY_2 = 'active:"true"\nAND metadata["key"]:"value"'; // 複数行
+
+/**
+ * 保存先データ項目がひとつも設定されていない
+ */
+test('Search query is blank', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+    configs.put('conf_ProductIds', '');
+    configs.put('conf_ProductUrls', '');
+    configs.put('conf_ProductNames', '');
+    configs.put('conf_DefaultPriceIds', '');
+    expect(execute).toThrow('No data item to save the search result is set.');
+});
+
+/**
+ * 保存先データ項目が重複 - ID と URL
+ */
+test('Same data item is set multiple times - ID and URL', () => {
+    const {idDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_ProductUrls', idDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - URL と名前
+ */
+test('Same data item is set multiple times - URL and Name', () => {
+    const {urlDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_ProductNames', urlDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - 名前と商品価格 ID
+ */
+test('Same data item is set multiple times - Name and Price ID', () => {
+    const {nameDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_DefaultPriceIds', nameDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複 - ID と商品価格 ID
+ */
+test('Same data item is set multiple times - ID and Price ID', () => {
+    const {priceIdDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.putObject('conf_ProductIds', priceIdDef);
+    expect(execute).toThrow('Same data item is set multiple times.');
+});
+
+/** 1 リクエストで取得できる件数 */
+const MAX_RESULTS_PER_REQ = 100;
+
+/**
+ * 商品を検索する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param query
+ * @param page
+ */
+const assertRequest = ({url, method, headers}, query, page) => {
+    const encodedQuery = encodeURIComponent(query).replace(/~/g, '%7E').replace(/%20/g, '+');
+    let expectedQueryStr = `query=${encodedQuery}&limit=${MAX_RESULTS_PER_REQ}`;
+    if (page !== null) {
+        expectedQueryStr += `&page=${page}`;
+    }
+    expect(url).toEqual(`https://api.stripe.com/v1/products/search?${expectedQueryStr}`);
+    expect(method).toEqual('GET');
+    expect(headers.get('Stripe-Version')).toEqual(STRIPE_VERSION);
+};
+
+/**
+ * 初回の商品を検索する HTTP リクエストで失敗
+ */
+test('Fail to search products', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to search products. status: 400');
+});
+
+/**
+ * 検索結果が 0 件
+ */
+test('No products found', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', '{"data": []}');
+    });
+
+    expect(execute).toThrow('No products found.');
+});
+
+/**
+ * あたえられた数の商品オブジェクトの配列を返す
+ * @param number
+ * @return products
+ */
+const prepareProducts = (number) => {
+    const products = [];
+    for (let i = 0; i < number; i++) {
+        const product = {
+            'id': `prod_${i+1}`,
+            'name': `テスト商品 ${i+1}`,
+            'default_price': `price_${i+1}`
+        };
+        products.push(product);
+    }
+    return products;
+};
+
+/**
+ * 検索 API のレスポンスボディを返す
+ * @param hasMore
+ * @param results
+ * @param nextPage
+ * @return response
+ */
+const searchResponse = (hasMore, results, nextPage) => {
+    const responseObj = {
+        'has_more': hasMore,
+        'data': results
+    };
+    if (nextPage !== null) {
+        responseObj['next_page'] = nextPage;
+    }
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 検索結果が 1 件、単一行データ項目に保存
+ */
+test('Success - 1 product found, saved to single-line data items', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    // 商品の ID 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('商品 ID の一覧', 5, 'q_productId', 'STRING_TEXTFIELD');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_ProductIds', idDef);
+
+    // 商品詳細ページの URL 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('商品 URL の一覧', 6, 'q_productUrl', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_ProductUrls', urlDef);
+
+    // 商品名の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const nameDef = engine.createDataDefinition('商品名の一覧', 7, 'q_productName', 'STRING_TEXTFIELD');
+    engine.setData(nameDef, '事前文字列');
+    configs.putObject('conf_ProductNames', nameDef);
+
+    // 商品価格 ID の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const priceIdDef = engine.createDataDefinition('商品価格 ID の一覧', 8, 'q_priceId', 'STRING_TEXTFIELD');
+    engine.setData(priceIdDef, '事前文字列');
+    configs.putObject('conf_DefaultPriceIds', priceIdDef);
+
+    const results = prepareProducts(1);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('prod_1');
+    expect(engine.findData(urlDef)).toEqual('https://dashboard.stripe.com/products/prod_1');
+    expect(engine.findData(nameDef)).toEqual('テスト商品 1');
+    expect(engine.findData(priceIdDef)).toEqual('price_1');
+});
+
+const REQ_LIMIT = httpClient.getRequestingLimit();
+
+/**
+ * 成功 - 検索結果が上限件。デフォルトの商品価格 ID が未設定の商品がある
+ */
+test('Success - max number of products found, with some default_price null', () => {
+    const {idDef, urlDef, nameDef, priceIdDef} = prepareConfigs(SAMPLE_QUERY_2);
+
+    const resultNum = MAX_RESULTS_PER_REQ * REQ_LIMIT;
+    const results = prepareProducts(resultNum);
+    results[2].default_price = null;
+    results[3].default_price = null;
+    results[10].default_price = null;
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_RESULTS_PER_REQ * reqCount;
+        const end = start + MAX_RESULTS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, SAMPLE_QUERY_2, null);
+            reqCount++;
+            const response = searchResponse(true, results.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, SAMPLE_QUERY_2, `page_${reqCount}`);
+        if (reqCount < REQ_LIMIT - 1) {
+            reqCount++;
+            const response = searchResponse(true, results.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        const response = searchResponse(false, results.slice(start, end), null);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const ids = engine.findData(idDef).split('\n');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    const priceIds = engine.findData(priceIdDef).split('\n');
+    expect(ids.length).toEqual(resultNum);
+    expect(urls.length).toEqual(resultNum);
+    expect(names.length).toEqual(resultNum);
+    expect(priceIds.length).toEqual(resultNum);
+
+    for (let i = 0; i < resultNum; i++) {
+        expect(ids[i]).toEqual(`prod_${i+1}`);
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/products/prod_${i+1}`);
+        expect(names[i]).toEqual(`テスト商品 ${i+1}`);
+        expect(names[i]).toEqual(`テスト商品 ${i+1}`);
+        if (i === 2 || i === 3 || i === 10) {
+            expect(priceIds[i]).toEqual(''); // 空行
+        } else {
+            expect(priceIds[i]).toEqual(`price_${i+1}`);
+        }
+    }
+});
+
+/**
+ * 検索クエリが空で、全件取得。検索結果が多すぎて HTTP リクエスト数の上限を超える
+ */
+test('Search query is blank. Number of HTTP requests exceeds the limit', () => {
+    const {idDef, urlDef, nameDef, priceIdDef} = prepareConfigs('');
+
+    const resultNum = MAX_RESULTS_PER_REQ * REQ_LIMIT;
+    const results = prepareProducts(resultNum);
+
+    let reqCount = 0;
+    const query = 'active:"true" OR active:"false"';
+    httpClient.setRequestHandler((request) => {
+        const start = MAX_RESULTS_PER_REQ * reqCount;
+        const end = start + MAX_RESULTS_PER_REQ;
+        if (reqCount === 0) {
+            assertRequest(request, query, null);
+            reqCount++;
+            const response = searchResponse(true, results.slice(start, end), `page_${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', response);
+        }
+        assertRequest(request, query, `page_${reqCount}`);
+        reqCount++;
+        // 最後のリクエストでも hasMore が true
+        const response = searchResponse(true, results.slice(start, end), `page_${reqCount}`);
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    expect(execute).toThrow(`HTTP requests must be up to ${REQ_LIMIT}.`); // スクリプトエンジンのエラー
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - ID
+ */
+test('Cannot save multiple results to single-line data item - ID', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    // 商品の ID 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const idDef = engine.createDataDefinition('商品 ID の一覧', 5, 'q_productId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ProductIds', idDef);
+
+    const results = prepareProducts(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    expect(execute).toThrow('More than one products were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - URL
+ */
+test('Cannot save multiple results to single-line data item - URL', () => {
+    prepareConfigs(SAMPLE_QUERY_2);
+
+    // 商品詳細ページの URL 一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const urlDef = engine.createDataDefinition('商品 URL の一覧', 6, 'q_productUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ProductUrls', urlDef);
+
+    const resultNum = MAX_RESULTS_PER_REQ + 1; // 1 回のリクエストでは取得しきれない件数
+    const results = prepareProducts(resultNum);
+    httpClient.setRequestHandler((request) => { // 1 回目のリクエストのあとエラーになるので、リクエストは 1 回のみ
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        const response = searchResponse(true, results.slice(0, MAX_RESULTS_PER_REQ), 'next_page')
+        return httpClient.createHttpResponse(200, 'application/json', response);
+    });
+
+    expect(execute).toThrow('More than one products were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - 名前
+ */
+test('Cannot save multiple results to single-line data item - Name', () => {
+    prepareConfigs(SAMPLE_QUERY_1);
+
+    // 商品名の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const nameDef = engine.createDataDefinition('商品名の一覧', 7, 'q_productName', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ProductNames', nameDef);
+
+    const results = prepareProducts(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    expect(execute).toThrow('More than one products were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 検索結果が複数件で、保存先データ項目が単一行 - 商品価格 ID
+ */
+test('Cannot save multiple results to single-line data item - Price ID', () => {
+    prepareConfigs(SAMPLE_QUERY_2);
+
+    // 商品価格 ID の一覧を保存する文字型データ項目（単一行）を準備し、設定
+    const priceIdDef = engine.createDataDefinition('商品価格 ID の一覧', 8, 'q_priceId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_DefaultPriceIds', priceIdDef);
+
+    const results = prepareProducts(2);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    expect(execute).toThrow('More than one products were found while the data item to save the result is Single-Line.');
+});
+
+/**
+ * 成功 - ID と商品価格 ID の保存先データ項目が未設定
+ */
+test('Success - Data item to save IDs and Price IDs are not set', () => {
+    const {idDef, urlDef, nameDef, priceIdDef} = prepareConfigs(SAMPLE_QUERY_1);
+    configs.put('conf_ProductIds', '');
+    configs.put('conf_DefaultPriceIds', '');
+
+    const resultNum = MAX_RESULTS_PER_REQ;
+    const results = prepareProducts(resultNum);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_1, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(priceIdDef)).toEqual('事前文字列');
+    const urls = engine.findData(urlDef).split('\n');
+    const names = engine.findData(nameDef).split('\n');
+    expect(urls.length).toEqual(resultNum);
+    expect(names.length).toEqual(resultNum);
+    for (let i = 0; i < resultNum; i++) {
+        expect(urls[i]).toEqual(`https://dashboard.stripe.com/products/prod_${i+1}`);
+        expect(names[i]).toEqual(`テスト商品 ${i+1}`);
+    }
+});
+
+/**
+ * 成功 - URL と名前の保存先データ項目が未設定
+ */
+test('Success - Data item to save URLs and Names are not set', () => {
+    const {idDef, urlDef, nameDef, priceIdDef} = prepareConfigs(SAMPLE_QUERY_2);
+    configs.put('conf_ProductUrls', '');
+    configs.put('conf_ProductNames', '');
+
+    const resultNum = 10;
+    const results = prepareProducts(resultNum);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, SAMPLE_QUERY_2, null);
+        return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+    expect(engine.findData(nameDef)).toEqual('事前文字列');
+    const ids = engine.findData(idDef).split('\n');
+    const priceIds = engine.findData(priceIdDef).split('\n');
+    expect(ids.length).toEqual(resultNum);
+    expect(priceIds.length).toEqual(resultNum);
+    for (let i = 0; i < resultNum; i++) {
+        expect(ids[i]).toEqual(`prod_${i+1}`);
+        expect(priceIds[i]).toEqual(`price_${i+1}`);
+    }
+});
+
+    ]]></test>
+
+</service-task-definition>
