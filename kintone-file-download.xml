@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download File</label>
 <label locale="ja">kintone: ファイルダウンロード</label>
-<last-modified>2022-10-14</last-modified>
+<last-modified>2022-10-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>This item downloads files from an Attachment field of a record in a Kintone App.</summary>
@@ -489,7 +489,6 @@ const prepareGetResponse = (attachFileFieldCode, num) => {
  * ファイルのテスト
  * @param file
  * @param name
- * @param contentType
  * @param encoding
  * @param body
  */
@@ -497,16 +496,22 @@ const assertFile = (file, name, encoding, body) => {
     expect(file.getName()).toEqual(name);
     expect(file.getContentType()).toEqual(CONTENT_TYPE);
 
-    // 改行コード数を数える
+    // 改行コード数を数える 0 → 1 行、 1 → 2 行、 2 → 3 行
     const count = ( body.match( new RegExp( "\n", "g" ) ) || [] ).length ;
 
     let text = '';
+    let lineCount = 0;
+    engine.log("count");
+    engine.log(String( count ));
 
-    if (count !== 0) {
-        fileRepository.readFile(file, encoding, line => text += line + '\n');
-    } else {
-        fileRepository.readFile(file, encoding, line => text += line);
-    }
+    fileRepository.readFile(file, encoding, function(line) {
+        text += line;
+
+        if( lineCount < count){
+            text += '\n';
+            lineCount++;
+        }
+    });
     expect(text).toEqual(body);
 };
 
@@ -620,19 +625,17 @@ test('DownLoad Failed', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル";
-    let fileKey = "";
 
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, '', appId, recordId);
             reqCount++;
             const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
-            fileKey = getFileKey(num);
             engine.log(JSON.stringify(getResponseObj));
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
 
-        assertDownloadRequest(request, domain, '', fileKey);
+        assertDownloadRequest(request, domain, '', getFileKey(num));
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -664,22 +667,16 @@ test('Success - basic and guestSpaseId - File is not null', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル7";
-    let fileKey = "";
-    let name = "";
 
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
             const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
-
-            fileKey = getFileKey(num);
-            name = getName(num);
-
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
 
-        assertDownloadRequest(request, domain, guestSpaceId, fileKey);
+        assertDownloadRequest(request, domain, guestSpaceId, getFileKey(num));
 
         return httpClient.createHttpResponse(200, 'text/plain; charset= UTF-8', 'testcase-7');
     });
@@ -689,7 +686,7 @@ test('Success - basic and guestSpaseId - File is not null', () => {
 
     const files_data = engine.findData(fileDef);
     expect(files_data.size()).toEqual(num + 1);
-    assertFile(files_data.get(1), name, 'UTF-8', 'testcase-7');
+    assertFile(files_data.get(1), getName(num), 'UTF-8', 'testcase-7');
 });
 
 
@@ -711,26 +708,21 @@ test('Success - max-files - File is null', () => {
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル8";
-    let fileKey = [];
-    let name = [];
 
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
             const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
-            for (let i = 1; i <= num; i++) {
-                fileKey[i - 1] = getFileKey(i);
-                name[i - 1] = getName(i);
-            }
+
             engine.log("max-test");
             engine.log(JSON.stringify(getResponseObj));
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
 
         engine.log("max-test2");
-        engine.log(fileKey[reqCount - 1]);
-        assertDownloadRequest(request, domain, guestSpaceId, fileKey[reqCount - 1]);
+        engine.log(getFileKey(reqCount));
+        assertDownloadRequest(request, domain, guestSpaceId, getFileKey(reqCount));
         reqCount++;
         return httpClient.createHttpResponse(200, 'text/plain; charset= UTF-8', `file-${reqCount - 1}\n`);
     });
@@ -744,7 +736,7 @@ test('Success - max-files - File is null', () => {
     for (let j = 1; j <= num; j++) {
         engine.log("max-test3");
         engine.log(`file-${j}\n`);
-        assertFile(files_data.get(j - 1), name[j - 1], 'UTF-8', `file-${j}\n`);
+        assertFile(files_data.get(j - 1), getName(j), 'UTF-8', `file-${j}\n`);
     }
 });
 
