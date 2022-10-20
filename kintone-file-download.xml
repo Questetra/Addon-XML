@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download File</label>
 <label locale="ja">kintone: ファイルダウンロード</label>
-<last-modified>2022-10-17</last-modified>
+<last-modified>2022-10-20</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <summary>This item downloads files from an Attachment field of a record in a Kintone App.</summary>
@@ -495,24 +495,18 @@ const prepareGetResponse = (attachFileFieldCode, num) => {
 const assertFile = (file, name, encoding, body) => {
     expect(file.getName()).toEqual(name);
     expect(file.getContentType()).toEqual(CONTENT_TYPE);
-
-    // 改行コード数を数える 0 → 1 行、 1 → 2 行、 2 → 3 行
-    const count = ( body.match( new RegExp( "\n", "g" ) ) || [] ).length ;
-
+	
     let text = '';
-    let lineCount = 0;
-    engine.log("count");
-    engine.log(String( count ));
-
-    fileRepository.readFile(file, encoding, function(line) {
-        text += line;
-
-        if( lineCount < count){
-            text += '\n';
-            lineCount++;
-        }
+    fileRepository.readFile(file, encoding, function(line) { // function(line) はファイルが N 行なら N 回呼ばれる　　1 行：改行コード無し
+        text += line + '\n';
     });
-    expect(text).toEqual(body);
+	
+    if (body.endsWith('\n') || body === '') {
+        expect(text).toEqual(body);
+    } else {
+        expect(text).toEqual(`${body}\n`);
+    }
+
 };
 
 
@@ -619,7 +613,7 @@ test('DownLoad Failed', () => {
     const domain = 'test.kintone.com';
     const appId = '5';
     const recordId = '5';
-    const num = 1; //レコードに添付されているファイル数
+    const kNum = 1; //レコードに添付されているファイル数
 
     prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル", null);
 
@@ -630,12 +624,12 @@ test('DownLoad Failed', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, '', appId, recordId);
             reqCount++;
-            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, kNum);
             engine.log(JSON.stringify(getResponseObj));
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
 
-        assertDownloadRequest(request, domain, '', getFileKey(num));
+        assertDownloadRequest(request, domain, '', getFileKey(kNum));
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -648,20 +642,23 @@ test('DownLoad Failed', () => {
  * ファイルダウンロード成功
  * basic 認証設定　ゲストスペースID 設定
  * 1 ファイル添付されているフィールドコード
- * ファイル型データ項目に他の 1 ファイルが保存されている状態
+ * ファイル型データ項目に他の 2 ファイルが保存されている状態
  */
 test('Success - basic and guestSpaseId - File is not null', () => {
     const files = new java.util.ArrayList();
     const fileName = 'file7.txt';
     const fileSize = 7;
     files.add(createQfile(fileName, fileSize));
+    const fileName2 = 'file8.txt';
+    const fileSize2 = 8;
+    files.add(createQfile(fileName2, fileSize2));
 
     const basic = 'basic';
     const guestSpaceId = '7';
     const domain = 'test.cybozu.com';
     const appId = '7';
     const recordId = '7';
-    const num = 1; //レコードに添付されているファイル数
+    const kNum = 1; //レコードに添付されているファイル数
 
     const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル7", files);
 
@@ -672,21 +669,21 @@ test('Success - basic and guestSpaseId - File is not null', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
-            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, kNum);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getResponseObj));
         }
 
-        assertDownloadRequest(request, domain, guestSpaceId, getFileKey(num));
+        assertDownloadRequest(request, domain, guestSpaceId, getFileKey(kNum));
 
-        return httpClient.createHttpResponse(200, 'text/plain; charset= UTF-8', 'testcase-7');
+        return httpClient.createHttpResponse(200, 'text/plain; charset= EUC-JP', 'testcase-7');
     });
 
     // <script> のスクリプトを実行
     execute();
 
-    const files_data = engine.findData(fileDef);
-    expect(files_data.size()).toEqual(num + 1);
-    assertFile(files_data.get(1), getName(num), 'UTF-8', 'testcase-7');
+    const resultFiles = engine.findData(fileDef);
+    expect(resultFiles.size()).toEqual(kNum + 2);
+    assertFile(resultFiles.get(2), getName(kNum), 'EUC-JP', 'testcase-7');
 });
 
 
@@ -702,7 +699,7 @@ test('Success - max-files - File is null', () => {
     const domain = 'test.kintone.com';
     const appId = '8';
     const recordId = '8';
-    const num = httpClient.getRequestingLimit() - 1; //レコードに添付されているファイル数
+    const kNum = httpClient.getRequestingLimit() - 1; //レコードに添付されているファイル数
 
     const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル8", null);
 
@@ -713,7 +710,7 @@ test('Success - max-files - File is null', () => {
         if (reqCount === 0) {
             assertGetRequest(request, domain, guestSpaceId, appId, recordId);
             reqCount++;
-            const getResponseObj = prepareGetResponse(attachFileFieldCode, num);
+            const getResponseObj = prepareGetResponse(attachFileFieldCode, kNum);
 
             engine.log("max-test");
             engine.log(JSON.stringify(getResponseObj));
@@ -730,13 +727,13 @@ test('Success - max-files - File is null', () => {
     // <script> のスクリプトを実行
     execute();
 
-    const files_data = engine.findData(fileDef);
-    expect(files_data.size()).toEqual(num);
+    const resultFiles = engine.findData(fileDef);
+    expect(resultFiles.size()).toEqual(kNum);
 
-    for (let j = 1; j <= num; j++) {
+    for (let j = 1; j <= kNum; j++) {
         engine.log("max-test3");
         engine.log(`file-${j}\n`);
-        assertFile(files_data.get(j - 1), getName(j), 'UTF-8', `file-${j}\n`);
+        assertFile(resultFiles.get(j - 1), getName(j), 'UTF-8', `file-${j}\n`);
     }
 });
 
