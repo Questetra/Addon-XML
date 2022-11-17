@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-11-14</last-modified>
+<last-modified>2022-11-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>2</engine-type>
 <label>Box: Delete Collaboration</label>
@@ -120,7 +120,7 @@ function getCollaborationList(oauth2, itemType, fileOrFolderId) {
   const url = `https://api.box.com/2.0/${itemType}/${fileOrFolderId}/collaborations/`;
   const response = httpClient.begin()
     .authSetting(oauth2)
-    .queryParam("fields", "id,accessible_by,role")
+    .queryParam("fields", "id,accessible_by,invite_email,role")
     .get(url);
   
   const status = response.getStatusCode();
@@ -147,7 +147,17 @@ function getCollaborationList(oauth2, itemType, fileOrFolderId) {
   */
 function findCollaborationId(collaborationList, emailAddress, role) {
   for (let i = 0; i < collaborationList.length; i++){
-    if(collaborationList[i].accessible_by.login === emailAddress && collaborationList[i].role === role){
+    if(collaborationList[i].role !== role){
+      continue;
+    }
+    if(collaborationList[i].accessible_by === null){
+      // 未承認ユーザの場合、招待メールアドレスをチェック
+      if(collaborationList[i].invite_email === emailAddress){
+        return collaborationList[i].id;
+      }
+      continue;
+    }
+    if(collaborationList[i].accessible_by.login === emailAddress){
       return collaborationList[i].id;
     }
   }
@@ -202,7 +212,7 @@ YII=</icon>
 <test><![CDATA[
 
 const SAMPLE_GET = {
-  "total_count": 2,
+  "total_count": 3,
   "entries": [
     {
       "type": "collaboration",
@@ -224,6 +234,13 @@ const SAMPLE_GET = {
         "name": "user2",
         "login": "testuser2@questetra.com"
       },
+      "role": "viewer"
+    },
+    {
+      "type": "collaboration",
+      "id": "34629870555",
+      "accessible_by": null,
+      "invite_email": "testuser3@questetra.com",
       "role": "viewer"
     }
   ]
@@ -281,7 +298,7 @@ const prepareConfigs = (configs, itemType, emailAddress, id, role) => {
  * @param fileOrFolderId
  */
 const assertGetRequest = ({url, method}, itemType, fileOrFolderId) => {
-    expect(url).toEqual(`https://api.box.com/2.0/${itemType}/${fileOrFolderId}/collaborations/?fields=id%2Caccessible_by%2Crole`);
+    expect(url).toEqual(`https://api.box.com/2.0/${itemType}/${fileOrFolderId}/collaborations/?fields=id%2Caccessible_by%2Cinvite_email%2Crole`);
     expect(method).toEqual('GET');
 };
 
@@ -404,9 +421,29 @@ test('Success 204 - File/Viewer', () => {
 });
 
 /**
+ * 招待済み・未承認のユーザを指定、コラボレーション削除成功の場合
+ */
+test('Success 204 - Newly Invited User', () => {
+    prepareConfigs(configs, FILES, 'testuser3@questetra.com', '12345', VIEWER);
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, FILES, '12345');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
+        }
+        assertDeleteRequest(request, '34629870555');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    
+    execute();
+});
+
+/**
  * Box への GET API リクエストでエラー 
  */
- test('GET Failed', () => {
+test('GET Failed', () => {
     prepareConfigs(configs, FILES, 'testuser@questetra.com', '12345', VIEWER);
     
     httpClient.setRequestHandler((request) => {
@@ -420,7 +457,7 @@ test('Success 204 - File/Viewer', () => {
 /**
  * 指定したファイルにコラボレーションがひとつもない
  */
- test('No collaborations in the file', () => {
+test('No collaborations in the file', () => {
     prepareConfigs(configs, FILES, 'testuser3@questetra.com', '54321', EDITOR);
     
     const SAMPLE_GET_FILE_NO_COLLABORATION = {
@@ -440,7 +477,7 @@ test('Success 204 - File/Viewer', () => {
 /**
  * 指定したフォルダにコラボレーションがひとつもない
  */
- test('No collaborations in the folder', () => {
+test('No collaborations in the folder', () => {
     prepareConfigs(configs, FOLDERS, 'testuser3@questetra.com', '67890', VIEWER);
     
     const SAMPLE_GET_FOLDER_NO_COLLABORATION = {
@@ -485,7 +522,7 @@ test('No Collaboration - wrong emailAddress', () => {
 /**
  * Box への DELETE API リクエストでエラー 
  */
- test('DELETE Failed', () => {
+test('DELETE Failed', () => {
     prepareConfigs(configs, FOLDERS, 'testuser1@questetra.com', '12345', EDITOR);
     
     let reqCount = 0;
