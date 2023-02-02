@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-05-24</last-modified>
+    <last-modified>2023-02-02</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Download File as PDF/Text/Image</label>
     <label locale="ja">Box: ファイルを PDF/テキスト/画像でダウンロード</label>
     <summary>This item downloads the specified file on Box in the specified file format.</summary>
@@ -61,37 +62,65 @@
             <label>C4: File Name (named with the file name on Box if blank)</label>
             <label locale="ja">C4: ファイル名 (空白の場合、Box でのファイル名を使用します)</label>
         </config>
+        <config name="conf_urlTemplate" required="true" form-type="SELECT" select-data-type="STRING">
+            <label>C4: ダウンロードに必要な一時データを保存するデータ項目</label>
+        </config>
         <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C5: File type data item to add the downloaded file</label>
-            <label locale="ja">C5: ダウンロードファイルを追加保存するファイル型データ項目</label>
+            <label locale="ja">C5: ダウンロードファイルを追加保存するデータ項目</label>
         </config>
     </configs>
 
     <script><![CDATA[
+const PATH_VARIABLE = "{+asset_path}";
 
-main();
-function main(){
+function main() {
     const oauth2 = configs.get('conf_OAuth2');
     const fileId = decideFileId();
     const representation = configs.get('conf_Representation');
-    const fileName = configs.get('conf_FileName');
-    const fileDef = configs.getObject("conf_Files");
+    const urlDef = configs.getObject("conf_urlTemplate");
 
     const {urlTemplate, paged} = getRepresentationInfo(oauth2, fileId, representation);
+    let url;
+    if (paged !== 'true') { // ページ分割されていない場合
+        url = urlTemplate.replace(PATH_VARIABLE, '');
+    } else {
+        url = urlTemplate;
+    }
+    engine.setData(urlDef, url);
+    return false;
+}
+
+function proceed() {
+    const oauth2 = configs.get('conf_OAuth2');
+    const representation = configs.get('conf_Representation');
+    const fileName = configs.get('conf_FileName');
+    const urlDef = configs.getObject("conf_urlTemplate");
+    const fileDef = configs.getObject("conf_Files");
+
+    const url = engine.findData(urlDef);
+    const paged = url.contains(PATH_VARIABLE);
+
     if (paged !== 'true') { // ページ割されていない場合
-        const qfile = download(oauth2, urlTemplate, representation, fileName);
+        const qfile = download(oauth2, url, representation, fileName);
+        if (qfile === false) {
+            return false;
+        }
         saveFile(fileDef, qfile);
         return;
     }
     // ページ割されている場合
-    const qfiles = downloadPages(oauth2, urlTemplate, representation, fileName);
+    const qfiles = downloadPages(oauth2, url, representation, fileName);
+    if (qfiles === false) {
+        return false;
+    }
     saveFiles(fileDef, qfiles);
 }
 
 /**
-  * ファイル ID を config から読み出す
-  * @return {String} fileId ファイル ID
-  */
+ * ファイル ID を config から読み出す
+ * @return {String} fileId ファイル ID
+ */
 function decideFileId() {
     const fileId = engine.findData(configs.getObject('conf_FileId'));
     if (fileId === '' || fileId === null) {
@@ -101,14 +130,14 @@ function decideFileId() {
 }
 
 /**
-  * レプリゼンテーションの情報を取得する GET リクエストを送信
-  * @param {String} oauth2 OAuth2 設定
-  * @param {String} fileId ファイル ID
-  * @param {String} representation レプリゼンテーション
-  * @return {Object} representationInfo
-  * @return {String} representationInfo.urlTemplate ダウンロードの際の URL テンプレート
-  * @return {String|undefined} representationInfo.paged ページ割されているかどうか
-  */
+ * レプリゼンテーションの情報を取得する GET リクエストを送信
+ * @param {String} oauth2 OAuth2 設定
+ * @param {String} fileId ファイル ID
+ * @param {String} representation レプリゼンテーション
+ * @return {Object} representationInfo
+ * @return {String} representationInfo.urlTemplate ダウンロードの際の URL テンプレート
+ * @return {String|undefined} representationInfo.paged ページ割されているかどうか
+ */
 function getRepresentationInfo(oauth2, fileId, representation) {
     const url = `https://api.box.com/2.0/files/${encodeURIComponent(fileId)}`;
     const response = httpClient.begin()
@@ -132,23 +161,22 @@ function getRepresentationInfo(oauth2, fileId, representation) {
 }
 
 /**
-  * レプリゼンテーションをダウンロードする GET リクエストを送信
-  * ページ割されていない場合
-  * @param {String} oauth2 OAuth2 設定
-  * @param {String} urlTemplate URL テンプレート
-  * @param {String} representation レプリゼンテーション
-  * @param {String} fileName ファイル名
-  * @return {NewQfile} qfile ダウンロードしたファイル
-  */
-function download(oauth2, urlTemplate, representation, fileName) {
-    const url = urlTemplate.replace('{+asset_path}', '');
+ * レプリゼンテーションをダウンロードする GET リクエストを送信
+ * ページ割されていない場合
+ * @param {String} oauth2 OAuth2 設定
+ * @param {String} url URL
+ * @param {String} representation レプリゼンテーション
+ * @param {String} fileName ファイル名
+ * @return {NewQfile} qfile ダウンロードしたファイル
+ */
+function download(oauth2, url, representation, fileName) {
     const response = httpClient.begin()
         .authSetting(oauth2)
         .queryParam('set_content_disposition_type', 'attachment')
         .get(url);
     const status = response.getStatusCode();
     if (status === 202) { // レプリゼンテーション作成中でダウンロードできない
-        throw `The representation ${representation} is being created and not available yet. Please try again later.`;
+        return false;
     }
     if (status !== 200) { // その他のエラー
         engine.log(response.getResponseAsString());
@@ -164,16 +192,16 @@ function download(oauth2, urlTemplate, representation, fileName) {
 }
 
 /**
-  * レプリゼンテーションをダウンロードする GET リクエストを送信
-  * ページ割されている場合
-  * @param {String} oauth2 OAuth2 設定
-  * @param {String} urlTemplate URL テンプレート
-  * @param {String} representation レプリゼンテーション
-  * @param {String} fileName ファイル名
-  * @return {Array<NewQfile>} qfiles ダウンロードしたファイルを格納した配列
-  */
+ * レプリゼンテーションをダウンロードする GET リクエストを送信
+ * ページ割されている場合
+ * @param {String} oauth2 OAuth2 設定
+ * @param {String} urlTemplate URL テンプレート
+ * @param {String} representation レプリゼンテーション
+ * @param {String} fileName ファイル名
+ * @return {Array<NewQfile>} qfiles ダウンロードしたファイルを格納した配列
+ */
 function downloadPages(oauth2, urlTemplate, representation, fileName) {
-    const extension = representation.substring(1,4); // jpg or png
+    const extension = representation.substring(1, 4); // jpg or png
     const qfiles = [];
     let pageNum = 1;
     const httpLimit = httpClient.getRequestingLimit();
@@ -188,7 +216,8 @@ function downloadPages(oauth2, urlTemplate, representation, fileName) {
             .get(url);
         const status = response.getStatusCode();
         if (pageNum === 1 && status === 202) { // レプリゼンテーション作成中でダウンロードできない
-            throw `The representation ${representation} is being created and not available yet. Please try again later.`;
+            //throw `The representation ${representation} is being created and not available yet. Please try again later.`;
+            return false;
         }
         if (pageNum > 1 && status === 404) { // ページを最後までダウンロードした。ループから抜ける
             break;
@@ -211,11 +240,11 @@ function downloadPages(oauth2, urlTemplate, representation, fileName) {
 }
 
 /**
-  * 保存時のファイル名を決定する
-  * @param {String} fileName 新しく名前をつける場合のファイル名
-  * @param {HttpResponseWrapper} response ファイルダウンロードのレスポンス
-  * @return {String} fileNameToSet 設定するファイル名
-  */
+ * 保存時のファイル名を決定する
+ * @param {String} fileName 新しく名前をつける場合のファイル名
+ * @param {HttpResponseWrapper} response ファイルダウンロードのレスポンス
+ * @return {String} fileNameToSet 設定するファイル名
+ */
 function decideFileNameToSet(fileName, response) {
     if (fileName !== '' && fileName !== null) {
         return fileName;
@@ -228,10 +257,10 @@ function decideFileNameToSet(fileName, response) {
 }
 
 /**
-  * 1 つのファイルを追加保存する
-  * @param {ProcessDataDefinitionView} fileDef 保存先データ項目
-  * @param {NewQfile} qfile 追加保存するファイル
-  */
+ * 1 つのファイルを追加保存する
+ * @param {ProcessDataDefinitionView} fileDef 保存先データ項目
+ * @param {NewQfile} qfile 追加保存するファイル
+ */
 function saveFile(fileDef, qfile) {
     let files = engine.findData(fileDef);
     if (files === null) {
@@ -242,10 +271,10 @@ function saveFile(fileDef, qfile) {
 }
 
 /**
-  * 複数のファイルを追加保存する
-  * @param {ProcessDataDefinitionView} fileDef 保存先データ項目
-  * @param {Array<NewQfile>} qfiles 追加保存するファイルを格納した配列
-  */
+ * 複数のファイルを追加保存する
+ * @param {ProcessDataDefinitionView} fileDef 保存先データ項目
+ * @param {Array<NewQfile>} qfiles 追加保存するファイルを格納した配列
+ */
 function saveFiles(fileDef, qfiles) {
     let files = engine.findData(fileDef);
     if (files === null) {
@@ -256,7 +285,6 @@ function saveFiles(fileDef, qfiles) {
     });
     engine.setData(fileDef, files);
 }
-
     ]]></script>
 
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
