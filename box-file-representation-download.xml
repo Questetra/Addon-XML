@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-02-02</last-modified>
+    <last-modified>2023-02-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <addon-version>2</addon-version>
@@ -99,22 +99,19 @@ function proceed() {
     const fileDef = configs.getObject("conf_Files");
 
     const url = engine.findData(urlDef);
-    const paged = url.contains(PATH_VARIABLE);
-
-    if (paged !== 'true') { // ページ割されていない場合
-        const qfile = download(oauth2, url, representation, fileName);
-        if (qfile === false) {
-            return false;
-        }
-        saveFile(fileDef, qfile);
-        return;
+    let qfiles;
+    if (url.includes(PATH_VARIABLE)) {
+        // ページ割されている場合
+        qfiles = downloadPages(oauth2, url, representation, fileName);
+    } else {
+        // ページ割されていない場合
+        qfiles = download(oauth2, url, representation, fileName);
     }
-    // ページ割されている場合
-    const qfiles = downloadPages(oauth2, url, representation, fileName);
     if (qfiles === false) {
         return false;
     }
     saveFiles(fileDef, qfiles);
+    engine.setData(urlDef, null);
 }
 
 /**
@@ -167,7 +164,7 @@ function getRepresentationInfo(oauth2, fileId, representation) {
  * @param {String} url URL
  * @param {String} representation レプリゼンテーション
  * @param {String} fileName ファイル名
- * @return {NewQfile} qfile ダウンロードしたファイル
+ * @return {Array<NewQfile>} qfiles ダウンロードしたファイルを格納した配列
  */
 function download(oauth2, url, representation, fileName) {
     const response = httpClient.begin()
@@ -188,7 +185,7 @@ function download(oauth2, url, representation, fileName) {
     const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileNameToSet, contentType, content
     );
-    return qfile;
+    return [qfile];
 }
 
 /**
@@ -203,13 +200,13 @@ function download(oauth2, url, representation, fileName) {
 function downloadPages(oauth2, urlTemplate, representation, fileName) {
     const extension = representation.substring(1, 4); // jpg or png
     const qfiles = [];
-    let pageNum = 1;
     const httpLimit = httpClient.getRequestingLimit();
-    while (true) {
-        if (pageNum + 1 > httpLimit) { // レプリゼンテーション情報の取得で 1 回リクエスト済み
+    for (let pageNum = 1; ; pageNum++) {
+        if (pageNum > httpLimit) {
             throw 'Number of necessary HTTP requests exceeds the limit.';
         }
         const url = urlTemplate.replace('{+asset_path}', `${pageNum}.${extension}`);
+        engine.log(`url: ${url}`);
         const response = httpClient.begin()
             .authSetting(oauth2)
             .queryParam('set_content_disposition_type', 'attachment')
@@ -234,7 +231,6 @@ function downloadPages(oauth2, urlTemplate, representation, fileName) {
             fileNameToSet, contentType, content
         );
         qfiles.push(qfile);
-        pageNum++;
     }
     return qfiles;
 }
@@ -252,22 +248,7 @@ function decideFileNameToSet(fileName, response) {
     // ファイル名をレスポンスの Content-Disposition ヘッダから取得する
     const contentDisposition = response.getHeaderValues('Content-Disposition')[0];
     const matched = contentDisposition.match(/filename\*=UTF-8''(.+)/);
-    const fileNameToSet = decodeURI(matched[1]);
-    return fileNameToSet;
-}
-
-/**
- * 1 つのファイルを追加保存する
- * @param {ProcessDataDefinitionView} fileDef 保存先データ項目
- * @param {NewQfile} qfile 追加保存するファイル
- */
-function saveFile(fileDef, qfile) {
-    let files = engine.findData(fileDef);
-    if (files === null) {
-        files = new java.util.ArrayList();
-    }
-    files.add(qfile);
-    engine.setData(fileDef, files);
+    return decodeURI(matched[1]);
 }
 
 /**
@@ -310,7 +291,6 @@ function saveFiles(fileDef, qfiles) {
     </icon>
 
     <test><![CDATA[
-
 /**
  * 設定の準備
  * @param fileId
@@ -319,7 +299,7 @@ function saveFiles(fileDef, qfiles) {
  * @param files
  * @return fileDef
  */
-const prepareConfigs = (fileId, representation, fileName, files) => {
+const prepareConfigs = (fileId, representation, fileName, urlTemplate, files) => {
     configs.put('conf_OAuth2', 'Box');
 
     // ファイル ID を保存した文字型データ項目（単一行）を準備し、設定
@@ -330,19 +310,42 @@ const prepareConfigs = (fileId, representation, fileName, files) => {
     configs.put('conf_Representation', representation);
     configs.put('conf_FileName', fileName);
 
+    const urlTemplateDef = engine.createDataDefinition('URL Template', 2, 'q_url', 'STRING_TEXTFIELD');
+    configs.putObject('conf_urlTemplate', urlTemplateDef);
+    engine.setData(urlTemplateDef, urlTemplate);
+
     // ファイルの保存先データ項目を準備し、設定
-    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
+    const fileDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
     configs.putObject('conf_Files', fileDef);
     engine.setData(fileDef, files);
-    return fileDef;
+    return {
+        urlTemplateDef,
+        fileDef
+    };
+}
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
 }
 
 /**
  * ファイル ID の値が空でエラー
  */
 test('File ID is blank', () => {
-    prepareConfigs(null, '[pdf]', '', null);
-    expect(execute).toThrow('File ID is blank.');
+    execute();
+
+    prepareConfigs(null, '[pdf]', '', null, null);
+    assertError(main, 'File ID is blank.');
 });
 
 /**
@@ -364,25 +367,28 @@ const assertGetRepInfoRequest = ({url, method, headers}, fileId, representation)
  * レプリゼンテーションの情報を取得する API リクエストで失敗
  */
 test('Fail in API Request to get representation info', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null);
+    prepareConfigs(fileId, representation, '', null, null);
 
     httpClient.setRequestHandler((request) => {
         assertGetRepInfoRequest(request, fileId, representation);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
-
-    expect(execute).toThrow('Failed to get representations. status:400');
+    assertError(main, 'Failed to get representations. status:400');
 });
 
 /**
  * 指定したレプリゼーションに対応しておらずエラーになる場合
  */
 test('Unavailable representation', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null);
+    prepareConfigs(fileId, representation, '', null, null);
 
     const responseObj = {
         "representations": {
@@ -393,8 +399,7 @@ test('Unavailable representation', () => {
         assertGetRepInfoRequest(request, fileId, representation);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
-
-    expect(execute).toThrow('The [pdf] representation is unavailable for this file.');
+    assertError(main, 'The [pdf] representation is unavailable for this file.');
 });
 
 const REP_INFO_TEMPLATE = {
@@ -462,24 +467,26 @@ const assertDownloadRepRequest = ({url, method}, downloadUrl) => {
  * PDF レプリゼーションをダウンロードする API リクエストで失敗
  */
 test('Fail in API Request to download PDF representation', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null);
+    const {urlTemplateDef} = prepareConfigs(fileId, representation, '', null, null);
 
     const repInfo = createPDFRepresentationInfo(fileId);
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/pdf/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
-
-    expect(execute).toThrow('Failed to download the representation [pdf]. status:400');
+    assertError(proceed, 'Failed to download the representation [pdf]. status:400');
 });
 
 /**
@@ -504,31 +511,36 @@ const assertFile = (file, name, contentType, encoding, body) => {
  * 他のファイルの保存なし
  */
 test('Succeed to download PDF representation', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const {
+        fileDef,
+        urlTemplateDef
+    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.pdf';
     const repInfo = createPDFRepresentationInfo(fileId);
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/pdf/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler(request => {
         assertDownloadRepRequest(request, downloadUrl);
         const response = httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
         response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
         return response;
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'application/pdf', 'UTF-8', 'This is the content of PDF\n');
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
@@ -537,6 +549,8 @@ test('Succeed to download PDF representation', () => {
  * 他のファイルの保存あり
  */
 test('Succeed to download PDF representation - fileName specified', () => {
+    execute();
+
     const fileId = 'fileId-3';
     const representation = '[pdf]';
     const fileName = 'ダウンロードファイル.pdf';
@@ -544,29 +558,32 @@ test('Succeed to download PDF representation - fileName specified', () => {
     // 事前ファイルを 1 つ追加
     const files = new java.util.ArrayList();
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル.csv', 'text/csv; charset=UTF-8', 'あいうえお'));
-    const fileDef = prepareConfigs(fileId, representation, fileName, files);
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs(fileId, representation, fileName, null, files);
 
     const originalFileName = '元の名前.pdf'; // 使用しないが、条件を同じにするためにレスポンスのヘッダにセット
     const repInfo = createPDFRepresentationInfo(fileId);
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/pdf/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
         const response = httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
         response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
         return response;
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(2);
     assertFile(savedFiles.get(1), fileName, 'application/pdf', 'UTF-8', 'This is the content of PDF\n');
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
@@ -575,260 +592,241 @@ test('Succeed to download PDF representation - fileName specified', () => {
  * 他のファイルの保存なし
  */
 test('Succeed to download TEXT representation', () => {
+    execute();
+
     const fileId = 'fileId-4';
     const representation = '[extracted_text]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.text';
     const repInfo = createTextRepresentationInfo(fileId);
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/text/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
         const response = httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', '抽出されたテキスト');
         response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
         return response;
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'text/plain', 'UTF-8', '抽出されたテキスト\n');
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
  * JPEG レプリゼーション（ページ割なし）のダウンロードに成功
+ * 1 度は、作成中でダウンロードに失敗。
  * ファイル名指定なし
  * 他のファイルの保存なし
  */
 test('Succeed to download JPEG representation', () => {
+    execute();
+
     const fileId = 'fileId-5';
     const representation = '[jpeg?dimensions=32x32]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.jpg';
     const repInfo = createImageRepresentationInfo(fileId, 'false');
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler((request) => {
+        assertDownloadRepRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
+    });
+    expect(proceed()).toEqual(false);
+    expect(engine.findData(fileDef)).toEqual(null);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+
+    httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
         const response = httpClient.createHttpResponse(200, 'image/jpeg', 'This is the content of JPEG');
         response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
         return response;
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'image/jpeg', 'UTF-8', 'This is the content of JPEG\n');
-});
-
-/**
- * JPEG レプリゼーション（ページ割なし）が作成中でダウンロードできない
- */
-test('The JPEG representation is not availabel yet', () => {
-    const fileId = 'fileId-1';
-    const representation = '[jpeg?dimensions=94x94]';
-    const fileDef = prepareConfigs(fileId, representation, 'ダウンロードファイル.jpg', null); // ファイル名指定、事前ファイルなし
-
-    const originalFileName = '元の名前.jpg';
-    const repInfo = createImageRepresentationInfo(fileId, 'false');
-    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
-        assertDownloadRepRequest(request, downloadUrl);
-        return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
-    });
-
-    expect(execute).toThrow('The representation [jpeg?dimensions=94x94] is being created and not available yet. Please try again later.');
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
  * PNG レプリゼーション（ページ割あり）のダウンロードに失敗
  */
 test('Fail in API Request to download PNG representation', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[png?dimensions=1024x1024]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
 
     const repInfo = createImageRepresentationInfo(fileId, 'true');
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl + "{+asset_path}");
+
+    httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, `${downloadUrl}1.png`);
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-
-    expect(execute).toThrow('Failed to download the page 1 of the representation [png?dimensions=1024x1024]. status:404');
-});
-
-/**
- * PNG レプリゼーション（ページ割あり）が作成中でダウンロードできない
- */
-test('The PNG representation is not available yet', () => {
-    const fileId = 'fileId-1';
-    const representation = '[png?dimensions=2048x2048]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
-
-    const repInfo = createImageRepresentationInfo(fileId, 'true');
-    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
-        assertDownloadRepRequest(request, `${downloadUrl}1.png`);
-        return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
-    });
-
-    expect(execute).toThrow('The representation [png?dimensions=2048x2048] is being created and not available yet. Please try again later.');
+    assertError(proceed, 'Failed to download the page 1 of the representation [png?dimensions=1024x1024]. status:404');
 });
 
 /**
  * PNG レプリゼーション（ページ割あり）のダウンロードに成功
+ * 1 度は、作成中でダウンロードに失敗。
  * ファイル名指定なし
  * 他のファイルの保存なし
  */
 test('Succeed to download PNG representation', () => {
+    execute();
+
     const fileId = 'fileId-6';
     const representation = '[png?dimensions=1024x1024]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.png';
     const repInfo = createImageRepresentationInfo(fileId, 'true');
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
-    const pageNum = httpClient.getRequestingLimit() - 2; // 上限のページ数でテスト
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertGetRepInfoRequest(request, fileId, representation);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl + "{+asset_path}");
+
+    // 作成中でダウンロードできない
+    httpClient.setRequestHandler((request) => {
+        assertDownloadRepRequest(request, `${downloadUrl}1.png`);
+        return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
+    });
+    expect(proceed()).toEqual(false);
+    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl + "{+asset_path}");
+
+    let reqCount = 1;
+    const pageNum = 3;
+    httpClient.setRequestHandler((request) => {
+        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
         if (reqCount <= pageNum) {
-            assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
             const response = httpClient.createHttpResponse(200, 'image/png', `This is the content of PNG, page ${reqCount}`);
             response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
             reqCount++;
             return response;
         }
-        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(pageNum);
     for (let i = 0; i < pageNum; i++) {
-        assertFile(savedFiles.get(i), `${i+1}-${originalFileName}`, 'image/png', 'UTF-8', `This is the content of PNG, page ${i+1}\n`);
+        assertFile(savedFiles.get(i), `${i + 1}-${originalFileName}`, 'image/png', 'UTF-8', `This is the content of PNG, page ${i + 1}\n`);
     }
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
  * JPEG レプリゼーション（ページ割あり）のダウンロードに成功
+ * ページ割数は、HTTP リクエスト数の上限
+ * HTTP リクエスト数の関係で、proceed() のみのテスト
  * ファイル名を指定
  * 他のファイルの保存あり
  */
-test('Succeed to download Paged JPEG representation - fileName specified', () => {
+test('proceed() Succeed to download Paged JPEG representation - fileName specified', () => {
+    execute();
+
     const fileId = 'fileId-7';
     const representation = '[jpg?dimensions=2048x2048]';
     const fileName = 'ダウンロードファイル.jpg';
+    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
 
     // 事前ファイルを 2 つ追加
     const files = new java.util.ArrayList();
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル1.csv', 'text/csv; charset=UTF-8', 'あいうえお'));
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル2.csv', 'text/csv; charset=UTF-8', 'かきくけこ'));
-    const fileDef = prepareConfigs(fileId, representation, fileName, files);
+    const {
+        urlTemplateDef,
+        fileDef
+    } = prepareConfigs('', representation, fileName, downloadUrl + "{+asset_path}", files);
 
-    const originalFileName = '元の名前.jpg'; // 使用しないが、条件を同じにするためにレスポンスのヘッダにセット
-    const repInfo = createImageRepresentationInfo(fileId, 'true');
-    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
-    const pageNum = httpClient.getRequestingLimit() - 2; // 上限のページ数でテスト
+    const originalFileName = '元の名前.pdf'; // 使用しないが、条件を同じにするためにレスポンスのヘッダにセット
+    const pageNum = httpClient.getRequestingLimit() - 1; // 上限のページ数でテスト
+    let reqCount = 1;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.jpg`);
         if (reqCount <= pageNum) {
-            assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.jpg`);
             const response = httpClient.createHttpResponse(200, 'image/jpg', `This is the content of JPEG, page ${reqCount}`);
             response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
             reqCount++;
             return response;
         }
-        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.jpg`);
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-
-    execute();
-
+    expect(proceed()).toEqual(undefined);
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(pageNum + 2);
     for (let i = 0; i < pageNum; i++) {
-        assertFile(savedFiles.get(i + 2), `${i+1}-${fileName}`, 'image/jpg', 'UTF-8', `This is the content of JPEG, page ${i+1}\n`);
+        assertFile(savedFiles.get(i + 2), `${i + 1}-${fileName}`, 'image/jpg', 'UTF-8', `This is the content of JPEG, page ${i + 1}\n`);
     }
+    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
  * ページ数が多く、リクエスト数の上限を超える
  */
-test('Number of necessary HTTP requests exceeds the limit', () => {
+test('proceed() sNumber of necessary HTTP requests exceeds the limit', () => {
+    execute();
+
     const fileId = 'fileId-1';
     const representation = '[png?dimensions=1024x1024]';
-    const fileDef = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
+    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
+    prepareConfigs('', representation, null, downloadUrl + "{+asset_path}", null);
 
     const originalFileName = '元の名前.png';
-    const repInfo = createImageRepresentationInfo(fileId, 'true');
-    const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    let reqCount = 0;
-    const pageNum = httpClient.getRequestingLimit() - 1; // (上限のページ数 + 1) でテスト
+    let reqCount = 1;
+    const pageNum = httpClient.getRequestingLimit();
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRepInfoRequest(request, fileId, representation);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
+        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
         if (reqCount <= pageNum) {
-            assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
             const response = httpClient.createHttpResponse(200, 'image/png', `This is the content of PNG, page ${reqCount}`);
             response.addHeader('Content-Disposition', `attachment;filename*=UTF-8''${encodeURI(originalFileName)}`);
             reqCount++;
             return response;
         }
-        assertDownloadRepRequest(request, `${downloadUrl}${reqCount}.png`);
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-
-    expect(execute).toThrow('Number of necessary HTTP requests exceeds the limit.');
+    assertError(proceed, 'Number of necessary HTTP requests exceeds the limit.');
 });
-
     ]]></test>
 
 </service-task-definition>
