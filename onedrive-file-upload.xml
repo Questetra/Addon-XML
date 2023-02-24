@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Upload File</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-    <last-modified>2022-05-06</last-modified>
+    <last-modified>2023-02-24</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>This item uploads files to the specified folder on OneDrive.</summary>
@@ -43,7 +43,6 @@
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
 
-const LIMIT_SIZE = 4194304; //File size border of Microsoft Graph
 const PACKET_MAX_SIZE = 10485760; //size of each packet,must be a multiple of 327680(320KiB): 10485760=10MiB
 const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
 
@@ -70,13 +69,7 @@ function main(){
 
   for(let i = 0; i< files.size(); i++){
     engine.log(`Uploading: ${files.get(i).getName()}`);
-    if(files.get(i).getLength() > LIMIT_SIZE){
-      //over 4MB
-      processLargeFile(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
-    }else{
-      //under 4MB
-      upload(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
-    }
+    uploadFile(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
   }
   //// == ワークフローデータへの代入 / Data Updating ==
   setData(urlDataDef,uploadedFileUrl);
@@ -100,7 +93,7 @@ function retrieveFolderUrl() {
 /**
   * アップロードしようとするファイルの名前・数・サイズが適切かどうかチェックする
   * ファイル数、通信制限をチェック
-  * 通信数=4MB以下のファイルの数 + <4MBを超えるファイルそれぞれについて>(ceil(ファイルサイズ/パケットの最大サイズ) + 1)
+  * 通信数=ceil(ファイルサイズ/パケットの最大サイズ) + 1
   * その後ファイル名をチェック
   * @param {Array<File>} files  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
@@ -112,11 +105,7 @@ function fileCheck(files,urlDataDef,folderUrl){
   let requestNum = 0;
   for (let i = 0; i < fileNum; i++){
     const size = files.get(i).getLength();
-    if(size > LIMIT_SIZE){
-      requestNum += (Math.ceil(size / PACKET_MAX_SIZE) + 1);
-    }else{
-      requestNum++;
-    }
+    requestNum += (Math.ceil(size / PACKET_MAX_SIZE) + 1);
   }
   if(folderUrl !== "" && folderUrl !== null){
     requestNum++;
@@ -223,48 +212,14 @@ function encodeSharingUrl( sharingUrl ) {
 }
 
 /**
-  * ファイルをアップロードする。一回につき一つのみ。
+  * ファイルのアップロード処理を行う
   * @param {String} oauth2  OAuth2 設定情報
   * @param {File} file  アップロードするファイル
   * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
   * @param {boolean} shouldReplace  上書きするかどうか
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   */
-function upload(oauth2,file,{
-  driveId,
-  folderId
-},shouldReplace,uploadedFileUrl){
-  const url = `${GRAPH_URI}${driveId}/items/${folderId}:/${encodeURIComponent(file.getName())}:/content`;
-  let request = httpClient.begin()
-    .authSetting(oauth2)
-    .body(file);
-  if (!shouldReplace) { // デフォルトは replace
-    request = request.queryParam("@microsoft.graph.conflictBehavior", "fail");
-  }
-  const response = request.put(url);
-
-  const responseStr = response.getResponseAsString();
-  const status = response.getStatusCode();
-  
-  if (status >= 300) {
-    //when error thrown
-    engine.log(`Status: ${status}`);
-    engine.log(responseStr);
-    throw "Failed to upload";
-  }
-  engine.log("Succeeded to upload.");
-  outputDataSet(responseStr,uploadedFileUrl);
-}
-
-/**
-  * 4MBを超えるファイルのアップロード処理を行う
-  * @param {String} oauth2  OAuth2 設定情報
-  * @param {File} file  アップロードするファイル
-  * @param {String,String} driveId,folderId  アップロード先ドライブ、フォルダのID
-  * @param {boolean} shouldReplace  上書きするかどうか
-  * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
-  */
-function processLargeFile(oauth2,file,{
+function uploadFile(oauth2,file,{
   driveId,
   folderId
 },shouldReplace,uploadedFileUrl){
@@ -277,7 +232,7 @@ function processLargeFile(oauth2,file,{
 
   fileRepository.readFile(file, PACKET_MAX_SIZE, function(packet){
     //upload each fragment of file
-    range = uploadLarge(upUrl,range,packet,fileSize,uploadedFileUrl);
+    range = uploadPacket(upUrl,range,packet,fileSize,uploadedFileUrl);
   });
 }
 
@@ -318,7 +273,7 @@ function createSession(oauth2,fileName,{
 }
 
 /**
-  * 4MBを超えるファイルについて、各部分のアップロードを実行する
+  * ファイルの各部分のアップロードを実行する
   * @param {String} upUrl  アップロード先 URL
   * @param {Number} range  これまでにアップロードしたサイズ
   * @param {ByteArrayWrapper} packet  アップロードするバイナリ
@@ -326,7 +281,7 @@ function createSession(oauth2,fileName,{
   * @param {Array<String>} uploadedFileUrl  アップロードしたファイルのURLを格納する配列
   * @return {Number}  新しい range
   */
-function uploadLarge(upUrl,range,packet,fileSize,uploadedFileUrl){
+function uploadPacket(upUrl,range,packet,fileSize,uploadedFileUrl){
   const packetSize = packet.getLength();
   const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
   let sending = httpClient.begin()
