@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Upload File</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: ファイルアップロード</label>
-    <last-modified>2023-02-24</last-modified>
+    <last-modified>2023-02-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <summary>This item uploads files to the specified folder on OneDrive.</summary>
@@ -62,7 +62,6 @@ function main(){
   }
 
   //// == 演算 / Calculating ==
-
   fileCheck(files, urlDataDef, folderUrl);
   const folderInfo = getFolderInfoByUrl( folderUrl, oauth2 );
   let uploadedFileUrl = [];
@@ -71,6 +70,7 @@ function main(){
     engine.log(`Uploading: ${files.get(i).getName()}`);
     uploadFile(oauth2,files.get(i),folderInfo,shouldReplace,uploadedFileUrl);
   }
+
   //// == ワークフローデータへの代入 / Data Updating ==
   setData(urlDataDef,uploadedFileUrl);
 }
@@ -92,8 +92,8 @@ function retrieveFolderUrl() {
 
 /**
   * アップロードしようとするファイルの名前・数・サイズが適切かどうかチェックする
-  * ファイル数、通信制限をチェック
-  * 通信数=ceil(ファイルサイズ/パケットの最大サイズ) + 1
+  * サイズ 0 のファイルが含まれている場合はエラー
+  * 各ファイルのアップロードに必要な通信数 = ceil(ファイルサイズ/パケットの最大サイズ) + 1
   * その後ファイル名をチェック
   * @param {Array<File>} files  アップロードしようとするファイル
   * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
@@ -103,11 +103,14 @@ function fileCheck(files,urlDataDef,folderUrl){
   const fileNum = files.size(); //number of files
   fileNumCheck(urlDataDef,fileNum);
   let requestNum = 0;
-  for (let i = 0; i < fileNum; i++){
-    const size = files.get(i).getLength();
+  files.forEach(file => {
+    const size = file.getLength();
+    if (size === 0) {
+      throw `Unable to upload "${file.getName()}" as its size is 0.`;
+    }
     const packetUploadingTimes = Math.max(1, Math.ceil(size / PACKET_MAX_SIZE));
     requestNum += packetUploadingTimes + 1;
-  }
+  });
   if(folderUrl !== "" && folderUrl !== null){
     requestNum++;
   }
@@ -231,14 +234,10 @@ function uploadFile(oauth2,file,{
   let range = 0;
   const fileSize = file.getLength();
 
-  if (fileSize === 0) {
-    // TODO サイズ 0 のファイルアップロード
-  } else {
-    fileRepository.readFile(file, PACKET_MAX_SIZE, function(packet){
-      //upload each fragment of file
-      range = uploadPacket(upUrl,range,packet,fileSize,uploadedFileUrl);
-    });
-  }
+  fileRepository.readFile(file, PACKET_MAX_SIZE, function(packet){
+    //upload each fragment of file
+    range = uploadPacket(upUrl,range,packet,fileSize,uploadedFileUrl);
+  });
 }
 
 /**
