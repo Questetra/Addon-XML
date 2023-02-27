@@ -653,8 +653,8 @@ const createUploadedResponse = (index) => {
 };
 
 /**
- * ファイルのアップロードに成功
- * フォルダ指定なし
+ * アップロード成功
+ * フォルダ指定なし (データ項目が設定されていて、値が空)
  * 上書きしない
  * パケットアップロードは1回のみ
  * ファイルが1個であれば、保存先データ項目が単一行でもエラーにならない
@@ -689,13 +689,13 @@ test('Succeed to upload a file', () => {
 });
 
 /**
- * ファイルのアップロードに成功
+ * アップロード成功
  * フォルダ指定あり (データ項目)
  * 上書きする
  * パケットアップロード複数回
  * 保存先データ項目を指定しない場合
  */
-test('Succeed to upload a large file - several upload requests required', () => {
+test('Succeed to upload a large file - more than one packet uploads required', () => {
     const files = new java.util.ArrayList();
     const fileSize = PACKET_SIZE_LIMIT * 2 + 1; // パケットアップロード3回
     files.add(createQfile('ファイル', fileSize));
@@ -731,20 +731,66 @@ test('Succeed to upload a large file - several upload requests required', () => 
 
 /**
  * アップロード成功
- * リクエスト上限ぎりぎりのファイル数
+ * リクエスト上限ぎりぎりのファイル数（パケットアップロードが 1 回で済むファイルのみ）
+ * フォルダ指定なし (固定値で値が空)
+ * 上書きする
  */
 test('Succeed to upload files - maximum number of files', () => {
     const files = new java.util.ArrayList();
-    const reqLimit = httpClient.getRequestingLimit();
+    const fileSize = 1;
+    for (let i = 0; (i + 1) * 2 <= httpClient.getRequestingLimit(); i++) {
+        files.add(createQfile(`ファイル${i}`, fileSize));
+    }
+    const fileUrlDef = prepareConfigs(files, 'dummy_folder', true);
+    configs.put('conf_folderUrl', ''); // 固定値でフォルダ指定を解除
+
+    let reqCount = 0;
+    let fileCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === fileCount * 2) { // セッション作成
+            assertCreateSessionRequest(request, files.get(fileCount), 'me/drive', 'root', true);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SESSION_1));
+        }
+        if (reqCount === fileCount * 2 + 1) { // パケットのアップロード
+            assertUploadPacketRequest(request, SESSION_1.uploadUrl, 0, fileSize - 1, fileSize);
+            reqCount++;
+            fileCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createUploadedResponse(fileCount));
+        }
+    });
+
+    execute();
+
+    // 文字型データ項目の値をチェック
+    const fileUrls = [];
+    for (let i = 0; i < files.size(); i++) {
+        fileUrls.push(`https://sample.com/:f:/g/personal/test_user/uploaded_file_${i+1}`);
+    }
+    expect(engine.findData(fileUrlDef)).toEqual(fileUrls.join('\n'));
+});
+
+/**
+ * アップロード成功
+ * リクエスト上限ぎりぎりのファイル数（パケットアップロード複数回のファイルを含む）
+ * フォルダ URL を固定値で指定
+ * 上書きしない
+ */
+test('Succeed to upload files - maximum number of files including a large file', () => {
+    const files = new java.util.ArrayList();
+
     // リクエストが計4回必要なファイル (セッション作成1回、パケットアップロード3回) を1つ追加
     const fileSize1 = PACKET_SIZE_LIMIT * 2 + 1;
     files.add(createQfile('ファイル0', fileSize1));
+
     // リクエストが計2回必要なファイル (セッション作成1回、パケットアップロード1回) をリクエスト回数上限に達するまで追加
     const fileSize2 = 1;
-    for (let i = 0; i * 2 + 5 < reqLimit - 2; i++) { // 5 = (1つ目のファイルのリクエスト数  = 4) + (フォルダの情報取得のリクエスト数 = 1)
+    for (let i = 0; (i + 1) * 2 + 5 <= httpClient.getRequestingLimit(); i++) { // 5 = (1つ目のファイルのリクエスト数  = 4) + (フォルダの情報取得のリクエスト数 = 1)
         files.add(createQfile(`ファイル${i+1}`, fileSize2));
     }
-    const fileUrlDef = prepareConfigs(files, FOLDER_URL_2, false);
+
+    const fileUrlDef = prepareConfigs(files, null, false);
+    configs.put('conf_folderUrl', FOLDER_URL_2); // 固定値で指定
 
     let reqCount = 0;
     let fileCount = 0;
