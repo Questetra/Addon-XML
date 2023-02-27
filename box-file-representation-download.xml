@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-02-13</last-modified>
+    <last-modified>2023-02-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>2</engine-type>
     <addon-version>2</addon-version>
@@ -66,10 +66,6 @@
             <label>C5: File type data item to add the downloaded file</label>
             <label locale="ja">C5: ダウンロードファイルを追加保存するデータ項目</label>
         </config>
-        <config name="conf_urlTemplate" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C6: Data item to store temporary data required for download</label>
-            <label locale="ja">C6: ダウンロードに必要な一時データを保存するデータ項目</label>
-        </config>
     </configs>
 
     <script><![CDATA[
@@ -81,7 +77,6 @@ function main() {
     const representation = configs.get('conf_Representation');
     const fileName = configs.get('conf_FileName');
     const fileDef = configs.getObject("conf_Files");
-    const urlDef = configs.getObject("conf_urlTemplate");
 
     const {urlTemplate, paged} = getRepresentationInfo(oauth2, fileId, representation);
     let url;
@@ -93,11 +88,8 @@ function main() {
 
     // ダウンロードしてみて、ダメだったら proceed() に進む
     if (downloadAndSaveFiles(oauth2, url, representation, fileName, fileDef) === false) {
-        if (urlDef === null) {
-            throw `The representation ${representation} is being created and not available yet.`;
-        }
-        // urlDef に url を保存
-        engine.setData(urlDef, url);
+        // url を一時データとして保存
+        engine.saveTemporaryData(url);
         return false;
     }
 }
@@ -107,14 +99,15 @@ function proceed() {
     const representation = configs.get('conf_Representation');
     const fileName = configs.get('conf_FileName');
     const fileDef = configs.getObject("conf_Files");
-    const urlDef = configs.getObject("conf_urlTemplate");
 
-    const url = engine.findData(urlDef);
+    const url = engine.restoreTemporaryData();
+    if (url === null) {
+        throw 'download url has not been saved';
+    }
 
     if (downloadAndSaveFiles(oauth2, url, representation, fileName, fileDef) === false) {
         return false;
     }
-    engine.setData(urlDef, null);
 }
 
 /**
@@ -326,9 +319,9 @@ function saveFiles(fileDef, qfiles) {
  * @param representation
  * @param fileName
  * @param files
- * @return fileDef
+ * @return {fileDef}
  */
-const prepareConfigs = (fileId, representation, fileName, urlTemplate, files) => {
+const prepareConfigs = (fileId, representation, fileName, files) => {
     configs.put('conf_OAuth2', 'Box');
 
     // ファイル ID を保存した文字型データ項目（単一行）を準備し、設定
@@ -344,13 +337,7 @@ const prepareConfigs = (fileId, representation, fileName, urlTemplate, files) =>
     configs.putObject('conf_Files', fileDef);
     engine.setData(fileDef, files);
 
-    // ダウンロード URL を一時的に保存するデータ項目を準備し、設定
-    const urlTemplateDef = engine.createDataDefinition('URL Template', 2, 'q_url', 'STRING_TEXTFIELD');
-    configs.putObject('conf_urlTemplate', urlTemplateDef);
-    engine.setData(urlTemplateDef, urlTemplate);
-
     return {
-        urlTemplateDef,
         fileDef
     };
 }
@@ -373,7 +360,7 @@ const assertError = (func, errorMsg) => {
  * ファイル ID の値が空でエラー
  */
 test('File ID is blank', () => {
-    prepareConfigs(null, '[pdf]', '', null, null);
+    prepareConfigs(null, '[pdf]', '', null);
     assertError(main, 'File ID is blank.');
 });
 
@@ -398,7 +385,7 @@ const assertGetRepInfoRequest = ({url, method, headers}, fileId, representation)
 test('Fail in API Request to get representation info', () => {
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null, null);
+    prepareConfigs(fileId, representation, '', null);
 
     httpClient.setRequestHandler((request) => {
         assertGetRepInfoRequest(request, fileId, representation);
@@ -413,7 +400,7 @@ test('Fail in API Request to get representation info', () => {
 test('Unavailable representation', () => {
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null, null);
+    prepareConfigs(fileId, representation, '', null);
 
     const responseObj = {
         "representations": {
@@ -494,7 +481,7 @@ const assertDownloadRepRequest = ({url, method}, downloadUrl) => {
 test('Fail in API Request to download PDF representation', () => {
     const fileId = 'fileId-1';
     const representation = '[pdf]';
-    prepareConfigs(fileId, representation, '', null, null);
+    prepareConfigs(fileId, representation, '', null);
 
     const repInfo = createPDFRepresentationInfo(fileId);
     let reqCount = 0;
@@ -536,9 +523,8 @@ test('Succeed to download PDF representation', () => {
     const fileId = 'fileId-1';
     const representation = '[pdf]';
     const {
-        fileDef,
-        urlTemplateDef
-    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
+        fileDef
+    } = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.pdf';
     let reqCount = 0;
@@ -560,8 +546,7 @@ test('Succeed to download PDF representation', () => {
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'application/pdf', 'UTF-8', 'This is the content of PDF\n');
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
+    expect(engine.restoreTemporaryData()).toEqual(null);
 });
 
 /**
@@ -578,9 +563,8 @@ test('Succeed to download PDF representation - fileName specified', () => {
     const files = new java.util.ArrayList();
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル.csv', 'text/csv; charset=UTF-8', 'あいうえお'));
     const {
-        urlTemplateDef,
         fileDef
-    } = prepareConfigs(fileId, representation, fileName, null, files);
+    } = prepareConfigs(fileId, representation, fileName, files);
 
     const originalFileName = '元の名前.pdf'; // 使用しないが、条件を同じにするためにレスポンスのヘッダにセット
     let reqCount = 0;
@@ -602,7 +586,7 @@ test('Succeed to download PDF representation - fileName specified', () => {
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(2);
     assertFile(savedFiles.get(1), fileName, 'application/pdf', 'UTF-8', 'This is the content of PDF\n');
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
+    expect(engine.restoreTemporaryData()).toEqual(null);
 });
 
 /**
@@ -614,9 +598,8 @@ test('Succeed to download TEXT representation', () => {
     const fileId = 'fileId-4';
     const representation = '[extracted_text]';
     const {
-        urlTemplateDef,
         fileDef
-    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
+    } = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.text';
     let reqCount = 0;
@@ -638,7 +621,7 @@ test('Succeed to download TEXT representation', () => {
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'text/plain', 'UTF-8', '抽出されたテキスト\n');
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
+    expect(engine.restoreTemporaryData()).toEqual(null);
 });
 
 /**
@@ -651,9 +634,8 @@ test('Succeed to download JPEG representation', () => {
     const fileId = 'fileId-5';
     const representation = '[jpeg?dimensions=32x32]';
     const {
-        urlTemplateDef,
         fileDef
-    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
+    } = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.jpg';
     let reqCount = 0;
@@ -669,7 +651,7 @@ test('Succeed to download JPEG representation', () => {
         return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
     });
     expect(main()).toEqual(false);
-    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+    expect(engine.restoreTemporaryData()).toEqual(downloadUrl);
 
     httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
@@ -677,7 +659,7 @@ test('Succeed to download JPEG representation', () => {
     });
     expect(proceed()).toEqual(false);
     expect(engine.findData(fileDef)).toEqual(null);
-    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl);
+    expect(engine.restoreTemporaryData()).toEqual(downloadUrl);
 
     httpClient.setRequestHandler((request) => {
         assertDownloadRepRequest(request, downloadUrl);
@@ -689,7 +671,6 @@ test('Succeed to download JPEG representation', () => {
     const savedFiles = engine.findData(fileDef);
     expect(savedFiles.size()).toEqual(1);
     assertFile(savedFiles.get(0), originalFileName, 'image/jpeg', 'UTF-8', 'This is the content of JPEG\n');
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
@@ -698,9 +679,7 @@ test('Succeed to download JPEG representation', () => {
 test('Fail in API Request to download PNG representation', () => {
     const fileId = 'fileId-1';
     const representation = '[png?dimensions=1024x1024]';
-    const {
-        urlTemplateDef
-    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
+    prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
 
     const repInfo = createImageRepresentationInfo(fileId, 'true');
     let reqCount = 0;
@@ -727,9 +706,8 @@ test('Succeed to download PNG representation', () => {
     const fileId = 'fileId-6';
     const representation = '[png?dimensions=1024x1024]';
     const {
-        urlTemplateDef,
         fileDef
-    } = prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
+    } = prepareConfigs(fileId, representation, '', null); // ファイル名指定なし、事前ファイルなし
 
     const originalFileName = '元の名前.png';
     let reqCount = 0;
@@ -745,7 +723,7 @@ test('Succeed to download PNG representation', () => {
         return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
     });
     expect(main()).toEqual(false);
-    expect(engine.findData(urlTemplateDef)).toEqual(downloadUrl + "{+asset_path}");
+    expect(engine.restoreTemporaryData()).toEqual(downloadUrl + "{+asset_path}");
 
     const pageNum = 3;
     httpClient.setRequestHandler((request) => {
@@ -764,32 +742,6 @@ test('Succeed to download PNG representation', () => {
     for (let i = 0; i < pageNum; i++) {
         assertFile(savedFiles.get(i), `${i + 1}-${originalFileName}`, 'image/png', 'UTF-8', `This is the content of PNG, page ${i + 1}\n`);
     }
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
-});
-
-/**
- * PNG レプリゼーション（ページ割あり）のダウンロードに失敗
- * 作成中でダウンロードに失敗するが、conf_urlTemplate が未定義のため、保存できない
- */
-test('Fail to download PNG representation, because conf_urlTemplate is undefined and response is 202', () => {
-    const fileId = 'fileId-6';
-    const representation = '[png?dimensions=1024x1024]';
-    prepareConfigs(fileId, representation, '', null, null); // ファイル名指定なし、事前ファイルなし
-    configs.remove('conf_urlTemplate');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            reqCount++;
-            assertGetRepInfoRequest(request, fileId, representation);
-            const repInfo = createImageRepresentationInfo(fileId, 'true');
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(repInfo));
-        }
-        const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-        assertDownloadRepRequest(request, `${downloadUrl}1.png`);
-        return httpClient.createHttpResponse(202, 'application/json', '{}'); // 作成中でダウンロードできない場合のステータスは 202
-    });
-    assertError(main, 'The representation [png?dimensions=1024x1024] is being created and not available yet.');
 });
 
 /**
@@ -810,9 +762,10 @@ test('proceed() Succeed to download Paged JPEG representation - fileName specifi
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル1.csv', 'text/csv; charset=UTF-8', 'あいうえお'));
     files.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル2.csv', 'text/csv; charset=UTF-8', 'かきくけこ'));
     const {
-        urlTemplateDef,
         fileDef
-    } = prepareConfigs('', representation, fileName, downloadUrl + "{+asset_path}", files);
+    } = prepareConfigs('', representation, fileName, files);
+    // 一時データにダウンロード URL を保存
+    engine.saveTemporaryData(downloadUrl + "{+asset_path}");
 
     const originalFileName = '元の名前.pdf'; // 使用しないが、条件を同じにするためにレスポンスのヘッダにセット
     const pageNum = httpClient.getRequestingLimit() - 1; // 上限のページ数でテスト
@@ -833,7 +786,6 @@ test('proceed() Succeed to download Paged JPEG representation - fileName specifi
     for (let i = 0; i < pageNum; i++) {
         assertFile(savedFiles.get(i + 2), `${i + 1}-${fileName}`, 'image/jpg', 'UTF-8', `This is the content of JPEG, page ${i + 1}\n`);
     }
-    expect(engine.findData(urlTemplateDef)).toEqual(null);
 });
 
 /**
@@ -843,7 +795,9 @@ test('proceed() Number of necessary HTTP requests exceeds the limit', () => {
     const fileId = 'fileId-1';
     const representation = '[png?dimensions=1024x1024]';
     const downloadUrl = `https://public.boxcloud.com/api/2.0/internal_files/${fileId}/path/to/the/image/representation/`;
-    prepareConfigs('', representation, null, downloadUrl + "{+asset_path}", null);
+    prepareConfigs('', representation, null, null);
+    // 一時データにダウンロード URL を保存
+    engine.saveTemporaryData(downloadUrl + "{+asset_path}");
 
     const originalFileName = '元の名前.png';
     let reqCount = 1;
