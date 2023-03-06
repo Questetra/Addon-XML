@@ -65,18 +65,18 @@ function main() {
     //// == 演算 / Calculating ==
     fileCheck(files, urlDataDef, folderUrl);
     const folderInfo = getFolderInfoByUrl(folderUrl, oauth2);
-    let uploadedFileUrl = [];
+    const uploadedFileUrl = [];
 
-    for (let i = 0; i < files.size(); i++) {
-        engine.log(`Uploading: ${files.get(i).getName()}`);
-        if (files.get(i).getLength() > LIMIT_SIZE) {
+    files.forEach(file => {
+        engine.log(`Uploading: ${file.getName()}`);
+        if (file.getLength() > LIMIT_SIZE) {
             //over 4MB
-            processLargeFile(oauth2, files.get(i), folderInfo, shouldReplace, uploadedFileUrl);
+            processLargeFile(oauth2, file, folderInfo, shouldReplace, uploadedFileUrl);
         } else {
             //under 4MB
-            upload(oauth2, files.get(i), folderInfo, shouldReplace, uploadedFileUrl);
+            upload(oauth2, file, folderInfo, shouldReplace, uploadedFileUrl);
         }
-    }
+    });
 
     //// == ワークフローデータへの代入 / Data Updating ==
     setData(urlDataDef, uploadedFileUrl);
@@ -107,17 +107,16 @@ function retrieveFolderUrl() {
   * @param {String} folderUrl  アップロード先フォルダの URL
   */
 function fileCheck(files, urlDataDef, folderUrl) {
-    const fileNum = files.size(); //number of files
-    fileNumCheck(urlDataDef, fileNum);
+    fileNumCheck(urlDataDef, files.size());
     let requestNum = 0;
-    for (let i = 0; i < fileNum; i++) {
-        const size = files.get(i).getLength();
+    files.forEach(file => {
+        const size = file.getLength();
         if (size > LIMIT_SIZE) {
             requestNum += (Math.ceil(size / PACKET_MAX_SIZE) + 1);
         } else {
             requestNum++;
         }
-    }
+    });
     if (folderUrl !== "" && folderUrl !== null) {
         requestNum++;
     }
@@ -146,14 +145,13 @@ function fileNumCheck(dataDef, fileNum) {
  * @param {Array<File>}  アップロードしようとするファイルの配列
  */
 function checkFileNameOverlap(files) {
-    const fileNames = [];
-    const fileNum = files.size();
-    for (let i = 0; i < fileNum; i++) {
-        if (fileNames.includes(files[i].getName())) {
+    const fileNames = new Set();
+    files.forEach(file => {
+        if (fileNames.has(file.getName())) {
             throw "Two or more files to upload have the same name.";
         }
-        fileNames[i] = files[i].getName();
-    }
+        fileNames.add(file.getName());
+    });
 }
 
 /**
@@ -180,7 +178,7 @@ function getFolderInfoByUrl(folderUrl, oauth2) {
 
 /**
   * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
-  * APIの仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+  * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有URL
   * @param {String} oauth2  OAuth2 設定情報
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
@@ -204,8 +202,7 @@ function getObjBySharingUrl(sharingUrl, oauth2) {
         engine.log(responseStr);
         throw "Failed to get drive item.";
     }
-    const responseObj = JSON.parse(responseStr);
-    return responseObj;
+    return JSON.parse(responseStr);
 }
 
 /**
@@ -218,8 +215,7 @@ function encodeSharingUrl(sharingUrl) {
     while (encodedSharingUrl.slice(-1) === '=') {
         encodedSharingUrl = encodedSharingUrl.slice(0, -1);
     }
-    encodedSharingUrl = "u!" + encodedSharingUrl;
-    return encodedSharingUrl;
+    return `u!${encodedSharingUrl}`;
 }
 
 /**
@@ -329,13 +325,13 @@ function createSession(oauth2, fileName, {
 function uploadLarge(upUrl, range, packet, fileSize, uploadedFileUrl) {
     const packetSize = packet.getLength();
     const rangetxt = `bytes ${range}-${range + packetSize - 1}/${fileSize}`;
-    let sending = httpClient.begin()
+    const response = httpClient.begin()
         .header("Content-Range", rangetxt)
         .body(packet, "application/octet-stream")
         .put(upUrl);
 
-    const status = sending.getStatusCode();
-    const responseStr = sending.getResponseAsString();
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
 
     if (status >= 300) {
         engine.log(`Status: ${status}`);
