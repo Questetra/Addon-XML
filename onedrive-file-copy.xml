@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <license>(C) Questetra, Inc. (MIT License)</license>
+<last-modified>2023-03-14</last-modified>
 <engine-type>2</engine-type>
+<addon-version>2</addon-version>
 <label>Microsoft 365 OneDrive for Business: Copy File / Folder</label>
 <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダコピー</label>
-<last-modified>2023-02-16</last-modified>
 <summary>This item copies the specified file/folder to the specified folder on OneDrive.</summary>
 <summary locale="ja">この工程は、OneDrive 上のファイル / フォルダを複製し、指定フォルダに新規保存します。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/onedrive-file-copy/</help-page-url>
@@ -44,7 +45,6 @@
   // グローバル変数
   const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
 
-  main();
   function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const oauth2 = configs.get( "conf_OAuth2" );
@@ -60,17 +60,35 @@
     const sourceInfo = getItemInfoByUrl( sourceUrl, oauth2 );
     const destInfo = getItemInfoByUrl( destUrl, oauth2 );
     // sending Copy Request
-    const copyResponse = sendCopyRequest( sourceInfo, destInfo, newName, oauth2 );
+    const location = sendCopyRequest( sourceInfo, destInfo, newName, oauth2 );
+    const driveId = determineDriveId(sourceInfo.driveId, destInfo.driveId);
 
-    // コピー状況を確認し、ドライブアイテム ID を取得
-    const newItemId = getNewItemId( copyResponse );
+    // コピー状況を確認し、未完了なら proceed() に進む
+    if (checkStatusAndSaveUrl(location, driveId, oauth2, saveUrlDataDef) === false) {
+      // location と driveId を一時データとして保存
+      const tempData = {
+        "location": `${location}`,
+        "driveId": `${driveId}`
+      };
+      engine.saveTemporaryData(JSON.stringify(tempData));
+      return false;
+    }
+  }
 
-    // ワークフローデータへの代入データの作成
-    const newItemUrl = getNewItemUrl( sourceInfo.driveId, destInfo.driveId, newItemId, oauth2 );
+  function proceed() {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const oauth2 = configs.get( "conf_OAuth2" );
+    const saveUrlDataDef = configs.getObject( "conf_dataForUrl" );
 
-    //// == Data Updating / ワークフローデータへの代入 ==
-    if ( saveUrlDataDef !== null ){
-      engine.setData( saveUrlDataDef, newItemUrl );
+    //// == Restoring Temporary Data / 一時データの読み出し ==
+    const tempDataStr = engine.restoreTemporaryData();
+    if (tempDataStr === null) {
+      throw 'temporary data has not been saved';
+    }
+    const {location, driveId} = JSON.parse(tempDataStr);
+
+    if (checkStatusAndSaveUrl(location, driveId, oauth2, saveUrlDataDef) === false) {
+      return false;
     }
   }
 
@@ -187,12 +205,12 @@
   }
 
   /**
-    * copyリクエストをPOSTし、レスポンスを返す
+    * copy リクエストを POST し、コピーステータス確認先 URL を返す
     * @param {String} sourceInfo  コピー元アイテム情報 {driveId, id}
     * @param {String} destInfo  コピー先フォルダ情報 {driveId, id}
     * @param {String} newName  新しいファイル / フォルダの名前
     * @param {String} oauth2  OAuth2 認証設定
-    * @return {HttpResponseWrapper} response  レスポンス
+    * @return {String} location  コピーステータス確認先 URL
     */
   function sendCopyRequest( sourceInfo, destInfo, newName, oauth2 ) {
     // Request PATH
@@ -210,7 +228,7 @@
       engine.log(accessLog);
       throw `Failed to copy. status: ${httpStatus}`;
     }
-    return response;
+    return response.getHeaderValues("Location").get(0);
   }
 
   /**
@@ -233,29 +251,63 @@
     return JSON.stringify( requestBodyObj );
   }
 
+/**
+    * 新しいアイテムのドライブ ID を決める
+    * @param {String} driveIdOfSource  コピー元アイテムのドライブ ID（コピー先フォルダのドライブ ID が空文字列の場合に使用）
+    * @param {String} driveIdOfDest  コピー先フォルダのドライブ ID
+    * @return {String} driveId  新しいファイル / フォルダのドライブ ID
+    */
+  function determineDriveId(driveIdOfSource, driveIdOfDest) {
+    let driveId = driveIdOfSource;
+    if ( driveIdOfDest !== "" ) {
+      driveId = driveIdOfDest;
+    }
+    return driveId;
+  }
+
   /**
-    * コピーAPIのレスポンスからコピーの完了状態を確認し、新しいドライブアイテムのIDを返す
-    * @param {HttpResponseWrapper} copyResponse  コピーAPIのレスポンス
+    * コピーの完了状態を確認し、完了していれば新しいアイテムの URL を保存する
+    * コピー未完了の場合は false を返す
+    * @param {String} location  コピーステータス確認用 URL
+    * @param {String} driveId  新しいアイテムのドライブ ID
+    * @param {String} oauth2  OAuth2 認証設定
+    * @param {DataDefinitionView} saveUrlDataDef  URL を保存するデータ項目
+    * @return {boolean}
+    */
+  function checkStatusAndSaveUrl(location, driveId, oauth2, saveUrlDataDef) {
+    const newItemId = checkStatusAndGetNewItemId(location);
+    if (newItemId === null) {
+      return false;
+    }
+    const newItemUrl = getItemUrlById(driveId, newItemId, oauth2);
+
+    if (saveUrlDataDef !== null) {
+      engine.setData(saveUrlDataDef, newItemUrl);
+    }
+  }
+
+  /**
+    * コピーの完了状態を確認し、新しいドライブアイテムのIDを返す
+    * コピー未完了の場合は null を返す
+    * @param {String} location  コピーステータス確認用 URL
     * @return {String} newItemId  新しいドライブアイテムのID
     */
-  function getNewItemId( copyResponse ) {
-    const location = copyResponse.getHeaderValues("Location").get(0);
+  function checkStatusAndGetNewItemId( location ) {
     const monitorResponseObj = getMonitorResponseObj( location );
     const copyStatus = monitorResponseObj.status;
-    let newItemId = "";
     if ( copyStatus === "notStarted" || copyStatus === "inProgress" ) {
-      // 未開始または進行中の場合、newItemId は空文字列のまま
+      // 未開始または進行中の場合、null を返す
       engine.log(`Copy status: ${copyStatus}\nTo retrieve copy status, GET ${location}\n`);
-    } else if ( copyStatus === "completed" ) {
-      // 完了の場合、ドライブアイテムIDを取得
-      engine.log(`Copy status: ${copyStatus}\n`);
-      newItemId = monitorResponseObj.resourceId;
-    } else {
-      // 不明なステータスの場合はエラー
-      engine.log(`error: ${JSON.stringify( monitorResponseObj.error )}\n`);
-      throw `Copy is not in progress nor completed. status: ${copyStatus}`;
+      return null;
     }
-    return newItemId;
+    if ( copyStatus === "completed" ) {
+      // 完了の場合、ドライブアイテム ID を返す
+      engine.log(`Copy status: ${copyStatus}\n`);
+      return monitorResponseObj.resourceId;
+    }
+    // 不明なステータスの場合はエラー
+    engine.log(`error: ${JSON.stringify( monitorResponseObj.error )}\n`);
+    throw `Copy is not in progress nor completed. status: ${copyStatus}`;
   }
 
   /**
@@ -275,27 +327,6 @@
       throw `Failed to get monitor. status: ${httpStatus}`;
     }
     return JSON.parse( responseStr );
-  }
-
-  /**
-    * 新しいファイル / フォルダのURLを返す
-    * @param {String} driveIdOfSource  コピー元アイテムのドライブのID（フォルダのドライブIDが空文字列の場合に使用）
-    * @param {String} driveIdOfDest  コピー先フォルダのドライブID
-    * @param {String} newItemId  新しいファイル/ フォルダのID
-    * @param {String} oauth2  OAuth2 認証設定
-    * @return {String} newItemUrl  新しいファイル / フォルダのURL
-    */
-  function getNewItemUrl( driveIdOfSource, driveIdOfDest, newItemId, oauth2 ) {
-    let newItemUrl = "";
-    // ドライブIDを決める（コピー先フォルダのドライブIDが空文字列でなければフォルダのドライブID）
-    let driveId = driveIdOfSource;
-    if ( driveIdOfDest !== "" ) {
-      driveId = driveIdOfDest;
-    }
-    if ( newItemId !== "" ) {
-      newItemUrl = getItemUrlById( driveId, newItemId, oauth2 );
-    }
-    return newItemUrl;
   }
 
   /**
