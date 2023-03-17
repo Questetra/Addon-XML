@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2023-02-16</last-modified>
+<last-modified>2023-03-17</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
 <label>Microsoft 365 Excel: Insert New Row</label>
 <label locale="ja">Microsoft 365 Excel: 行挿入</label>
 <summary>This item inserts a new row with data at the specified position in a sheet.</summary>
@@ -106,12 +106,13 @@ function main() {
 
     // Access to the API 1st(Get Book Info)
     const bookInfo = getFileInfoByUrl(bookUrl, oauth2);
+    const worksheetId = getWorksheetId(bookInfo.driveId, bookInfo.fileId, sheetName, oauth2);
 
     // Access to the API 2nd(Insert Row)
-    insertRow(bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, oauth2);
+    insertRow(bookInfo.driveId, bookInfo.fileId, worksheetId, rowNumber, oauth2);
 
     // Access to the API 3rd(PATCH)
-    patchData(bookInfo.driveId, bookInfo.fileId, sheetName, rowNumber, patchRequestBody, oauth2);
+    patchData(bookInfo.driveId, bookInfo.fileId, worksheetId, rowNumber, patchRequestBody, oauth2);
 }
 
 /**
@@ -230,14 +231,35 @@ function encodeSharingUrl(sharingUrl) {
 }
 
 /**
+  * ワークシートの ID を取得する
+  * @param {String,String} driveId, bookId  ワークブックのドライブ ID、ファイル ID
+  * @param {String} sheetName  シートの名前
+  * @param {String} oauth2  OAuth2 設定
+  */
+function getWorksheetId(driveId, bookId, sheetName, oauth2) {
+    const getWorksheetsUrl = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .get(getWorksheetsUrl);
+
+    logAndJudgeError(response, "GET");
+    const jsonRes = JSON.parse(response.getResponseAsString());
+    const worksheet = jsonRes.value.find(worksheet => worksheet.name === sheetName);
+    if (worksheet === undefined) {
+      throw 'Worksheet not found.';
+    }
+    return worksheet.id;
+}
+
+/**
   * 行を指定シートの指定箇所に挿入する
   * @param {String,String} driveId, bookId  挿入先ファイルのドライブ ID、ファイル ID
-  * @param {String} sheetName  挿入先シートの名前
+  * @param {String} worksheetId  挿入先シートの ID
   * @param {Number} rowNumber  挿入箇所の行番号
   * @param {String} oauth2  OAuth2 設定
   */
-function insertRow(driveId, bookId, sheetName, rowNumber, oauth2) {
-    const insertUrl = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='${rowNumber}:${rowNumber}')/insert`;
+function insertRow(driveId, bookId, worksheetId, rowNumber, oauth2) {
+    const insertUrl = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${encodeURIComponent(worksheetId)}/range(address='${rowNumber}:${rowNumber}')/insert`;
     const requestBody = {
         "Shift": "Down"
     };
@@ -253,13 +275,13 @@ function insertRow(driveId, bookId, sheetName, rowNumber, oauth2) {
 /**
   * 指定シートの指定行にデータを入力する
   * @param {String,String} driveId, bookId  挿入先ファイルのドライブ ID、ファイル ID
-  * @param {String} sheetName  挿入先シートの名前
+  * @param {String} worksheetId  挿入先シートの ID
   * @param {Number} rowNumber  挿入箇所の行番号
   * @param {Object} requestBody  入力するデータの入ったリクエストオブジェクト
   * @param {String} oauth2  OAuth2 設定
   */
-function patchData(driveId, bookId, sheetName, rowNumber, requestBody, oauth2) {
-    const patchUri = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='A${rowNumber}:J${rowNumber}')/`;
+function patchData(driveId, bookId, worksheetId, rowNumber, requestBody, oauth2) {
+    const patchUri = `${GRAPH_URI}${driveId}/items/${bookId}/workbook/worksheets/${encodeURIComponent(worksheetId)}/range(address='A${rowNumber}:J${rowNumber}')/`;
 
     const response = httpClient.begin()
         .authSetting(oauth2)
