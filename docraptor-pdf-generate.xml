@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Docraptor: Generate PDF</label>
+    <label locale="ja">DocRaptor: PDF 生成</label>
+    <last-modified>2023-04-27</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <summary>This item generates a PDF file from an HTML file.</summary>
+    <summary locale="ja">この工程は、HTML ファイルから PDF ファイルを生成します。</summary>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2">
+            <label>C1: Authorization Setting in which API Key is set</label>
+            <label locale="ja">C1: API キーを設定した認証設定</label>
+        </config>
+        <config name="conf_SourceFiles" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C2: File type data item that stores the source HTML file</label>
+            <label locale="ja">C2: 変換元のHTML ファイルが保存されているファイル型データ項目</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: File type data item to save the generated PDF file</label>
+            <label locale="ja">C3: 生成された PDF ファイルを追加保存するファイル型データ項目</label>
+        </config>
+        <config name="conf_DeleteOtherFiles" form-type="TOGGLE">
+            <label>C4: Delete other files when saving</label>
+            <label locale="ja">C4: 保存時に他のファイルを削除する</label>
+        </config>
+        <config name="conf_FileName" form-type="TEXTFIELD" required="true" el-enabled="true">
+            <label>C5: File name to save as</label>
+            <label locale="ja">C5: 保存する際のファイル名</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/docraptor-pdf-generate/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/docraptor-pdf-generate/</help-page-url>
+
+    <script><![CDATA[
+
+const MAX_SOURCE_SIZE = 1048576; // 1MB。一度に文字列として読み出せるファイルサイズの QBPMS の制限から
+
+main();
+function main(){
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const apiKey = retrieveApiKey();
+    const html = retrieveSourceHtml();
+    const {filesDef, files} = retrieveFiles();
+    const fileName = retrieveFileName();
+
+    //// == 演算 / Calculating ==
+    generatePdf(apiKey, html, fileName, files);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    engine.setData(filesDef, files);
+}
+
+/**
+  * 認証設定から API キーを読み出す
+  * @return {String} apiKey
+  */
+function retrieveApiKey() {
+    const authSettingName = configs.get('conf_Auth');
+    return httpClient.getOAuth2Token(authSettingName);
+}
+
+/**
+  * config に設定したファイル型データ項目から変換元 HTML を読み出す
+  * @return {String} html
+  */
+function retrieveSourceHtml() {
+    const sourceFilesDef = configs.getObject('conf_SourceFiles');
+    const sourceFiles = engine.findData(sourceFilesDef);
+    if (sourceFiles === null) {
+        throw 'No source file attached.';
+    }
+    if (sourceFiles.size() > 1) {
+        throw 'More than one source files attached.';
+    }
+    const sourceFile = sourceFiles.get(0);
+    if (sourceFile.getLength() > MAX_SOURCE_SIZE) {
+        throw 'Source file is too large.';
+    }
+    if (!sourceFile.getContentType().startsWith('text/html')) {
+        throw 'Content-Type of the source file is not text/html.';
+    }
+    // Content-Type の charset 部は無視して、UTF-8 として読み出す
+    return fileRepository.readFile(sourceFile, 'UTF-8');
+}
+
+/**
+  * ファイル保存に関する情報を読み出す
+  * @return {Object} returnObj
+  * @return {ProcessDataDefinitionView} returnObj.filesDef  保存先データ項目
+  * @return {java.util.ArrayList<QfileView>} returnObj.files  保存ファイルを格納するリスト
+  */
+function retrieveFiles() {
+    const filesDef = configs.getObject('conf_Files');
+    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
+    let files = engine.findData(filesDef);
+    if (files === null || deleteOtherFiles) {
+        files = new java.util.ArrayList();
+    }
+    return {filesDef, files};
+}
+
+/**
+  * config から保存する際のファイル名を読み出す
+  * 空の場合はエラー
+  * @return {String} fileName
+  */
+function retrieveFileName() {
+    const fileName = configs.get('conf_FileName');
+    if (fileName === '') {
+        throw 'File name is blank.';
+    }
+    return fileName;
+}
+
+/**
+  * DocRaptor の PDF 生成 API に POST リクエストを送信し、生成されたファイルをリストに追加する
+  * プロセスがデバッグ実行の場合、PDF 生成をテスト扱いにする
+  * @param {String} apiKey  API キー
+  * @param {String} html  HTML ソース
+  * @param {String} fileName  生成された PDF を保存する際のファイル名
+  * @param {java.util.ArrayList<QfileView>} files  生成されたファイルを格納するリスト
+  */
+function generatePdf(apiKey, html, fileName, files) {
+    const requestBody = generateRequestBody(html);
+    const response = httpClient.begin()
+        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .body(requestBody, 'application/json')
+        .post('https://api.docraptor.com/docs');
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(`status: ${status}`);
+        engine.log(response.getResponseAsString());
+        throw 'Failed to generate PDF.';
+    }
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName, response.getContentType(), response.getResponse()
+    );
+    files.add(qfile);
+}
+
+/**
+  * PDF ファイル生成 API のリクエストボディを生成し、JSON 文字列で返す
+  * プロセスがデバッグ実行の場合、test パラメータに true を設定
+  * @param {String} html
+  * @return {String} requestBody
+  */
+function generateRequestBody(html) {
+    const requestBody = {};
+    requestBody.docyment_type = 'pdf';
+    requestBody.document_content = html;
+    if (processInstance.getProcessInstanceDebug()) {
+        requestBody.test = true;
+    }
+    return JSON.stringify(requestBody);
+}
+
+    ]]></script>
+
+</service-task-definition>
