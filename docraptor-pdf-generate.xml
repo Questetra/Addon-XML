@@ -5,6 +5,7 @@
     <last-modified>2023-04-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <summary>This item generates a PDF file from an HTML file.</summary>
     <summary locale="ja">この工程は、HTML ファイルから PDF ファイルを生成します。</summary>
     <configs>
@@ -36,19 +37,41 @@
 
 const MAX_SOURCE_SIZE = 1048576; // 1MB。一度に文字列として読み出せるファイルサイズの QBPMS の制限から
 
-main();
 function main(){
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const apiKey = retrieveApiKey();
     const html = retrieveSourceHtml();
-    const {filesDef, files} = retrieveFiles();
+    const filesDef = configs.getObject('conf_Files');
+    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
     const fileName = retrieveFileName();
 
     //// == 演算 / Calculating ==
-    generatePdf(apiKey, html, fileName, files);
+    const statusId = generatePdf(apiKey, html);
 
-    //// == ワークフローデータへの代入 / Data Updating ==
-    engine.setData(filesDef, files);
+    // 処理状況を確認し、未完了なら proceed() に進む
+    if (checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+        engine.saveTemporaryData(statusId);
+        return false;
+    }
+}
+
+function proceed() {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const apiKey = retrieveApiKey();
+    const filesDef = configs.getObject('conf_Files');
+    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
+    const fileName = retrieveFileName();
+
+    //// == Restoring Temporary Data / 一時データの読み出し ==
+    const statusId = engine.restoreTemporaryData();
+    if (statusId === null) {
+        throw 'Temporary data has not been saved.';
+    }
+
+    //// == 演算 / Calculating ==
+    if (checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+        return false;
+    }
 }
 
 /**
@@ -85,22 +108,6 @@ function retrieveSourceHtml() {
 }
 
 /**
-  * ファイル保存に関する情報を読み出す
-  * @return {Object} returnObj
-  * @return {ProcessDataDefinitionView} returnObj.filesDef  保存先データ項目
-  * @return {java.util.ArrayList<QfileView>} returnObj.files  保存ファイルを格納するリスト
-  */
-function retrieveFiles() {
-    const filesDef = configs.getObject('conf_Files');
-    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
-    let files = engine.findData(filesDef);
-    if (files === null || deleteOtherFiles) {
-        files = new java.util.ArrayList();
-    }
-    return {filesDef, files};
-}
-
-/**
   * config から保存する際のファイル名を読み出す
   * 空の場合はエラー
   * @return {String} fileName
@@ -114,14 +121,13 @@ function retrieveFileName() {
 }
 
 /**
-  * DocRaptor の PDF 生成 API に POST リクエストを送信し、生成されたファイルをリストに追加する
+  * DocRaptor の PDF 生成 API に POST リクエストを送信し、ステータス ID を返す
   * プロセスがデバッグ実行の場合、PDF 生成をテスト扱いにする
   * @param {String} apiKey  API キー
   * @param {String} html  HTML ソース
-  * @param {String} fileName  生成された PDF を保存する際のファイル名
-  * @param {java.util.ArrayList<QfileView>} files  生成されたファイルを格納するリスト
+  * @return {String} statusId  ステータス ID
   */
-function generatePdf(apiKey, html, fileName, files) {
+function generatePdf(apiKey, html) {
     const requestBody = generateRequestBody(html);
     const response = httpClient.begin()
         .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
@@ -130,19 +136,16 @@ function generatePdf(apiKey, html, fileName, files) {
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
-        engine.log(`status: ${status}`);
-        engine.log(response.getResponseAsString());
-        throw 'Failed to generate PDF.';
+        engine.log(responseStr);
+        throw `Failed to post PDF generation request. status: ${status}`;
     }
-    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
-        fileName, response.getContentType(), response.getResponse()
-    );
-    files.add(qfile);
+    return JSON.parse(responseStr).status_id;
 }
 
 /**
   * PDF ファイル生成 API のリクエストボディを生成し、JSON 文字列で返す
-  * プロセスがデバッグ実行の場合、test パラメータに true を設定
+  * - 非同期生成をリクエスト
+  * - プロセスがデバッグ実行の場合、テストリクエスト扱いにする
   * @param {String} html
   * @return {String} requestBody
   */
@@ -150,6 +153,7 @@ function generateRequestBody(html) {
     const requestBody = {};
     requestBody.docyment_type = 'pdf';
     requestBody.document_content = html;
+    requestBody.async = true; // 非同期生成をリクエストする
     // プロセスがデバッグ実行の場合、test パラメータに true を設定
     if (processInstance.getProcessInstanceDebug()) {
         requestBody.test = true;
@@ -157,6 +161,62 @@ function generateRequestBody(html) {
     // DocRaptor でログを確認しやすいように名前をつけておく
     requestBody.name = `QBPMS-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`;
     return JSON.stringify(requestBody);
+}
+
+/**
+  * PDF ファイル生成の処理状態を確認し、完了していればファイルを保存する
+  * 未完了の場合は false を返す
+  * @param {String} apiKey  API キー
+  * @param {String} statusId  ステータス ID
+  * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
+  * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
+  * @param {String} fileName  保存ファイル名
+  * @return {boolean}
+  */
+function checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) {
+    const response = httpClient.begin()
+        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .get(`https://docraptor.com/status/${statusId}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get PDF generation status. status: ${status}`;
+    }
+    const json = JSON.parse(responseStr);
+    if (json.status !== 'completed') {
+        return false;
+    }
+    downloadAndSaveFile(apiKey, json.download_url, filesDef, deleteOtherFiles, fileName);
+}
+
+/**
+  * PDF ファイルをダウンロードし、を保存する
+  * @param {String} apiKey  API キー
+  * @param {String} downloadUrl  ダウンロード先 URL
+  * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
+  * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
+  * @param {String} fileName  保存ファイル名
+  * @return {boolean}
+  */
+function downloadAndSaveFile(apiKey, downloadUrl, filesDef, deleteOtherFiles, fileName) {
+    const response = httpClient.begin()
+        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .get(downloadUrl);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to download PDF file. status: ${status}`;
+    }
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName, response.getContentType(), response.getResponse()
+    );
+    let files = engine.findData(filesDef);
+    if (files === null || deleteOtherFiles) {
+        files = new java.util.ArrayList();
+    }
+    files.add(qfile);
+    engine.setData(filesDef, files);
 }
 
     ]]></script>
