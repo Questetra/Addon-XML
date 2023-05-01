@@ -2,16 +2,16 @@
 <service-task-definition>
     <label>Docraptor: Generate PDF</label>
     <label locale="ja">DocRaptor: PDF 生成</label>
-    <last-modified>2023-04-28</last-modified>
+    <last-modified>2023-05-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
     <summary>This item generates a PDF file from an HTML file.</summary>
     <summary locale="ja">この工程は、HTML ファイルから PDF ファイルを生成します。</summary>
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
-            <label>C1: Authorization Setting in which API Key is set</label>
-            <label locale="ja">C1: API キーを設定した認証設定</label>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="BASIC">
+            <label>C1: Basic Auth Setting in which API Key is set as Username</label>
+            <label locale="ja">C1: API キーをユーザ名に設定した BASIC 認証設定</label>
         </config>
         <config name="conf_SourceFiles" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C2: File type data item that stores the source HTML file</label>
@@ -39,17 +39,17 @@ const MAX_SOURCE_SIZE = 1048576; // 1MB。一度に文字列として読み出�
 
 function main(){
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const apiKey = retrieveApiKey();
+    const auth = configs.get('conf_Auth');
     const html = retrieveSourceHtml();
     const filesDef = configs.getObject('conf_Files');
     const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
     const fileName = retrieveFileName();
 
     //// == 演算 / Calculating ==
-    const statusId = generatePdf(apiKey, html);
+    const statusId = generatePdf(auth, html);
 
     // 処理状況を確認し、未完了なら proceed() に進む
-    if (checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+    if (checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) === false) {
         engine.saveTemporaryData(statusId);
         return false;
     }
@@ -57,7 +57,7 @@ function main(){
 
 function proceed() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const apiKey = retrieveApiKey();
+    const auth = configs.get('conf_Auth');
     const filesDef = configs.getObject('conf_Files');
     const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
     const fileName = retrieveFileName();
@@ -69,18 +69,9 @@ function proceed() {
     }
 
     //// == 演算 / Calculating ==
-    if (checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+    if (checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) === false) {
         return false;
     }
-}
-
-/**
-  * 認証設定から API キーを読み出す
-  * @return {String} apiKey
-  */
-function retrieveApiKey() {
-    const authSettingName = configs.get('conf_Auth');
-    return httpClient.getOAuth2Token(authSettingName);
 }
 
 /**
@@ -123,14 +114,14 @@ function retrieveFileName() {
 /**
   * DocRaptor の PDF 生成 API に POST リクエストを送信し、ステータス ID を返す
   * プロセスがデバッグ実行の場合、PDF 生成をテスト扱いにする
-  * @param {String} apiKey  API キー
+  * @param {String} auth  認証設定名
   * @param {String} html  HTML ソース
   * @return {String} statusId  ステータス ID
   */
-function generatePdf(apiKey, html) {
+function generatePdf(auth, html) {
     const requestBody = generateRequestBody(html);
     const response = httpClient.begin()
-        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .authSetting(auth)
         .body(requestBody, 'application/json')
         .post('https://api.docraptor.com/docs');
     const status = response.getStatusCode();
@@ -166,16 +157,16 @@ function generateRequestBody(html) {
 /**
   * PDF ファイル生成の処理状態を確認し、完了していればファイルを保存する
   * 未完了の場合は false を返す
-  * @param {String} apiKey  API キー
+  * @param {String} auth  認証設定名
   * @param {String} statusId  ステータス ID
   * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
   * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
   * @param {String} fileName  保存ファイル名
   * @return {boolean}
   */
-function checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fileName) {
+function checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) {
     const response = httpClient.begin()
-        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .authSetting(auth)
         .get(`https://docraptor.com/status/${statusId}`);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -189,7 +180,7 @@ function checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fi
             engine.log(JSON.stringify(json));
             throw 'Failed to generate PDF.';
         case 'completed':
-            downloadAndSaveFile(apiKey, json.download_url, filesDef, deleteOtherFiles, fileName);
+            downloadAndSaveFile(auth, json.download_url, filesDef, deleteOtherFiles, fileName);
             break;
         default:
             return false;
@@ -198,16 +189,16 @@ function checkStatusAndSaveFile(apiKey, statusId, filesDef, deleteOtherFiles, fi
 
 /**
   * PDF ファイルをダウンロードし、を保存する
-  * @param {String} apiKey  API キー
+  * @param {String} auth  認証設定名
   * @param {String} downloadUrl  ダウンロード先 URL
   * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
   * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
   * @param {String} fileName  保存ファイル名
   * @return {boolean}
   */
-function downloadAndSaveFile(apiKey, downloadUrl, filesDef, deleteOtherFiles, fileName) {
+function downloadAndSaveFile(auth, downloadUrl, filesDef, deleteOtherFiles, fileName) {
     const response = httpClient.begin()
-        .basic(apiKey, 'dummy') // DocRaptor の認証の仕様で、パスワード部は何でも良い
+        .authSetting(auth)
         .get(downloadUrl);
     const status = response.getStatusCode();
     if (status !== 200) {
