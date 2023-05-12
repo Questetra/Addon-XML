@@ -2,20 +2,20 @@
 <service-task-definition>
     <label>Docraptor: Generate PDF</label>
     <label locale="ja">DocRaptor: PDF 生成</label>
-    <last-modified>2023-05-09</last-modified>
+    <last-modified>2023-05-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <summary>This item generates a PDF file from an HTML file.</summary>
-    <summary locale="ja">この工程は、HTML ファイルから PDF ファイルを生成します。</summary>
+    <summary>This item generates a PDF file from HTML.</summary>
+    <summary locale="ja">この工程は、HTML から PDF ファイルを生成します。</summary>
     <configs>
         <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="BASIC">
             <label>C1: Basic Auth Setting in which API Key is set as Username</label>
             <label locale="ja">C1: API キーをユーザ名に設定した BASIC 認証設定</label>
         </config>
-        <config name="conf_SourceFiles" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>C2: File type data item that stores the source HTML file</label>
-            <label locale="ja">C2: 変換元のHTML ファイルが保存されているファイル型データ項目</label>
+        <config name="conf_SourceHtml" required="true" form-type="SELECT" select-data-type="FILE|STRING_TEXTAREA">
+            <label>C2: File / String type data item that stores the source HTML</label>
+            <label locale="ja">C2: 変換元の HTML が保存されているファイル型/文字型データ項目</label>
         </config>
         <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C3: File type data item to save the generated PDF file</label>
@@ -35,7 +35,7 @@
 
     <script><![CDATA[
 
-const MAX_SOURCE_SIZE = 1048576; // 1MB。一度に文字列として読み出せるファイルサイズの QBPMS の制限から
+const MAX_SOURCE_FILE_SIZE = 1048576; // 1MB。標準アイテムではファイルの読み出しサイズに制限はないが、無制限もよくないので
 
 function main(){
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
@@ -75,11 +75,28 @@ function proceed() {
 }
 
 /**
-  * config に設定したファイル型データ項目から変換元 HTML を読み出す
+  * config に設定したファイル型/文字型データ項目から変換元 HTML を読み出す
   * @return {String} html
   */
 function retrieveSourceHtml() {
-    const sourceFilesDef = configs.getObject('conf_SourceFiles');
+    const sourceHtmlDef = configs.getObject('conf_SourceHtml');
+    if (sourceHtmlDef.matchDataType('FILE')) { // ファイル型データ項目の場合
+        return retrieveSourceHtmlFromFile(sourceHtmlDef);
+    }
+    // 文字型データ項目の場合
+    const html = engine.findData(sourceHtmlDef);
+    if (html === null) {
+        throw 'Source HTML is empty.';
+    }
+    return html;
+}
+
+/**
+  * ファイル型データ項目から変換元 HTML を読み出す
+  * @param {ProcessDataDefinitionView} sourceFilesDef
+  * @return {String} html
+  */
+function retrieveSourceHtmlFromFile(sourceFilesDef) {
     const sourceFiles = engine.findData(sourceFilesDef);
     if (sourceFiles === null) {
         throw 'No source file attached.';
@@ -88,7 +105,10 @@ function retrieveSourceHtml() {
         throw 'More than one source files attached.';
     }
     const sourceFile = sourceFiles.get(0);
-    if (sourceFile.getLength() > MAX_SOURCE_SIZE) {
+    if (sourceFile.getLength() === 0) {
+        throw 'Source file is empty.';
+    }
+    if (sourceFile.getLength() > MAX_SOURCE_FILE_SIZE) {
         throw 'Source file is too large.';
     }
     const contentType = sourceFile.getContentType();
@@ -259,6 +279,7 @@ const MAX_FILE_SIZE = 1048576;
 
 /**
  * 設定の準備
+ * ファイル型データ項目で変換元 HTML を指定する場合
  * @param sourceFiles
  * @param deleteOtherFiles
  * @param fileName
@@ -269,7 +290,7 @@ const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName) => {
 
     // ファイル型データ項目を作成・設定し、変換元ファイルを添付
     const sourceFilesDef = engine.createDataDefinition('変換元ファイル', 1, 'q_SourceFiles', 'FILE');
-    configs.putObject('conf_SourceFiles', sourceFilesDef);
+    configs.putObject('conf_SourceHtml', sourceFilesDef);
     engine.setData(sourceFilesDef, sourceFiles);
 
     // 生成されたファイルを保存する用のファイル型データ項目を作成し、設定
@@ -316,6 +337,16 @@ test('More than one source files', () => {
     sourceFiles.add(engine.createQfile('ファイル2.html', 'text/html', ''));
     prepareConfigs(sourceFiles, false, '変換後.pdf');
     assertError(main, 'More than one source files attached.');
+});
+
+/**
+ * 変換元ファイルの中身が空
+ */
+test('Source file is empty', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', ''));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+    assertError(main, 'Source file is empty.');
 });
 
 /**
@@ -706,15 +737,50 @@ test('Succeed - Max source file size, add file, proceed once', () => {
 });
 
 /**
+ * 設定の準備
+ * 文字型型データ項目で変換元 HTML を指定する場合
+ * @param sourceHtml
+ * @param deleteOtherFiles
+ * @param fileName
+ * @return filesDef
+ */
+const prepareConfigsWithString = (sourceHtml, deleteOtherFiles, fileName) => {
+    configs.put('conf_Auth', 'DocRaptor');
+
+    // 文字型データ項目を作成・設定し、変換元 HTML を保存
+    const sourceHtmlDef = engine.createDataDefinition('変換元 HTML', 1, 'q_SourceHtml', 'STRING_TEXTAREA');
+    configs.putObject('conf_SourceHtml', sourceHtmlDef);
+    engine.setData(sourceHtmlDef, sourceHtml);
+
+    // 生成されたファイルを保存する用のファイル型データ項目を作成し、設定
+    const filesDef = engine.createDataDefinition('ファイル保存先', 2, 'q_Files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+
+    // 保存時に他のファイルを削除するかどうかを設定
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // 保存する際のファイル名を設定
+    configs.put('conf_FileName', fileName);
+
+    return filesDef;
+};
+
+/**
+ * 変換元 HTML が空
+ */
+test('Source HTML is empty.', () => {
+    prepareConfigsWithString(null, false, '変換後.pdf');
+    assertError(main, 'Source HTML is empty.');
+});
+
+/**
  * 成功
- * 変換元ファイルに charset の指定なし
+ * 変換元 HTML を文字型データ項目で指定
  * 他のファイルの保存あり, 他のファイルを削除する
  * 2 回目の proceed() でダウンロードまで完了
  */
-test('Succeed - Delete other files, proceed twice', () => {
-    const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
-    const filesDef = prepareConfigs(sourceFiles, true, '変換後def.pdf');
+test('Succeed - String source, delete other files, proceed twice', () => {
+    const filesDef = prepareConfigsWithString(SAMPLE_HTML, true, '変換後def.pdf');
 
     const existingFiles = new java.util.ArrayList();
     existingFiles.add(engine.createQfile('元々添付されているファイル', 'text/plain', 'aaa'));
