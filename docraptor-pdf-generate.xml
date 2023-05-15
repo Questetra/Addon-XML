@@ -1,0 +1,830 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Docraptor: Generate PDF</label>
+    <label locale="ja">DocRaptor: PDF 生成</label>
+    <last-modified>2023-05-15</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item generates a PDF file from HTML.</summary>
+    <summary locale="ja">この工程は、HTML から PDF ファイルを生成します。</summary>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="BASIC">
+            <label>C1: Basic Auth Setting in which API Key is set as Username</label>
+            <label locale="ja">C1: API キーをユーザ名に設定した BASIC 認証設定</label>
+        </config>
+        <config name="conf_SourceHtml" required="true" form-type="SELECT" select-data-type="FILE|STRING_TEXTAREA">
+            <label>C2: Data item that stores the source HTML</label>
+            <label locale="ja">C2: 変換元の HTML が保存されているデータ項目</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: Data item to save the generated PDF file</label>
+            <label locale="ja">C3: 生成された PDF ファイルを保存するデータ項目</label>
+        </config>
+        <config name="conf_DeleteOtherFiles" form-type="TOGGLE">
+            <label>C4: Delete other files when saving</label>
+            <label locale="ja">C4: 保存時に他のファイルを削除する</label>
+        </config>
+        <config name="conf_FileName" form-type="TEXTFIELD" required="true" el-enabled="true">
+            <label>C5: File name to save as</label>
+            <label locale="ja">C5: 保存する際のファイル名</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/docraptor-pdf-generate/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/docraptor-pdf-generate/</help-page-url>
+
+    <script><![CDATA[
+
+const MAX_SOURCE_FILE_SIZE = 1048576; // 1MB。標準アイテムではファイルの読み出しサイズに制限はないが、無制限もよくないので
+
+function main(){
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.get('conf_Auth');
+    const html = retrieveSourceHtml();
+    const filesDef = configs.getObject('conf_Files');
+    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
+    const fileName = retrieveFileName();
+
+    //// == 演算 / Calculating ==
+    const statusId = generatePdf(auth, html);
+
+    // 処理状況を確認し、未完了なら proceed() に進む
+    if (checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+        engine.saveTemporaryData(statusId);
+        return false;
+    }
+}
+
+function proceed() {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.get('conf_Auth');
+    const filesDef = configs.getObject('conf_Files');
+    const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
+    const fileName = retrieveFileName();
+
+    //// == Restoring Temporary Data / 一時データの読み出し ==
+    const statusId = engine.restoreTemporaryData();
+    if (statusId === null) {
+        throw 'Temporary data has not been saved.';
+    }
+
+    //// == 演算 / Calculating ==
+    if (checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) === false) {
+        return false;
+    }
+}
+
+/**
+  * config に設定したファイル型/文字型データ項目から変換元 HTML を読み出す
+  * @return {String} html
+  */
+function retrieveSourceHtml() {
+    const sourceHtmlDef = configs.getObject('conf_SourceHtml');
+    if (sourceHtmlDef.matchDataType('FILE')) { // ファイル型データ項目の場合
+        return retrieveSourceHtmlFromFile(sourceHtmlDef);
+    }
+    // 文字型データ項目の場合
+    const html = engine.findData(sourceHtmlDef);
+    if (html === null) {
+        throw 'Source HTML is empty.';
+    }
+    return html;
+}
+
+/**
+  * ファイル型データ項目から変換元 HTML を読み出す
+  * @param {ProcessDataDefinitionView} sourceFilesDef
+  * @return {String} html
+  */
+function retrieveSourceHtmlFromFile(sourceFilesDef) {
+    const sourceFiles = engine.findData(sourceFilesDef);
+    if (sourceFiles === null) {
+        throw 'No source file attached.';
+    }
+    if (sourceFiles.size() > 1) {
+        throw 'More than one source files attached.';
+    }
+    const sourceFile = sourceFiles.get(0);
+    if (sourceFile.getLength() === 0) {
+        throw 'Source file is empty.';
+    }
+    if (sourceFile.getLength() > MAX_SOURCE_FILE_SIZE) {
+        throw 'Source file is too large.';
+    }
+    const contentType = sourceFile.getContentType();
+    if (!contentType.startsWith('text/html')) {
+        throw 'Content-Type of the source file is not text/html.';
+    }
+    return fileRepository.readFile(sourceFile, decideCharset(sourceFile));
+}
+
+/**
+  * config から保存する際のファイル名を読み出す
+  * 空の場合はエラー
+  * @return {String} fileName
+  */
+function retrieveFileName() {
+    const fileName = configs.get('conf_FileName');
+    if (fileName === '') {
+        throw 'File name is blank.';
+    }
+    return fileName;
+}
+
+/**
+  * ファイルの charset を読み出す
+  * charset が設定されていない場合は UTF-8 を返す
+  * @param {QfileView} sourceFile
+  * @return {String} charset
+  */
+function decideCharset(sourceFile) {
+    const charset = sourceFile.getCharset();
+    if (charset === null) {
+        return 'UTF-8';
+    }
+    return charset;
+}
+
+/**
+  * DocRaptor の PDF 生成 API に POST リクエストを送信し、ステータス ID を返す
+  * プロセスがデバッグ実行の場合、PDF 生成をテスト扱いにする
+  * @param {String} auth  認証設定名
+  * @param {String} html  HTML ソース
+  * @return {String} statusId  ステータス ID
+  */
+function generatePdf(auth, html) {
+    const requestBody = generateRequestBody(html);
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(requestBody, 'application/json')
+        .post('https://api.docraptor.com/docs');
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to post PDF generation request. status: ${status}`;
+    }
+    return JSON.parse(responseStr).status_id;
+}
+
+/**
+  * PDF ファイル生成 API のリクエストボディを生成し、JSON 文字列で返す
+  * - 非同期生成をリクエスト
+  * - プロセスがデバッグ実行の場合、テストリクエスト扱いにする
+  * @param {String} html
+  * @return {String} requestBody
+  */
+function generateRequestBody(html) {
+    const requestBody = {
+        document_type: 'pdf',
+        document_content: html,
+        async: true,
+        name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`
+    };
+    // プロセスがデバッグ実行の場合、test パラメータに true を設定
+    if (processInstance.getProcessInstanceDebug()) {
+        requestBody.test = true;
+    }
+    return JSON.stringify(requestBody);
+}
+
+/**
+  * PDF ファイル生成の処理状態を確認し、完了していればファイルを保存する
+  * 未完了の場合は false を返す
+  * @param {String} auth  認証設定名
+  * @param {String} statusId  ステータス ID
+  * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
+  * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
+  * @param {String} fileName  保存ファイル名
+  * @return {boolean}
+  */
+function checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, fileName) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://docraptor.com/status/${statusId}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get PDF generation status. status: ${status}`;
+    }
+    const json = JSON.parse(responseStr);
+    switch (json.status) {
+        case 'failed':
+            engine.log(JSON.stringify(json));
+            throw 'Failed to generate PDF.';
+        case 'completed':
+            downloadAndSaveFile(auth, json.download_url, filesDef, deleteOtherFiles, fileName);
+            break;
+        default:
+            return false;
+    }
+}
+
+/**
+  * PDF ファイルをダウンロードし、を保存する
+  * @param {String} auth  認証設定名
+  * @param {String} downloadUrl  ダウンロード先 URL
+  * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
+  * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
+  * @param {String} fileName  保存ファイル名
+  * @return {boolean}
+  */
+function downloadAndSaveFile(auth, downloadUrl, filesDef, deleteOtherFiles, fileName) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(downloadUrl);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to download PDF file. status: ${status}`;
+    }
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName, response.getContentType(), response.getResponse()
+    );
+    let files = engine.findData(filesDef);
+    if (files === null || deleteOtherFiles) {
+        files = new java.util.ArrayList();
+    }
+    files.add(qfile);
+    engine.setData(filesDef, files);
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4ZJREFUWEfF
+        l2lIVFEUx//vOaNOWZFlu1QmSQSBIzaSRQu2gNaDosSoCOuDhYVJORRRCQXNtNKHFKQMkiyCYFqw
+        oMiFnBlK/WCblS1amnumNpbje3Gnec9507zFnJj78d2z/M4595x7H4UAL0qt/7hjd0ZpHOx6AMsp
+        IBbALADj3fpdAD5yQA2Ax04dfavq2NofamwrAsQfuDeFpp1GCsgAEKrGKIB+DshnWY3p6ankr3I6
+        sgAJOZYMUDgNYLRKx95ifeCw32Zm8qX0JQESjJaLAHb9o2NvtTybidnty5ZPAEOO5RpFIc1Pzl1m
+        OA7FdjOz2dvmXwB+jlwxEyIAd83z/Bn5X7Y47PI8EwIAOe1BtPPdCA6c4GtRzGS8aOxC949fvmLp
+        G2Q10Xx3CAAGo+UcBWTxGrpgDc5sN+DJ6xbcsn2E45dTMTE0TcG8dSES502Gc5BF3v1XuFZR7yMJ
+        OG83MfvIhguADBmtg+3w7vP46AicS08ATVH40tmHBzWfcbPyg1RkqDiRAk0QLXJYVd+OzIJKb4j+
+        AR09gQwrF4DBaNlCAVd9hTg/cjzyMhKh9TDc8s2BR7VNuF5Rj7bv/S414pgA8KuhvRfF5fVwshzu
+        PmvwlYWtdhNTxANcooB0qRzPnjQGV/YuRbBGHB2R7+j5ifKXzaj91Ikjm/SCiV7HAFbmlkiWjQMu
+        203MDhdAgtFSjT/zXXJNCx+FoqxlIGdD7VqVW4Iex4CUeI3NxOh5gE6Pi0XSfnhYCO4dXq3K/yDL
+        YYP5IUi5JFaXzcSE8wCcGquHN8YiOS5SjSgOFj1F6fNmWVmbiaFUA6yJnYGjqUM1VqJ429SNbRfK
+        VAPIlmBmRBiKs1eA4JLUfmjpQfTUsSLj7d/7EabTIkQTBCfLoqGtF1vOl8oBiEogewh3JsVgR1KM
+        yxiZA2dv16L8eAq07q4gUIsP3RGchWqDoI+aiMq6FjmAoUNoMFpk25BYSVowHblpelS/78CegkoB
+        gOU4ZBfaYX/TqlQV0b6oDeUGkafW3GnjkLZkDnJvVKPseIprLljrWpFdaBuWcyLMAUODSGoUy1m1
+        nlwnbL9s7EJmgVXVfeFWEo9i8tH7MlIKKTUxCj8HBgUx65tWuZ73Tr/4MiK7/ryOFeB9X8dEKaAP
+        Ep46oE8yHiKgj9L/lInhPcsFiED+mPAQAf0182yngP2cKg2kke7/BmM1hzDqtBczAAAAAElFTkSu
+        QmCC
+    </icon>
+
+    <test><![CDATA[
+
+const MAX_FILE_SIZE = 1048576;
+
+/**
+ * 設定の準備
+ * ファイル型データ項目で変換元 HTML を指定する場合
+ * @param sourceFiles
+ * @param deleteOtherFiles
+ * @param fileName
+ * @return filesDef
+ */
+const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName) => {
+    configs.put('conf_Auth', 'DocRaptor');
+
+    // ファイル型データ項目を作成・設定し、変換元ファイルを添付
+    const sourceFilesDef = engine.createDataDefinition('変換元ファイル', 1, 'q_SourceFiles', 'FILE');
+    configs.putObject('conf_SourceHtml', sourceFilesDef);
+    engine.setData(sourceFilesDef, sourceFiles);
+
+    // 生成されたファイルを保存する用のファイル型データ項目を作成し、設定
+    const filesDef = engine.createDataDefinition('ファイル保存先', 2, 'q_Files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+
+    // 保存時に他のファイルを削除するかどうかを設定
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // 保存する際のファイル名を設定
+    configs.put('conf_FileName', fileName);
+
+    return filesDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 変換元ファイルが添付されていない
+ */
+test('No source file', () => {
+    prepareConfigs(null, false, '変換後.pdf');
+    assertError(main, 'No source file attached.');
+});
+
+/**
+ * 変換元ファイルが 2 つ以上添付されている
+ */
+test('More than one source files', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('ファイル1.html', 'text/html', ''));
+    sourceFiles.add(engine.createQfile('ファイル2.html', 'text/html', ''));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+    assertError(main, 'More than one source files attached.');
+});
+
+/**
+ * 変換元ファイルの中身が空
+ */
+test('Source file is empty', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', ''));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+    assertError(main, 'Source file is empty.');
+});
+
+/**
+ * 指定サイズの文字列を作成
+ * @param size
+ * @return text
+ */
+const createText = (size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return text;
+};
+
+/**
+ * 変換元ファイルのサイズが大きすぎる
+ */
+test('Source file is too large', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', createText(MAX_FILE_SIZE + 1)));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+    assertError(main, 'Source file is too large.');
+});
+
+/**
+ * 変換元ファイルが text/html でない
+ */
+test('Content-Type of the source file is not text/html', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/plain', 'aaa'));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+    assertError(main, 'Content-Type of the source file is not text/html.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('File name is blank', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, false, '');
+    assertError(main, 'File name is blank.');
+});
+
+/**
+ * PDF ファイルを生成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param html
+ */
+const assertGeneratePdfRequest = ({url, method, contentType, body}, html) => {
+    expect(url).toEqual('https://api.docraptor.com/docs');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.document_type).toEqual('pdf');
+    expect(bodyObj.document_content).toEqual(html);
+    expect(bodyObj.async).toEqual(true);
+    expect(bodyObj.name)
+        .toEqual(`Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`);
+    expect(bodyObj.test).toEqual(undefined); // デバッグ実行でなければ、設定されない
+};
+
+/**
+ * PDF 生成の API リクエストでエラー
+ */
+test('Fail to generate PDF', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+
+    httpClient.setRequestHandler((request) => {
+        assertGeneratePdfRequest(request, 'aaa');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to post PDF generation request. status: 400');
+});
+
+/**
+ * PDF ファイルを生成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param statusId
+ */
+const assertCheckStatusRequest = ({url, method}, statusId) => {
+    expect(url).toEqual(`https://docraptor.com/status/${statusId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ステータス確認の API リクエストでエラー
+ */
+test('Fail to get PDF generation status', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status12345"}');
+        }
+        assertCheckStatusRequest(request, 'status12345');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get PDF generation status. status: 400');
+});
+
+/**
+ * ステータス確認 API のレスポンスを作成
+ * @param status
+ * @param downloadUrl
+ * @return responseString
+ */
+const createStatusResponse = (status, downloadUrl) => {
+    const json = {status};
+    if (downloadUrl !== null) {
+        json.download_url = downloadUrl;
+    }
+    return JSON.stringify(json);
+};
+
+/**
+ * PDF 生成のステータスが failed
+ */
+test('PDF generation failed', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    const filesDef = prepareConfigs(sourceFiles, false, '変換後.pdf');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status12345"}');
+        }
+        assertCheckStatusRequest(request, 'status12345');
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('failed', null));
+    });
+
+    assertError(main, 'Failed to generate PDF.');
+});
+
+/**
+ * PDF ファイルをダウンロードする API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param downloadUrl
+ */
+const assertDownloadRequest = ({url, method}, downloadUrl) => {
+    expect(url).toEqual(downloadUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * PDF ファイルをダウンロードする API リクエストでエラー
+ */
+test('Fail to download PDF file', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, false, '変換後.pdf');
+
+    let reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/12345';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status12345"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'status12345');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to download PDF file. status: 400');
+});
+
+const SAMPLE_HTML = `
+    <html>
+        <head></head>
+        <body>
+            <h1>PDF 生成のテスト</h1>
+            <p>これは PDF 生成のテストです。</p>
+        </body>
+    </html>
+    `;
+
+/**
+ * PDF ファイルのテスト
+ * @param file
+ * @param name
+ * @param body
+ */
+const assertPdfFile = (file, name, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual('application/pdf');
+    expect(fileRepository.readFile(file, 'UTF-8')).toEqual(body);
+};
+
+/**
+ * 成功
+ * 変換元ファイルに charset の指定なし
+ * 他のファイルの保存なし, 他のファイルを削除しない
+ * main() でダウンロードまで完了
+ */
+test('Succeed - No charset', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    const filesDef = prepareConfigs(sourceFiles, false, '変換後.pdf');
+
+    let reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/12345';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status12345"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'status12345');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    //ファイルデータ項目の値をチェック
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後.pdf', 'This is the content of PDF');
+});
+
+/**
+ * 成功
+ * 変換元ファイルに charset=Shift_JIS を指定
+ * 他のファイルの保存あり, 他のファイルを削除しない
+ * main() でダウンロードまで完了
+ */
+test('Succeed - Shift_JIS, add file', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html; charset=Shift_JIS', SAMPLE_HTML));
+    const filesDef = prepareConfigs(sourceFiles, false, '変換後');
+
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('元々添付されているファイル', 'text/plain', 'aaa'));
+    engine.setData(filesDef, existingFiles);
+
+    let reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/23456';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status23456"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'status23456');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'Content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    //ファイルデータ項目の値をチェック
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('元々添付されているファイル');
+    assertPdfFile(files.get(1), '変換後', 'Content of PDF');
+});
+
+
+/**
+ * 成功
+ * 変換元ファイルに charset=UTF-8 を指定
+ * 他のファイルの保存あり, 他のファイルを削除する
+ * main() でダウンロードまで完了
+ */
+test('Succeed - UTF-8, delete other files', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html;charset=UTF-8', SAMPLE_HTML));
+    const filesDef = prepareConfigs(sourceFiles, true, '変換後_.pdf');
+
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('元々添付されているファイル', 'text/plain', 'aaa'));
+    engine.setData(filesDef, existingFiles);
+
+    let reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/67890';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status67890"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'status67890');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'Content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    //ファイルデータ項目の値をチェック
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後_.pdf', 'Content of PDF');
+});
+
+/**
+ * 成功
+ * 変換元ファイルに charset の指定なし
+ * 変換元ファイルが最大サイズ
+ * 他のファイルの保存あり, 他のファイルを削除しない
+ * 1 回目の proceed() でダウンロードまで完了
+ */
+test('Succeed - Max source file size, add file, proceed once', () => {
+    const sourceFiles = new java.util.ArrayList();
+    const html = createText(MAX_FILE_SIZE);
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', html));
+    const filesDef = prepareConfigs(sourceFiles, false, '変換後abc.pdf');
+
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('元々添付されているファイル', 'text/plain', 'aaa'));
+    engine.setData(filesDef, existingFiles);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, html);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status12345"}');
+        }
+        assertCheckStatusRequest(request, 'status12345');
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('processing', null));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('status12345');
+
+    reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/12345';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCheckStatusRequest(request, 'status12345');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(proceed()).toEqual(undefined);
+
+    //ファイルデータ項目の値をチェック
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('元々添付されているファイル');
+    assertPdfFile(files.get(1), '変換後abc.pdf', 'This is the content of PDF');
+});
+
+/**
+ * 設定の準備
+ * 文字型型データ項目で変換元 HTML を指定する場合
+ * @param sourceHtml
+ * @param deleteOtherFiles
+ * @param fileName
+ * @return filesDef
+ */
+const prepareConfigsWithString = (sourceHtml, deleteOtherFiles, fileName) => {
+    configs.put('conf_Auth', 'DocRaptor');
+
+    // 文字型データ項目を作成・設定し、変換元 HTML を保存
+    const sourceHtmlDef = engine.createDataDefinition('変換元 HTML', 1, 'q_SourceHtml', 'STRING_TEXTAREA');
+    configs.putObject('conf_SourceHtml', sourceHtmlDef);
+    engine.setData(sourceHtmlDef, sourceHtml);
+
+    // 生成されたファイルを保存する用のファイル型データ項目を作成し、設定
+    const filesDef = engine.createDataDefinition('ファイル保存先', 2, 'q_Files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+
+    // 保存時に他のファイルを削除するかどうかを設定
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // 保存する際のファイル名を設定
+    configs.put('conf_FileName', fileName);
+
+    return filesDef;
+};
+
+/**
+ * 変換元 HTML が空
+ */
+test('Source HTML is empty.', () => {
+    prepareConfigsWithString(null, false, '変換後.pdf');
+    assertError(main, 'Source HTML is empty.');
+});
+
+/**
+ * 成功
+ * 変換元 HTML を文字型データ項目で指定
+ * 他のファイルの保存あり, 他のファイルを削除する
+ * 2 回目の proceed() でダウンロードまで完了
+ */
+test('Succeed - String source, delete other files, proceed twice', () => {
+    const filesDef = prepareConfigsWithString(SAMPLE_HTML, true, '変換後def.pdf');
+
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('元々添付されているファイル', 'text/plain', 'aaa'));
+    engine.setData(filesDef, existingFiles);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGeneratePdfRequest(request, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status_id": "status67890"}');
+        }
+        assertCheckStatusRequest(request, 'status67890');
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('processing', null));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('status67890');
+
+    reqCount = 0;
+    const downloadUrl = 'https://docraptor.com/download/67890';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCheckStatusRequest(request, 'status67890');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('processing', null));
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'status67890');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('completed', downloadUrl));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(proceed()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('status67890');
+    expect(proceed()).toEqual(undefined);
+
+    //ファイルデータ項目の値をチェック
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後def.pdf', 'This is the content of PDF');
+});
+
+    ]]></test>
+
+</service-task-definition>
