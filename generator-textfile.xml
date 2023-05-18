@@ -10,7 +10,9 @@
 <summary locale="ja">この工程は、任意のテキストファイルを生成し、ファイルデータ項目に格納します。</summary>
 
 <license>(C) Questetra, Inc. (MIT License)</license>
-<last-modified>2022-10-28</last-modified>
+<last-modified>2023-05-18</last-modified>
+<engine-type>3</engine-type>
+
 <configs>
   <config name="File_DataId" required="true" form-type="SELECT" select-data-type="FILE">
     <label>C1: File type data item to save text file </label>
@@ -28,9 +30,32 @@
     <label>C4: Contents of text file</label>
     <label locale="ja">C4: テキストファイルの内容</label>
   </config>
+  <config name="conf_CharacterEncoding" required="false" form-type="SELECT_ITEM">
+    <label>C5: Character encoding when saving</label>
+    <label locale="ja">C5: 保存する際の文字コード</label>
+    <item value="UTF-8">
+    　　<label>UTF-8</label>
+    </item>
+    <item value="UTF-16">
+      <label>UTF-16BE with BOM</label>
+      <label locale="ja">UTF-16BE (BOM あり)</label>
+    </item>
+    <item value="x-UTF-16LE-BOM">
+      <label>UTF-16LE with BOM</label>
+      <label locale="ja">UTF-16LE (BOM あり)</label>
+    </item>
+    <item value="UTF-16BE">
+      <label>UTF-16BE without BOM</label>
+      <label locale="ja">UTF-16BE (BOM なし)</label>
+    </item>
+    <item value="UTF-16LE">
+      <label>UTF-16LE without BOM</label>
+      <label locale="ja">UTF-16LE (BOM なし)</label>
+    </item>
+  </config>
   <config name="conf_ContentType" required="false" form-type="SELECT_ITEM">
-    <label>C5: File type when saving</label>
-    <label locale="ja">C5: 保存する際のファイルタイプ</label>
+    <label>C6: File type when saving</label>
+    <label locale="ja">C6: 保存する際のファイルタイプ</label>
     <item value="text/plain">
       <label>text/plain</label>
     </item>
@@ -46,8 +71,6 @@
   </config>
 </configs>
 
-<engine-type>2</engine-type>
-
 <script><![CDATA[
 
 //////// START "main()" ////////
@@ -59,17 +82,22 @@ function main() {
     const filename = configs.get("File_Name");
     const filedataId = configs.get("File_DataId");
     const deleteOtherFiles = configs.getObject("conf_DeleteOtherFiles");
+    let characterEncoding = configs.get("conf_CharacterEncoding");
     let contentType = configs.get("conf_ContentType");
 
     if (filename === "" || filename === null) {
         throw new Error("File Name is blank");
     }
 
+    if (characterEncoding === "" || characterEncoding === null) {
+        characterEncoding = 'UTF-8';
+    }
+
     if (contentType === "" || contentType === null) {
         contentType = 'text/plain';
     }
 
-    myFiles = retrieveData(textdata, filename, filedataId, deleteOtherFiles, contentType);
+    myFiles = retrieveData(textdata, filename, filedataId, deleteOtherFiles, characterEncoding, contentType);
     updateData(filedataId, myFiles);
 }
 
@@ -79,10 +107,11 @@ function main() {
   * @param {String} filename 保存ファイル名
   * @param {String} filedataId テキストファイルを保存するファイル型データ項目のデータ定義番号
   * @param {boolean} deleteOtherFiles 保存時に他のファイルを削除するかどうか
-  * @param {String} contentType 保存時に他のファイルを削除するかどうか
+  * @param {String} characterEncoding 保存する際の文字コード
+  * @param {String} contentType 保存する際のファイルタイプ
   * @return {java.util.ArrayList<QfileView>} myFiles テキストデータをファイル型データとして追加した配列
   */
-function retrieveData(textdata, filename, filedataId, deleteOtherFiles, contentType) {
+function retrieveData(textdata, filename, filedataId, deleteOtherFiles, characterEncoding, contentType) {
     let myFiles;
     if (deleteOtherFiles === true) {
         myFiles = new java.util.ArrayList();
@@ -97,11 +126,23 @@ function retrieveData(textdata, filename, filedataId, deleteOtherFiles, contentT
         textdata = "";
     }
 
+    let fileType = `${contentType}; charset=${characterEncoding}`;
+    //x-UTF-16LE-BOM について   QBPMS では contentType の charset は UTF-16 として扱われる
+    if (characterEncoding === 'x-UTF-16LE-BOM') {
+        fileType = `${contentType}; charset=UTF-16`;
+    }
+    let charset = `${characterEncoding}`;
+    //application/json で UTF-8 の場合は、charset 無しで application/json のみ
+    if (contentType === "application/json" && characterEncoding === "UTF-8") {
+        fileType = "application/json";
+    }
+
     // テキストデータをファイル型データに変換して追加した配列を返す
     myFiles.add(
         new com.questetra.bpms.core.event.scripttask.NewQfile(
             filename,
-            `${contentType}; charset=UTF-8`,
+            fileType,
+            charset,
             textdata
         )
     );
@@ -142,10 +183,11 @@ QMT010wd75j9nP5l0s2q/Qa8EHkw8/O47gAAAABJRU5ErkJggg==
  * @param deleteOtherFiles
  * @param fileName
  * @param textData
+ * @param characterEncoding
  * @param contentType
  * @return fileDef: {Object}
  */
-const prepareConfigs = (deleteOtherFiles, fileName, textData, contentType) => {
+const prepareConfigs = (deleteOtherFiles, fileName, textData, characterEncoding, contentType) => {
     configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
 
     // ファイル名を config に指定
@@ -154,6 +196,7 @@ const prepareConfigs = (deleteOtherFiles, fileName, textData, contentType) => {
     // テキストファイルの内容を config に指定
     configs.put('Text_Data', textData);
 
+    configs.put('conf_CharacterEncoding', characterEncoding);
     configs.put('conf_ContentType', contentType);
 
     // ファイル型データ項目を準備して、config に指定
@@ -167,7 +210,7 @@ const prepareConfigs = (deleteOtherFiles, fileName, textData, contentType) => {
  * ファイル名が設定されておらずエラーになる場合
  */
 test('File Name is blank', () => {
-    const fileDef = prepareConfigs(true, '', 'test\ntest\ntest', 'text/html');
+    const fileDef = prepareConfigs(true, '', 'test\ntest\ntest', 'UTF-8', 'text/html');
 
     // ファイル型データ項目の値を指定
     engine.setData(fileDef, null);
@@ -179,37 +222,34 @@ test('File Name is blank', () => {
  * ファイルのテスト
  * @param file
  * @param name
+ * @param characterEncoding
  * @param contentType
  * @param content
  */
-const assertFile = (file, name, contentType, content) => {
+const assertFile = (file, name, characterEncoding, contentType, content) => {
     expect(file.getName()).toEqual(name);
+
     expect(file.getContentType()).toEqual(contentType);
 
-    let text = '';
-    fileRepository.readFile(file, 'UTF-8', (line) => {
-        text += line + '\n';
-    });
-    //作成されたファイルの中身がテキストと合っていることを確認
-    if (content === '' || content.endsWith("\n")) {
-        expect(text).toEqual(content);
-    } else {
-        expect(text).toEqual(`${content}\n`);
-    }
+    const text = fileRepository.readFile(file, characterEncoding);
+    expect(text).toEqual(content);
 };
+
+
 
 /**
  * テキストファイル作成に成功した場合
  * ファイル型データにファイルが１つ添付されている
  * 他のファイルを削除しない
- * text/plain
+ * text/html
+ * UTF-8
  */
-test('success - 1file attached, not delete other files, text/plain', () => {
-    const fileDef = prepareConfigs(false, 'テスト1.txt', 'test\ntest\ntest1', 'text/plain');
+test('success - 1file attached, not delete other files, text/html, UTF-8', () => {
+    const fileDef = prepareConfigs(false, 'テスト1.txt', 'test\ntest\ntest1', 'UTF-8', 'text/html');
 
     // ファイル型データ項目の値を指定（ファイル型データに1ファイル添付されている状態を作成）
     let files = new java.util.ArrayList();
-    files.add(engine.createQfile('事前ファイル.txt', 'text/plain', '事前ファイル\n'));
+    files.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
 
     // ファイル型データ項目の値を指定
     engine.setData(fileDef, files);
@@ -222,10 +262,10 @@ test('success - 1file attached, not delete other files, text/plain', () => {
     expect(files.size()).toEqual(2);
 
     const file0 = files.get(0);
-    assertFile(file0, '事前ファイル.txt', 'text/plain', '事前ファイル\n');
+    assertFile(file0, '事前ファイル.txt', 'UTF-8', 'text/plain; charset=UTF-8', '事前ファイル\n');
 
     const file1 = files.get(1);
-    assertFile(file1, 'テスト1.txt', 'text/plain; charset=UTF-8', 'test\ntest\ntest1');
+    assertFile(file1, 'テスト1.txt', 'UTF-8', 'text/html; charset=UTF-8', 'test\ntest\ntest1');
 });
 
 /**
@@ -234,9 +274,10 @@ test('success - 1file attached, not delete other files, text/plain', () => {
  * ファイル型データにはファイルは添付されていない
  * 他のファイルを削除しない
  * text/plain
+ * UTF-16
  */
-test('success - no file attached and no text, not delete other files, text/plain', () => {
-    const fileDef = prepareConfigs(false, 'テスト2.txt', '', 'text/plain');
+test('success - no file attached and no text, not delete other files, text/plain, UTF-16', () => {
+    const fileDef = prepareConfigs(false, 'テスト2.txt', '', 'UTF-16', 'text/plain');
 
     // ファイル型データ項目の値を指定
     engine.setData(fileDef, null);
@@ -249,7 +290,7 @@ test('success - no file attached and no text, not delete other files, text/plain
     expect(files.size()).toEqual(1);
 
     const file = files.get(0);
-    assertFile(file, 'テスト2.txt', 'text/plain; charset=UTF-8', '');
+    assertFile(file, 'テスト2.txt', 'UTF-16', 'text/plain; charset=UTF-16', '');
 });
 
 /**
@@ -257,9 +298,10 @@ test('success - no file attached and no text, not delete other files, text/plain
  * ファイル型データにファイルが１つ添付されている
  * 他のファイルを削除する
  * text/html
+ * x-UTF-16LE-BOM
  */
-test('success - 1file attached, delete other files, text/html', () => {
-    const fileDef = prepareConfigs(true, 'テスト3.txt', 'test\ntest\ntest3', 'text/html');
+test('success - 1file attached, delete other files, text/html, x-UTF-16LE-BOM', () => {
+    const fileDef = prepareConfigs(true, 'テスト3.txt', 'test\ntest\ntest3', 'x-UTF-16LE-BOM', 'text/html');
 
     // ファイル型データ項目の値を指定（ファイル型データに1ファイル添付されている状態を作成）
     let files = new java.util.ArrayList();
@@ -276,7 +318,8 @@ test('success - 1file attached, delete other files, text/html', () => {
     expect(files.size()).toEqual(1);
 
     const file = files.get(0);
-    assertFile(file, 'テスト3.txt', 'text/html; charset=UTF-8', 'test\ntest\ntest3');
+　　　　//x-UTF-16LE-BOM について   QBPMS では contentType の charset は UTF-16 として扱われる
+    assertFile(file, 'テスト3.txt', 'x-UTF-16LE-BOM', 'text/html; charset=UTF-16', 'test\ntest\ntest3');
 });
 
 /**
@@ -284,9 +327,10 @@ test('success - 1file attached, delete other files, text/html', () => {
  * ファイル型データにファイルが添付されていない
  * 他のファイルを削除する
  * text/xml
+ * UTF-16BE
  */
-test('success - no file attached, delete other files, text/xml', () => {
-    const fileDef = prepareConfigs(true, 'テスト4.txt', 'test\ntest\ntest4', 'text/xml');
+test('success - no file attached, delete other files, text/xml, UTF-16BE', () => {
+    const fileDef = prepareConfigs(true, 'テスト4.txt', 'test\ntest\ntest4', 'UTF-16BE', 'text/xml');
 
     // ファイル型データ項目の値を指定
     engine.setData(fileDef, null);
@@ -299,7 +343,7 @@ test('success - no file attached, delete other files, text/xml', () => {
     expect(files.size()).toEqual(1);
 
     const file = files.get(0);
-    assertFile(file, 'テスト4.txt', 'text/xml; charset=UTF-8', 'test\ntest\ntest4');
+    assertFile(file, 'テスト4.txt', 'UTF-16BE', 'text/xml; charset=UTF-16BE', 'test\ntest\ntest4');
 });
 
 /**
@@ -308,13 +352,14 @@ test('success - no file attached, delete other files, text/xml', () => {
  * ファイル型データにファイルが１つ添付されている
  * 他のファイルを削除しない
  * application/json
+ * UTF-16LE
  */
-test('success - 1file attached and no text, delete other files, application/json', () => {
-    const fileDef = prepareConfigs(false, 'テスト5.txt', '', 'application/json');
+test('success - 1file attached and no text, delete other files, application/json, UTF-16LE', () => {
+    const fileDef = prepareConfigs(false, 'テスト5.txt', '', 'UTF-16LE', 'application/json');
 
     // ファイル型データ項目の値を指定（ファイル型データに1ファイル添付されている状態を作成）
     let files = new java.util.ArrayList();
-    files.add(engine.createQfile('事前ファイル.txt', 'text/plain', '事前ファイル\n'));
+    files.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
 
     // ファイル型データ項目の値を指定
     engine.setData(fileDef, files);
@@ -327,20 +372,20 @@ test('success - 1file attached and no text, delete other files, application/json
     expect(files.size()).toEqual(2);
 
     const file0 = files.get(0);
-    assertFile(file0, '事前ファイル.txt', 'text/plain', '事前ファイル\n');
+    assertFile(file0, '事前ファイル.txt', 'UTF-8', 'text/plain; charset=UTF-8', '事前ファイル\n');
 
     const file1 = files.get(1);
-    assertFile(file1, 'テスト5.txt', 'application/json; charset=UTF-8', '');
+    assertFile(file1, 'テスト5.txt', 'UTF-16LE', 'application/json; charset=UTF-16LE', '');
 });
 
 /**
  * テキストファイル作成に成功した場合
  * ファイル型データにファイルが１つ添付されている
  * 他のファイルを削除する
- * text/plain
+ * 文字コード、ファイルタイプが未設定
  */
-test('success - 1file attached, delete other files, contentType is blank', () => {
-    const fileDef = prepareConfigs(true, 'テスト6.txt', 'test\ntest\ntest6', '');
+test('success - 1file attached, delete other files, contentType and charset are blank', () => {
+    const fileDef = prepareConfigs(true, 'テスト6.txt', 'test\ntest\ntest6', '', '');
 
     // ファイル型データ項目の値を指定（ファイル型データに1ファイル添付されている状態を作成）
     let files = new java.util.ArrayList();
@@ -357,7 +402,34 @@ test('success - 1file attached, delete other files, contentType is blank', () =>
     expect(files.size()).toEqual(1);
 
     const file = files.get(0);
-    assertFile(file, 'テスト6.txt', 'text/plain; charset=UTF-8', 'test\ntest\ntest6');
+    assertFile(file, 'テスト6.txt', 'UTF-8', 'text/plain; charset=UTF-8', 'test\ntest\ntest6');
+});
+
+/**
+ * JSON ファイル作成に成功した場合
+ * ファイル型データにファイルが１つ添付されている
+ * 他のファイルを削除する
+ * application/json
+ * UTF-8
+ */
+test('success - 1file attached, delete other files, UTF-8 & application/json, UTF-8', () => {
+    const fileDef = prepareConfigs(true, 'テスト7.txt', 'test\ntest\ntest7', 'UTF-8', 'application/json');
+    // ファイル型データ項目の値を指定（ファイル型データに1ファイル添付されている状態を作成）
+    let files = new java.util.ArrayList();
+    files.add(engine.createQfile('事前ファイル.txt', 'text/plain', '事前ファイル\n'));
+
+    // ファイル型データ項目の値を指定
+    engine.setData(fileDef, files);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    files = engine.findData(fileDef);
+    // ファイルが上書きされていることを確認
+    expect(files.size()).toEqual(1);
+
+    const file = files.get(0);
+    assertFile(file, 'テスト7.txt', 'UTF-8', 'application/json', 'test\ntest\ntest7');
 });
 
 
