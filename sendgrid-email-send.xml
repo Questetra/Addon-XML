@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <last-modified>2023-06-02</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Twilio SendGrid: Send Email</label>
+    <label locale="ja">Twilio SendGrid: メール送信</label>
+    <summary>This item sends emails to the existing contact lists on SendGrid. When you specify multiple list IDs, write one per line.
+    </summary>
+    <summary locale="ja">この工程は、SendGrid の既存の宛先リストにメールを一斉送信します。複数のリスト ID を指定する場合、1 行につき 1 つずつ書くようにしてください。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/sendgrid-email-send/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/sendgrid-email-send/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: API Key</label>
+            <label locale="ja">C1: API キー</label>
+        </config>
+        <config name="conf_SenderId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C2: Email Sender ID</label>
+            <label locale="ja">C2: メール送信者の ID</label>
+        </config>
+        <config name="conf_ListIds" required="true" el-enabled="true" form-type="TEXTAREA">
+            <label>C3: List IDs to which the emails will be sent</label>
+            <label locale="ja">C3: メールを送信する宛先リストの ID</label>
+        </config>
+        <config name="conf_UnsubscribeGroupId" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C4: Unsubscribe Group ID</label>
+            <label locale="ja">C4: 配信解除グループの ID</label>
+        </config>
+        <config name="conf_SendAt" form-type="SELECT" select-data-type="DATETIME">
+            <label>C5: Scheduled Datetime (if blank, sent immediately)</label>
+            <label locale="ja">C5: 送信日時（指定しない場合、即座に送信されます）</label>
+        </config>
+        <config name="conf_Subject" el-enabled="true" form-type="TEXTFIELD">
+            <label>C6: Subject</label>
+            <label locale="ja">C6: 件名</label>
+        </config>
+        <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
+            <label>C7: Content</label>
+            <label locale="ja">C7: 本文</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+main();
+function main(){
+    const auth = configs.get('conf_Auth');
+    const senderId = retrieveIdAsInt('conf_SenderId', 'Sender ID');
+    const listIds = retrieveListIds();
+    const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
+    const sendAt = retrieveSendAt();
+    const subject = configs.get('conf_Subject');
+    const htmlContent = configs.get('conf_HtmlContent');
+
+    const singleSendId = createSingleSend(auth, senderId, listIds, unsubscribeGroupId, subject, htmlContent);
+    scheduleSingleSend(auth, singleSendId, sendAt);
+}
+
+function retrieveIdAsInt(confName, label) {
+    const idStr = configs.get(confName);
+    if (idStr === '') {
+        throw `${label} is blank.`;
+    }
+    const reg = new RegExp('^\\d+$');
+    if (!reg.test(idStr)) {
+        throw `${label} must be integer.`;
+    }
+    return parseInt(idStr, 10);
+}
+
+function retrieveListIds() {
+    const listIds = configs.get('conf_ListIds').split('\n')
+        .filter(id => id !== '');
+    if (listIds.length === 0) {
+        throw 'No List IDs.';
+    }
+    if (listIds.length > 50) {
+        throw 'The maximum number of List IDs is 50.';
+    }
+    return listIds;
+}
+
+function retrieveSendAt() {
+    // TODO 後で
+    return 'now';
+}
+
+function createSingleSend(auth, senderId, listIds, unsubscribeGroupId, subject, htmlContent) {
+    const requestBody = {
+        name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`,
+        send_to: {
+            list_ids: listIds
+        },
+        email_config: {
+            sender_id: senderId,
+            suppression_group_id: unsubscribeGroupId,
+            subject: subject,
+            html_content: htmlContent
+        }
+    };
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .post('https://api.sendgrid.com/v3/marketing/singlesends');
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status >= 300) {
+        engine.log(responseStr);
+        throw `Failed to create single send. status: ${status}`;
+    }
+    return JSON.parse(responseStr).id;
+}
+
+function scheduleSingleSend(auth, singleSendId, sendAt) {
+    const requestBody = {
+        send_at: sendAt
+    };
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .put(`https://api.sendgrid.com/v3/marketing/singlesends/${singleSendId}/schedule`);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status >= 300) {
+        engine.log(responseStr);
+        throw `Failed to schedule single send. status: ${status}`;
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADBUlEQVRYR8WXS08TURTH/5cWBeXZ
+        ipHFjBh3JIYSdKELYePGZCYS4jMxtiauwU+gJm40JpYPYKhxodEoj+4R4lYrjQsXimKrUhKRNxNC
+        22vuTMcZ5s50psLgbCY5c++c3zn33PMg+M8PqUh/MnMOFN0gJAKgCQB7s2cKwCIoZe8JyOKo1/+6
+        AwwvNCG42g9KB0AIU+r+ULoIQuLI1w2it3mx3IbyAGPfo0DxoWfFVk0qCGKQxBEnCGeAZDYOoN/d
+        XA8rKI1DFm/arbQHSGYSALnm4dfel1CagCzGrBt4ABfL+w7V4lhDNae4LkiwmqecPKsU8Ci7pssH
+        IQkD5kVbAdiZEzpUzqzJUy04HdrLLfm4mse9z8uc/OzBWlxMzZvktNccEwYAi/bAyle3gHMCSC1t
+        ouvNHAfwpDOEq+9/G3IWmIX6I/rtMACS2dsAbrkd6rYBNAV3IAlMHwyAsQy7u427AsC8IIvNBgDL
+        cCDDbsrZ9x3yAAAtFjQP2ET+DXE/zrTUcEztddVorani5OO/NvBNySNICIIECBCCKgJMr+Vxf3rF
+        zjb1RmgAY9kJEHSbVz3vCuN8ay238ct6AUfHZzn565Mt6Anzt2Mkp6D3rfkWlLZSTEIWenQPzAA4
+        7AfAq5yCPjsAVsAkoVMH4DLITnngxayCC+9sPMCslQTiO8Czn+u4nDLlAbObTQC+HcHTH+u4Yk5E
+        BkAakhBxDMKXx8OINOzhgq1IKeY2ipz8UmoeoycOcPLhnIK7n/gUDUsQcqV3qCOEWJp3XaV5oExu
+        MV1Dm0TkP4A5Eam5YGsq9hWA0iXIotreORYjXwFsi5FWjmf0guQbALO+UN/Gl2P1GIyG5EF7I8LV
+        AS6G2vYFwLof6/NheRPX0wse6plTQ6Jv3clmlMf52wfon3avKQV9DEmMWpl2py03BZ13ALVPUEex
+        hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
+        chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
+    </icon>
+    
+</service-task-definition>
