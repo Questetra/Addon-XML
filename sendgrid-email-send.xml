@@ -31,21 +31,25 @@
             <label>C5: Scheduled Datetime (if blank, sent immediately)</label>
             <label locale="ja">C5: 送信日時（指定しない場合、即座に送信されます）</label>
         </config>
+        <config name="conf_DesignId" el-enabled="true" form-type="TEXTFIELD">
+            <label>C6-A: Design ID (when blank, C6-B1 and C6-B2 are required)</label>
+            <label locale="ja">C6-A: デザイン ID（指定しない場合、件名と本文を指定してください）</label>
+        </config>
         <config name="conf_Subject" el-enabled="true" form-type="TEXTFIELD">
-            <label>C6: Subject</label>
-            <label locale="ja">C6: 件名</label>
+            <label>C6-B1: Subject</label>
+            <label locale="ja">C6-B1: 件名</label>
         </config>
         <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
-            <label>C7: Content</label>
-            <label locale="ja">C7: 本文</label>
+            <label>C6-B2: Content</label>
+            <label locale="ja">C6-B2: 本文</label>
         </config>
         <config name="conf_SingleSendId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C8: Data item to save ID of the email sending</label>
-            <label locale="ja">C8: メール送信の ID を保存するデータ項目</label>
+            <label>C7: Data item to save ID of the email sending</label>
+            <label locale="ja">C7: メール送信の ID を保存するデータ項目</label>
         </config>
-        <config name="conf_SingleSendUrl" rform-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C9: Data item to save URL of the email sending status page</label>
-            <label locale="ja">C9: メール送信のステータス確認ページの URL を保存するデータ項目</label>
+        <config name="conf_SingleSendUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C8: Data item to save URL of the email sending status page</label>
+            <label locale="ja">C8: メール送信のステータス確認ページの URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -58,13 +62,14 @@ function main(){
     const listIds = retrieveListIds();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
     const sendAt = retrieveSendAt();
+    const designId = configs.get('conf_DesignId');
     const subject = configs.get('conf_Subject');
     const htmlContent = configs.get('conf_HtmlContent');
     const singleSendIdDef = configs.getObject('conf_SingleSendId');
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
     //// == Calculating / 演算 ==
-    const singleSendId = createSingleSend(auth, senderId, listIds, unsubscribeGroupId, subject, htmlContent);
+    const singleSendId = createSingleSend(auth, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent);
     scheduleSingleSend(auth, singleSendId, sendAt);
 
     //// == Data Updating / ワークフローデータへの代入 ==
@@ -121,26 +126,18 @@ function retrieveSendAt() {
   * @param {String} auth 認証設定名
   * @param {Number} senderId 送信者 ID
   * @param {Array<String>} listIds リスト ID の配列
+  * @param {Number} unsubscribeGroupId 配信解除グループ ID
+  * @param {String} designId デザイン ID
+  * @param {String} subject メールの件名
+  * @param {String} htmlContent メールの HTML 本文
   * @return {String} singleSendId
   */
-function createSingleSend(auth, senderId, listIds, unsubscribeGroupId, subject, htmlContent) {
-    const requestBody = {
-        name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`,
-        send_to: {
-            list_ids: listIds
-        },
-        email_config: {
-            sender_id: senderId,
-            suppression_group_id: unsubscribeGroupId,
-            subject: subject,
-            html_content: htmlContent
-        }
-    };
+function createSingleSend(auth, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent) {
+    const requestBody = buildRequestBody(senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent);
     const response = httpClient.begin()
         .authSetting(auth)
         .body(JSON.stringify(requestBody), 'application/json')
         .post('https://api.sendgrid.com/v3/marketing/singlesends');
-
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status >= 300) {
@@ -148,6 +145,37 @@ function createSingleSend(auth, senderId, listIds, unsubscribeGroupId, subject, 
         throw `Failed to create single send. status: ${status}`;
     }
     return JSON.parse(responseStr).id;
+}
+
+/**
+  * リクエストボディを作成
+  * @param {Number} senderId 送信者 ID
+  * @param {Array<String>} listIds リスト ID の配列
+  * @param {Number} unsubscribeGroupId 配信解除グループ ID
+  * @param {String} designId デザイン ID
+  * @param {String} subject メールの件名
+  * @param {String} htmlContent メールの HTML 本文
+  * @return {Object} requestBody
+  */
+function buildRequestBody(senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent) {
+    const emailConfig = {
+        sender_id: senderId,
+        suppression_group_id: unsubscribeGroupId
+    };
+    if (designId !== '') {
+        emailConfig.design_id = designId;
+    } else {
+        emailConfig.subject = subject;
+        emailConfig.html_content = htmlContent;
+    }
+    const requestBody = {
+        name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`,
+        send_to: {
+            list_ids: listIds
+        },
+        email_config: emailConfig
+    };
+    return requestBody;
 }
 
 /**
