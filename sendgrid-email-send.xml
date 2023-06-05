@@ -39,18 +39,22 @@
             <label locale="ja">C6: 送信日時（指定しない場合、即座に送信されます）</label>
         </config>
         <config name="conf_DesignId" el-enabled="true" form-type="TEXTFIELD">
-            <label>C7-A: Design ID (if blank, C7-B1 and C7-B2 are required)</label>
-            <label locale="ja">C7-A: デザイン ID（指定しない場合、件名と本文を指定してください）</label>
+            <label>C7-A: Design ID</label>
+            <label locale="ja">C7-A: デザイン ID</label>
         </config>
-        <config name="conf_Subject" el-enabled="true" form-type="TEXTFIELD">
+        <config name="conf_HasUniqueContent" form-type="TOGGLE">
+            <label>C7-B: Configure the subject and content without using Design</label>
+            <label locale="ja">C7-B: デザインを使用せず、件名と本文を直接指定する</label>
+        </config>
+        <config name="conf_Subject" depends-on="conf_HasUniqueContent" required="true" el-enabled="true" form-type="TEXTFIELD">
             <label>C7-B1: Subject</label>
             <label locale="ja">C7-B1: 件名</label>
         </config>
-        <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
+        <config name="conf_HtmlContent" depends-on="conf_HasUniqueContent" required="true" el-enabled="true" form-type="TEXTAREA">
             <label>C7-B2: HTML Content</label>
             <label locale="ja">C7-B2: HTML メールの本文</label>
         </config>
-        <config name="conf_PlainContent" el-enabled="true" form-type="TEXTAREA">
+        <config name="conf_PlainContent" depends-on="conf_HasUniqueContent" el-enabled="true" form-type="TEXTAREA">
             <label>C7-B3: Plain Text Content (if blank, auto-generated from HTML)</label>
             <label locale="ja">C7-B3: プレーンテキストメールの本文（指定しない場合、HTML メールの本文から自動生成されます）</label>
         </config>
@@ -74,15 +78,12 @@ function main(){
     const sendTo = retrieveSendTo();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
     const sendAt = retrieveSendAt();
-    const designId = configs.get('conf_DesignId');
-    const subject = configs.get('conf_Subject');
-    const htmlContent = configs.get('conf_HtmlContent');
-    const plainContent = configs.get('conf_PlainContent');
+    const content = retrieveContent();
     const singleSendIdDef = configs.getObject('conf_SingleSendId');
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
     //// == Calculating / 演算 ==
-    const singleSendId = createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
+    const singleSendId = createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, content);
     scheduleSingleSend(auth, singleSendId, sendAt);
 
     //// == Data Updating / ワークフローデータへの代入 ==
@@ -138,7 +139,7 @@ function retrieveIdAsInt(confName, label) {
 }
 
 /**
-  * config に設定された宛先リスト/セグメントの ID 一覧を読み出す
+  * config に設定された宛先情報を読み出す
   * @return {Object} sendTo
   * @return {Array<String>} sendTo.listIds
   * @return {Array<String>} sendTo.segmentIds
@@ -181,6 +182,39 @@ function retrieveSendAt() {
 }
 
 /**
+  * config に設定されたメールの中身の情報を読み出す
+  * @return {Object} content メールの中身
+  * @return {String} content.designId デザイン ID
+  * @return {String} content.subject メールの件名
+  * @return {String} content.htmlContent HTML メールの本文
+  * @return {String} content.plainContent プレーンテキストメールの本文
+  */
+function retrieveContent() {
+    const designId = configs.get('conf_DesignId');
+    const hasUniqueContent = configs.getObject('conf_HasUniqueContent');
+    if (!hasUniqueContent) { // デザイン ID を指定する場合
+        if (designId === '') {
+            throw 'Design ID is blank.';
+        }
+        return {designId};
+    }
+    // 件名、本文を直接指定する場合
+    if (designId !== '') {
+        throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
+    }
+    const subject = configs.get('conf_Subject');
+    if (subject === '') {
+        throw 'Subject is blank.';
+    }
+    const htmlContent = configs.get('conf_HtmlContent');
+    if (htmlContent === '') {
+        throw 'HTML Content is blank.'
+    }
+    const plainContent = configs.get('conf_PlainContent');
+    const content = {subject, htmlContent, plainContent};
+}
+
+/**
   * Single Send のドラフトを作成する
   * @param {String} auth 認証設定名
   * @param {Array<String>} categories カテゴリ一覧
@@ -189,14 +223,11 @@ function retrieveSendAt() {
   * @param {Array<String>} sendTo.listIds 宛先リストの ID 一覧
   * @param {Array<String>} sendTo.segmentIds 宛先セグメントの ID 一覧
   * @param {Number} unsubscribeGroupId 配信解除グループ ID
-  * @param {String} designId デザイン ID
-  * @param {String} subject メールの件名
-  * @param {String} htmlContent HTML メールの本文
-  * @param {String} plainContent プレーンテキストメールの本文
+  * @param {Object} content メールの中身
   * @return {String} singleSendId
   */
-function createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
-    const requestBody = buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
+function createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, content) {
+    const requestBody = buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, content);
     const response = httpClient.begin()
         .authSetting(auth)
         .body(JSON.stringify(requestBody), 'application/json')
@@ -218,26 +249,21 @@ function createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId
   * @param {Array<String>} sendTo.listIds 宛先リストの ID 一覧
   * @param {Array<String>} sendTo.segmentIds 宛先セグメントの ID 一覧
   * @param {Number} unsubscribeGroupId 配信解除グループ ID
-  * @param {String} designId デザイン ID
-  * @param {String} subject メールの件名
-  * @param {String} htmlContent HTML メールの本文
-  * @param {String} plainContent プレーンテキストメールの本文
+  * @param {Object} content メールの中身
+  * @param {String} content.designId デザイン ID
+  * @param {String} content.subject メールの件名
+  * @param {String} content.htmlContent HTML メールの本文
+  * @param {String} content.plainContent プレーンテキストメールの本文
   * @return {Object} requestBody
   */
-function buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
+function buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, {designId, subject, htmlContent, plainContent}) {
     const emailConfig = {
         sender_id: senderId,
         suppression_group_id: unsubscribeGroupId
     };
-    if (designId !== '') {
+    if (designId !== undefined) {
         emailConfig.design_id = designId;
     } else {
-        if (subject === '') {
-            throw 'Subject is blank.';
-        }
-        if (htmlContent === '') {
-            throw 'HTML Content is blank.'
-        }
         emailConfig.subject = subject;
         emailConfig.html_content = htmlContent;
         if (plainContent !== '') {
