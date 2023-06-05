@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <engine-type>3</engine-type>
-    <last-modified>2023-06-02</last-modified>
+    <last-modified>2023-06-05</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Email</label>
     <label locale="ja">Twilio SendGrid: メール送信</label>
-    <summary>This item sends emails to the existing contact lists on SendGrid. When you specify multiple list IDs, write one per line.
+    <summary>This item sends emails to the existing contact lists and/or segments on SendGrid. When you specify multiple list/segment IDs, write one per line.
     </summary>
-    <summary locale="ja">この工程は、SendGrid の既存の宛先リストにメールを一斉送信します。複数のリスト ID を指定する場合、1 行につき 1 つずつ書くようにしてください。</summary>
+    <summary locale="ja">この工程は、SendGrid の既存の宛先リストおよびセグメントにメールを一斉送信します。複数のリスト/セグメント ID を指定する場合、1 行につき 1 つずつ書くようにしてください。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/sendgrid-email-send/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/sendgrid-email-send/</help-page-url>
     <configs>
@@ -23,9 +23,13 @@
             <label>C3: Email Sender ID</label>
             <label locale="ja">C3: メール送信者の ID</label>
         </config>
-        <config name="conf_ListIds" required="true" el-enabled="true" form-type="TEXTAREA">
-            <label>C4: List IDs to which the emails will be sent</label>
-            <label locale="ja">C4: メールを送信する宛先リストの ID</label>
+        <config name="conf_ListIds" el-enabled="true" form-type="TEXTAREA">
+            <label>C4-A: List IDs to which the emails will be sent</label>
+            <label locale="ja">C4-A: メールを送信する宛先リストの ID</label>
+        </config>
+        <config name="conf_SegmentIds" el-enabled="true" form-type="TEXTAREA">
+            <label>C4-B: Segment IDs to which the emails will be sent</label>
+            <label locale="ja">C4-B: メールを送信する宛先セグメントの ID</label>
         </config>
         <config name="conf_UnsubscribeGroupId" required="true" el-enabled="true" form-type="TEXTFIELD">
             <label>C5: Unsubscribe Group ID</label>
@@ -68,7 +72,7 @@ function main(){
     const auth = configs.get('conf_Auth');
     const categories = retrieveCategories();
     const senderId = retrieveIdAsInt('conf_SenderId', 'Sender ID');
-    const listIds = retrieveListIds();
+    const sendTo = retrieveSendTo();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
     const sendAt = retrieveSendAt();
     const designId = configs.get('conf_DesignId');
@@ -79,7 +83,7 @@ function main(){
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
     //// == Calculating / 演算 ==
-    const singleSendId = createSingleSend(auth, categories, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
+    const singleSendId = createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
     scheduleSingleSend(auth, singleSendId, sendAt);
 
     //// == Data Updating / ワークフローデータへの代入 ==
@@ -135,19 +139,26 @@ function retrieveIdAsInt(confName, label) {
 }
 
 /**
-  * config に設定されたリスト ID を読み出す
-  * @return {Array<String>} listIds
+  * config に設定された宛先リスト/セグメントの ID 一覧を読み出す
+  * @return {Object} sendTo
+  * @return {Array<String>} sendTo.listIds
+  * @return {Array<String>} sendTo.segmentIds
   */
-function retrieveListIds() {
+function retrieveSendTo() {
     const listIds = configs.get('conf_ListIds').split('\n')
         .filter(id => id !== '');
-    if (listIds.length === 0) {
-        throw 'No List IDs.';
-    }
     if (listIds.length > 50) {
         throw 'The maximum number of List IDs is 50.';
     }
-    return listIds;
+    const segmentIds = configs.get('conf_SegmentIds').split('\n')
+        .filter(id => id !== '');
+    if (segmentIds.length > 10) {
+        throw 'The maximum number of Segment IDs is 10.';
+    }
+    if (listIds.length === 0 && segmentIds.length === 0) {
+        throw 'No List IDs or Segment IDs.';
+    }
+    return {listIds, segmentIds};
 }
 
 /**
@@ -165,7 +176,9 @@ function retrieveSendAt() {
   * @param {String} auth 認証設定名
   * @param {Array<String>} categories カテゴリ一覧
   * @param {Number} senderId 送信者 ID
-  * @param {Array<String>} listIds リスト ID 一覧
+  * @param {Object} sendTo 宛先情報
+  * @param {Array<String>} sendTo.listIds 宛先リストの ID 一覧
+  * @param {Array<String>} sendTo.segmentIds 宛先セグメントの ID 一覧
   * @param {Number} unsubscribeGroupId 配信解除グループ ID
   * @param {String} designId デザイン ID
   * @param {String} subject メールの件名
@@ -173,8 +186,8 @@ function retrieveSendAt() {
   * @param {String} plainContent プレーンテキストメールの本文
   * @return {String} singleSendId
   */
-function createSingleSend(auth, categories, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
-    const requestBody = buildRequestBody(categories, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
+function createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
+    const requestBody = buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent);
     const response = httpClient.begin()
         .authSetting(auth)
         .body(JSON.stringify(requestBody), 'application/json')
@@ -192,7 +205,9 @@ function createSingleSend(auth, categories, senderId, listIds, unsubscribeGroupI
   * リクエストボディを作成
   * @param {Array<String>} categories カテゴリ一覧
   * @param {Number} senderId 送信者 ID
-  * @param {Array<String>} listIds リスト ID 一覧
+  * @param {Object} sendTo 宛先情報
+  * @param {Array<String>} sendTo.listIds 宛先リストの ID 一覧
+  * @param {Array<String>} sendTo.segmentIds 宛先セグメントの ID 一覧
   * @param {Number} unsubscribeGroupId 配信解除グループ ID
   * @param {String} designId デザイン ID
   * @param {String} subject メールの件名
@@ -200,7 +215,7 @@ function createSingleSend(auth, categories, senderId, listIds, unsubscribeGroupI
   * @param {String} plainContent プレーンテキストメールの本文
   * @return {Object} requestBody
   */
-function buildRequestBody(categories, senderId, listIds, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
+function buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, designId, subject, htmlContent, plainContent) {
     const emailConfig = {
         sender_id: senderId,
         suppression_group_id: unsubscribeGroupId
@@ -224,7 +239,8 @@ function buildRequestBody(categories, senderId, listIds, unsubscribeGroupId, des
     const requestBody = {
         name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`,
         send_to: {
-            list_ids: listIds
+            list_ids: sendTo.listIds,
+            segment_ids: sendTo.segmentIds
         },
         email_config: emailConfig
     };
