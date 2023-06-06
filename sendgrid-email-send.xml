@@ -362,17 +362,25 @@ const prepareConfigs = (categories, senderId, listIds, segmentIds, unsubscribeGr
     configs.put('conf_DesignId', designId);
 
     // ID を保存するデータ項目を作成し、設定
-    const idDef = engine.createDataDefinition('ID 保存先', 2, 'q_id', 'STRING_TEXTFIELD');
+    const idDef = engine.createDataDefinition('ID 保存先', 1, 'q_id', 'STRING_TEXTFIELD');
     engine.setData(idDef, '事前文字列');
     configs.putObject('conf_SingleSendId', idDef);
 
     // URL を保存するデータ項目を作成し、設定
-    const urlDef = engine.createDataDefinition('URL 保存先', 3, 'q_url', 'STRING_TEXTFIELD');
+    const urlDef = engine.createDataDefinition('URL 保存先', 2, 'q_url', 'STRING_TEXTFIELD');
     engine.setData(urlDef, '事前文字列');
     configs.putObject('conf_SingleSendUrl', urlDef);
 
     return {idDef, urlDef};
 };
+
+/**
+ * カテゴリに ASCII 文字以外を含む
+ */
+test('Categories include invalid characters', () => {
+    prepareConfigs('categoryあ', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    expect(execute).toThrow('Categories cannot include non-ascii characters.');
+});
 
 /**
  * 送信者 ID が空
@@ -513,11 +521,11 @@ test('Fail to schedule Single Send', () => {
 
 /**
  * 成功
+ * デザイン ID で指定
  * カテゴリ指定なし
- * デザイン ID を指定
  * 送信日時指定なし
  */
-test('Succeed - No categories, content set by design ID, no schduled datetime', () => {
+test('Succeed - Content set by design ID, no categories, no schduled datetime', () => {
     const {idDef, urlDef} = prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
 
     let reqCount = 0;
@@ -538,9 +546,97 @@ test('Succeed - No categories, content set by design ID, no schduled datetime', 
     expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend1/stats');
 });
 
-const setSendAt = () => {
-
+/**
+ * 送信日時を設定
+ * @param timestamp
+ */
+const setSendAt = (timestamp) => {
+    const def = engine.createDataDefinition('送信日時', 3, 'q_sendAt', 'DATETIME');
+    if (timestamp !== null) {
+        engine.setData(def, timestamp);
+    }
+    configs.putObject('conf_SendAt', def);
 }
+
+/**
+ * 送信日時が選択されているのに、値が空
+ */
+test('Scheduled Datetime is null', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    setSendAt(null);
+    expect(execute).toThrow('Scheduled Datetime is selected but its data is null.');
+});
+
+/**
+ * 送信日時が過去
+ */
+test('Scheduled Datetime has passed', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(-1);
+    setSendAt(timestamp);
+    expect(execute).toThrow('Scheduled Datetime must be future.');
+});
+
+/**
+ * 成功
+ * デザイン ID で指定
+ * リストのみ指定し、セグメント指定なし
+ * カテゴリ指定あり
+ * 送信日時指定あり
+ */
+test('Succeed - Content set by design ID, no segments, with categories, with schduled datetime', () => {
+    const {idDef, urlDef} = prepareConfigs('category1\ncategory2\ncategory3', '1', 'list1', '', '4', 'design2');
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(3);
+    setSendAt(timestamp);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, ['category1', 'category2', 'category3'], 1, ['list1'], [], 4, 'design2', undefined, undefined, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend2"}');
+        }
+        assertScheduleRequest(request, 'singleSend2', dateFormatter.format('UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'", timestamp));
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend2');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend2/stats');
+});
+
+/**
+ * 成功
+ * デザイン ID で指定
+ * セグメントのみ指定し、リスト指定なし
+ * カテゴリ指定あり
+ * 送信日時指定なし
+ * データ項目に保存しない
+ */
+test('Succeed - Content set by design ID, no lists, with categories, no schduled datetime, not save', () => {
+    const {idDef, urlDef} = prepareConfigs('category1', '1000', '', 'segment1', '4000', 'design3');
+    configs.put('conf_SingleSendId', '');
+    configs.put('conf_SingleSendUrl', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, ['category1'], 1000, [], ['segment1'], 4000, 'design3', undefined, undefined, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend3"}');
+        }
+        assertScheduleRequest(request, 'singleSend3', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
 
     ]]></test>
 
