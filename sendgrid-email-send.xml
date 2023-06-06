@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <engine-type>3</engine-type>
-    <last-modified>2023-06-05</last-modified>
+    <last-modified>2023-06-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Email</label>
     <label locale="ja">Twilio SendGrid: メール送信</label>
@@ -211,7 +211,7 @@ function retrieveContent() {
         throw 'HTML Content is blank.'
     }
     const plainContent = configs.get('conf_PlainContent');
-    const content = {subject, htmlContent, plainContent};
+    return {subject, htmlContent, plainContent};
 }
 
 /**
@@ -636,6 +636,108 @@ test('Succeed - Content set by design ID, no lists, with categories, no schduled
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
     expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+/**
+ * 「デザインを使用せず、件名と本文を直接指定する」がオンなのに、デザイン ID が指定されている
+ */
+test('Design ID is set while hasUniqueContent is enabled', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    configs.putObject('conf_HasUniqueContent', true);
+    expect(execute).toThrow('Design ID is set while "Configure the subject and content without using Design" is enabled.');
+});
+
+/**
+ * 本文を直接指定
+ * @param subject
+ * @param htmlContent
+ * @param plainContent
+ */
+const setUniqueContent = (subject, htmlContent, plainContent) => {
+    configs.put('conf_Subject', subject);
+    configs.put('conf_HtmlContent', htmlContent);
+    configs.put('conf_PlainContent', plainContent);
+}
+
+/**
+ * 「デザインを使用せず、件名と本文を直接指定する」がオンなのに、件名が空
+ */
+test('Subject is blank', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
+    configs.putObject('conf_HasUniqueContent', true);
+    setUniqueContent('', 'メールの HTML 本文', '');
+    expect(execute).toThrow('Subject is blank.');
+});
+
+/**
+ * 「デザインを使用せず、件名と本文を直接指定する」がオンなのに、HTML 本文が空
+ */
+test('HTML Content is Blank', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
+    configs.putObject('conf_HasUniqueContent', true);
+    setUniqueContent('メールの件名', '', '');
+    expect(execute).toThrow('HTML Content is blank.');
+});
+
+/**
+ * 成功
+ * 件名、本文を直接指定
+ * プレーンテキストメールの本文は指定なし
+ */
+test('Succeed - Has unique content, without plain text content', () => {
+    const {idDef, urlDef} = prepareConfigs('', '1', 'list1', '', '4', '');
+    configs.putObject('conf_HasUniqueContent', true);
+    const subject = 'メールの件名';
+    const htmlContent = 'HTML メールの本文\nこれは HTML メールの本文です';
+    setUniqueContent(subject, htmlContent, '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, [], 1, ['list1'], [], 4, undefined, subject, htmlContent, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend4"}');
+        }
+        assertScheduleRequest(request, 'singleSend4', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend4');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend4/stats');
+});
+
+/**
+ * 成功
+ * 件名、本文を直接指定
+ * プレーンテキストメールの本文の指定あり
+ */
+test('Succeed - Has unique content, with plain text content', () => {
+    const {idDef, urlDef} = prepareConfigs('', '1', 'list1', '', '4', '');
+    configs.putObject('conf_HasUniqueContent', true);
+    const subject = 'メールの件名';
+    const htmlContent = 'HTML メールの 本文\nこれは HTML メールの本文です';
+    const plainContent = 'プレーンテキストメールの本文\nこれはプレーンテキストメールの本文です';
+    setUniqueContent(subject, htmlContent, plainContent);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, [], 1, ['list1'], [], 4, undefined, subject, htmlContent, plainContent);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend5"}');
+        }
+        assertScheduleRequest(request, 'singleSend5', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend5');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend5/stats');
 });
 
     ]]></test>
