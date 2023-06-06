@@ -11,8 +11,8 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/sendgrid-email-send/</help-page-url>
     <configs>
         <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
-            <label>C1: API Key</label>
-            <label locale="ja">C1: API キー</label>
+            <label>C1: Authorization Setting in which API Key is set as token</label>
+            <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
         </config>
         <config name="conf_Categories" el-enabled="true" form-type="TEXTAREA">
             <label>C2: Categories for filtering logs (write one per line)</label>
@@ -273,15 +273,13 @@ function buildRequestBody(categories, senderId, sendTo, unsubscribeGroupId, {des
     }
     const requestBody = {
         name: `Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`,
+        categories,
         send_to: {
             list_ids: sendTo.listIds,
             segment_ids: sendTo.segmentIds
         },
         email_config: emailConfig
     };
-    if (categories.length > 0) {
-        requestBody.categories = categories;
-    }
     return requestBody;
 }
 
@@ -338,5 +336,212 @@ function setData(dataDef, value) {
         hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
         chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
     </icon>
-    
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * メールの内容をデザイン ID で指定する場合
+ * @param categories
+ * @param senderId
+ * @param listIds
+ * @param segmentIds
+ * @param unsubscribeGroupId
+ * @param designId
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (categories, senderId, listIds, segmentIds, unsubscribeGroupId, designId) => {
+    configs.put('conf_Auth', 'SendGrid');
+    configs.put('conf_Categories', categories);
+    configs.put('conf_SenderId', senderId);
+    configs.put('conf_ListIds', listIds);
+    configs.put('conf_SegmentIds', segmentIds);
+    configs.put('conf_UnsubscribeGroupId', unsubscribeGroupId);
+    configs.put('conf_DesignId', designId);
+
+    // ID を保存するデータ項目を作成し、設定
+    const idDef = engine.createDataDefinition('ID 保存先', 2, 'q_id', 'STRING_TEXTFIELD');
+    engine.setData(idDef, '事前文字列');
+    configs.putObject('conf_SingleSendId', idDef);
+
+    // URL を保存するデータ項目を作成し、設定
+    const urlDef = engine.createDataDefinition('URL 保存先', 3, 'q_url', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_SingleSendUrl', urlDef);
+
+    return {idDef, urlDef};
+};
+
+/**
+ * 送信者 ID が空
+ */
+test('Sender ID is blank', () => {
+    prepareConfigs('', '', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
+    expect(execute).toThrow('Sender ID is blank.');
+});
+
+/**
+ * 送信者 ID が整数でない
+ */
+test('Sender ID is not integer', () => {
+    prepareConfigs('', 'invalidId', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
+    expect(execute).toThrow('Sender ID must be integer.');
+});
+
+/**
+ * 配信解除グループ ID が空
+ */
+test('Unsubscribe Group ID is blank', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '', 'design1');
+    expect(execute).toThrow('Unsubscribe Group ID is blank.');
+});
+
+/**
+ * 配信解除グループ ID が整数でない
+ */
+test('Unsubscribe Group ID is not integer', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', 'invalidId', 'design1');
+    expect(execute).toThrow('Unsubscribe Group ID must be integer.');
+});
+
+/**
+ * リスト ID とセグメント ID がどちらも空
+ */
+test('No List IDs or Segment IDs', () => {
+    prepareConfigs('', '123', '', '', '456', 'design1');
+    expect(execute).toThrow('No List IDs or Segment IDs.');
+});
+
+/**
+ * デザイン ID が空
+ */
+test('Design ID is blank', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
+    expect(execute).toThrow('Design ID is blank.');
+});
+
+/**
+ * Single Send のドラフトを作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param categories
+ * @param senderId
+ * @param listIds
+ * @param segmentIds
+ * @param unsubscribeGroupId
+ * @param designId
+ * @param subject
+ * @param htmlContent
+ * @param plainContent
+ */
+const assertCreateRequest = ({url, method, contentType, body}, categories, senderId, listIds, segmentIds, unsubscribeGroupId, designId, subject, htmlContent, plainContent) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/marketing/singlesends');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.name).toEqual(`Questetra-m${processInstance.getProcessModelInfoId()}-p${processInstance.getProcessInstanceId()}`);
+    expect(bodyObj.categories).toEqual(categories);
+    expect(bodyObj.send_to.list_ids).toEqual(listIds);
+    expect(bodyObj.send_to.segment_ids).toEqual(segmentIds);
+    expect(bodyObj.email_config.sender_id).toEqual(senderId);
+    expect(bodyObj.email_config.suppression_group_id).toEqual(unsubscribeGroupId);
+    expect(bodyObj.email_config.design_id).toEqual(designId);
+    expect(bodyObj.email_config.subject).toEqual(subject);
+    expect(bodyObj.email_config.html_content).toEqual(htmlContent);
+    expect(bodyObj.email_config.plain_content).toEqual(plainContent);
+    if (plainContent !== undefined) {
+        expect(bodyObj.email_config.generate_plain_content).toEqual(false);
+    }
+};
+
+/**
+ * Single Send のドラフトを作成する API リクエストでエラー
+ */
+test('Fail to create Single Send', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to create single send. status: 400');
+});
+
+/**
+ * Single Send の送信予約をする API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param singleSendId
+ * @param sendAt
+ */
+const assertScheduleRequest = ({url, method, contentType, body}, singleSendId, sendAt) => {
+    expect(url).toEqual(`https://api.sendgrid.com/v3/marketing/singlesends/${singleSendId}/schedule`);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.send_at).toEqual(sendAt);
+};
+
+/**
+ * Single Send の送信予約をする API リクエストでエラー
+ */
+test('Fail to schedule Single Send', () => {
+    prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
+        }
+        assertScheduleRequest(request, 'singleSend1', 'now');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    expect(execute).toThrow('Failed to schedule single send. status: 400, singleSendId: singleSend1');
+});
+
+/**
+ * 成功
+ * カテゴリ指定なし
+ * デザイン ID を指定
+ * 送信日時指定なし
+ */
+test('Succeed - No categories, content set by design ID, no schduled datetime', () => {
+    const {idDef, urlDef} = prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
+        }
+        assertScheduleRequest(request, 'singleSend1', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend1');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend1/stats');
+});
+
+const setSendAt = () => {
+
+}
+
+    ]]></test>
+
 </service-task-definition>
