@@ -96,6 +96,8 @@ function main(){
   * 以下の場合はエラー
   * - 件数が多すぎる
   * - カテゴリが ASCII 文字でないものを含む
+  * - 文字数が多すぎる
+  * - カテゴリ指定が重複
   * @return {Array<String>} categories
   */
 function retrieveCategories() {
@@ -106,6 +108,14 @@ function retrieveCategories() {
     }
     if (!categories.every(isAscii)) {
         throw 'Categories cannot include non-ascii characters.';
+    }
+    // API ドキュメントに文字数制限の記載はないが、実際には制限がある
+    if (categories.some(category => category.length > 128)) {
+        throw 'Each category must be within 128 characters.';
+    }
+    const set = new Set(categories);
+    if (categories.length !== set.size) {
+        throw 'The same category is set multiple times.';
     }
     return categories;
 }
@@ -375,11 +385,63 @@ const prepareConfigs = (categories, senderId, listIds, segmentIds, unsubscribeGr
 };
 
 /**
+ * 指定個数のデータを改行区切りにした文字列を生成する
+ * @param num
+ * @return string
+ */
+const createListString = (num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `item${num}\n`;
+    }
+    return string;
+};
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'abcdefghijklmnopqrstuvwxyz';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * カテゴリの個数が多すぎる
+ */
+test('Categories are too many', () => {
+    const categoriesStr = createListString(11);
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    expect(execute).toThrow('The maximum number of Categories is 10.');
+});
+
+/**
  * カテゴリに ASCII 文字以外を含む
  */
 test('Categories include invalid characters', () => {
     prepareConfigs('categoryあ', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
     expect(execute).toThrow('Categories cannot include non-ascii characters.');
+});
+
+/**
+ * 長すぎるカテゴリを含む
+ */
+test('Category is loo long', () => {
+    const categoriesStr = createListString(6) + createString(129) + '\n' + createListString(3);
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    expect(execute).toThrow('Each category must be within 128 characters.');
+});
+
+/**
+ * カテゴリの指定が重複
+ */
+test('Same category is set multiple times', () => {
+    const categoriesStr = createListString(9) + 'item1';
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    expect(execute).toThrow('The same category is set multiple times.');
 });
 
 /**
