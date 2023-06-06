@@ -349,6 +349,11 @@ function setData(dataDef, value) {
 
     <test><![CDATA[
 
+const MAX_CATEGORY_NUM = 10;
+const MAX_CATEGORY_LENGTH = 128;
+const MAX_LIST_ID_NUM = 50;
+const MAX_SEGMENT_ID_NUM = 10;
+
 /**
  * 設定の準備
  * メールの内容をデザイン ID で指定する場合
@@ -392,7 +397,7 @@ const prepareConfigs = (categories, senderId, listIds, segmentIds, unsubscribeGr
 const createListString = (num) => {
     let string = '';
     for (let i = 0; i < num; i++) {
-        string += `item${num}\n`;
+        string += `item${i}\n`;
     }
     return string;
 };
@@ -412,10 +417,10 @@ const createString = (length) => {
 /**
  * カテゴリの個数が多すぎる
  */
-test('Categories are too many', () => {
-    const categoriesStr = createListString(11);
+test('Too many Categories', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM + 1);
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow('The maximum number of Categories is 10.');
+    expect(execute).toThrow(`The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
 });
 
 /**
@@ -430,16 +435,16 @@ test('Categories include invalid characters', () => {
  * 長すぎるカテゴリを含む
  */
 test('Category is loo long', () => {
-    const categoriesStr = createListString(6) + createString(129) + '\n' + createListString(3);
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow('Each category must be within 128 characters.');
+    expect(execute).toThrow(`Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
 });
 
 /**
  * カテゴリの指定が重複
  */
 test('Same category is set multiple times', () => {
-    const categoriesStr = createListString(9) + 'item1';
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + 'item1';
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
     expect(execute).toThrow('The same category is set multiple times.');
 });
@@ -482,6 +487,24 @@ test('Unsubscribe Group ID is not integer', () => {
 test('No List IDs or Segment IDs', () => {
     prepareConfigs('', '123', '', '', '456', 'design1');
     expect(execute).toThrow('No List IDs or Segment IDs.');
+});
+
+/**
+ * リスト ID の個数が多すぎる
+ */
+test('Too many List IDs', () => {
+    const listIdsStr = createListString(MAX_LIST_ID_NUM + 1);
+    prepareConfigs('', '123', listIdsStr, '', '456', 'design1');
+    expect(execute).toThrow(`The maximum number of List IDs is ${MAX_LIST_ID_NUM}.`);
+});
+
+/**
+ * セグメント ID の個数が多すぎる
+ */
+test('Too many Segment IDs', () => {
+    const segmentIdsStr = createListString(MAX_SEGMENT_ID_NUM + 1);
+    prepareConfigs('', '123', '', segmentIdsStr, '456', 'design1');
+    expect(execute).toThrow(`The maximum number of Segment IDs is ${MAX_SEGMENT_ID_NUM}.`);
 });
 
 /**
@@ -698,6 +721,35 @@ test('Succeed - Content set by design ID, no lists, with categories, no schduled
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
     expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+/**
+ * 成功
+ * デザイン ID で指定
+ * カテゴリ、リスト ID、セグメント ID を最大個数指定し、API リクエストの確認を省略
+ */
+test('Succeed - Maximum number of categories, listIds and segmentIds', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH);
+    const listIdsStr = createListString(MAX_LIST_ID_NUM);
+    const segmentIdsStr = createListString(MAX_SEGMENT_ID_NUM);
+    const {idDef, urlDef} = prepareConfigs(categoriesStr, '1', listIdsStr, segmentIdsStr, '4', 'design2');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            // API リクエストの確認を省略
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
+        }
+        assertScheduleRequest(request, 'singleSend1', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    execute();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend1');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend1/stats');
 });
 
 /**
