@@ -79,8 +79,13 @@ function main(){
     const auth = configs.get('conf_Auth');
     const listIds = retrieveListIds();
     const contact = retrieveContact();
+    const customFieldMap = retrieveCustomFieldsAsMap();
 
     //// == Calculating / 演算 ==
+    if (customFieldMap.size > 0) {
+        const allCustomFields = getAllCustomFields(auth);
+        setCustomFields(contact, customFieldMap, allCustomFields);
+    }
     const jobId = addContact(auth, listIds, contact);
 
     // TODO ステータスを確認して、完了を待つように
@@ -99,6 +104,7 @@ function retrieveListIds() {
 
 /**
   * config に設定された宛先情報を、API リクエストボディに設定する形式で読み出す
+  * この時点では、カスタムフィールドの情報は含まない
   * @return {Object} contact
   * @return {String} contact.email
   * @return {Array<String>} contact.alternate_emails
@@ -110,7 +116,6 @@ function retrieveListIds() {
   * @return {String} contact.city
   * @return {String} contact.address_line_1
   * @return {String} contact.address_line_2
-  * @return {Object} contact.custom_fields
   */
 function retrieveContact() {
     const email = retrieveConfig('conf_Email', true, MAX_EMAIL_LENGTH, 'Email');
@@ -123,7 +128,6 @@ function retrieveContact() {
     const city = retrieveConfig('conf_City', false, MAX_CITY_LENGTH, 'City');
     const address1 = retrieveConfig('conf_Address1', false, MAX_ADDRESS_LENGTH, 'Address 1st Line');
     const address2 = retrieveConfig('conf_Address2', false, MAX_ADDRESS_LENGTH, 'Address 2nd Line');
-    const customFields = retrieveCustomFields();
 
     const contact = {
         email,
@@ -179,10 +183,70 @@ function retrieveAlternateEmails() {
 
 /**
   * config に設定されたカスタムフィールドを読み出す
-  * @return {Object} customFields
+  * Map のキーはフィールド名
+  * @return {Map} customFieldMap
   */
-function retrieveCustomFields() {
-    // TODO 後で
+function retrieveCustomFieldsAsMap() {
+    const customFieldMap = new Map();
+    const tableDef = configs.getObject('conf_CustomFields');
+    if (tableDef === null) {
+        return customFieldMap;
+    }
+    const table = engine.findData(tableDef); // ScriptListArray
+    if (table === null || table.size() === 0) {
+        return customFieldMap;
+    }
+    if (table.size() > 1) {
+        throw 'Custom Fields must be set by a table with a single row.';
+    }
+
+    const subDataDefs = tableDef.getSubDataDefinitions(); // List<SubDataDefinitionView>
+    for (let i = 0; i < subDataDefs.size(); i++) {
+        const fieldName = subDataDefs.get(i).getName();
+        const fieldValue = table.get(0, i);
+        if (fieldValue !== null && fieldValue !== '') {
+            // 値が空でない場合のみ、Map に追加
+            customFieldMap.set(fieldName, fieldValue);
+        }
+    }
+    // TODO データの個数をチェック。最大50個まで？
+    return customFieldMap;
+}
+
+/**
+  * 全カスタムフィールドの一覧を取得する
+  * @param {String} auth 認証設定名
+  * @return {Array<Object>} allCustomFields
+  */
+function getAllCustomFields(auth) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get('https://api.sendgrid.com/v3/marketing/field_definitions');
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get field definitions. status: ${status}`;
+    }
+    return JSON.parse(responseStr).custom_fields;
+}
+
+/**
+  * 宛先オブジェクトにカスタムフィールドの情報を追加する
+  * @param {Object} contact 宛先オブジェクト
+  * @param {Map} customFieldMap フィールド名がキーの Map
+  * @param {Array<Object>} allCustomFields 全カスタムフィールドの一覧
+  */
+function setCustomFields(contact, customFieldMap, allCustomFields) {
+    contact.custom_fields = {};
+    customFieldMap.forEach((fieldValue, fieldName) => {
+        const customField = allCustomFields.find(field => field.name === fieldName);
+        if (customField === undefined) { // 指定したフィールド名のカスタムフィールドがない場合
+            throw `Custom Field named "${fieldName}" does not exist.`;
+        }
+        contact.custom_fields[customField.id] = fieldValue;
+    });
 }
 
 /**
