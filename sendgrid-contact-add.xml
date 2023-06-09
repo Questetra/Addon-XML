@@ -108,7 +108,7 @@ function proceed() {
     }
 
     //// == 演算 / Calculating ==
-    if (checkStatusA(auth, jobId) === false) {
+    if (checkStatus(auth, jobId) === false) {
         return false;
     }
 }
@@ -205,8 +205,8 @@ function retrieveAlternateEmails() {
 
 /**
   * config に設定されたカスタムフィールドを読み出す
-  * Map のキーはフィールド名
-  * @return {Map} customFieldMap
+  * Map のキーはサブデータの定義、値はセルデータのオブジェクト
+  * @return {Map<SubDataDefinitionView, Object>} customFieldMap
   */
 function retrieveCustomFieldsAsMap() {
     const customFieldMap = new Map();
@@ -224,14 +224,13 @@ function retrieveCustomFieldsAsMap() {
 
     const subDataDefs = tableDef.getSubDataDefinitions(); // List<SubDataDefinitionView>
     for (let i = 0; i < subDataDefs.size(); i++) {
-        const fieldName = subDataDefs.get(i).getName();
-        const fieldValue = table.get(0, i);
-        if (fieldValue !== null && fieldValue !== '') {
+        const subDataDef = subDataDefs.get(i);
+        const dataObj = table.getObject(0, i);
+        if (dataObj !== null && dataObj !== '') {
             // 値が空でない場合のみ、Map に追加
-            customFieldMap.set(fieldName, fieldValue);
+            customFieldMap.set(subDataDef, dataObj);
         }
     }
-    // TODO データの個数をチェック。最大50個まで？
     return customFieldMap;
 }
 
@@ -285,18 +284,64 @@ function getAllCustomFields(auth) {
 /**
   * 宛先オブジェクトにカスタムフィールドの情報を追加する
   * @param {Object} contact 宛先オブジェクト
-  * @param {Map} customFieldMap フィールド名がキーの Map
+  * @param {Map<SubDataDefinitionView, Object>} customFieldMap カスタムフィールドの Map
   * @param {Array<Object>} allCustomFields 全カスタムフィールドの一覧
   */
 function setCustomFields(contact, customFieldMap, allCustomFields) {
-    contact.custom_fields = {};
-    customFieldMap.forEach((fieldValue, fieldName) => {
+    const customFields = {};
+    customFieldMap.forEach((dataObj, subDataDef) => {
+        const fieldName = subDataDef.getName();
         const customField = allCustomFields.find(field => field.name === fieldName);
         if (customField === undefined) { // 指定したフィールド名のカスタムフィールドがない場合
             throw `Custom Field named "${fieldName}" does not exist.`;
         }
-        contact.custom_fields[customField.id] = fieldValue;
+        switch (customField.field_type) {
+            case 'Text':
+                addTextField(customFields, customField.id, subDataDef, dataObj);
+                break;
+            case 'Number':
+                addNumberField(customFields, customField.id, subDataDef, dataObj);
+                break;
+            case 'Date':
+                addDateField(customFields, customField.id, subDataDef, dataObj);
+                break;
+            default:
+                // ありえないが、念のため
+                throw `Custom Field type "${customField.field_type}" is not supported.`;
+        }
     });
+    Object.assign(contact, {custom_fields: customFields});
+}
+
+function addTextField(customFields, customFieldId, subDataDef, dataObj) {
+    if (subDataDef.matchDataType('STRING')) {
+        // dataObj は String
+        Object.assign(customFields, {[customFieldId]: dataObj});
+        return;
+    }
+    if (subDataDef.matchDataType('SELECT')) {
+        // TODO 後で実装
+        return;
+    }
+    throw `Custom Field "${subDataDef.getName()}" is Text-type but the table sub-data is neither STRING nor SELECT.`;
+}
+
+function addNumberField(customFields, customFieldId, subDataDef, dataObj) {
+    if (!subDataDef.matchDataType('DECIMAL')) {
+        throw `Custom Field "${subDataDef.getName()}" is Number-type but the table sub-data is not DECIMAL.`;
+    }
+    // dataObj は BigDecimal
+    const fieldValue = dataObj.doubleValue();
+    Object.assign(customFields, {[customFieldId]: fieldValue});
+}
+
+function addDateField(customFields, customFieldId, subDataDef, dataObj) {
+    if (!subDataDef.matchDataType('DATE')) {
+        throw `Custom Field "${subDataDef.getName()}" is Date-type but the table sub-data is not DATE.`;
+    }
+    // dataObj は AddableDate
+    const fieldValue = dataObj.toString(); // yyyy-MM-dd
+    Object.assign(customFields, {[customFieldId]: fieldValue});
 }
 
 /**
