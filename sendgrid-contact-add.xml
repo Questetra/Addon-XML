@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <last-modified>2023-06-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Add Contact</label>
@@ -73,7 +74,6 @@ const MAX_CITY_LENGTH = 60;
 const MAX_ADDRESS_LENGTH = 1000;
 const MAX_ALTERNATE_EMAIL_NUM = 5;
 
-main();
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
@@ -88,7 +88,28 @@ function main(){
     }
     const jobId = addContact(auth, listIds, contact);
 
-    // TODO ステータスを確認して、完了を待つように
+    // 処理状況を確認し、未完了なら proceed() に進む
+    if (checkStatus(auth, jobId) === false) {
+        engine.saveTemporaryData(jobId);
+        return false;
+    }
+}
+
+function proceed() {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const email = configs.get('conf_Email');
+
+    //// == Restoring Temporary Data / 一時データの読み出し ==
+    const jobId = engine.restoreTemporaryData();
+    if (jobId === null) {
+        throw 'Temporary data has not been saved.';
+    }
+
+    //// == 演算 / Calculating ==
+    if (checkStatusA(auth, jobId) === false) {
+        return false;
+    }
 }
 
 /**
@@ -273,6 +294,29 @@ function addContact(auth, listIds, contact) {
         throw `Failed to add contact. status: ${status}`;
     }
     return JSON.parse(responseStr).job_id;
+}
+
+function checkStatus(auth, jobId) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get import status. status: ${status}`;
+    }
+    const jobStatus = JSON.parse(responseStr).status;
+    switch (jobStatus) {
+        case 'pending': // 処理中
+            return false;
+        case 'completed': // 完了
+            return true;
+        default: // errored or failed
+            engine.log(responseStr);
+            throw 'Failed to complete adding the contact.';
+    }
 }
 
     ]]></script>
