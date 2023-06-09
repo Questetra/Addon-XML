@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <last-modified>2023-06-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Email</label>
@@ -93,16 +94,21 @@
     </tabs>
 
     <script><![CDATA[
-main();
+
+const MAX_CATEGORY_NUM = 10;
+const MAX_CATEGORY_LENGTH = 128;
+const MAX_LIST_ID_NUM = 50;
+const MAX_SEGMENT_ID_NUM = 10;
+
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.get('conf_Auth');
-    const categories = retrieveCategories();
     const senderId = retrieveIdAsInt('conf_SenderId', 'Sender ID');
+    const sendAt = retrieveSendAt();
     const sendTo = retrieveSendTo();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
-    const sendAt = retrieveSendAt();
     const content = retrieveContent();
+    const categories = retrieveCategories();
     const singleSendIdDef = configs.getObject('conf_SingleSendId');
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
@@ -127,15 +133,15 @@ function main(){
 function retrieveCategories() {
     const categories = configs.get('conf_Categories').split('\n')
         .filter(category => category !== '');
-    if (categories.length > 10) {
-        throw 'The maximum number of Categories is 10.';
+    if (categories.length > MAX_CATEGORY_NUM) {
+        throw `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`;
     }
     if (!categories.every(isAscii)) {
         throw 'Categories cannot include non-ascii characters.';
     }
     // API ドキュメントに文字数制限の記載はないが、実際には制限がある
-    if (categories.some(category => category.length > 128)) {
-        throw 'Each category must be within 128 characters.';
+    if (categories.some(category => category.length > MAX_CATEGORY_LENGTH)) {
+        throw `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`;
     }
     const set = new Set(categories);
     if (categories.length !== set.size) {
@@ -181,13 +187,13 @@ function retrieveIdAsInt(confName, label) {
 function retrieveSendTo() {
     const listIds = configs.get('conf_ListIds').split('\n')
         .filter(id => id !== '');
-    if (listIds.length > 50) {
-        throw 'The maximum number of List IDs is 50.';
+    if (listIds.length > MAX_LIST_ID_NUM) {
+        throw `The maximum number of List IDs is ${MAX_LIST_ID_NUM}.`;
     }
     const segmentIds = configs.get('conf_SegmentIds').split('\n')
         .filter(id => id !== '');
-    if (segmentIds.length > 10) {
-        throw 'The maximum number of Segment IDs is 10.';
+    if (segmentIds.length > MAX_SEGMENT_ID_NUM) {
+        throw `The maximum number of Segment IDs is ${MAX_SEGMENT_ID_NUM}.`;
     }
     if (listIds.length === 0 && segmentIds.length === 0) {
         throw 'No List IDs or Segment IDs.';
@@ -373,11 +379,6 @@ function setData(dataDef, value) {
 
     <test><![CDATA[
 
-const MAX_CATEGORY_NUM = 10;
-const MAX_CATEGORY_LENGTH = 128;
-const MAX_LIST_ID_NUM = 50;
-const MAX_SEGMENT_ID_NUM = 10;
-
 /**
  * 設定の準備
  * メールの内容をデザイン ID で指定する場合
@@ -414,6 +415,20 @@ const prepareConfigs = (categories, senderId, listIds, segmentIds, unsubscribeGr
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
  * 指定個数のデータを改行区切りにした文字列を生成する
  * @param num
  * @return string
@@ -444,7 +459,7 @@ const createString = (length) => {
 test('Too many Categories', () => {
     const categoriesStr = createListString(MAX_CATEGORY_NUM + 1);
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow(`The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
 });
 
 /**
@@ -452,7 +467,7 @@ test('Too many Categories', () => {
  */
 test('Categories include invalid characters', () => {
     prepareConfigs('categoryあ', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow('Categories cannot include non-ascii characters.');
+    assertError(main, 'Categories cannot include non-ascii characters.');
 });
 
 /**
@@ -461,7 +476,7 @@ test('Categories include invalid characters', () => {
 test('Category is loo long', () => {
     const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow(`Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
 });
 
 /**
@@ -470,7 +485,7 @@ test('Category is loo long', () => {
 test('Same category is set multiple times', () => {
     const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + 'item1';
     prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    expect(execute).toThrow('The same category is set multiple times.');
+    assertError(main, 'The same category is set multiple times.');
 });
 
 /**
@@ -478,7 +493,7 @@ test('Same category is set multiple times', () => {
  */
 test('Sender ID is blank', () => {
     prepareConfigs('', '', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
-    expect(execute).toThrow('Sender ID is blank.');
+    assertError(main, 'Sender ID is blank.');
 });
 
 /**
@@ -486,7 +501,7 @@ test('Sender ID is blank', () => {
  */
 test('Sender ID is not integer', () => {
     prepareConfigs('', 'invalidId', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
-    expect(execute).toThrow('Sender ID must be integer.');
+    assertError(main, 'Sender ID must be integer.');
 });
 
 /**
@@ -494,7 +509,7 @@ test('Sender ID is not integer', () => {
  */
 test('Unsubscribe Group ID is blank', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '', 'design1');
-    expect(execute).toThrow('Unsubscribe Group ID is blank.');
+    assertError(main, 'Unsubscribe Group ID is blank.');
 });
 
 /**
@@ -502,7 +517,7 @@ test('Unsubscribe Group ID is blank', () => {
  */
 test('Unsubscribe Group ID is not integer', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', 'invalidId', 'design1');
-    expect(execute).toThrow('Unsubscribe Group ID must be integer.');
+    assertError(main, 'Unsubscribe Group ID must be integer.');
 });
 
 /**
@@ -510,7 +525,7 @@ test('Unsubscribe Group ID is not integer', () => {
  */
 test('No List IDs or Segment IDs', () => {
     prepareConfigs('', '123', '', '', '456', 'design1');
-    expect(execute).toThrow('No List IDs or Segment IDs.');
+    assertError(main, 'No List IDs or Segment IDs.');
 });
 
 /**
@@ -519,7 +534,7 @@ test('No List IDs or Segment IDs', () => {
 test('Too many List IDs', () => {
     const listIdsStr = createListString(MAX_LIST_ID_NUM + 1);
     prepareConfigs('', '123', listIdsStr, '', '456', 'design1');
-    expect(execute).toThrow(`The maximum number of List IDs is ${MAX_LIST_ID_NUM}.`);
+    assertError(main, `The maximum number of List IDs is ${MAX_LIST_ID_NUM}.`);
 });
 
 /**
@@ -528,7 +543,7 @@ test('Too many List IDs', () => {
 test('Too many Segment IDs', () => {
     const segmentIdsStr = createListString(MAX_SEGMENT_ID_NUM + 1);
     prepareConfigs('', '123', '', segmentIdsStr, '456', 'design1');
-    expect(execute).toThrow(`The maximum number of Segment IDs is ${MAX_SEGMENT_ID_NUM}.`);
+    assertError(main, `The maximum number of Segment IDs is ${MAX_SEGMENT_ID_NUM}.`);
 });
 
 /**
@@ -536,7 +551,7 @@ test('Too many Segment IDs', () => {
  */
 test('Design ID is blank', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
-    expect(execute).toThrow('Design ID is blank.');
+    assertError(main, 'Design ID is blank.');
 });
 
 /**
@@ -587,7 +602,7 @@ test('Fail to create Single Send', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create single send. status: 400');
+    assertError(main, 'Failed to create single send. status: 400');
 });
 
 /**
@@ -625,7 +640,7 @@ test('Fail to schedule Single Send', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to schedule single send. status: 400, singleSendId: singleSend1');
+    assertError(main, 'Failed to schedule single send. status: 400, singleSendId: singleSend1');
 });
 
 /**
@@ -648,7 +663,7 @@ test('Succeed - Content set by design ID, no categories, no schduled datetime', 
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('singleSend1');
@@ -673,7 +688,7 @@ const setSendAt = (timestamp) => {
 test('Scheduled Datetime is null', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
     setSendAt(null);
-    expect(execute).toThrow('Scheduled Datetime is selected but its data is null.');
+    assertError(main, 'Scheduled Datetime is selected but its data is null.');
 });
 
 /**
@@ -683,7 +698,7 @@ test('Scheduled Datetime has passed', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
     const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(-1);
     setSendAt(timestamp);
-    expect(execute).toThrow('Scheduled Datetime must be future.');
+    assertError(main, 'Scheduled Datetime must be future.');
 });
 
 /**
@@ -709,7 +724,7 @@ test('Succeed - Content set by design ID, no segments, with categories, with sch
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('singleSend2');
@@ -740,7 +755,7 @@ test('Succeed - Content set by design ID, no lists, with categories, no schduled
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
@@ -769,7 +784,7 @@ test('Succeed - Maximum number of categories, listIds and segmentIds', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('singleSend1');
@@ -782,7 +797,7 @@ test('Succeed - Maximum number of categories, listIds and segmentIds', () => {
 test('Design ID is set while hasUniqueContent is enabled', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
     configs.putObject('conf_HasUniqueContent', true);
-    expect(execute).toThrow('Design ID is set while "Configure the subject and content without using Design" is enabled.');
+    assertError(main, 'Design ID is set while "Configure the subject and content without using Design" is enabled.');
 });
 
 /**
@@ -804,7 +819,7 @@ test('Subject is blank', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
     configs.putObject('conf_HasUniqueContent', true);
     setUniqueContent('', 'メールの HTML 本文', '');
-    expect(execute).toThrow('Subject is blank.');
+    assertError(main, 'Subject is blank.');
 });
 
 /**
@@ -814,7 +829,7 @@ test('HTML Content is Blank', () => {
     prepareConfigs('', '123', 'list1\nlist2', 'segment1\nsegment2', '456', '');
     configs.putObject('conf_HasUniqueContent', true);
     setUniqueContent('メールの件名', '', '');
-    expect(execute).toThrow('HTML Content is blank.');
+    assertError(main, 'HTML Content is blank.');
 });
 
 /**
@@ -840,7 +855,7 @@ test('Succeed - Has unique content, without plain text content', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('singleSend4');
@@ -871,7 +886,7 @@ test('Succeed - Has unique content, with plain text content', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('singleSend5');
