@@ -77,7 +77,7 @@ function main(){
     const contact = retrieveContact();
 
     //// == Calculating / 演算 ==
-    const jobId = addContact(auth, listIds, contact);
+    const jobId = upsertContact(auth, listIds, contact);
 
     // 処理状況を確認し、未完了なら proceed() に進む
     if (checkStatus(auth, jobId) === false) {
@@ -244,13 +244,13 @@ function retrieveAlternateEmails() {
 }
 
 /**
-  * 宛先を追加する
+  * 宛先を追加/更新する
   * @param {String} auth 認証設定名
   * @param {Array<String>} listIds 宛先を追加するリスト ID の一覧
   * @param {Object} contact 宛先情報
   * @return {String} jobId
   */
-function addContact(auth, listIds, contact) {
+function upsertContact(auth, listIds, contact) {
     const requestBody = {
         "list_ids": listIds,
         "contacts": [contact]
@@ -264,7 +264,7 @@ function addContact(auth, listIds, contact) {
     const responseStr = response.getResponseAsString();
     if (status !== 202) {
         engine.log(responseStr);
-        throw `Failed to add contact. status: ${status}`;
+        throw `Failed to upsert contact. status: ${status}`;
     }
     return JSON.parse(responseStr).job_id;
 }
@@ -284,7 +284,7 @@ function checkStatus(auth, jobId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get import status. status: ${status}`;
+        throw `Failed to get upsert status. status: ${status}`;
     }
     const jobStatus = JSON.parse(responseStr).status;
     switch (jobStatus) {
@@ -294,7 +294,7 @@ function checkStatus(auth, jobId) {
             return true;
         default: // errored or failed
             engine.log(responseStr);
-            throw 'Failed to complete adding the contact.';
+            throw 'Failed to complete upserting the contact.';
     }
 }
 
@@ -519,6 +519,146 @@ test('Address 2nd Line is too long', () => {
     const address2 = createString(MAX_FIELD_VALUE_LENGTH + 1);
     prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, address2);
     assertError(main, `Address 2nd Line must be within ${MAX_FIELD_VALUE_LENGTH} characters.`);
+});
+
+/**
+  * 宛先を追加/更新する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param listIds
+  * @param contact
+  */
+const assertUpsertRequest = ({url, method, contentType, body}, listIds, contact) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/marketing/contacts');
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.list_ids).toEqual(listIds);
+    expect(bodyObj.contacts[0]).toEqual(contact);
+};
+
+/**
+  * リクエストボディのアサート用の宛先オブジェクトを作成する
+  * 同じロジックだとテストにならないので、別のロジックで作成
+  * @param email
+  * @param alternateEmails
+  * @param lastName
+  * @param firstName
+  * @param country
+  * @param postalCode
+  * @param region
+  * @param city
+  * @param address1
+  * @param address2
+  * @return contact
+  */
+const createContact = (email, alternateEmails, lastName, firstName, country, postalCode, region,
+                        city, address1, address2) => {
+    const contact = {email};
+    assignIfNotNull(contact, 'alternate_emails', alternateEmails);
+    assignIfNotNull(contact, 'last_name', lastName);
+    assignIfNotNull(contact, 'first_name', firstName);
+    assignIfNotNull(contact, 'country', country);
+    assignIfNotNull(contact, 'postal_code', postalCode);
+    assignIfNotNull(contact, 'state_province_region', region);
+    assignIfNotNull(contact, 'city', city);
+    assignIfNotNull(contact, 'address_line_1', address1);
+    assignIfNotNull(contact, 'address_line_2', address2);
+    return contact;
+};
+
+/**
+  * 値が null でない場合のみ、オブジェクトに追加する
+  * @param obj
+  * @param key
+  * @param value
+  */
+const assignIfNotNull = (obj, key, value) => {
+    if (value !== null) {
+        Object.assign(obj, {[key]: value});
+    }
+};
+
+/**
+  * 宛先を追加/更新する API リクエストでエラー
+  */
+test('Fail to upsert contact', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertUpsertRequest(request, listIds, contact);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to upsert contact. status: 400');
+});
+
+/**
+  * ジョブの処理状況を確認する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param jobId
+  */
+const assertCheckStatusRequest = ({url, method}, jobId) => {
+    expect(url).toEqual(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * ジョブの処理状況を確認する API リクエストでエラー
+  */
+test('Fail to get upsert status', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get upsert status. status: 400');
+});
+
+/**
+  * 成功
+  * リスト ID を文字型データ項目で指定
+  * その他のフィールドはすべて空
+  */
+test('Succeed - List IDs set by STRING, the other fields are blank', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+
+    main();
 });
 
     ]]></test>
