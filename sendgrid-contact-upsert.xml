@@ -637,11 +637,35 @@ test('Fail to get upsert status', () => {
 });
 
 /**
+  * 1 回目のステータス確認で、ジョブが異常終了
+  */
+test('Fail to complete upserting in main()', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "failed"}');
+    });
+
+    assertError(main, 'Failed to complete upserting the contact.');
+});
+
+/**
   * 成功
   * リスト ID を文字型データ項目で指定
   * その他のフィールドはすべて空
+  * 1 回目のステータス確認で、ジョブが完了
   */
-test('Succeed - List IDs set by STRING, the other fields are blank', () => {
+test('Succeed - List IDs set by STRING, the other fields are blank, complete in 1st request', () => {
     const email = createString(MAX_EMAIL_LENGTH);
     prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
 
@@ -657,8 +681,154 @@ test('Succeed - List IDs set by STRING, the other fields are blank', () => {
         assertCheckStatusRequest(request, 'job1');
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
     });
+    expect(main()).toEqual(undefined);
+});
 
-    main();
+/**
+  * 成功
+  * リスト ID を文字型データ項目で指定し、値が空
+  * その他のフィールドはすべて指定
+  * 2 回目のステータス確認で、ジョブが完了
+  */
+test('Succeed - List IDs set by STRING with its value null, the other fields set at max length, complete in 2nd request', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const alternateEmailsStr = createListString(MAX_ALTERNATE_EMAIL_NUM);
+    const lastName = createString(MAX_NAME_LENGTH);
+    const firstName = createString(MAX_NAME_LENGTH);
+    const country = createString(MAX_NAME_LENGTH);
+    const postalCode = createString(MAX_POSTAL_CODE_LENGTH);
+    const region = createString(MAX_NAME_LENGTH);
+    const city = createString(MAX_CITY_LENGTH);
+    const address1 = createString(MAX_FIELD_VALUE_LENGTH);
+    const address2 = createString(MAX_FIELD_VALUE_LENGTH);
+    prepareConfigs(email, null, alternateEmailsStr, lastName, firstName, country, postalCode, region, city, address1, address2);
+
+    const listIds = [];
+    const alternateEmails = alternateEmailsStr.split('\n').filter(email => email !== '');
+    expect(alternateEmails.length).toEqual(MAX_ALTERNATE_EMAIL_NUM);
+    const contact = createContact(email, alternateEmails, lastName, firstName, country, postalCode, region, city, address1, address2);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job2"}');
+        }
+        assertCheckStatusRequest(request, 'job2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('job2');
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(proceed()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * メールアドレス以外の全フィールド、データ項目の指定なし
+  * 3 回目のステータス確認で、ジョブが完了
+  */
+test('Succeed - Only Email is set, complete in 3rd request', () => {
+    const email = 'test@example.com';
+    const dummy = 'dummy';
+    prepareConfigs(email, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy);
+    configs.put('conf_ListIds', '');
+    configs.put('conf_AlternateEmails', '');
+    configs.put('conf_LastName', '');
+    configs.put('conf_FirstName', '');
+    configs.put('conf_Country', '');
+    configs.put('conf_PostalCode', '');
+    configs.put('conf_Region', '');
+    configs.put('conf_City', '');
+    configs.put('conf_Address1', '');
+    configs.put('conf_Address2', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, undefined, {email}); // メールアドレスのみ
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job3"}');
+        }
+        assertCheckStatusRequest(request, 'job3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('job3');
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(proceed()).toEqual(false);
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(proceed()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * リスト ID を選択型データ項目で指定
+  * その他のフィールドはすべて空
+  * 1 回目のステータス確認で、ジョブが完了
+  */
+test('Succeed - List IDs set by SELECT, the other fields are blank, complete in 1st request', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'dummy', null, null, null, null, null, null, null, null, null);
+    const listIdsSelect = new java.util.ArrayList();
+    for (let i = 0; i < 5; i++) {
+        const item = engine.createItem(`list${i+1}`, `リスト ${i+1}`);
+        listIdsSelect.add(item);
+    }
+    setDataItem('ListIds', 12, 'SELECT_CHECKBOX', listIdsSelect);
+
+    const listIds = ['list1', 'list2', 'list3', 'list4', 'list5'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job4"}');
+        }
+        assertCheckStatusRequest(request, 'job4');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * リスト ID を選択型データ項目で指定し、何も選択されていない
+  * その他のフィールドはすべて空
+  * 1 回目のステータス確認で、ジョブが完了
+  */
+test('Succeed - List IDs set by SELECT with none selected, the other fields are blank, complete in 1st request', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'dummy', null, null, null, null, null, null, null, null, null);
+    const listIdsSelect = new java.util.ArrayList();
+    setDataItem('ListIds', 12, 'SELECT_CHECKBOX', listIdsSelect);
+
+    const listIds = [];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job5"}');
+        }
+        assertCheckStatusRequest(request, 'job5');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
 });
 
     ]]></test>
