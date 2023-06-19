@@ -271,7 +271,7 @@ function addNumberField(customFields, customFieldId, customFieldName, dataDef) {
   */
 function addDateField(customFields, customFieldId, customFieldName, dataDef) {
     if (!dataDef.matchDataType('DATE_YMD')) {
-        throw `Custom Field "${customFieldName}" is Date-type. Its value must be set by DATE_YMD type data item.`;
+        throw `Custom Field "${customFieldName}" is Date type. Its value must be set by DATE_YMD type data item.`;
     }
     const dataObj = engine.findData(dataDef); // AddableDate or null
     let fieldValue = '';
@@ -676,6 +676,70 @@ const ALL_CUSTOM_FIELDS_RESPONSE = {
 };
 
 /**
+  * 存在しないカスタムフィールド名を指定
+  */
+test('Custom Field does not exist', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_100', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetAllCustomFieldsRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+    });
+    assertError(main, 'Custom Field named "field_100" does not exist.');
+});
+
+/**
+  * 文字型のカスタムフィールドの値を、文字型以外で指定
+  */
+test('Custom Field is Text type but its value is not set by STRING_TEXTFIELD type data item', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_1', type: 'DECIMAL', value: 123});
+    prepareConfigs(email, fieldConfigMap);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetAllCustomFieldsRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+    });
+    assertError(main, 'Custom Field "field_1" is Text type. Its value must be set by STRING_TEXTFIELD type data item.');
+});
+
+/**
+  * 数値型のカスタムフィールドの値を、数値型以外で指定
+  */
+test('Custom Field is Number type but its value is not set by DECIMAL type data item', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(2, {name: 'field_9', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetAllCustomFieldsRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+    });
+    assertError(main, 'Custom Field "field_9" is Number type. Its value must be set by DECIMAL type data item.');
+});
+
+/**
+  * 日付型のカスタムフィールドの値を、日付型以外で指定
+  */
+test('Custom Field is Date type but its value is not set by DATE_YMD type data item', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(3, {name: 'field_10', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetAllCustomFieldsRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+    });
+    assertError(main, 'Custom Field "field_10" is Date type. Its value must be set by DATE_YMD type data item.');
+});
+
+/**
   * 成功
   * カスタムフィールドを最大個数、最長文字数の文字列で指定
   */
@@ -710,6 +774,86 @@ test('Succeed - Maximum number of Custom Fields', () => {
             return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job2"}');
         }
         assertCheckStatusRequest(request, 'job2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * 文字型、数値型、日付型のカスタムフィールドが混在
+  */
+test('Succeed - All types of Custom Fields', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    fieldConfigMap.set(4, {name: 'field_9', type: 'DECIMAL', value: 123});
+    fieldConfigMap.set(7, {name: 'field_10', type: 'DATE_YMD', value: '2021-01-31'});
+    prepareConfigs(email, fieldConfigMap);
+
+    const customFields = {
+        '1T': 'フィールドの値',
+        '9N': 123,
+        '10D': '01/31/2021'
+    };
+    const contact = {
+        email,
+        custom_fields: customFields
+    };
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetAllCustomFieldsRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job3"}');
+        }
+        assertCheckStatusRequest(request, 'job3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * フィールドの値が null の場合、空文字列が送られる
+  */
+test('Succeed - Custom Data Value is null', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: null});
+    fieldConfigMap.set(4, {name: 'field_9', type: 'DECIMAL', value: null});
+    fieldConfigMap.set(7, {name: 'field_10', type: 'DATE_YMD', value: null});
+    fieldConfigMap.set(8, {name: 'field_2', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+
+    const customFields = {
+        '1T': '',
+        '9N': '',
+        '10D': '',
+        '2T': 'フィールドの値'
+    };
+    const contact = {
+        email,
+        custom_fields: customFields
+    };
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetAllCustomFieldsRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job4"}');
+        }
+        assertCheckStatusRequest(request, 'job4');
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
     });
     expect(main()).toEqual(undefined);
