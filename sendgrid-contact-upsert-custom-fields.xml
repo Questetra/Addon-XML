@@ -444,6 +444,144 @@ test('Email Address is too long', () => {
 });
 
 /**
+  * 宛先を追加/更新する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param contact
+  */
+const assertUpsertRequest = ({url, method, contentType, body}, contact) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/marketing/contacts');
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.contacts[0]).toEqual(contact);
+};
+
+/**
+  * 宛先を追加/更新する API リクエストでエラー
+  */
+test('Fail to upsert contact', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, new Map()); // カスタムフィールドの指定なし
+
+    httpClient.setRequestHandler((request) => {
+        assertUpsertRequest(request, {email});
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to upsert contact. status: 400');
+});
+
+/**
+  * ジョブの処理状況を確認する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param jobId
+  */
+const assertCheckStatusRequest = ({url, method}, jobId) => {
+    expect(url).toEqual(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * ジョブの処理状況を確認する API リクエストでエラー
+  */
+test('Fail to get upsert status', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, new Map()); // カスタムフィールドの指定なし
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, {email});
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get upsert status. status: 400');
+});
+
+/**
+  * 1 回目のステータス確認で、ジョブが異常終了
+  */
+test('Fail to complete upserting in main()', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, new Map()); // カスタムフィールドの指定なし
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, {email});
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "failed"}');
+    });
+    assertError(main, 'Failed to complete upserting the contact.');
+});
+
+/**
+  * 成功
+  * カスタムフィールドを指定しない場合
+  */
+test('Succeed - No Custom Fields', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, new Map()); // カスタムフィールドの指定なし
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, {email});
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * フィールド名が空なのに、値のデータ項目が選択されている
+ */
+test('Field Name is blank while its value is selected', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(3, {name: '', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+    assertError(main, `Custom Field Name 3 is blank while its value is selected.`);
+});
+
+/**
+ * フィールド名の指定が重複
+ */
+test('Same Field Name is set multiple times', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    fieldConfigMap.set(3, {name: 'field_1', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+    assertError(main, `Custom Field Name "field_1" is set multiple times.`);
+});
+
+/**
+ * フィールド名は設定されているのに、値のデータ項目が選択されていない
+ */
+test('Field Value is not selected while its field name is set', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(4, {name: 'field_4', type: null, value: null});
+    prepareConfigs(email, fieldConfigMap);
+    assertError(main, `Value 4 is not selected while its field name is set.`);
+});
+
+/**
  * フィールドの値が文字列で、長すぎる
  */
 test('Field Value is too long', () => {
@@ -453,6 +591,128 @@ test('Field Value is too long', () => {
     fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: fieldValue});
     prepareConfigs(email, fieldConfigMap);
     assertError(main, `Custom Field Value of "field_1" must be within ${MAX_FIELD_VALUE_LENGTH} characters.`);
+});
+
+/**
+  * 全カスタムフィールドの一覧を取得する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  */
+const assertGetAllCustomFieldsRequest = ({url, method}) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/marketing/field_definitions');
+    expect(method).toEqual('GET');
+};
+
+/**
+  * 全カスタムフィールドの一覧を取得する API リクエストでエラー
+  */
+test('Fail to get upsert status', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: 'フィールドの値'});
+    prepareConfigs(email, fieldConfigMap);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetAllCustomFieldsRequest(request);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get field definitions. status: 400');
+});
+
+const ALL_CUSTOM_FIELDS_RESPONSE = {
+    custom_fields: [
+        {
+            id: '1T',
+            name: 'field_1',
+            field_type: 'Text'
+        },
+        {
+            id: '2T',
+            name: 'field_2',
+            field_type: 'Text'
+        },
+        {
+            id: '3T',
+            name: 'field_3',
+            field_type: 'Text'
+        },
+        {
+            id: '4T',
+            name: 'field_4',
+            field_type: 'Text'
+        },
+        {
+            id: '5T',
+            name: 'field_5',
+            field_type: 'Text'
+        },
+        {
+            id: '6T',
+            name: 'field_6',
+            field_type: 'Text'
+        },
+        {
+            id: '7T',
+            name: 'field_7',
+            field_type: 'Text'
+        },
+        {
+            id: '8T',
+            name: 'field_8',
+            field_type: 'Text'
+        },
+        {
+            id: '9N',
+            name: 'field_9',
+            field_type: 'Number'
+        },
+        {
+            id: '10D',
+            name: 'field_10',
+            field_type: 'Date'
+        }
+    ]
+};
+
+/**
+  * 成功
+  * カスタムフィールドを最大個数、最長文字数の文字列で指定
+  */
+test('Succeed - Maximum number of Custom Fields', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    const customFields = {}; // リクエストボディのアサート用オブジェクト
+    const fieldValuePrefix = createString(MAX_FIELD_VALUE_LENGTH - 2);
+    for (let i = 0; i < FIELD_NUM; i++) {
+        const fieldName = `field_${i + 1}`;
+        const fieldId = `${i + 1}T`;
+        const fieldValue = `${fieldValuePrefix}_${i + 1}`;
+        fieldConfigMap.set(i + 1, {name: fieldName, type: 'STRING_TEXTFIELD', value: fieldValue});
+        Object.assign(customFields, {[fieldId]: fieldValue});
+    }
+    prepareConfigs(email, fieldConfigMap);
+
+    const contact = {
+        email,
+        custom_fields: customFields
+    };
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetAllCustomFieldsRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(ALL_CUSTOM_FIELDS_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job2"}');
+        }
+        assertCheckStatusRequest(request, 'job2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
 });
 
     ]]></test>
