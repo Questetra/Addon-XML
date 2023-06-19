@@ -2,12 +2,12 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-06-15</last-modified>
+    <last-modified>2023-06-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Add or Update Contact (Custom Fields)</label>
     <label locale="ja">Twilio SendGrid: 宛先追加/更新（カスタムフィールド）</label>
     <summary>This item adds or updates a contact on SendGrid with the specified custom field values. If a contact with the specified email address already exists, the contact will be updated.</summary>
-    <summary locale="ja">この工程は、SendGrid の宛先を追加または更新し、指定したカスタムフィールドの値を設定します。指定したメールアドレスの宛先がすでにある場合、その宛先が更新されます。</summary>
+    <summary locale="ja">この工程は、SendGrid の宛先を追加または更新し、指定したカスタムフィールドに値を設定します。指定したメールアドレスの宛先がすでにある場合、その宛先が更新されます。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/sendgrid-contact-upsert-custom-fields/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/sendgrid-contact-upsert-custom-fields/</help-page-url>
     <configs>
@@ -103,7 +103,7 @@ function main(){
         const allCustomFields = getAllCustomFields(auth);
         setCustomFields(contact, customFieldMap, allCustomFields);
     }
-    const jobId = addContact(auth, contact);
+    const jobId = upsertContact(auth, contact);
 
     // 処理状況を確認し、未完了なら proceed() に進む
     if (checkStatus(auth, jobId) === false) {
@@ -139,7 +139,7 @@ function retrieveEmail() {
         throw 'Email Address is blank.';
     }
     if (email.length > MAX_EMAIL_LENGTH) {
-        trow `Email Address must be within ${MAX_EMAIL_LENGTH} characters.`;
+        throw `Email Address must be within ${MAX_EMAIL_LENGTH} characters.`;
     }
     return email;
 }
@@ -154,7 +154,7 @@ function retrieveCustomFieldsAsMap() {
     for (let i = 0; i < FIELD_NUM; i++) {
         const fieldName = configs.get(`conf_FieldName${i + 1}`);
         const fieldValueDef = configs.getObject(`conf_FieldValue${i + 1}`);
-        if (fieldName === '') {
+        if (fieldName === '' || fieldName === null) {
             if (fieldValueDef !== null) { // フィールド名が空なのに、値のデータ項目が選択されている場合
                 throw `Custom Field Name ${i + 1} is blank while its value is selected.`;
             }
@@ -166,6 +166,11 @@ function retrieveCustomFieldsAsMap() {
         if (fieldValueDef === null) { // フィールド名は設定されているのに、値のデータ項目が選択されてない場合
             // 「SendGrid: 宛先追加/更新」と仕様を合わせるため、null をセットせずにエラーにする
             throw `Value ${i + 1} is not selected while its field name is set.`;
+        }
+        const dataObj = engine.findData(fieldValueDef);
+        // 文字型データを想定した文字数チェック。数値型、日付型データ以外が文字数制限に引っかかることはありえない
+        if (dataObj !== null && dataObj.toString().length > MAX_FIELD_VALUE_LENGTH) {
+            throw `Custom Field Value of "${fieldName}" must be within ${MAX_FIELD_VALUE_LENGTH} characters.`;
         }
         customFieldMap.set(fieldName, fieldValueDef);
     }
@@ -234,10 +239,7 @@ function addTextField(customFields, customFieldId, customFieldName, dataDef) {
         throw `Custom Field "${customFieldName}" is Text type. Its value must be set by STRING_TEXTFIELD type data item.`;
     }
     const dataObj = engine.findData(dataDef); // String or null
-    const fieldValue = dataObj ?? '';
-    if (fieldValue.length > MAX_FIELD_VALUE_LENGTH) {
-        throw `Custom Field Value of "${customFieldName}" must be within ${MAX_FIELD_VALUE_LENGTH} characters.`;
-    }
+    const fieldValue = dataObj ?? ''; // String
     Object.assign(customFields, {[customFieldId]: fieldValue});
 }
 
@@ -280,12 +282,12 @@ function addDateField(customFields, customFieldId, customFieldName, dataDef) {
 }
 
 /**
-  * 宛先を追加する
+  * 宛先を追加/更新する
   * @param {String} auth 認証設定名
   * @param {Object} contact 宛先情報
   * @return {String} jobId
   */
-function addContact(auth, contact) {
+function upsertContact(auth, contact) {
     const requestBody = {
         "contacts": [contact]
     };
@@ -298,7 +300,7 @@ function addContact(auth, contact) {
     const responseStr = response.getResponseAsString();
     if (status !== 202) {
         engine.log(responseStr);
-        throw `Failed to add contact. status: ${status}`;
+        throw `Failed to upsert contact. status: ${status}`;
     }
     return JSON.parse(responseStr).job_id;
 }
@@ -318,7 +320,7 @@ function checkStatus(auth, jobId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get import status. status: ${status}`;
+        throw `Failed to get upsert status. status: ${status}`;
     }
     const jobStatus = JSON.parse(responseStr).status;
     switch (jobStatus) {
@@ -328,7 +330,7 @@ function checkStatus(auth, jobId) {
             return true;
         default: // errored or failed
             engine.log(responseStr);
-            throw 'Failed to complete adding the contact.';
+            throw 'Failed to complete upserting the contact.';
     }
 }
 
@@ -351,5 +353,108 @@ function checkStatus(auth, jobId) {
         hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
         chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
     </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * @param {String} email
+  * @param {Map<Number, Object>} fieldConfigMap
+  */
+const prepareConfigs = (email, fieldConfigMap) => {
+    configs.put('conf_Auth', 'SendGrid');
+    setDataItem('Email', 10, 'STRING_TEXTFIELD', email);
+
+    fieldConfigMap.forEach((fieldConfig, i) => {
+        configs.put(`conf_FieldName${i}`, fieldConfig.name);
+        setDataItem(`FieldValue${i}`, i, fieldConfig.type, fieldConfig.value);
+    });
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  */
+const setDataItem = (name, index, type, value) => {
+    if (type === null) {
+        return;
+    }
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    configs.putObject(`conf_${name}`, dataDef);
+    if (value === null) {
+        return;
+    }
+    switch (type) {
+        case 'STRING_TEXTFIELD':
+            engine.setData(dataDef, value);
+            break;
+        case 'DECIMAL':
+            engine.setData(dataDef, java.math.BigDecimal.valueOf(value));
+            break;
+        case 'DATE_YMD':
+            engine.setData(dataDef, java.sql.Date.valueOf(value));
+            break;
+    }
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定の長さの文字列を作成
+  * @param length
+  * @return string
+  */
+const createString = (length) => {
+    const sourceStr = 'abcdefghijklmnopqrstuvwxyz';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * メールアドレスが空
+ */
+test('Email Address is blank', () => {
+    prepareConfigs(null, new Map());
+    assertError(main, `Email Address is blank.`);
+});
+
+/**
+ * メールアドレスが長すぎる
+ */
+test('Email Address is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH + 1);
+    prepareConfigs(email, new Map());
+    assertError(main, `Email Address must be within ${MAX_EMAIL_LENGTH} characters.`);
+});
+
+/**
+ * フィールドの値が文字列で、長すぎる
+ */
+test('Field Value is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const fieldConfigMap = new Map();
+    const fieldValue = createString(MAX_FIELD_VALUE_LENGTH + 1);
+    fieldConfigMap.set(1, {name: 'field_1', type: 'STRING_TEXTFIELD', value: fieldValue});
+    prepareConfigs(email, fieldConfigMap);
+    assertError(main, `Custom Field Value of "field_1" must be within ${MAX_FIELD_VALUE_LENGTH} characters.`);
+});
+
+    ]]></test>
 
 </service-task-definition>
