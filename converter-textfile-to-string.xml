@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-06-20</last-modified>
+    <last-modified>2023-06-22</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Converter (Text File to String type data)</label>
@@ -14,12 +14,12 @@
 
     <configs>
         <config name="File_DataId" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>C1: File type data item that stores the target text file</label>
-            <label locale="ja">C1: 対象のテキストファイルが格納されているファイル型データ項目</label>
+            <label>C1: Data item that stores the target text file</label>
+            <label locale="ja">C1: 対象のテキストファイルが格納されているデータ項目</label>
         </config>
         <config name="conf_ReadFileCharset" form-type="TOGGLE">
-            <label>C2: Read the file with Content-Type charset (If not null)</label>
-            <label locale="ja">C2: ファイルの Content-Type charset で指定された文字コードで読み込む（null でない場合）</label>
+            <label>C2: If charset is specified in Content-Type, give priority to it</label>
+            <label locale="ja">C2: Content-Type で charset が指定されていれば、その文字コードを優先させる</label>
         </config>
         <config name="conf_CharacterEncoding" form-type="SELECT_ITEM">
             <label>C3: Character encoding when reading (UTF-8 if not selected)</label>
@@ -41,8 +41,8 @@
             </item>
         </config>
         <config name="String_DataId" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-            <label>C4: String type data item to save the text data</label>
-            <label locale="ja">C4: テキストを保存する文字型データ項目</label>
+            <label>C4: Data item to save the text data</label>
+            <label locale="ja">C4: テキストを保存するデータ項目</label>
         </config>
     </configs>
 
@@ -60,49 +60,50 @@ function main() {
     const myFiles = engine.findDataByNumber(textFileDataNum);
     // java.util.ArrayList
 
+    // ファイル型データ項目にファイルが１つも添付されていない場合、文字型データ項目にnull をセット
+    if (myFiles === null) {
+        engine.setDataByNumber(stringDataNum, null);
+        return;
+    }
+
+    // ファイル型データ項目に複数添付されている場合、エラー
+    if (myFiles.size() > 1) {
+        throw new Error("Attachment of multiple files can not be supported.");
+    }
+
+    // ファイル型データ項目にファイルが1つ添付されている場合
+    //// == Determine Charset / charset を決める ==
+    const charset = determineCharset(myFiles.get(0), readFileCharset, characterEncoding);
+    
     //// == Data Updating / ワークフローデータへの代入 ==
-    updateData(stringDataNum, myFiles, readFileCharset, characterEncoding);
+    updateData(stringDataNum, myFiles, charset);
 }
 
 /**
  * ファイルの内容を文字型データ項目に上書き出力
  * @param {String} stringDataNum 保存先文字型データ項目の番号
  * @param {java.util.ArrayList<QfileView>} myFiles ファイル型データの配列
- * @param {boolean} readFileCharset ファイルのcharset を読み込むかどうか
- * @param {String} characterEncoding 読み込む際の文字コード
+ * @param {String} charset 文字コード
  */
-function updateData(stringDataNum, myFiles, readFileCharset, characterEncoding) {
-    // ファイルが空の場合
-    if (myFiles === null) {
-        engine.setDataByNumber(stringDataNum, "");
-        return;
-    }
-    // ファイル型データに複数添付されている場合、エラー
-    if (myFiles.size() > 1) {
-        throw new Error("Attachment of multiple files can not be supported.");
-    }
+function updateData(stringDataNum, myFiles, charset) {
     let myFileText = "";
-    // ファイル型データにファイルが1つ添付されている場合
-    // charset を決める
-    const charset = determineCharset(myFiles.get(0), readFileCharset, characterEncoding);
     fileRepository.readFile(myFiles.get(0), charset, function (line) {
         myFileText += line + "\n";
     });
 
     //// == Data Updating / ワークフローデータへの代入 ==
-    // ファイル型データ項目にファイルが1つ添付されている場合はその値、1つも添付されていない場合は空をセット
     engine.setDataByNumber(stringDataNum, myFileText);
 }
 
 /**
  * 文字コードを決定する
- * @param {QfileView} myFile ファイル型データ
- * @param {boolean} readFileCharset ファイルのcharset を読み込むかどうか
+ * @param {QfileView} myFile ファイル型データ項目
+ * @param {boolean} readFileCharset Content-Type のcharset で読み込むか
  * @param {String} characterEncoding 読み込む際の文字コード
  * @return {String} charset 文字コード
  */
 function determineCharset(myFile, readFileCharset, characterEncoding) {
-    let charset = myFile.getCharset();
+    const charset = myFile.getCharset();
     if (readFileCharset === true && charset !== null) {
         return charset;
     }
@@ -148,7 +149,7 @@ const prepareConfigs = (readFileCharset, characterEncoding) => {
     const fileDef = engine.createDataDefinition('ファイル', 0, 'q_file', 'FILE');
     configs.putObject('File_DataId', fileDef);
 
-    // Content-Type charset で指定された文字コードで読み込む
+    // Content-Type のcharset で読み込むかを指定
     configs.putObject('conf_ReadFileCharset', readFileCharset);
 
     // 読み込む際の文字コードを指定
@@ -183,7 +184,7 @@ test('no file', () => {
     execute();
 
     // 文字型データ項目の値をチェック。
-    expect(engine.findData(stringDef)).toEqual('');
+    expect(engine.findData(stringDef)).toEqual(null);
 });
 
 /**
@@ -197,8 +198,8 @@ test('multiple files', () => {
 
     // ファイル型データ項目の値を指定。ファイルは 2 つ。
     const files = new java.util.ArrayList();
-    files.add(engine.createQfile('1.txt', 'text/plain; charset=x-UTF-16LE-BOM', 'テスト1'));
-    files.add(engine.createQfile('2.txt', 'text/plain; charset=x-UTF-16LE-BOM', 'テスト2'));
+    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16', 'x-UTF-16LE-BOM', 'テスト1'));
+    files.add(engine.createQfile('2.txt', 'application/octet-stream; charset=UTF-16', 'x-UTF-16LE-BOM', 'テスト2'));
     engine.setData(fileDef, files);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認。
@@ -207,12 +208,12 @@ test('multiple files', () => {
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: false
- * 読み込む際の文字コード: UTF-8
+ * C2: false
+ * C3: UTF-8
  * Content-Type: application/octet-stream
  * ファイルのエンコーディング: UTF-8
  */
-test("success - read file's charset - false, reading - UTF-8, Content-Type - application/octet-stream, file's encording - UTF-8", () => {
+test("success - C2 - false, C3 - UTF-8, Content-Type - application/octet-stream, file's encording - UTF-8", () => {
     const {
         fileDef,
         stringDef
@@ -232,13 +233,13 @@ test("success - read file's charset - false, reading - UTF-8, Content-Type - app
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: false
- * 読み込む際の文字コード: UTF-16
+ * C2: false
+ * C3: UTF-16
  * Content-Type: application/octet-stream; charset=UTF-16LE
  * ファイルのエンコーディング: UTF-16
- * 読み込む際の文字コードで読み込む。Content-Type のcharset は無視される
+ * C3 で読み込む。Content-Type のcharset は無視される
  */
-test("success - read file's charset - false, reading - UFT-16, Content-Type - application/octet-stream; charset=UTF-16LE, file's encording - UTF-16", () => {
+test("success - C2 - false, C3 - UTF-16, Content-Type - application/octet-stream; charset=UTF-16LE, file's encording - UTF-16", () => {
     const {
         fileDef,
         stringDef
@@ -258,13 +259,13 @@ test("success - read file's charset - false, reading - UFT-16, Content-Type - ap
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: false
- * 読み込む際の文字コード: 空
+ * C2: false
+ * C3: 空
  * Content-Type: application/octet-stream; charset=UFT-16
  * ファイルのエンコーディング: UTF-8
- * 読み込む際の文字コードが空の場合、UTF-8 で読み込む。Content-Type のcharsetは無視される
+ * C3 が空の場合、UTF-8 で読み込む。Content-Type のcharsetは無視される
  */
-test("success - read file's charset - false, reading - blank, Content-Type - application/octet-stream; charset=UTF-16, file's encording - UTF-8", () => {
+test("success - C2 - false, C3 - blank, Content-Type - application/octet-stream; charset=UTF-16, file's encording - UTF-8", () => {
     const {
         fileDef,
         stringDef
@@ -285,11 +286,12 @@ test("success - read file's charset - false, reading - blank, Content-Type - app
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: true
- * 読み込む際の文字コード: 空
+ * C2: true
+ * C3: 空
  * Content-Type: application/octet-stream; charset=UTF-16BE
+ * ファイルのエンコーディング: UTF-16BE
  */
-test("success - read file's charset - true, reading - blank, Content-Type - application/octet-stream; charset=UTF-16BE", () => {
+test("success - C2 - true, C3 - blank, Content-Type - application/octet-stream; charset=UTF-16BE, file's encording - UTF-16BE", () => {
     const {
         fileDef,
         stringDef
@@ -297,7 +299,7 @@ test("success - read file's charset - true, reading - blank, Content-Type - appl
 
     // ファイル型データ項目の値を指定。ファイルは 1 つ。
     const files = new java.util.ArrayList();
-    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16BE', 'テスト1'));
+    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16BE', 'UTF-16BE', 'テスト1'));
     engine.setData(fileDef, files);
 
     // <script> のスクリプトを実行。
@@ -309,12 +311,13 @@ test("success - read file's charset - true, reading - blank, Content-Type - appl
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: true
- * 読み込む際の文字コード: UTF-8
+ * C2: true
+ * C3: UTF-8
  * Content-Type: application/octet-stream; charset=UTF-16LE
- * 読み込む際の文字コードは無視される
+ * ファイルのエンコーディング: UTF-16LE
+ * C3 は無視される
  */
-test("success - read file's charset - true, reading - UTF-8, Content-Type - application/octet-stream; charset=UTF-16LE", () => {
+test("success - C2 - true, C3 - UTF-8, Content-Type - application/octet-stream; charset=UTF-16LE, file's encording - UTF-16LE", () => {
     const {
         fileDef,
         stringDef
@@ -322,7 +325,7 @@ test("success - read file's charset - true, reading - UTF-8, Content-Type - appl
 
     // ファイル型データ項目の値を指定。ファイルは 1 つ。
     const files = new java.util.ArrayList();
-    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16LE', 'テスト1'));
+    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16LE', 'UTF-16LE', 'テスト1'));
     engine.setData(fileDef, files);
 
     // <script> のスクリプトを実行。
@@ -334,13 +337,13 @@ test("success - read file's charset - true, reading - UTF-8, Content-Type - appl
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: true
- * 読み込む際の文字コード: 空
+ * C2: true
+ * C3: 空
  * Content-Type: application/octet-stream
  * ファイルのエンコーディング: UTF-8 
- * Content-Type のcharset がnull かつ読み込む際の文字コードが空の場合、UTF-8 で読み込む
+ * Content-Type のcharset がnull かつC2 が空の場合、UTF-8 で読み込む
  */
-test("success - read file's charset - true, reading - blank, Content-Type - application/octet-stream, file's encording - UTF-8", () => {
+test("success - C2 - true, C3 - blank, Content-Type - application/octet-stream, file's encording - UTF-8", () => {
     const {
         fileDef,
         stringDef
@@ -360,13 +363,13 @@ test("success - read file's charset - true, reading - blank, Content-Type - appl
 
 /**
  * ファイル型データ項目の添付ファイルが 1 つ
- * ファイルの Content-Type charset で指定された文字コードで読み込む: true
- * 読み込む際の文字コード: UTF-16
+ * C2: true
+ * C3: UTF-16
  * Content-Type: application/octet-stream
- * ファイルのエンコーディング: UTF-16LE
- * Content-Type のcharset がnull の場合、 読み込む際の文字コードで読み込む
+ * ファイルのエンコーディング: UTF-16
+ * Content-Type のcharset がnull の場合、 C3で読み込む
  */
-test("success - read file's charset - true, reading - UTF-16, Content-Type - application/octet-stream, file's encording - UTF-16", () => {
+test("success - C2 - true, C3 - UTF-16, Content-Type - application/octet-stream, file's encording - UTF-16", () => {
     const {
         fileDef,
         stringDef
@@ -375,6 +378,31 @@ test("success - read file's charset - true, reading - UTF-16, Content-Type - app
     // ファイル型データ項目の値を指定。ファイルは 1 つ。
     const files = new java.util.ArrayList();
     files.add(engine.createQfile('1.txt', 'application/octet-stream', 'UTF-16', 'テスト1'));
+    engine.setData(fileDef, files);
+
+    // <script> のスクリプトを実行。
+    execute();
+
+    // 文字型データ項目の値をチェック。
+    expect(engine.findData(stringDef)).toEqual('テスト1\n');
+});
+
+/**
+ * ファイル型データ項目の添付ファイルが 1 つ
+ * C2: false
+ * C3: UTF-16
+ * Content-Type: application/octet-stream; charset=UTF-16
+ * ファイルのエンコーディング: x-UTF-16LE-BOM
+ */
+test("success - C2 - false, C3 - UTF-16, Content-Type - application/octet-stream; charset=UTF16, file's encording - x-UTF-16LE-BOM", () => {
+    const {
+        fileDef,
+        stringDef
+    } = prepareConfigs(false, 'UTF-16');
+
+    // ファイル型データ項目の値を指定。ファイルは 1 つ。
+    const files = new java.util.ArrayList();
+    files.add(engine.createQfile('1.txt', 'application/octet-stream; charset=UTF-16', 'x-UTF-16LE-BOM', 'テスト1'));
     engine.setData(fileDef, files);
 
     // <script> のスクリプトを実行。
