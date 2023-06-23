@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-06-15</last-modified>
+    <last-modified>2023-06-23</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Bulk Email</label>
     <label locale="ja">Twilio SendGrid: メール一斉送信</label>
@@ -19,7 +19,7 @@
                     <label>C1: Authorization Setting in which API Key is set as token</label>
                     <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
                 </config>
-                <config name="conf_SenderId" required="true" el-enabled="true" form-type="TEXTFIELD">
+                <config name="conf_SenderId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
                     <label>C2: Sender ID</label>
                     <label locale="ja">C2: 送信者 ID</label>
                 </config>
@@ -41,7 +41,7 @@
                     <label>C4-B: Segment IDs to send the emails to (write one per line)</label>
                     <label locale="ja">C4-B: メールを送信する宛先セグメントの ID（複数設定する場合、1 行に 1 つ）</label>
                 </config>
-                <config name="conf_UnsubscribeGroupId" required="true" el-enabled="true" form-type="TEXTFIELD">
+                <config name="conf_UnsubscribeGroupId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
                     <label>C5: Unsubscribe Group ID</label>
                     <label locale="ja">C5: 配信停止グループ ID</label>
                 </config>
@@ -51,7 +51,7 @@
             <label>Email Content</label>
             <label locale="ja">メール本文</label>
             <configs>
-                <config name="conf_DesignId" el-enabled="true" form-type="TEXTFIELD">
+                <config name="conf_DesignId" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
                     <label>C6-A: Design ID</label>
                     <label locale="ja">C6-A: デザイン ID</label>
                 </config>
@@ -167,8 +167,30 @@ function isAscii(text) {
   * @return {Number} id
   */
 function retrieveIdAsInt(confName, label) {
-    const idStr = configs.get(confName);
-    if (idStr === '') {
+    const idDef = configs.getObject(confName);
+    if (idDef === null) { // 固定値で指定
+        return checkIdAndReturnAsInt(configs.get(confName), label);
+    }
+    // 文字型データ項目で指定
+    if (idDef.matchDataType('STRING_TEXTFIELD')) {
+        return checkIdAndReturnAsInt(engine.findData(idDef), label);
+    }
+    // 選択型データ項目で指定
+    const selects = engine.findData(idDef);
+    if (selects === null || selects.size() === 0) {
+        throw `${label} is not selected.`;
+    }
+    return checkIdAndReturnAsInt(selects.get(0).getValue(), label);
+}
+
+/**
+  * 整数であるはずの ID 文字列をチェックし、数値として返す
+  * @param {String} idStr ID 文字列
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {Number} id
+  */
+function checkIdAndReturnAsInt(idStr, label) {
+    if (idStr === null || idStr === '') {
         throw `${label} is blank.`;
     }
     const reg = new RegExp('^\\d+$');
@@ -230,18 +252,12 @@ function retrieveSendAt() {
   * @return {String} content.plainContent プレーンテキストメールの本文
   */
 function retrieveContent() {
-    const designId = configs.get('conf_DesignId');
     const hasUniqueContent = configs.getObject('conf_HasUniqueContent');
+    const designId = retrieveDesignId(hasUniqueContent);
     if (!hasUniqueContent) { // デザイン ID を指定する場合
-        if (designId === '') {
-            throw 'Design ID is blank.';
-        }
         return {designId};
     }
     // 件名、本文を直接指定する場合
-    if (designId !== '') {
-        throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
-    }
     const subject = configs.get('conf_Subject');
     if (subject === '') {
         throw 'Subject is blank.';
@@ -252,6 +268,40 @@ function retrieveContent() {
     }
     const plainContent = configs.get('conf_PlainContent');
     return {subject, htmlContent, plainContent};
+}
+
+/**
+  * config に設定されたデザイン ID を読み出す
+  * hasUniqueContent の値と矛盾する場合はエラー
+  * @param {boolean} hasUniqueContent 件名、本文を直接指定するかどうか
+  * @return {String} designId デザイン ID
+  */
+function retrieveDesignId(hasUniqueContent) {
+    const confValue = configs.get('conf_DesignId');
+    if (hasUniqueContent && confValue !== '') {
+        throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
+    }
+    if (!hasUniqueContent && confValue === '') {
+        throw 'Design ID is blank.';
+    }
+    const designIdDef = configs.getObject('conf_DesignId');
+    if (designIdDef === null) { // 固定値で指定
+        return confValue;
+    }
+    // 文字型データ項目で指定
+    if (designIdDef.matchDataType('STRING_TEXTFIELD')) {
+        const designId = engine.findData(designIdDef);
+        if (designId === null) {
+            throw 'Design ID is blank.';
+        }
+        return designId;
+    }
+    // 選択型データ項目で指定
+    const selects = engine.findData(designIdDef);
+    if (selects === null || selects.size() === 0) {
+        throw 'Design ID is not selected.';
+    }
+    return selects.get(0).getValue();
 }
 
 /**
@@ -387,7 +437,8 @@ function setData(dataDef, value) {
 
 /**
  * 設定の準備
- * メールの内容をデザイン ID で指定する場合
+ * メールの内容をデザイン ID で指定
+ * 送信者 ID、配信停止グループ ID、デザイン ID を固定値で指定
  * @param categories
  * @param senderId
  * @param listIds
