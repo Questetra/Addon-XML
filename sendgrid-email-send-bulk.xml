@@ -1021,6 +1021,81 @@ test('Succeed - Has unique content, with plain text content', () => {
     expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend5/stats');
 });
 
+/**
+ * 設定を固定値で上書き
+ * @param senderId
+ * @param unsubscribeGroupId
+ * @param designId
+ */
+const updateConfigsWithFixedValues = (senderId, unsubscribeGroupId, designId) => {
+    configs.put('conf_SenderId', senderId);
+    configs.put('conf_UnsubscribeGroupId', unsubscribeGroupId);
+    configs.put('conf_DesignId', designId);
+};
+
+/**
+ * 送信者 ID が整数でない（固定値）
+ */
+test('Sender ID is not integer - set as fixed value', () => {
+    prepareConfigs(null, 'dummyId', 'list1\nlist2', 'segment1\nsegment2', 'dummyId', 'dummyId');
+    updateConfigsWithFixedValues('invalidId', '456', 'design1');
+    assertError(main, 'Sender ID must be integer.');
+});
+
+/**
+ * 配信停止グループ ID が整数でない（固定値）
+ */
+test('Unsubscribe Group ID is not integer - set as fixed value', () => {
+    prepareConfigs(null, 'dummyId', 'list1\nlist2', 'segment1\nsegment2', 'dummyId', 'dummyId');
+    updateConfigsWithFixedValues('123', 'invalidId', 'design1');
+    assertError(main, 'Unsubscribe Group ID must be integer.');
+});
+
+/**
+ * デザイン ID が空（固定値）
+ */
+test('Design ID is blank - set as fixed value', () => {
+    prepareConfigs(null, 'dummyId', 'list1\nlist2', 'segment1\nsegment2', 'dummyId', 'dummyId');
+    updateConfigsWithFixedValues('123', '456', '');
+    assertError(main, 'Design ID is blank.');
+});
+
+/**
+ * 「デザインを使用せず、件名と本文を直接指定する」がオンなのに、デザイン ID が固定値で指定されている
+ */
+test('Design ID is set as fixed value while hasUniqueContent is enabled', () => {
+    prepareConfigs(null, 'dummyId', 'list1\nlist2', 'segment1\nsegment2', 'dummyId', 'dummyId');
+    updateConfigsWithFixedValues('123', '456', 'design1');
+    configs.putObject('conf_HasUniqueContent', true);
+    assertError(main, 'Design ID is set while "Configure the subject and content without using Design" is enabled.');
+});
+
+/**
+ * 成功
+ * 送信者 ID、配信停止グループ ID、デザイン ID を固定値で指定
+ */
+test('Succeed - Sender ID, Unsubscribe Group ID and Design ID are set as fixed value', () => {
+    const {idDef, urlDef} = prepareConfigs(null, 'dummyId', 'list1', null, 'dummyId', 'dummyId');
+    updateConfigsWithFixedValues('123', '456', 'design1');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRequest(request, [], 123, ['list1'], [], 456, 'design1', undefined, undefined, undefined);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend11"}');
+        }
+        assertScheduleRequest(request, 'singleSend11', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend11');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend11/stats');
+});
+
     ]]></test>
 
 </service-task-definition>
