@@ -33,13 +33,13 @@
             <label>Send To</label>
             <label locale="ja">送信先</label>
             <configs>
-                <config name="conf_ListIds" el-enabled="true" form-type="TEXTAREA">
+                <config name="conf_ListIds" form-type="SELECT" select-data-type="STRING|SELECT">
                     <label>C4-A: List IDs to send the emails to (write one per line)</label>
-                    <label locale="ja">C4-A: メールを送信する宛先リストの ID（複数設定する場合、1 行に 1 つ）</label>
+                    <label locale="ja">C4-A: メールを送信する宛先リストの ID（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
-                <config name="conf_SegmentIds" el-enabled="true" form-type="TEXTAREA">
+                <config name="conf_SegmentIds" form-type="SELECT" select-data-type="STRING|SELECT">
                     <label>C4-B: Segment IDs to send the emails to (write one per line)</label>
-                    <label locale="ja">C4-B: メールを送信する宛先セグメントの ID（複数設定する場合、1 行に 1 つ）</label>
+                    <label locale="ja">C4-B: メールを送信する宛先セグメントの ID（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
                 <config name="conf_UnsubscribeGroupId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
                     <label>C5: Unsubscribe Group ID</label>
@@ -77,9 +77,9 @@
             <label>Additional Settings</label>
             <label locale="ja">追加設定</label>
             <configs>
-                <config name="conf_Categories" el-enabled="true" form-type="TEXTAREA">
+                <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
                     <label>C7: Categories for filtering logs (write one per line)</label>
-                    <label locale="ja">C7: メール送信ログ検索用カテゴリ（複数設定する場合、1 行に 1 つ）</label>
+                    <label locale="ja">C7: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
                 <config name="conf_SingleSendId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
                     <label>C8: Data item to save ID of the email sending</label>
@@ -123,16 +123,47 @@ function main(){
 
 /**
   * config に設定されたカテゴリ一覧を読み出す
+  * @return {Array<String>} categories
+  */
+function retrieveCategories() {
+    const dataDef = configs.getObject('conf_Categories');
+    if (dataDef === null) {
+        return [];
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING')) {
+        const categoriesStr = engine.findData(dataDef);
+        if (categoriesStr === null) {
+            return [];
+        }
+        const categories = categoriesStr.split('\n')
+            .filter(category => category !== '');
+        validateCategories(categories);
+        return categories;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return [];
+    }
+    const categories = [];
+    selects.forEach(item => {
+        categories.push(item.getValue()); // 選択肢 ID を格納
+    });
+    validateCategories(categories);
+    return categories;
+}
+
+/**
+  * カテゴリ一覧のバリデーション
   * 以下の場合はエラー
   * - 件数が多すぎる
   * - カテゴリが ASCII 文字でないものを含む
   * - 文字数が多すぎる
   * - カテゴリ指定が重複
-  * @return {Array<String>} categories
+  * @param categories カテゴリ一覧
   */
-function retrieveCategories() {
-    const categories = configs.get('conf_Categories').split('\n')
-        .filter(category => category !== '');
+function validateCategories(categories) {
     if (categories.length > MAX_CATEGORY_NUM) {
         throw `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`;
     }
@@ -147,7 +178,6 @@ function retrieveCategories() {
     if (categories.length !== set.size) {
         throw 'The same category is set multiple times.';
     }
-    return categories;
 }
 
 /**
@@ -169,27 +199,27 @@ function isAscii(text) {
 function retrieveIdAsInt(confName, label) {
     const idDef = configs.getObject(confName);
     if (idDef === null) { // 固定値で指定
-        return checkIdAndReturnAsInt(configs.get(confName), label);
+        return validateIdAndReturnAsInt(configs.get(confName), label);
     }
     // 文字型データ項目で指定
     if (idDef.matchDataType('STRING_TEXTFIELD')) {
-        return checkIdAndReturnAsInt(engine.findData(idDef), label);
+        return validateIdAndReturnAsInt(engine.findData(idDef), label);
     }
     // 選択型データ項目で指定
     const selects = engine.findData(idDef);
     if (selects === null || selects.size() === 0) {
         throw `${label} is not selected.`;
     }
-    return checkIdAndReturnAsInt(selects.get(0).getValue(), label);
+    return validateIdAndReturnAsInt(selects.get(0).getValue(), label);
 }
 
 /**
-  * 整数であるはずの ID 文字列をチェックし、数値として返す
+  * ID 文字列のバリデーションを行い、数値として返す
   * @param {String} idStr ID 文字列
   * @param {String} label エラーメッセージ用ラベル
   * @return {Number} id
   */
-function checkIdAndReturnAsInt(idStr, label) {
+function validateIdAndReturnAsInt(idStr, label) {
     if (idStr === null || idStr === '') {
         throw `${label} is blank.`;
     }
@@ -207,20 +237,52 @@ function checkIdAndReturnAsInt(idStr, label) {
   * @return {Array<String>} sendTo.segmentIds
   */
 function retrieveSendTo() {
-    const listIds = configs.get('conf_ListIds').split('\n')
-        .filter(id => id !== '');
-    if (listIds.length > MAX_LIST_ID_NUM) {
-        throw `The maximum number of List IDs is ${MAX_LIST_ID_NUM}.`;
-    }
-    const segmentIds = configs.get('conf_SegmentIds').split('\n')
-        .filter(id => id !== '');
-    if (segmentIds.length > MAX_SEGMENT_ID_NUM) {
-        throw `The maximum number of Segment IDs is ${MAX_SEGMENT_ID_NUM}.`;
-    }
+    const listIds = retrieveIdsAsList('conf_ListIds', 'List IDs', MAX_LIST_ID_NUM);
+    const segmentIds = retrieveIdsAsList('conf_SegmentIds', 'Segment IDs', MAX_SEGMENT_ID_NUM);
     if (listIds.length === 0 && segmentIds.length === 0) {
         throw 'No List IDs or Segment IDs.';
     }
     return {listIds, segmentIds};
+}
+
+/**
+  * config に設定された ID 一覧を読み出す
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @param {Number} maxNum 最大件数
+  * @return {Array<String>} ids
+  */
+function retrieveIdsAsList(confName, label, maxNum) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return [];
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING')) {
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        const ids = dataObj.split('\n')
+            .filter(id => id !== '');
+        if (ids.length > maxNum) {
+            throw `The maximum number of ${label} is ${maxNum}.`;
+        }
+        return ids;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return [];
+    }
+    const ids = [];
+    selects.forEach(item => {
+        ids.push(item.getValue()); // 選択肢 ID を格納
+    });
+    if (ids.length > maxNum) {
+        throw `The maximum number of ${label} is ${maxNum}.`;
+    }
+    return ids;
 }
 
 /**
