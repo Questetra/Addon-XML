@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <!-- <last-modified>2023-06-19</last-modified> -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Adobe: HTML to PDF</label>
+    <!-- <label locale="ja">Adobe: HTML to PDF</label> -->
+    <!--
+    <summary>This item adds or updates a contact on SendGrid. If a contact with the specified email address already exists, the contact will be updated.</summary>
+    <summary locale="ja">この工程は、SendGrid の宛先を追加または更新します。指定したメールアドレスの宛先がすでにある場合、その宛先が更新されます。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/sendgrid-contact-upsert/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/sendgrid-contact-upsert/</help-page-url>
+    -->
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_CLIENT_CREDENTIALS"
+                    oauth2-setting-name="https://ims-na1.adobelogin.com/openid,AdobeID,DCAPI"
+        >
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_HtmlDef" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C2: Data item saving HTML file</label>
+            <label locale="ja">C2: HTML ファイルが保存されているデータ項目</label>
+        </config>
+        <config name="conf_PdfDef" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: Data item to save PDF file</label>
+            <label locale="ja">C5: PDF ファイルを保存するデータ項目</label>
+        </config>
+        <config name="conf_SaveAs" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C4: PDF File Name</label>
+            <label locale="ja">C4: PDF ファイル名</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+const main = () => {
+    const authSetting = configs.getObject('conf_Auth');
+    const htmlDef = configs.getObject('conf_HtmlDef');
+
+    const files = engine.findData(htmlDef);
+    if (files.size() !== 1) {
+        throw new Error('HTML file not found');
+    }
+    const htmlFile = files.get(0);
+
+    const {uploadUri, assetID} = createAsset(authSetting);
+    uploadHtml(uploadUri, htmlFile);
+    const statusUrl = htmlToPdf(authSetting, assetID);
+    engine.saveTemporaryData(statusUrl);
+
+    return proceed();
+};
+
+const proceed = () => {
+    const authSetting = configs.getObject('conf_Auth');
+    const pdfDef = configs.getObject('conf_PdfDef');
+    const fileName = configs.get('conf_SaveAs');
+    const statusUrl = engine.restoreTemporaryData();
+
+    const {status, asset: {downloadUri} = {}} = checkStatus(authSetting, statusUrl);
+    if (status !== 'done') {
+        return false;
+    }
+    downloadPdf(downloadUri, pdfDef, fileName);
+};
+
+/**
+ * asset の作成
+ * @param authSetting
+ * @returns {any}
+ */
+const createAsset = (authSetting) => {
+    const body = JSON.stringify({
+        mediaType: 'text/html'
+    });
+    let response = httpClient.begin().authSetting(authSetting)
+        .header('x-api-key', authSetting.getClientId())
+        .body(body, 'application/json')
+        .post('https://pdf-services-ue1.adobe.io/assets');
+
+    let respStr = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(respStr);
+        throw new Error('Failed to create asset');
+    }
+    return JSON.parse(respStr);
+};
+
+/**
+ * HTML ファイルのアップロード
+ * @param url
+ * @param htmlFile
+ */
+const uploadHtml = (url, htmlFile) => {
+    const response = httpClient.begin().body(htmlFile).put(url);
+    if (response.getStatusCode() !== 200) {
+        engine.log(response.getResponseAsString());
+        throw new Error('Failed to upload HTML');
+    }
+};
+
+const htmlToPdf = (authSetting, assetID) => {
+    const body = JSON.stringify({
+        assetID,
+        json: '{}',
+        includeHeaderFooter: false,
+        pageLayout: {
+            pageWidth: 11,
+            pageHeight: 8.5
+        }
+    });
+    const response = httpClient.begin().authSetting(authSetting)
+        .header('x-api-key', authSetting.getClientId())
+        .body(body, 'application/json')
+        .post('https://pdf-services-ue1.adobe.io/operation/htmltopdf');
+    if (response.getStatusCode() !== 201) {
+        engine.log(response.getResponseAsString());
+        throw new Error('Failed to convert HTML to PDF');
+    }
+    return response.getHeaderValues('Location').get(0);
+};
+
+/**
+ * 変換ステータスの確認
+ * @param authSetting
+ * @param statusUrl
+ * @returns {any}
+ */
+const checkStatus = (authSetting, statusUrl) => {
+    const response = httpClient.begin().authSetting(authSetting)
+        .header('x-api-key', authSetting.getClientId())
+        .get(statusUrl);
+    const respStr = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(respStr);
+        throw new Error('Failed to get converting status');
+    }
+    return JSON.parse(respStr);
+};
+
+/**
+ * PDF ファイルのダウンロード
+ * @param downloadUrl
+ * @param pdfDef
+ * @param fileName
+ */
+const downloadPdf = (downloadUrl, pdfDef, fileName) => {
+    const response = httpClient.begin().get(downloadUrl);
+    if (response.getStatusCode() !== 200) {
+        engine.log(response.getResponseAsString());
+        throw new Error('Failed to download PDF');
+    }
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName, 'application/pdf', response.getResponse()
+    );
+    engine.setData(pdfDef, qfile);
+};
+    ]]></script>
+
+    <!--
+    <icon>
+    </icon>
+    -->
+
+    <test><![CDATA[
+    ]]></test>
+
+</service-task-definition>
