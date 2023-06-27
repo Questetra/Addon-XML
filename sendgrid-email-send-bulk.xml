@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-06-26</last-modified>
+    <last-modified>2023-06-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Bulk Email</label>
     <label locale="ja">Twilio SendGrid: メール一斉送信</label>
@@ -123,50 +123,15 @@ function main(){
 
 /**
   * config に設定されたカテゴリ一覧を読み出す
-  * @return {Array<String>} categories
-  */
-function retrieveCategories() {
-    const dataDef = configs.getObject('conf_Categories');
-    if (dataDef === null) {
-        return [];
-    }
-    // 文字型データ項目の場合
-    if (dataDef.matchDataType('STRING')) {
-        const categoriesStr = engine.findData(dataDef);
-        if (categoriesStr === null) {
-            return [];
-        }
-        const categories = categoriesStr.split('\n')
-            .filter(category => category !== '');
-        validateCategories(categories);
-        return categories;
-    }
-    // 選択型データ項目の場合
-    const selects = engine.findData(dataDef);
-    if (selects === null || selects.size() === 0) {
-        return [];
-    }
-    const categories = [];
-    selects.forEach(item => {
-        categories.push(item.getValue()); // 選択肢 ID を格納
-    });
-    validateCategories(categories);
-    return categories;
-}
-
-/**
-  * カテゴリ一覧のバリデーション
   * 以下の場合はエラー
   * - 件数が多すぎる
   * - カテゴリが ASCII 文字でないものを含む
   * - 文字数が多すぎる
   * - カテゴリ指定が重複
-  * @param categories カテゴリ一覧
+  * @return {Array<String>} categories
   */
-function validateCategories(categories) {
-    if (categories.length > MAX_CATEGORY_NUM) {
-        throw `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`;
-    }
+function retrieveCategories() {
+    const categories = retrieveIdsAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
     if (!categories.every(isAscii)) {
         throw 'Categories cannot include non-ascii characters.';
     }
@@ -178,6 +143,7 @@ function validateCategories(categories) {
     if (categories.length !== set.size) {
         throw 'The same category is set multiple times.';
     }
+    return categories;
 }
 
 /**
@@ -197,20 +163,40 @@ function isAscii(text) {
   * @return {Number} id
   */
 function retrieveIdAsInt(confName, label) {
+    const idStr = retrieveId(confName, label);
+    return validateIdAndReturnAsInt(idStr, label);
+}
+
+/**
+  * config に設定された ID を読み出す
+  * ID が設定されていない場合はエラー
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {String} id
+  */
+function retrieveId(confName, label) {
     const idDef = configs.getObject(confName);
     if (idDef === null) { // 固定値で指定
-        return validateIdAndReturnAsInt(configs.get(confName), label);
+        const id = configs.get(confName);
+        if (id === null || id === '') {
+            throw `${label} is blank.`;
+        }
+        return id;
     }
     // 文字型データ項目で指定
     if (idDef.matchDataType('STRING_TEXTFIELD')) {
-        return validateIdAndReturnAsInt(engine.findData(idDef), label);
+        const id = engine.findData(idDef);
+        if (id === null || id === '') {
+            throw `${label} is blank.`;
+        }
+        return id;
     }
     // 選択型データ項目で指定
     const selects = engine.findData(idDef);
     if (selects === null || selects.size() === 0) {
         throw `${label} is not selected.`;
     }
-    return validateIdAndReturnAsInt(selects.get(0).getValue(), label);
+    return selects.get(0).getValue();
 }
 
 /**
@@ -220,9 +206,6 @@ function retrieveIdAsInt(confName, label) {
   * @return {Number} id
   */
 function validateIdAndReturnAsInt(idStr, label) {
-    if (idStr === null || idStr === '') {
-        throw `${label} is blank.`;
-    }
     const reg = new RegExp('^\\d+$');
     if (!reg.test(idStr)) {
         throw `${label} must be integer.`;
@@ -315,11 +298,12 @@ function retrieveSendAt() {
   */
 function retrieveContent() {
     const hasUniqueContent = configs.getObject('conf_HasUniqueContent');
-    const designId = retrieveDesignId(hasUniqueContent);
     if (!hasUniqueContent) { // デザイン ID を指定する場合
+        const designId = retrieveId('conf_DesignId', 'Design ID');
         return {designId};
     }
     // 件名、本文を直接指定する場合
+    throwErrorIfDesignIdIsSet();
     const subject = configs.get('conf_Subject');
     if (subject === '') {
         throw 'Subject is blank.';
@@ -333,37 +317,13 @@ function retrieveContent() {
 }
 
 /**
-  * config に設定されたデザイン ID を読み出す
-  * hasUniqueContent の値と矛盾する場合はエラー
-  * @param {boolean} hasUniqueContent 件名、本文を直接指定するかどうか
-  * @return {String} designId デザイン ID
+  * config にデザイン ID が設定されている場合、エラーをスローする
   */
-function retrieveDesignId(hasUniqueContent) {
+function throwErrorIfDesignIdIsSet() {
     const confValue = configs.get('conf_DesignId');
-    if (hasUniqueContent && confValue !== '') {
+    if (confValue !== '') {
         throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
     }
-    if (!hasUniqueContent && confValue === '') {
-        throw 'Design ID is blank.';
-    }
-    const designIdDef = configs.getObject('conf_DesignId');
-    if (designIdDef === null) { // 固定値で指定
-        return confValue;
-    }
-    // 文字型データ項目で指定
-    if (designIdDef.matchDataType('STRING_TEXTFIELD')) {
-        const designId = engine.findData(designIdDef);
-        if (designId === null) {
-            throw 'Design ID is blank.';
-        }
-        return designId;
-    }
-    // 選択型データ項目で指定
-    const selects = engine.findData(designIdDef);
-    if (selects === null || selects.size() === 0) {
-        throw 'Design ID is not selected.';
-    }
-    return selects.get(0).getValue();
 }
 
 /**
