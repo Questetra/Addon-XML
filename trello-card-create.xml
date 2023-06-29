@@ -236,10 +236,10 @@ function retrieveDue() {
   */
 function retrieveDueReminder() {
     const dueReminder = configs.get('conf_DueReminder');
-    if (dueReminder === '') {
+    if (dueReminder === null || dueReminder === '') {
         return null;
     }
-    return Number(dueReminder);
+    return parseInt(dueReminder, 10);
 }
 
 /**
@@ -311,5 +311,177 @@ function setData(dataDef, value) {
         JIqIrhk9tm8TcrJ4RxCDowv4He0TogosWjLFjKopdWTZaJPtpjSBJ5IE2WBbHvNEKn9MFIiU/pqp
         /Z6yn9Mkg2+1/S+COKkwjkUALAAAAABJRU5ErkJggg==
     </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * 文字型/選択型データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 開始日、期限、リマインダ設定は指定なし
+  * @param listId
+  * @param name
+  * @param desc
+  * @param labelIdsStr
+  * @param memberIdsStr
+  * @return returnObj
+  * @return returnObj.idDef
+  * @return returnObj.urlDef
+  */
+const prepareConfigs = (listId, name, desc, labelIdsStr, memberIdsStr) => {
+    configs.put('conf_ApiKey', 'TrelloApiKey');
+    configs.put('conf_ApiToken', 'TrelloApiToken');
+    setDataItem('ListId', 1, 'STRING_TEXTFIELD', listId);
+    configs.put('conf_Name', name);
+    configs.put('conf_Desc', desc);
+    setDataItem('LabelIds', 2, 'STRING_TEXTAREA', labelIdsStr);
+    setDataItem('MemberIds', 3, 'STRING_TEXTAREA', memberIdsStr);
+
+    // ID を保存するデータ項目を作成し、設定
+    const idDef = setDataItem('CardId', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    // URL を保存するデータ項目を作成し、設定
+    const urlDef = setDataItem('CardUrl', 5, 'STRING_TEXTFIELD', '事前文字列');
+
+    return {idDef, urlDef};
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定個数のデータを改行区切りにした文字列を生成する
+  * @param num
+  * @return string
+  */
+const createListString = (num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `item${i}\n`;
+    }
+    return string;
+};
+
+/**
+  * リスト ID が空（文字型データ項目）
+  */
+test('List ID is blank - set by STRING', () => {
+    prepareConfigs(null, 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    assertError(main, 'List ID is blank.');
+});
+
+/**
+  * カードタイトルが空
+  */
+test('Card Title is blank', () => {
+    prepareConfigs('listId1', '', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    assertError(main, 'Card Title is blank.');
+});
+
+/**
+  * カードを作成する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param listId
+  * @param name
+  * @param desc
+  * @param labelIds
+  * @param memberIds
+  * @param start
+  * @param due
+  * @param dueReminder
+  */
+const assertCreateRequest = ({url, method, contentType, body}, listId, name, desc, labelIds, memberIds, start, due, dueReminder) => {
+    expect(url).toEqual('https://api.trello.com/1/cards?key=token&token=token'); // 認証設定のトークンのテスト時の値は token
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.idList).toEqual(listId);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.desc).toEqual(desc);
+    expect(bodyObj.idLabels).toEqual(labelIds);
+    expect(bodyObj.idMembers).toEqual(memberIds);
+    expect(bodyObj.start).toEqual(start);
+    expect(bodyObj.due).toEqual(due);
+    expect(bodyObj.dueReminder).toEqual(dueReminder);
+};
+
+/**
+  * カードを作成する API リクエストでエラー
+  */
+test('Fail to create card', () => {
+    prepareConfigs('listId1', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2'], null, null, null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to create card. status: 400');
+});
+
+/**
+  * API のレスポンス文字列を作成
+  * @param cardId
+  * @param cardUrl
+  * @return requestBodyString
+  */
+const createCardResponse = (cardId, cardUrl) => {
+    const responseObj = {
+        id: cardId,
+        url: cardUrl
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+  * 成功
+  * 文字型/選択型データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 開始日、期限、リマインダ設定は指定なし
+  */
+test('Succeed - Configs set by STRING, no Start, no Due, no DueReminder', () => {
+    const {idDef, urlDef} = prepareConfigs('listId1', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+
+    const cardId = 'cardId1';
+    const cardUrl = 'https://trello.com/c/cardId1/1-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2'], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+    ]]></test>
 
 </service-task-definition>
