@@ -71,31 +71,16 @@ function main(){
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const oauth2 = configs.get('conf_OAuth2');
     const requestId = decideEditable('conf_RequestId', 'Sign Request ID'); // 要修正。editable じゃなくて良さそう
+    const dataDefs = retrieveDataDefs();
     
-    const statusDef = configs.getObject('conf_Status');
-    const notSignedDef = configs.getObject('conf_NotSigned');
-    const signedDef = configs.getObject('conf_Signed');
-    const declinedDef = configs.getObject('conf_Declined');
-    const signedFileIdsDef = configs.getObject('conf_SignedFileIds');
-    const logFileIdDef = configs.getObject('conf_LogFileId');
-    // TODO 保存先が何も設定されていない場合はエラーにする
-
     //// == 演算 / Calculating ==
-    const signRequest = getSignRequest(oauth2, requestId);
-    const status = signRequest.status;
-    const {notSigned, signed, declined} = classifySigners(signRequest.signers);
-
-    //// == Data Updating / ワークフローデータへの代入 ==
-    setData(statusDef, status);
-    setData(notSignedDef, notSigned.join('\n'));
-    setData(signedDef, signed.join('\n'));
-    setData(declinedDef, declined.join('\n'));
-
-    if (ENDED_STATUSES.includes(status)) {
-        const signedFileIds = signRequest.sign_files.files.map(file => file.id).join('\n');
-        setData(signedFileIdsDef, signedFileIds);
-        setData(logFileIdDef, signRequest.signing_log.id);
+    if (checkAndSaveStatus(oauth2, requestId, dataDefs) === false) {
+        return false;
     }
+}
+
+function proceed() {
+    return main();
 }
 
 /**
@@ -120,8 +105,73 @@ function decideEditable(confName, label) {
 }
 
 /**
+  * config からデータ保存先の DataDefinitionView を読み出す
+  * @return {Object} dataDefs
+  * @return {DataDefinitionView} dataDefs.statusDef
+  * @return {DataDefinitionView} dataDefs.notSignedDef
+  * @return {DataDefinitionView} dataDefs.signedDef
+  * @return {DataDefinitionView} dataDefs.declinedDef
+  * @return {DataDefinitionView} dataDefs.signedFileIdsDef
+  * @return {DataDefinitionView} dataDefs.logFileIdDef
+  */
+function retrieveDataDefs() {
+    const statusDef = configs.getObject('conf_Status');
+    const notSignedDef = configs.getObject('conf_NotSigned');
+    const signedDef = configs.getObject('conf_Signed');
+    const declinedDef = configs.getObject('conf_Declined');
+    const signedFileIdsDef = configs.getObject('conf_SignedFileIds');
+    const logFileIdDef = configs.getObject('conf_LogFileId');
+
+    // TODO 保存先が何も設定されていない場合はエラーにする、または、ステータス保存を必須にする
+
+    return {
+        statusDef,
+        notSignedDef,
+        signedDef,
+        declinedDef,
+        signedFileIdsDef,
+        logFileIdDef
+    };
+}
+
+/**
+  * 署名リクエストのステータスを確認し、保存する
+  * @param {String} oauth2 OAuth2 設定
+  * @param {String} requestId 署名リクエスト ID
+  * @param {Object} dataDefs
+  * @param {DataDefinitionView} dataDefs.statusDef
+  * @param {DataDefinitionView} dataDefs.notSignedDef
+  * @param {DataDefinitionView} dataDefs.signedDef
+  * @param {DataDefinitionView} dataDefs.declinedDef
+  * @param {DataDefinitionView} dataDefs.signedFileIdsDef
+  * @param {DataDefinitionView} dataDefs.logFileIdDef
+  * @return {Boolean} isFinished
+  */
+function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdsDef, logFileIdDef}) {
+    const signRequest = getSignRequest(oauth2, requestId);
+    const status = signRequest.status;
+    const {notSigned, signed, declined} = classifySigners(signRequest.signers); // TODO 関数内で文字列にする
+
+    setData(statusDef, status);
+    setData(notSignedDef, notSigned.join('\n'));
+    setData(signedDef, signed.join('\n'));
+    setData(declinedDef, declined.join('\n'));
+
+    if (ABORTED_STATUSES.includes(status)) {
+        return true;
+    }
+    if (ENDED_STATUSES.includes(status)) {
+        const signedFileIds = signRequest.sign_files.files.map(file => file.id).join('\n');
+        setData(signedFileIdsDef, signedFileIds);
+        setData(logFileIdDef, signRequest.signing_log.id);
+        return true;
+    }
+    return false;
+}
+
+/**
   * 署名リクエストを取得
-  * @param {String} oauth OAuth2 設定
+  * @param {String} oauth2 OAuth2 設定
   * @param {String} requestId 署名リクエストの ID
   * @return {Object} signRequest 署名リクエスト
   */
@@ -136,7 +186,6 @@ function getSignRequest(oauth2, requestId) {
         engine.log(responseTxt);
         throw `Failed to get Sign Request. status:${status}`;
     }
-    engine.log(responseTxt); // テスト用
     return JSON.parse(responseTxt);
 }
 
