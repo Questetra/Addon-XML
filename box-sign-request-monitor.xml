@@ -90,7 +90,7 @@ function proceed() {
   * @return {String} requestId 署名リクエスト ID
   */
 function retrieveRequestId() {
-    const requestId = engine.findData(configs.get('conf_RequestId'));
+    const requestId = engine.findData(configs.getObject('conf_RequestId'));
     if (requestId === null) {
         throw 'Sign Request ID is blank.';
     }
@@ -180,7 +180,7 @@ function getSignRequest(oauth2, requestId) {
     const responseTxt = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseTxt);
-        throw `Failed to get Sign Request. status:${status}`;
+        throw `Failed to get Sign Request. status: ${status}`;
     }
     return JSON.parse(responseTxt);
 }
@@ -255,5 +255,187 @@ function setData(dataDef, value) {
         Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
         YII=
     </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * @param requestId 署名リクエストID
+  * @return returnObj
+  * @return returnObj.statusDef
+  * @return returnObj.notSignedDef
+  * @return returnObj.signedDef
+  * @return returnObj.declinedDef
+  * @return returnObj.signedFileIdDef
+  * @return returnObj.logFileIdDef
+  */
+const prepareConfigs = (requestId) => {
+    configs.put('conf_OAuth2', 'Box Sign');
+    setDataItem('RequestId', 1, 'STRING_TEXTFIELD', requestId);
+    const statusDef = setDataItem('Status', 2, 'STRING_TEXTFIELD', '事前文字列');
+    const notSignedDef = setDataItem('NotSigned', 3, 'STRING_TEXTAREA', '事前文字列');
+    const signedDef = setDataItem('Signed', 4, 'STRING_TEXTAREA', '事前文字列');
+    const declinedDef = setDataItem('Declined', 5, 'STRING_TEXTFIELD', '事前文字列');
+    const signedFileIdDef = setDataItem('SignedFileId', 6, 'STRING_TEXTFIELD', '事前文字列');
+    const logFileIdDef = setDataItem('LogFileId', 7, 'STRING_TEXTFIELD', '事前文字列');
+    return {
+        statusDef,
+        notSignedDef,
+        signedDef,
+        declinedDef,
+        signedFileIdDef,
+        logFileIdDef,
+    };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @returns dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 署名リクエスト ID が空
+ */
+test('Sign Request ID is blank', () => {
+    prepareConfigs(null);
+    assertError(main, 'Sign Request ID is blank.');
+});
+
+/**
+  * 署名リクエストを取得する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param requestId
+  */
+const assertRequest = ({url, method}, requestId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/sign_requests/${requestId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * 署名リクエストを取得する API リクエストでエラー
+  */
+test('Fail to get sign request', () => {
+    const requestId = 'request-id-1';
+    prepareConfigs(requestId);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get Sign Request. status: 400');
+});
+
+/**
+  * 署名リクエスト取得 API のレスポンス文字列を生成
+  * @param status
+  * @param signers
+  * @param signedFileId
+  * @param logFileId
+  * @returns signRequestResponseString
+  */
+const createSignRequestResponse = (status, signers, signedFileId, logFileId) => {
+    const signRequest = {
+        status,
+        signers,
+        signing_log: null
+    };
+    Object.assign(signRequest, {
+        sign_files: {
+            files: [
+                {
+                    id: signedFileId
+                }
+            ]
+        }
+    });
+    if (logFileId !== null) {
+        Object.assign(signRequest, {
+            signing_log: {
+                id: logFileId
+            }
+        });
+    }
+    return JSON.stringify(signRequest);
+};
+
+/**
+  * 署名リクエスト取得 API のレスポンスに設定する署名者オブジェクトを生成
+  * @param email
+  * @param role
+  * @param decision
+  * @returns signer
+  */
+const createSigner = (email, role, decision) => {
+    const signer = {
+        email,
+        role,
+        signer_decision: null
+    };
+    if (decision !== null) {
+        Object.assign(signer, {
+            signer_decision: {
+                type: decision
+            }
+        });
+    }
+    return signer;
+};
+
+/**
+  * 成功
+  * 1 回目で署名リクエストのステータスが signed の場合
+  */
+test('Succeed - Signed in main()', () => {
+    const requestId = 'request-id-1';
+    const {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdDef, logFileIdDef} = prepareConfigs(requestId);
+
+    const signers = [];
+    signers.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signers.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signers.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signers.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStr = createSignRequestResponse('signed', signers, 'signedFileId1', 'logFileId1');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStr);
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(statusDef)).toEqual('signed');
+    expect(engine.findData(notSignedDef)).toEqual('');
+    expect(engine.findData(signedDef)).toEqual('signer1@example.com\nsigner2@example.com\nsigner3@example.com');
+    expect(engine.findData(declinedDef)).toEqual('');
+    expect(engine.findData(signedFileIdDef)).toEqual('signedFileId1');
+    expect(engine.findData(logFileIdDef)).toEqual('logFileId1');
+});
+
+    ]]></test>
 
 </service-task-definition>
