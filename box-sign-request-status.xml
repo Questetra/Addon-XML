@@ -27,18 +27,18 @@
         </config>
         <config name="conf_NotSigned" form-type="SELECT" select-data-type="STRING_TEXTAREA">
             <label>C4-A: Data item to save the signers who have not signed yet</label>
-            <label locale="ja">C4-A: 未署名者一覧を保存するデータ項目</label>
+            <label locale="ja">C4-A: 未署名者のメールアドレス一覧を保存するデータ項目</label>
         </config>
         <config name="conf_Signed" form-type="SELECT" select-data-type="STRING_TEXTAREA">
             <label>C4-B: Data item to save the signers who have signed</label>
-            <label locale="ja">C4-B: 署名済みの署名者一覧を保存するデータ項目</label>
+            <label locale="ja">C4-B: 署名済みの署名者のメールアドレス一覧を保存するデータ項目</label>
         </config>
-        <config name="conf_Declined" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-            <label>C4-C: Data item to save the signers who have declined</label>
-            <label locale="ja">C4-C: 署名を拒否した署名者一覧を保存するデータ項目</label>
+        <config name="conf_Declined" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4-C: Data item to save the signer who has declined</label>
+            <label locale="ja">C4-C: 署名を拒否した署名者のメールアドレスを保存するデータ項目</label>
         </config>
-        <config name="conf_SignedFileIds" form-type="SELECT" select-data-type="STRING">
-            <label>C5: Data item to save the File IDs of the signed documents</label>
+        <config name="conf_SignedFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save the File ID of the signed document</label>
             <label locale="ja">C5: 署名済みドキュメントのファイル ID を保存するデータ項目</label>
         </config>
         <config name="conf_LogFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
@@ -101,7 +101,7 @@ function retrieveRequestId() {
   * @return {DataDefinitionView} dataDefs.notSignedDef
   * @return {DataDefinitionView} dataDefs.signedDef
   * @return {DataDefinitionView} dataDefs.declinedDef
-  * @return {DataDefinitionView} dataDefs.signedFileIdsDef
+  * @return {DataDefinitionView} dataDefs.signedFileIdDef
   * @return {DataDefinitionView} dataDefs.logFileIdDef
   */
 function retrieveDataDefs() {
@@ -109,17 +109,15 @@ function retrieveDataDefs() {
     const notSignedDef = configs.getObject('conf_NotSigned');
     const signedDef = configs.getObject('conf_Signed');
     const declinedDef = configs.getObject('conf_Declined');
-    const signedFileIdsDef = configs.getObject('conf_SignedFileIds');
+    const signedFileIdDef = configs.getObject('conf_SignedFileId');
     const logFileIdDef = configs.getObject('conf_LogFileId');
-
-    // TODO 保存先が何も設定されていない場合はエラーにする、または、ステータス保存を必須にする
 
     return {
         statusDef,
         notSignedDef,
         signedDef,
         declinedDef,
-        signedFileIdsDef,
+        signedFileIdDef,
         logFileIdDef
     };
 }
@@ -133,20 +131,20 @@ function retrieveDataDefs() {
   * @param {DataDefinitionView} dataDefs.notSignedDef
   * @param {DataDefinitionView} dataDefs.signedDef
   * @param {DataDefinitionView} dataDefs.declinedDef
-  * @param {DataDefinitionView} dataDefs.signedFileIdsDef
+  * @param {DataDefinitionView} dataDefs.signedFileIdDef
   * @param {DataDefinitionView} dataDefs.logFileIdDef
   * @return {Boolean} isFinished 処理中の場合、false
   */
-function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdsDef, logFileIdDef}) {
+function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdDef, logFileIdDef}) {
     const signRequest = getSignRequest(oauth2, requestId);
     const status = signRequest.status;
-    const {notSigned, signed, declined} = classifySigners(signRequest.signers); // TODO 関数内で文字列にする
+    const {notSigned, signed, declined} = classifySigners(signRequest.signers);
 
     // 処理状況のデータ保存
     setData(statusDef, status);
-    setData(notSignedDef, notSigned.join('\n'));
-    setData(signedDef, signed.join('\n'));
-    setData(declinedDef, declined.join('\n'));
+    setData(notSignedDef, notSigned);
+    setData(signedDef, signed);
+    setData(declinedDef, declined);
 
     // 処理中の場合、false を返す
     if (PROCESSING_STATUSES.includes(status)) {
@@ -159,8 +157,8 @@ function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedD
     }
     // 署名済みドキュメントの ID は、署名完了時のみ保存
     if (status === SIGNED_STATUS) {
-        const signedFileIds = signRequest.sign_files.files.map(file => file.id).join('\n');
-        setData(signedFileIdsDef, signedFileIds);
+        const signedFileId = signRequest.sign_files.files[0].id;
+        setData(signedFileIdDef, signedFileId);
     }
 }
 
@@ -188,31 +186,35 @@ function getSignRequest(oauth2, requestId) {
   * 署名者を未署名、署名済み、拒否の各グループに分類する
   * @param {Array<Object>} signers 署名者のリスト
   * @return {Object} classified 分類結果
-  * @return {Array<String>} classified.notSigned 未署名の署名者のメールアドレスのリスト
-  * @return {Array<String>} classified.signed 署名済みの署名者のメールアドレスのリスト
-  * @return {Array<String>} classified.declined 署名を拒否した署名者のメールアドレスのリスト
+  * @return {String} classified.notSigned 未署名の署名者のメールアドレスのリスト（改行区切りの文字列）
+  * @return {String} classified.signed 署名済みの署名者のメールアドレスのリスト（改行区切りの文字列）
+  * @return {String} classified.declined 署名を拒否した署名者のメールアドレス
   */
 function classifySigners(signers) {
-    const notSigned = [];
-    const signed = [];
-    const declined = [];
+    const notSignedList = [];
+    const signedList = [];
+    let declined = '';
     signers.forEach(signer => {
         if (signer.role === 'final_copy_reader') {
             return;
         }
         const decision = signer.signer_decision;
         if (decision === null) {
-            notSigned.push(signer.email);
+            notSignedList.push(signer.email);
             return;
         }
         if (decision.type === 'signed') {
-            signed.push(signer.email);
+            signedList.push(signer.email);
             return;
         }
-        // declined
-        declined.push(signer.email);
+        // 1 人でも拒否した時点で declined ステータスになるので、declined は 1 人だけのはず
+        declined = signer.email;
     });
-    return {notSigned, signed, declined};
+    return {
+        notSigned: notSignedList.join('\n'),
+        signed: signedList.join('\n'),
+        declined
+    };
 }
 
 /**
