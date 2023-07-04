@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-07-03</last-modified>
+    <last-modified>2023-07-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -56,15 +56,13 @@
 // - Consumer Key: (Get by Box Developer Console)
 // - Consumer Secret: (Get by Box Developer Console)
 
-const ENDED_STATUSES = [
-    'signed',
-    'declined'
-];
-const ABORTED_STATUSES = [
-    'error_converting',
-    'error_sending',
-    'cancelled',
-    'expired'
+const SIGNED_STATUS = 'signed';
+
+const PROCESSING_STATUSES = [
+    'converting',
+    'created',
+    'sent',
+    'viewed'
 ];
 
 function main(){
@@ -145,28 +143,33 @@ function retrieveDataDefs() {
   * @param {DataDefinitionView} dataDefs.declinedDef
   * @param {DataDefinitionView} dataDefs.signedFileIdsDef
   * @param {DataDefinitionView} dataDefs.logFileIdDef
-  * @return {Boolean} isFinished
+  * @return {Boolean} isFinished 処理中の場合、false
   */
 function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdsDef, logFileIdDef}) {
     const signRequest = getSignRequest(oauth2, requestId);
     const status = signRequest.status;
     const {notSigned, signed, declined} = classifySigners(signRequest.signers); // TODO 関数内で文字列にする
 
+    // 処理状況のデータ保存
     setData(statusDef, status);
     setData(notSignedDef, notSigned.join('\n'));
     setData(signedDef, signed.join('\n'));
     setData(declinedDef, declined.join('\n'));
 
-    if (ABORTED_STATUSES.includes(status)) {
-        return true;
+    // 処理中の場合、false を返す
+    if (PROCESSING_STATUSES.includes(status)) {
+        return false;
     }
-    if (ENDED_STATUSES.includes(status)) {
+
+    // 処理完了の場合、ログファイルの ID を保存
+    if (signRequest.signing_log !== null) {
+        setData(logFileIdDef, signRequest.signing_log.id);
+    }
+    // 署名済みドキュメントの ID は、署名完了時のみ保存
+    if (status === SIGNED_STATUS) {
         const signedFileIds = signRequest.sign_files.files.map(file => file.id).join('\n');
         setData(signedFileIdsDef, signedFileIds);
-        setData(logFileIdDef, signRequest.signing_log.id);
-        return true;
     }
-    return false;
 }
 
 /**
