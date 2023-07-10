@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-07-04</last-modified>
+    <last-modified>2023-07-10</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -409,15 +409,34 @@ const createSigner = (email, role, decision) => {
 };
 
 /**
+  * データ項目の値を確認
+  * @param dataDefs
+  * @param status
+  * @param notSigned
+  * @param signed
+  * @param declined
+  * @param signedFileId
+  * @param logFileId
+  */
+const assertData = (dataDefs, status, notSigned, signed, declined, signedFileId, logFileId) => {
+    expect(engine.findData(dataDefs.statusDef)).toEqual(status);
+    expect(engine.findData(dataDefs.notSignedDef)).toEqual(notSigned);
+    expect(engine.findData(dataDefs.signedDef)).toEqual(signed);
+    expect(engine.findData(dataDefs.declinedDef)).toEqual(declined);
+    expect(engine.findData(dataDefs.signedFileIdDef)).toEqual(signedFileId);
+    expect(engine.findData(dataDefs.logFileIdDef)).toEqual(logFileId);
+}
+
+/**
   * 成功
   * 1 回目で署名リクエストのステータスが signed の場合
   */
 test('Succeed - Signed in main()', () => {
     const requestId = 'request-id-1';
-    const {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdDef, logFileIdDef} = prepareConfigs(requestId);
+    const dataDefs = prepareConfigs(requestId);
 
     const signers = [];
-    signers.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signers.push(createSigner('sender@example.com', 'final_copy_reader', null)); // 署名者でない
     signers.push(createSigner('signer1@example.com', 'signer', 'signed'));
     signers.push(createSigner('signer2@example.com', 'approver', 'signed'));
     signers.push(createSigner('signer3@example.com', 'signer', 'signed'));
@@ -428,12 +447,131 @@ test('Succeed - Signed in main()', () => {
     });
 
     expect(main()).toEqual(undefined);
-    expect(engine.findData(statusDef)).toEqual('signed');
-    expect(engine.findData(notSignedDef)).toEqual('');
-    expect(engine.findData(signedDef)).toEqual('signer1@example.com\nsigner2@example.com\nsigner3@example.com');
-    expect(engine.findData(declinedDef)).toEqual('');
-    expect(engine.findData(signedFileIdDef)).toEqual('signedFileId1');
-    expect(engine.findData(logFileIdDef)).toEqual('logFileId1');
+    assertData(dataDefs, 'signed', '', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', 'signedFileId1', 'logFileId1');
+});
+
+/**
+  * 成功
+  * 1 回目で署名リクエストのステータスが error_converting の場合
+  */
+test('Succeed - Error_converting in main()', () => {
+    const requestId = 'request-id-2';
+    const dataDefs = prepareConfigs(requestId);
+
+    const signers = [];
+    signers.push(createSigner('signer1@example.com', 'signer', null));
+    const responseStr = createSignRequestResponse('error_converting', signers, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStr);
+    });
+
+    expect(main()).toEqual(undefined);
+    assertData(dataDefs, 'error_converting', 'signer1@example.com', '', '', '事前文字列', '事前文字列');
+});
+
+/**
+  * 成功
+  * 5 回目で署名リクエストのステータスが signed の場合（4 つの処理中ステータスのテスト）
+  */
+test('Succeed - Signed in proceed()', () => {
+    const requestId = 'request-id-2';
+    const dataDefs = prepareConfigs(requestId);
+
+    // 1 回目の確認（ステータス: converting）
+    const signersNoneSigned = [];
+    signersNoneSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersNoneSigned.push(createSigner('signer1@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer2@example.com', 'approver', null));
+    signersNoneSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrConverting = createSignRequestResponse('converting', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrConverting);
+    });
+    expect(main()).toEqual(false);
+    assertData(dataDefs, 'converting', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 2 回目の確認（ステータス: created）
+    const responseStrCreated = createSignRequestResponse('created', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrCreated);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'created', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 3 回目の確認（ステータス: sent）
+    const responseStrSent = createSignRequestResponse('sent', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrSent);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'sent', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 4 回目の確認（ステータス: viewed）
+    const signersSomeSigned = [];
+    signersSomeSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersSomeSigned.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signersSomeSigned.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signersSomeSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrViewed = createSignRequestResponse('viewed', signersSomeSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrViewed);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'viewed', 'signer3@example.com', 'signer1@example.com\nsigner2@example.com', '', '事前文字列', '事前文字列');
+
+    // 5 回目の確認（ステータス: signed）
+    const signersAllSigned = [];
+    signersAllSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersAllSigned.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signersAllSigned.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signersAllSigned.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStrSigned = createSignRequestResponse('signed', signersAllSigned, 'signedFileId2', 'logFileId2');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrSigned);
+    });
+    expect(proceed()).toEqual(undefined);
+    assertData(dataDefs, 'signed', '', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', 'signedFileId2', 'logFileId2');
+});
+
+/**
+  * 成功
+  * 2 回目で署名リクエストのステータスが declined の場合
+  */
+test('Succeed - Error_converting in main()', () => {
+    const requestId = 'request-id-3';
+    const dataDefs = prepareConfigs(requestId);
+
+    // 1 回目の確認（ステータス: converting）
+    const signersNoneSigned = [];
+    signersNoneSigned.push(createSigner('signer1@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer2@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrConverting = createSignRequestResponse('converting', signersNoneSigned, 'signedFileId3', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrConverting);
+    });
+    expect(main()).toEqual(false);
+    assertData(dataDefs, 'converting', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 2 回目の確認（ステータス: declined）
+    const signersDeclined = [];
+    signersDeclined.push(createSigner('signer1@example.com', 'signer', null));
+    signersDeclined.push(createSigner('signer2@example.com', 'signer', 'declined'));
+    signersDeclined.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStrDeclined = createSignRequestResponse('declined', signersDeclined, 'signedFileId3', 'logFileId3');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrDeclined);
+    });
+    expect(proceed()).toEqual(undefined);
+    assertData(dataDefs, 'declined', 'signer1@example.com', 'signer3@example.com', 'signer2@example.com', '事前文字列', 'logFileId3'); // 署名済みファイルの ID は保存されない
 });
 
     ]]></test>
