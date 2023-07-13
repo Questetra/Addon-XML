@@ -1,0 +1,579 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2023-07-13</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Box Sign: Monitor Sign Request</label>
+    <label locale="ja">Box Sign: 署名リクエストの進捗確認</label>
+    <summary>
+        This item monitors the progress of a Sign Request on Box Sign until its completion.
+        File ID of the signed document can be saved when all the signers have signed.
+    </summary>
+    <summary locale="ja">この工程は、Box Sign の署名リクエストの進捗を、リクエストが完了するまで確認し続けます。署名者全員が署名を終えると、署名済みドキュメントのファイル ID を保存できます。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-sign-request-monitor/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-sign-request-monitor/
+    </help-page-url>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://app.box.com/api/oauth2/sign_requests.readwrite">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_RequestId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Sign Request ID</label>
+            <label locale="ja">C2: 署名リクエスト ID</label>
+        </config>
+        <config name="conf_Status" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save the status of the sign request</label>
+            <label locale="ja">C3: 署名リクエストのステータスを保存するデータ項目</label>
+        </config>
+        <config name="conf_NotSigned" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C4-A: Data item to save the signers who have not signed yet</label>
+            <label locale="ja">C4-A: 未署名者のメールアドレス一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_Signed" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C4-B: Data item to save the signers who have signed</label>
+            <label locale="ja">C4-B: 署名済みの署名者のメールアドレス一覧を保存するデータ項目</label>
+        </config>
+        <config name="conf_Declined" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4-C: Data item to save the signer who has declined</label>
+            <label locale="ja">C4-C: 署名を拒否した署名者のメールアドレスを保存するデータ項目</label>
+        </config>
+        <config name="conf_SignedFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save the File ID of the signed document</label>
+            <label locale="ja">C5: 署名済みドキュメントのファイル ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_LogFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save the File ID of the signing log</label>
+            <label locale="ja">C6: 署名ログのファイル ID を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://account.box.com/api/oauth2/authorize
+// - Token Endpoint URL: https://api.box.com/oauth2/token
+// - Scope: sign_requests.readwrite root_readwrite
+// - Consumer Key: (Get by Box Developer Console)
+// - Consumer Secret: (Get by Box Developer Console)
+
+const SIGNED_STATUS = 'signed';
+
+const PROCESSING_STATUSES = [
+    'converting',
+    'created',
+    'sent',
+    'viewed'
+];
+
+function main(){
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const oauth2 = configs.get('conf_OAuth2');
+    const requestId = retrieveRequestId();
+    const dataDefs = retrieveDataDefs();
+    
+    //// == 演算 / Calculating ==
+    if (checkAndSaveStatus(oauth2, requestId, dataDefs) === false) {
+        return false;
+    }
+}
+
+function proceed() {
+    return main();
+}
+
+/**
+  * config から署名リクエスト ID を読み出す
+  * 設定値が空の場合はエラー
+  * @return {String} requestId 署名リクエスト ID
+  */
+function retrieveRequestId() {
+    const requestId = engine.findData(configs.getObject('conf_RequestId'));
+    if (requestId === null) {
+        throw 'Sign Request ID is blank.';
+    }
+    return requestId;
+}
+
+/**
+  * config からデータ保存先の DataDefinitionView を読み出す
+  * @return {Object} dataDefs
+  * @return {DataDefinitionView} dataDefs.statusDef
+  * @return {DataDefinitionView} dataDefs.notSignedDef
+  * @return {DataDefinitionView} dataDefs.signedDef
+  * @return {DataDefinitionView} dataDefs.declinedDef
+  * @return {DataDefinitionView} dataDefs.signedFileIdDef
+  * @return {DataDefinitionView} dataDefs.logFileIdDef
+  */
+function retrieveDataDefs() {
+    const statusDef = configs.getObject('conf_Status');
+    const notSignedDef = configs.getObject('conf_NotSigned');
+    const signedDef = configs.getObject('conf_Signed');
+    const declinedDef = configs.getObject('conf_Declined');
+    const signedFileIdDef = configs.getObject('conf_SignedFileId');
+    const logFileIdDef = configs.getObject('conf_LogFileId');
+
+    return {
+        statusDef,
+        notSignedDef,
+        signedDef,
+        declinedDef,
+        signedFileIdDef,
+        logFileIdDef
+    };
+}
+
+/**
+  * 署名リクエストのステータスを確認し、保存する
+  * @param {String} oauth2 OAuth2 設定
+  * @param {String} requestId 署名リクエスト ID
+  * @param {Object} dataDefs
+  * @param {DataDefinitionView} dataDefs.statusDef
+  * @param {DataDefinitionView} dataDefs.notSignedDef
+  * @param {DataDefinitionView} dataDefs.signedDef
+  * @param {DataDefinitionView} dataDefs.declinedDef
+  * @param {DataDefinitionView} dataDefs.signedFileIdDef
+  * @param {DataDefinitionView} dataDefs.logFileIdDef
+  * @return {Boolean} isFinished 処理中の場合、false
+  */
+function checkAndSaveStatus(oauth2, requestId, {statusDef, notSignedDef, signedDef, declinedDef, signedFileIdDef, logFileIdDef}) {
+    const signRequest = getSignRequest(oauth2, requestId);
+    const status = signRequest.status;
+    const {notSigned, signed, declined} = classifySigners(signRequest.signers);
+
+    // 処理状況のデータ保存
+    setData(statusDef, status);
+    setData(notSignedDef, notSigned);
+    setData(signedDef, signed);
+    setData(declinedDef, declined);
+
+    // 処理中の場合、false を返す
+    if (PROCESSING_STATUSES.includes(status)) {
+        return false;
+    }
+
+    // 処理完了の場合、ログファイルの ID を保存
+    if (signRequest.signing_log !== null) {
+        setData(logFileIdDef, signRequest.signing_log.id);
+    }
+    // 署名済みドキュメントの ID は、署名完了時のみ保存
+    if (status === SIGNED_STATUS) {
+        const signedFileId = signRequest.sign_files.files[0].id;
+        setData(signedFileIdDef, signedFileId);
+    }
+}
+
+/**
+  * 署名リクエストを取得
+  * @param {String} oauth2 OAuth2 設定
+  * @param {String} requestId 署名リクエストの ID
+  * @return {Object} signRequest 署名リクエスト
+  */
+function getSignRequest(oauth2, requestId) {
+    const url = `https://api.box.com/2.0/sign_requests/${requestId}`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .get(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseTxt);
+        throw `Failed to get Sign Request. status: ${status}`;
+    }
+    return JSON.parse(responseTxt);
+}
+
+/**
+  * 署名者を未署名、署名済み、拒否の各グループに分類する
+  * @param {Array<Object>} signers 署名者のリスト
+  * @return {Object} classified 分類結果
+  * @return {String} classified.notSigned 未署名の署名者のメールアドレスのリスト（改行区切りの文字列）
+  * @return {String} classified.signed 署名済みの署名者のメールアドレスのリスト（改行区切りの文字列）
+  * @return {String} classified.declined 署名を拒否した署名者のメールアドレス
+  */
+function classifySigners(signers) {
+    const notSignedList = [];
+    const signedList = [];
+    let declined = '';
+    signers.forEach(signer => {
+        if (signer.role === 'final_copy_reader') {
+            return;
+        }
+        const decision = signer.signer_decision;
+        if (decision === null) {
+            notSignedList.push(signer.email);
+            return;
+        }
+        if (decision.type === 'signed') {
+            signedList.push(signer.email);
+            return;
+        }
+        // 1 人でも拒否した時点で declined ステータスになるので、declined は 1 人だけのはず
+        declined = signer.email;
+    });
+    return {
+        notSigned: notSignedList.join('\n'),
+        signed: signedList.join('\n'),
+        declined
+    };
+}
+
+/**
+  * データ項目にデータを保存する
+  * @param {DataDefinitionView} dataDef データ項目の DataDefinitionView
+  * @param {Object} value 保存する値
+  */
+function setData(dataDef, value) {
+    if (dataDef !== null) {
+        engine.setData(dataDef, value);
+    }
+}
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEBElEQVRYR82Xb2jbRRjHP/fL2jXJ
+        0qSd65x11aK0YgJWZUwEWZ0DfSNaHYKKmgykbP7pH/SVghvCkIlb6kREwfyGOougbgxB2Yt1oGwg
+        aietdOJoV21ty2ob26xdm+TkLsufJr+2Sdtt3pv8uDx3z+ee+z53zwmucRMF+ff/9ijEtwB1IDwI
+        9QtIOkGOA50I0UHIezTfeRcH8Pd64GITyGaE8OQ1sVQwIgiONsxqBTZvWxjA3+UHDuTtONuNBjEC
+        mLcfmY9gfgB/dxBBU14rXsxIyiCmr8XKzBog0GWCeG6xeQv6X2JiegPZY3IBVnLlOVtCG6a3ObN7
+        LoDacyFCBa2sUGMpGjI1kQbQao/0Lllw+YJoYTqrk9mRAdC9G8Eb+c6zLDvJHkzvbjVHGiDQpXLX
+        nZw4tOMGyp02Hjn457J8WQ5WUTB9ZWkAdcIJ+XWm8XCwFkexwLWrZ+UB9OmZ0EIiAhbKH2lLAKzZ
+        eaUAEhmRAAh0dYBQZ3yqKQDnaoPDp8PUVZXo/pM9EV75Ylh/77q/jO2bSlmz2mBgLErjoUHad95I
+        Z/80re0Jmw+e3UD1dcU8uP+8RRTlSUK++ssA3X3ATdkA61y2nIE/9k7Rd2GWx+4uxWZkAP8bo9Ru
+        YAho+XyIUruNNxsqiMzE8bxgEUV1gZneO5MAMtuTioACUM7e+W4Uj8Pg5W1rdV9cwvSsxPx+nNPn
+        LvLStnI2VdsZi8TwOGyMTsY0nNth493j/9DSPmSto5BXLAigsmDLW7388MeUnuDVh9ay74n1+vvI
+        zxM0vJfOkNGDtdiLDH7pn+beW+3a5kRPhK37rMJ/mScDIGcLBvfXsM61isrWs4xMxPSIpza7+ayx
+        Un8rbTz94UBqZX8fqNFp+82vkzTc5dL9n54K88xHaZu5YZBnCPnq5hXhqdequecWO2rPH3j7PBvc
+        qzjWVEXN9cV6HhVmJbwvf5rgcGMlT2526y1wldiYiUl9wKhtUHp4/8TYIiK0SMP6WgdfvbiRMqeN
+        yKU4NkNQUiToH51lcDyq4aIxtMjcdoOpGYkSkrJpOz6qt6OxvowLkzEqms7mAsjMNLQ4iNSIrbc5
+        2bu9QqdSNC7pHrjEjo8H+GssyifPV3JfjQNHscFQOMqeoyPsfXw9vw/P8HBbv3b4bWsVG8uL8L5+
+        zgIg8yBSf2cdxdayXaleGSbk0+Xd/+gyUtexiPRlXkgrtd4s9YeRzptzr2NldU0LkiTmlS3JUnVA
+        0t3VK0qRhwj5VJk/p12lsjxdAeUPoDWhCpW4KtFTlVJhwpRhpOFf2sMkpQn9NGtGyOb8QZRj/TQL
+        Lu9plr1c/TiV9QipHqUeEHckTOQZYBwpOkF0LLTiwragsHgvyfo/g3CBMFgjn40AAAAASUVORK5C
+        YII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * @param requestId 署名リクエストID
+  * @return returnObj
+  * @return returnObj.statusDef
+  * @return returnObj.notSignedDef
+  * @return returnObj.signedDef
+  * @return returnObj.declinedDef
+  * @return returnObj.signedFileIdDef
+  * @return returnObj.logFileIdDef
+  */
+const prepareConfigs = (requestId) => {
+    configs.put('conf_OAuth2', 'Box Sign');
+    setDataItem('RequestId', 1, 'STRING_TEXTFIELD', requestId);
+    const statusDef = setDataItem('Status', 2, 'STRING_TEXTFIELD', '事前文字列');
+    const notSignedDef = setDataItem('NotSigned', 3, 'STRING_TEXTAREA', '事前文字列');
+    const signedDef = setDataItem('Signed', 4, 'STRING_TEXTAREA', '事前文字列');
+    const declinedDef = setDataItem('Declined', 5, 'STRING_TEXTFIELD', '事前文字列');
+    const signedFileIdDef = setDataItem('SignedFileId', 6, 'STRING_TEXTFIELD', '事前文字列');
+    const logFileIdDef = setDataItem('LogFileId', 7, 'STRING_TEXTFIELD', '事前文字列');
+    return {
+        statusDef,
+        notSignedDef,
+        signedDef,
+        declinedDef,
+        signedFileIdDef,
+        logFileIdDef,
+    };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @returns dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 署名リクエスト ID が空
+ */
+test('Sign Request ID is blank', () => {
+    prepareConfigs(null);
+    assertError(main, 'Sign Request ID is blank.');
+});
+
+/**
+  * 署名リクエストを取得する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param requestId
+  */
+const assertRequest = ({url, method}, requestId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/sign_requests/${requestId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * 署名リクエストを取得する API リクエストでエラー
+  */
+test('Fail to get sign request', () => {
+    const requestId = 'request-id-1';
+    prepareConfigs(requestId);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get Sign Request. status: 400');
+});
+
+/**
+  * 署名リクエスト取得 API のレスポンス文字列を生成
+  * @param status
+  * @param signers
+  * @param signedFileId
+  * @param logFileId
+  * @returns signRequestResponseString
+  */
+const createSignRequestResponse = (status, signers, signedFileId, logFileId) => {
+    const signRequest = {
+        status,
+        signers,
+        signing_log: null
+    };
+    Object.assign(signRequest, {
+        sign_files: {
+            files: [
+                {
+                    id: signedFileId
+                }
+            ]
+        }
+    });
+    if (logFileId !== null) {
+        Object.assign(signRequest, {
+            signing_log: {
+                id: logFileId
+            }
+        });
+    }
+    return JSON.stringify(signRequest);
+};
+
+/**
+  * 署名リクエスト取得 API のレスポンスに設定する署名者オブジェクトを生成
+  * @param email
+  * @param role
+  * @param decision
+  * @returns signer
+  */
+const createSigner = (email, role, decision) => {
+    const signer = {
+        email,
+        role,
+        signer_decision: null
+    };
+    if (decision !== null) {
+        Object.assign(signer, {
+            signer_decision: {
+                type: decision
+            }
+        });
+    }
+    return signer;
+};
+
+/**
+  * データ項目の値を確認
+  * @param dataDefs
+  * @param status
+  * @param notSigned
+  * @param signed
+  * @param declined
+  * @param signedFileId
+  * @param logFileId
+  */
+const assertData = (dataDefs, status, notSigned, signed, declined, signedFileId, logFileId) => {
+    expect(engine.findData(dataDefs.statusDef)).toEqual(status);
+    expect(engine.findData(dataDefs.notSignedDef)).toEqual(notSigned);
+    expect(engine.findData(dataDefs.signedDef)).toEqual(signed);
+    expect(engine.findData(dataDefs.declinedDef)).toEqual(declined);
+    expect(engine.findData(dataDefs.signedFileIdDef)).toEqual(signedFileId);
+    expect(engine.findData(dataDefs.logFileIdDef)).toEqual(logFileId);
+}
+
+/**
+  * 成功
+  * 1 回目で署名リクエストのステータスが signed の場合
+  */
+test('Succeed - Signed in main()', () => {
+    const requestId = 'request-id-1';
+    const dataDefs = prepareConfigs(requestId);
+
+    const signers = [];
+    signers.push(createSigner('sender@example.com', 'final_copy_reader', null)); // 署名者でない
+    signers.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signers.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signers.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStr = createSignRequestResponse('signed', signers, 'signedFileId1', 'logFileId1');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStr);
+    });
+
+    expect(main()).toEqual(undefined);
+    assertData(dataDefs, 'signed', '', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', 'signedFileId1', 'logFileId1');
+});
+
+/**
+  * 成功
+  * 1 回目で署名リクエストのステータスが error_converting の場合
+  */
+test('Succeed - Error_converting in main()', () => {
+    const requestId = 'request-id-2';
+    const dataDefs = prepareConfigs(requestId);
+
+    const signers = [];
+    signers.push(createSigner('signer1@example.com', 'signer', null));
+    const responseStr = createSignRequestResponse('error_converting', signers, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStr);
+    });
+
+    expect(main()).toEqual(undefined);
+    assertData(dataDefs, 'error_converting', 'signer1@example.com', '', '', '事前文字列', '事前文字列');
+});
+
+/**
+  * 成功
+  * 5 回目で署名リクエストのステータスが signed の場合（4 つの処理中ステータスのテスト）
+  */
+test('Succeed - Signed in proceed()', () => {
+    const requestId = 'request-id-2';
+    const dataDefs = prepareConfigs(requestId);
+
+    // 1 回目の確認（ステータス: converting）
+    const signersNoneSigned = [];
+    signersNoneSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersNoneSigned.push(createSigner('signer1@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer2@example.com', 'approver', null));
+    signersNoneSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrConverting = createSignRequestResponse('converting', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrConverting);
+    });
+    expect(main()).toEqual(false);
+    assertData(dataDefs, 'converting', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 2 回目の確認（ステータス: created）
+    const responseStrCreated = createSignRequestResponse('created', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrCreated);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'created', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 3 回目の確認（ステータス: sent）
+    const responseStrSent = createSignRequestResponse('sent', signersNoneSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrSent);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'sent', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 4 回目の確認（ステータス: viewed）
+    const signersSomeSigned = [];
+    signersSomeSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersSomeSigned.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signersSomeSigned.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signersSomeSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrViewed = createSignRequestResponse('viewed', signersSomeSigned, 'signedFileId2', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrViewed);
+    });
+    expect(proceed()).toEqual(false);
+    assertData(dataDefs, 'viewed', 'signer3@example.com', 'signer1@example.com\nsigner2@example.com', '', '事前文字列', '事前文字列');
+
+    // 5 回目の確認（ステータス: signed）
+    const signersAllSigned = [];
+    signersAllSigned.push(createSigner('sender@example.com', 'final_copy_reader', null));
+    signersAllSigned.push(createSigner('signer1@example.com', 'signer', 'signed'));
+    signersAllSigned.push(createSigner('signer2@example.com', 'approver', 'signed'));
+    signersAllSigned.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStrSigned = createSignRequestResponse('signed', signersAllSigned, 'signedFileId2', 'logFileId2');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrSigned);
+    });
+    expect(proceed()).toEqual(undefined);
+    assertData(dataDefs, 'signed', '', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', 'signedFileId2', 'logFileId2');
+});
+
+/**
+  * 成功
+  * 2 回目で署名リクエストのステータスが declined の場合
+  */
+test('Succeed - Error_converting in main()', () => {
+    const requestId = 'request-id-3';
+    const dataDefs = prepareConfigs(requestId);
+
+    // 1 回目の確認（ステータス: converting）
+    const signersNoneSigned = [];
+    signersNoneSigned.push(createSigner('signer1@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer2@example.com', 'signer', null));
+    signersNoneSigned.push(createSigner('signer3@example.com', 'signer', null));
+    const responseStrConverting = createSignRequestResponse('converting', signersNoneSigned, 'signedFileId3', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrConverting);
+    });
+    expect(main()).toEqual(false);
+    assertData(dataDefs, 'converting', 'signer1@example.com\nsigner2@example.com\nsigner3@example.com', '', '', '事前文字列', '事前文字列');
+
+    // 2 回目の確認（ステータス: declined）
+    const signersDeclined = [];
+    signersDeclined.push(createSigner('signer1@example.com', 'signer', null));
+    signersDeclined.push(createSigner('signer2@example.com', 'signer', 'declined'));
+    signersDeclined.push(createSigner('signer3@example.com', 'signer', 'signed'));
+    const responseStrDeclined = createSignRequestResponse('declined', signersDeclined, 'signedFileId3', 'logFileId3');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, requestId);
+        return httpClient.createHttpResponse(200, 'application/json', responseStrDeclined);
+    });
+    expect(proceed()).toEqual(undefined);
+    assertData(dataDefs, 'declined', 'signer1@example.com', 'signer3@example.com', 'signer2@example.com', '事前文字列', 'logFileId3'); // 署名済みファイルの ID は保存されない
+});
+
+    ]]></test>
+
+</service-task-definition>
