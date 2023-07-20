@@ -19,21 +19,52 @@
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
-        <config name="conf_HtmlDef" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>C2: Data item saving HTML file</label>
-            <label locale="ja">C2: HTML ファイルが保存されているデータ項目</label>
+        <config name="conf_HtmlDef" required="true" form-type="SELECT" select-data-type="FILE|STRING_TEXTAREA">
+            <label>C2: Data item that stores the source HTML</label>
+            <label locale="ja">C2: 変換元の HTML が保存されているデータ項目</label>
+        </config>
+        <config name="conf_Size" required="true" form-type="SELECT_ITEM">
+            <label>C3: PDF Page Size</label>
+            <label locale="ja">C3: PDF ページサイズ</label>
+            <item value="A4-P">
+                <label>A4 Portrait</label>
+                <label locale="ja">A4 縦</label>
+            </item>
+            <item value="A4-L">
+                <label>A4 Landscape</label>
+                <label locale="ja">A4 横</label>
+            </item>
         </config>
         <config name="conf_PdfDef" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>C3: Data item to save PDF file</label>
-            <label locale="ja">C5: PDF ファイルを保存するデータ項目</label>
+            <label>C4: Data item to save the generated PDF file</label>
+            <label locale="ja">C4: 生成された PDF ファイルを保存するデータ項目</label>
+        </config>
+        <config name="conf_DeleteOtherFiles" form-type="TOGGLE">
+            <label>C5: Delete other files when saving</label>
+            <label locale="ja">C5: 保存時に他のファイルを削除する</label>
         </config>
         <config name="conf_SaveAs" required="true" el-enabled="true" form-type="TEXTFIELD">
-            <label>C4: PDF File Name</label>
-            <label locale="ja">C4: PDF ファイル名</label>
+            <label>C6: File name to save as</label>
+            <label locale="ja">C6: 保存する際のファイル名</label>
         </config>
     </configs>
 
     <script><![CDATA[
+
+const MAX_SOURCE_FILE_SIZE = 1048576; // 1MB。標準アイテムではファイルの読み出しサイズに制限はないが、無制限もよくないので
+
+/** PDF のレイアウトの候補 (サイズはインチで指定) */
+const LAYOUTS = {
+    'A4-P': {
+        pageWidth: 8.27,
+        pageHeight: 11.69
+    },
+    'A4-L': {
+        pageWidth: 11.69,
+        pageHeight: 8.27
+    }
+};
+
 /**
  * tokenUrl: https://ims-na1.adobelogin.com/ims/token/v3
  * scope: openid, AdobeID, DCAPI
@@ -42,6 +73,7 @@
 const main = () => {
     const authSetting = configs.getObject('conf_Auth');
     const htmlDef = configs.getObject('conf_HtmlDef');
+    const pageSize = configs.get('conf_Size');
 
     const files = engine.findData(htmlDef);
     if (files.size() !== 1) {
@@ -51,7 +83,7 @@ const main = () => {
 
     const {uploadUri, assetID} = createAsset(authSetting);
     uploadHtml(uploadUri, htmlFile);
-    const statusUrl = htmlToPdf(authSetting, assetID);
+    const statusUrl = htmlToPdf(authSetting, assetID, pageSize);
     engine.saveTemporaryData(statusUrl);
 
     return proceed();
@@ -105,15 +137,18 @@ const uploadHtml = (url, htmlFile) => {
     }
 };
 
-const htmlToPdf = (authSetting, assetID) => {
+/**
+ * HTML から PDF を生成
+ * @param authSetting
+ * @param assetID
+ * @param pageSize
+ */
+const htmlToPdf = (authSetting, assetID, pageSize) => {
     const body = JSON.stringify({
         assetID,
         json: '{}',
         includeHeaderFooter: false,
-        pageLayout: {
-            pageWidth: 11,
-            pageHeight: 8.5
-        }
+        pageLayout: LAYOUTS[pageSize]
     });
     const response = httpClient.begin().authSetting(authSetting)
         .header('x-api-key', authSetting.getClientId())
