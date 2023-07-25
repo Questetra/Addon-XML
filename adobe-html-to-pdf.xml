@@ -87,9 +87,17 @@ const proceed = () => {
     const fileName = configs.get('conf_SaveAs');
     const statusUrl = engine.restoreTemporaryData();
 
-    const {status, asset: {downloadUri} = {}} = checkStatus(authSetting, statusUrl);
-    if (status !== 'done') {
-        return false;
+    const {status, asset: {downloadUri} = {}, error = {}} = getStatus(authSetting, statusUrl);
+    switch (status) {
+        case 'done':
+            break;
+        case 'inprogress':
+            return false;
+        case 'failed':
+            engine.log(JSON.stringify(error));
+            throw 'Failed to convert HTML to PDF.';
+        default:
+            throw `The converting status "${status}" is unkown.`;
     }
     const qfile = downloadPdf(downloadUri, fileName);
     saveFile(pdfDef, deleteOtherFiles, qfile);
@@ -195,12 +203,12 @@ const htmlToPdf = (authSetting, assetID, pageSize) => {
 };
 
 /**
- * 変換ステータスの確認
+ * 変換ステータスを取得
  * @param authSetting
  * @param statusUrl
  * @returns {any}
  */
-const checkStatus = (authSetting, statusUrl) => {
+const getStatus = (authSetting, statusUrl) => {
     const response = httpClient.begin().authSetting(authSetting)
         .header('x-api-key', authSetting.getClientId())
         .get(statusUrl);
@@ -496,21 +504,41 @@ test('Fail to convert HTML to PDF', () => {
 });
 
 /**
- * 変換ステータスを確認する API リクエストのテスト
+ * 変換ステータスを取得する API リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
  * @param request.headers
  * @param statusUrlt
  */
-const assertCheckStatusRequest = ({url, method, headers}, statusUrl) => {
+const assertGetStatusRequest = ({url, method, headers}, statusUrl) => {
     expect(url).toEqual(statusUrl);
     expect(method).toEqual('GET');
     expect(headers['x-api-key']).toEqual(CLIENT_ID);
 };
 
 /**
- * 変換ステータスを確認する API リクエストでエラー
+ * 変換ステータスを取得する API のレスポンスを作成
+ * @param status
+ * @param downloadUri
+ * @param error
+ * @returns {String} response
+ */
+const createStatusResponse = (status, downloadUri, error) => {
+    const json = {status};
+    if (downloadUri !== null) {
+        Object.assign(json, {
+            asset: {downloadUri}
+        });
+    }
+    if (error !== null) {
+        Object.assign(json, {error});
+    }
+    return JSON.stringify(json);
+};
+
+/**
+ * 変換ステータスを取得する API リクエストでエラー
  */
 test('Fail to get converting status', () => {
     const sourceFiles = new java.util.ArrayList();
@@ -539,10 +567,51 @@ test('Fail to get converting status', () => {
             reqCount++;
             return response;
         }
-        assertCheckStatusRequest(request, statusUrl);
+        assertGetStatusRequest(request, statusUrl);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to get converting status. status: 400');
+});
+
+/**
+ * 変換ステータスが failed
+ */
+test('Fail to convert with status failed', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertGetStatusRequest(request, statusUrl);
+        const error = {
+            status: 400,
+            code: 'some status code',
+            message: 'failed'
+        };
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('failed', null, error));
+    });
+    assertError(main, 'Failed to convert HTML to PDF.');
 });
 
     ]]></test>
