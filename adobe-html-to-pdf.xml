@@ -21,7 +21,7 @@
             <label>C2: Data item that stores the source HTML file</label>
             <label locale="ja">C2: 変換元の HTML ファイルが保存されているデータ項目</label>
         </config>
-        <config name="conf_Size" required="true" form-type="SELECT_ITEM">
+        <config name="conf_PageSize" required="true" form-type="SELECT_ITEM">
             <label>C3: PDF Page Size</label>
             <label locale="ja">C3: PDF ページサイズ</label>
             <item value="A4-P">
@@ -49,7 +49,7 @@
 
     <script><![CDATA[
 
-/** PDF のレイアウトの候補 (サイズはインチで指定) */
+/** PDF のレイアウト候補 (サイズはインチで指定) */
 const LAYOUTS = {
     'A4-P': {
         pageWidth: 8.27,
@@ -69,7 +69,7 @@ const LAYOUTS = {
 const main = () => {
     const authSetting = configs.getObject('conf_Auth');
     const htmlFile = retrieveHtmlFile();
-    const pageSize = configs.get('conf_Size');
+    const pageSize = configs.get('conf_PageSize');
     validateFileName();
 
     const {uploadUri, assetID} = createAsset(authSetting);
@@ -250,6 +250,233 @@ const saveFile = (dataDef, deleteOtherFiles, qfile) => {
     -->
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param sourceFiles
+ * @param pageSize
+ * @param deleteOtherFiles
+ * @param fileName
+ * @return pdfDef
+ */
+const prepareConfigs = (sourceFiles, pageSize, deleteOtherFiles, fileName) => {
+    configs.put('conf_Auth', 'Adobe PDF Services');
+
+    // ファイル型データ項目を作成・設定し、変換元ファイルを添付
+    const sourceFilesDef = engine.createDataDefinition('変換元ファイル', 1, 'q_SourceFiles', 'FILE');
+    configs.putObject('conf_HtmlDef', sourceFilesDef);
+    engine.setData(sourceFilesDef, sourceFiles);
+
+    // PDF ページサイズを設定
+    configs.put('conf_PageSize', pageSize);
+
+    // 生成されたファイルを保存する用のファイル型データ項目を作成し、設定
+    const pdfDef = engine.createDataDefinition('ファイル保存先', 2, 'q_TargetFiles', 'FILE');
+    configs.putObject('conf_PdfDef', pdfDef);
+
+    // 保存時に他のファイルを削除するかどうかを設定
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // 保存する際のファイル名を設定
+    configs.put('conf_SaveAs', fileName);
+
+    return pdfDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 変換元ファイルが添付されていない
+ */
+test('No source file', () => {
+    prepareConfigs(null, 'A4-P', false, '変換後.pdf');
+    assertError(main, 'No source file attached.');
+});
+
+/**
+ * 変換元ファイルが 2 つ以上添付されている
+ */
+test('More than one source files', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('ファイル1.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('ファイル2.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+    assertError(main, 'More than one source files attached.');
+});
+
+/**
+ * 変換元ファイルの中身が空
+ */
+test('Source file is empty', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', ''));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+    assertError(main, 'Source file is empty.');
+});
+
+/**
+ * 変換元ファイルが text/html でない
+ */
+test('Content-Type of the source file is not text/html', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/plain', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+    assertError(main, 'Content-Type of the source file is not text/html.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('File name is blank', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '');
+    assertError(main, 'File name to save as is blank.');
+});
+
+/**
+ * asset を作成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ */
+const assertCreateAssetRequest = ({url, method, contentType, body}) => {
+    expect(url).toEqual('https://pdf-services-ue1.adobe.io/assets');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.mediaType).toEqual('text/html');
+};
+
+/**
+ * asset を作成する API リクエストでエラー
+ */
+test('Fail to create asset', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+
+    httpClient.setRequestHandler((request) => {
+        assertCreateAssetRequest(request);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to create asset. status: 400');
+});
+
+/**
+ * HTML ファイルをアップロードする API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param uploadUrl
+ * @param htmlStr
+ */
+const assertUploadHtmlRequest = ({url, method, contentType, body}, uploadUrl, htmlStr) => {
+    expect(url).toEqual(uploadUrl);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('text/html');
+    expect(body).toEqual(htmlStr);
+};
+
+/**
+ * asset 作成 API のレスポンスを作成
+ * @param assetID
+ * @param uploadUrl
+ * @returns {String} response
+ */
+const createAssetResponse = (assetID, uploadUrl) => {
+    const json = {assetID, uploadUrl};
+    return JSON.stringify(json);
+};
+
+/**
+ * HTML ファイルをアップロードする API リクエストでエラー
+ */
+test('Fail to upload HTML', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to upload HTML. status: 400');
+});
+
+/**
+ * HTML から PDF を生成する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param assetId
+ * @param pageLayout
+ */
+const assertHtmlToPdfRequest = ({url, method, contentType, body}, assetId, pageLayout) => {
+    expect(url).toEqual('https://pdf-services-ue1.adobe.io/operation/htmltopdf');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.assetID).toEqual(assetId);
+    expect(bodyObj.json).toEqual('{}');
+    expect(bodyObj.includeHeaderFooter).toEqual(false);
+    expect(bodyObj.pageLayout).toEqual(pageLayout);
+};
+
+/**
+ * HTML から PDF を生成する API リクエストでエラー
+ */
+test('Fail to convert HTML to PDF', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4-P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4-P);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to convert HTML to PDF. status: 400');
+});
+
     ]]></test>
 
 </service-task-definition>
