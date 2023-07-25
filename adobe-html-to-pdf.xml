@@ -255,6 +255,8 @@ const saveFile = (dataDef, deleteOtherFiles, qfile) => {
 
     <test><![CDATA[
 
+const CLIENT_ID = 'client-id-12345';
+
 /**
  * 設定の準備
  * @param sourceFiles
@@ -269,7 +271,7 @@ const prepareConfigs = (sourceFiles, pageSize, deleteOtherFiles, fileName) => {
         'Adobe PDF Services',
         'https://ims-na1.adobelogin.com/ims/token/v3',
         'openid,AdobeID,DCAPI',
-        'client-id-12345',
+        CLIENT_ID,
         'client-secret-67890',
         'access-token-abcde');
     configs.putObject('conf_Auth', authSetting);
@@ -363,12 +365,14 @@ test('File name is blank', () => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param request.contentType
  * @param request.body
  */
-const assertCreateAssetRequest = ({url, method, contentType, body}) => {
+const assertCreateAssetRequest = ({url, method, headers, contentType, body}) => {
     expect(url).toEqual('https://pdf-services-ue1.adobe.io/assets');
     expect(method).toEqual('POST');
+    expect(headers['x-api-key']).toEqual(CLIENT_ID);
     expect(contentType).toEqual('application/json');
     const bodyObj = JSON.parse(body);
     expect(bodyObj.mediaType).toEqual('text/html');
@@ -441,18 +445,20 @@ test('Fail to upload HTML', () => {
 });
 
 /**
- * HTML から PDF を生成する API リクエストのテスト
+ * HTML to PDF 変換の API リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param request.contentType
  * @param request.body
  * @param assetId
  * @param pageLayout
  */
-const assertHtmlToPdfRequest = ({url, method, contentType, body}, assetId, pageLayout) => {
+const assertHtmlToPdfRequest = ({url, method, headers, contentType, body}, assetId, pageLayout) => {
     expect(url).toEqual('https://pdf-services-ue1.adobe.io/operation/htmltopdf');
     expect(method).toEqual('POST');
+    expect(headers['x-api-key']).toEqual(CLIENT_ID);
     expect(contentType).toEqual('application/json');
     const bodyObj = JSON.parse(body);
     expect(bodyObj.assetID).toEqual(assetId);
@@ -462,7 +468,7 @@ const assertHtmlToPdfRequest = ({url, method, contentType, body}, assetId, pageL
 };
 
 /**
- * HTML から PDF を生成する API リクエストでエラー
+ * HTML to PDF 変換の API リクエストでエラー
  */
 test('Fail to convert HTML to PDF', () => {
     const sourceFiles = new java.util.ArrayList();
@@ -487,6 +493,56 @@ test('Fail to convert HTML to PDF', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to convert HTML to PDF. status: 400');
+});
+
+/**
+ * 変換ステータスを確認する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param statusUrlt
+ */
+const assertCheckStatusRequest = ({url, method, headers}, statusUrl) => {
+    expect(url).toEqual(statusUrl);
+    expect(method).toEqual('GET');
+    expect(headers['x-api-key']).toEqual(CLIENT_ID);
+};
+
+/**
+ * 変換ステータスを確認する API リクエストでエラー
+ */
+test('Fail to get converting status', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertCheckStatusRequest(request, statusUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get converting status. status: 400');
 });
 
     ]]></test>
