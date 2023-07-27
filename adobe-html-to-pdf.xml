@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-07-25</last-modified>
+    <last-modified>2023-07-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Adobe: Generate PDF (HTML to PDF)</label>
     <label locale="ja">Adobe: PDF 生成（HTML to PDF）</label>
@@ -87,20 +87,7 @@ const proceed = () => {
     const fileName = configs.get('conf_SaveAs');
     const statusUrl = engine.restoreTemporaryData();
 
-    const {status, asset: {downloadUri} = {}, error = {}} = getStatus(authSetting, statusUrl);
-    switch (status) {
-        case 'done':
-            break;
-        case 'inprogress':
-            return false;
-        case 'failed':
-            engine.log(JSON.stringify(error));
-            throw 'Failed to convert HTML to PDF.';
-        default:
-            throw `The converting status "${status}" is unkown.`;
-    }
-    const qfile = downloadPdf(downloadUri, fileName);
-    saveFile(pdfDef, deleteOtherFiles, qfile);
+    return checkStatusAndSaveFile(authSetting, statusUrl, pdfDef, deleteOtherFiles, fileName);
 };
 
 /**
@@ -203,10 +190,37 @@ const htmlToPdf = (authSetting, assetID, pageSize) => {
 };
 
 /**
+ * PDF 生成のステータスを確認し、完了していればファイルを保存
+ * 処理途中であれば false を返す
+ * @param authSetting
+ * @param statusUrl
+ * @param pdfDef
+ * @param deleteOtherFiles
+ * @param fileName
+ * @returns {boolean|undefined} 処理途中であれば false
+ */
+const checkStatusAndSaveFile = (authSetting, statusUrl, pdfDef, deleteOtherFiles, fileName) => {
+    const {status, asset: {downloadUri} = {}, error = {}} = getStatus(authSetting, statusUrl);
+    switch (status) {
+        case 'done':
+            break;
+        case 'inprogress':
+            return false;
+        case 'failed':
+            engine.log(JSON.stringify(error));
+            throw 'Failed to convert HTML to PDF.';
+        default:
+            throw `The converting status "${status}" is unknown.`;
+    }
+    const qfile = downloadPdf(downloadUri, fileName);
+    saveFile(pdfDef, deleteOtherFiles, qfile);
+};
+
+/**
  * 変換ステータスを取得
  * @param authSetting
  * @param statusUrl
- * @returns {any}
+ * @returns {Object}
  */
 const getStatus = (authSetting, statusUrl) => {
     const response = httpClient.begin().authSetting(authSetting)
@@ -231,7 +245,7 @@ const downloadPdf = (downloadUrl, fileName) => {
     const status = response.getStatusCode();
     if (status !== 200) {
         engine.log(response.getResponseAsString());
-        throw `Failed to download PDF. status:${status}`;
+        throw `Failed to download PDF. status: ${status}`;
     }
     const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileName, 'application/pdf', response.getResponse()
@@ -264,6 +278,16 @@ const saveFile = (dataDef, deleteOtherFiles, qfile) => {
     <test><![CDATA[
 
 const CLIENT_ID = 'client-id-12345';
+
+const SAMPLE_HTML = `
+    <html>
+        <head></head>
+        <body>
+            <h1>PDF 生成のテスト</h1>
+            <p>これは PDF 生成のテストです。</p>
+        </body>
+    </html>
+    `;
 
 /**
  * 設定の準備
@@ -332,7 +356,7 @@ test('No source file', () => {
  */
 test('More than one source files', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('ファイル1.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('ファイル1.html', 'text/html', SAMPLE_HTML));
     sourceFiles.add(engine.createQfile('ファイル2.html', 'text/html', 'aaa'));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
     assertError(main, 'More than one source files attached.');
@@ -353,7 +377,7 @@ test('Source file is empty', () => {
  */
 test('Content-Type of the source file is not text/html', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/plain', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/plain', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
     assertError(main, 'Content-Type of the source file is not text/html.');
 });
@@ -363,7 +387,7 @@ test('Content-Type of the source file is not text/html', () => {
  */
 test('File name is blank', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '');
     assertError(main, 'File name to save as is blank.');
 });
@@ -391,7 +415,7 @@ const assertCreateAssetRequest = ({url, method, headers, contentType, body}) => 
  */
 test('Fail to create asset', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
 
     httpClient.setRequestHandler((request) => {
@@ -402,7 +426,7 @@ test('Fail to create asset', () => {
 });
 
 /**
- * HTML ファイルをアップロードする API リクエストのテスト
+ * HTML ファイルをアップロードするリクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
@@ -430,11 +454,11 @@ const createAssetResponse = (assetID, uploadUri) => {
 };
 
 /**
- * HTML ファイルをアップロードする API リクエストでエラー
+ * HTML ファイルをアップロードするリクエストでエラー
  */
 test('Fail to upload HTML', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
 
     let reqCount = 0;
@@ -446,7 +470,7 @@ test('Fail to upload HTML', () => {
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
         }
-        assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+        assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to upload HTML. status: 400');
@@ -480,7 +504,7 @@ const assertHtmlToPdfRequest = ({url, method, headers, contentType, body}, asset
  */
 test('Fail to convert HTML to PDF', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
 
     let reqCount = 0;
@@ -493,7 +517,7 @@ test('Fail to convert HTML to PDF', () => {
             return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
         }
         if (reqCount === 1) {
-            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
@@ -509,13 +533,49 @@ test('Fail to convert HTML to PDF', () => {
  * @param request.url
  * @param request.method
  * @param request.headers
- * @param statusUrlt
+ * @param statusUrl
  */
 const assertGetStatusRequest = ({url, method, headers}, statusUrl) => {
     expect(url).toEqual(statusUrl);
     expect(method).toEqual('GET');
     expect(headers['x-api-key']).toEqual(CLIENT_ID);
 };
+
+/**
+ * 変換ステータスを取得する API リクエストでエラー
+ */
+test('Fail to get converting status', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertGetStatusRequest(request, statusUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get converting status. status: 400');
+});
 
 /**
  * 変換ステータスを取得する API のレスポンスを作成
@@ -538,47 +598,11 @@ const createStatusResponse = (status, downloadUri, error) => {
 };
 
 /**
- * 変換ステータスを取得する API リクエストでエラー
- */
-test('Fail to get converting status', () => {
-    const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
-    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
-
-    let reqCount = 0;
-    const assetId = 'asset:id-1';
-    const uploadUrl = 'https://example.com/uploadUrl1';
-    const statusUrl = 'https://example.com/statusUrl1';
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertCreateAssetRequest(request);
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
-        }
-        if (reqCount === 1) {
-            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', '{}');
-        }
-        if (reqCount === 2) {
-            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
-            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
-            response.addHeader('Location', statusUrl);
-            reqCount++;
-            return response;
-        }
-        assertGetStatusRequest(request, statusUrl);
-        return httpClient.createHttpResponse(400, 'application/json', '{}');
-    });
-    assertError(main, 'Failed to get converting status. status: 400');
-});
-
-/**
  * 変換ステータスが failed
  */
-test('Fail to convert with status failed', () => {
+test('Fail to convert with failed status', () => {
     const sourceFiles = new java.util.ArrayList();
-    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
     prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
 
     let reqCount = 0;
@@ -592,7 +616,7 @@ test('Fail to convert with status failed', () => {
             return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
         }
         if (reqCount === 1) {
-            assertUploadHtmlRequest(request, uploadUrl, 'aaa');
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
@@ -612,6 +636,399 @@ test('Fail to convert with status failed', () => {
         return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('failed', null, error));
     });
     assertError(main, 'Failed to convert HTML to PDF.');
+});
+
+/**
+ * 変換ステータスが failed, done, inprogress 以外
+ */
+test('Fail to convert with unknown status', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertGetStatusRequest(request, statusUrl);
+        const error = {
+            status: 400,
+            code: 'some status code',
+            message: 'some message here'
+        };
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('invalid_status', null, error));
+    });
+    assertError(main, 'The converting status "invalid_status" is unknown.');
+});
+
+/**
+ * ダウンロードリクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param downloadUrl
+ */
+const assertDownloadRequest = ({url, method}, downloadUrl) => {
+    expect(url).toEqual(downloadUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ダウンロードリクエストでエラー
+ */
+test('Fail to download PDF', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    const downloadUrl = 'https://example.com/downloadUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        if (reqCount === 3) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to download PDF. status: 400');
+});
+
+/**
+ * PDF ファイルのテスト
+ * @param file
+ * @param name
+ * @param body
+ */
+const assertPdfFile = (file, name, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual('application/pdf');
+    expect(fileRepository.readFile(file, 'UTF-8')).toEqual(body);
+};
+
+/**
+ * 成功
+ * 変換元ファイルに charset の指定なし
+ * 他のファイルの保存なし, 他のファイルを削除しない
+ * 1 回目のステータス確認時に処理完了
+ */
+test('Succeed - No charset, no other files, complete in the 1st status check', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    const pdfDef = prepareConfigs(sourceFiles, 'A4_P', false, '変換後.pdf');
+
+    let reqCount = 0;
+    const assetId = 'asset:id-1';
+    const uploadUrl = 'https://example.com/uploadUrl1';
+    const statusUrl = 'https://example.com/statusUrl1';
+    const downloadUrl = 'https://example.com/downloadUrl1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        if (reqCount === 3) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    // ファイル型データ項目の値をチェック
+    const files = engine.findData(pdfDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後.pdf', 'This is the content of PDF');
+});
+
+/**
+ * 成功
+ * 変換元ファイルに charset=Shift_JIS を指定
+ * 他のファイルの保存あり, 他のファイルを削除しない
+ * 1 回目のステータス確認時に処理完了
+ */
+test('Succeed - Shift_JIS, add file, complete in the 1st status check', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html; charset=Shift_JIS', SAMPLE_HTML));
+    const pdfDef = prepareConfigs(sourceFiles, 'A4_L', false, '変換後_1.pdf');
+    // 他のファイルを保存しておく
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('他のファイル.txt', 'text/plain', 'This is the content of text file'));
+    engine.setData(pdfDef, existingFiles);
+
+    let reqCount = 0;
+    const assetId = 'asset:id-2';
+    const uploadUrl = 'https://example.com/uploadUrl2';
+    const statusUrl = 'https://example.com/statusUrl2';
+    const downloadUrl = 'https://example.com/downloadUrl2';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            // アップロードリクエストの確認は省略。Shift_JIS のファイルの ByteArray が body に正しく設定されているかどうか、テストしにくいため
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_L);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        if (reqCount === 3) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'Content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    // ファイル型データ項目の値をチェック
+    const files = engine.findData(pdfDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('他のファイル.txt');
+    assertPdfFile(files.get(1), '変換後_1.pdf', 'Content of PDF');
+});
+
+/**
+ * 成功
+ * 変換元ファイルに charset=UTF-8 を指定
+ * 他のファイルの保存あり, 他のファイルを削除する
+ * 1 回目のステータス確認時に処理完了
+ */
+test('Succeed - UTF-8, delete other files, complete in the 1st status check', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html;charset=UTF-8', SAMPLE_HTML));
+    const pdfDef = prepareConfigs(sourceFiles, 'A4_L', true, '変換後(1).pdf');
+    // 他のファイルを保存しておく
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('他のファイル.txt', 'text/plain', 'This is the content of text file'));
+    engine.setData(pdfDef, existingFiles);
+
+    let reqCount = 0;
+    const assetId = 'asset:id-3';
+    const uploadUrl = 'https://example.com/uploadUrl3';
+    const statusUrl = 'https://example.com/statusUrl3';
+    const downloadUrl = 'https://example.com/downloadUrl3';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_L);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        if (reqCount === 3) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(main()).toEqual(undefined);
+
+    // ファイル型データ項目の値をチェック
+    const files = engine.findData(pdfDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後(1).pdf', 'This is the content of PDF');
+});
+
+/**
+ * 成功
+ * 他のファイルの保存あり, 他のファイルを削除しない
+ * 2 回目のステータス確認時に処理完了
+ */
+test('Succeed - Add file, complete in the 2nd status check', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    const pdfDef = prepareConfigs(sourceFiles, 'A4_L', false, '変換後(2).pdf');
+    // 他のファイルを保存しておく
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('他のファイル.txt', 'text/plain', 'This is the content of text file'));
+    engine.setData(pdfDef, existingFiles);
+
+    let reqCount = 0;
+    const assetId = 'asset:id-4';
+    const uploadUrl = 'https://example.com/uploadUrl4';
+    const statusUrl = 'https://example.com/statusUrl4';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_L);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertGetStatusRequest(request, statusUrl);
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('inprogress', null, null));
+    });
+    expect(main()).toEqual(false);
+
+    reqCount = 0;
+    const downloadUrl = 'https://example.com/downloadUrl4';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(proceed()).toEqual(undefined);
+
+    // ファイル型データ項目の値をチェック
+    const files = engine.findData(pdfDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('他のファイル.txt');
+    assertPdfFile(files.get(1), '変換後(2).pdf', 'This is the content of PDF');
+});
+
+/**
+ * 成功
+ * 他のファイルの保存あり, 他のファイルを削除する
+ * 3 回目のステータス確認時に処理完了
+ */
+test('Succeed - Delete other files, complete in the 3rd status check', () => {
+    const sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('変換元.html', 'text/html', SAMPLE_HTML));
+    const pdfDef = prepareConfigs(sourceFiles, 'A4_P', true, '変換後(3).pdf');
+    // 他のファイルを保存しておく
+    const existingFiles = new java.util.ArrayList();
+    existingFiles.add(engine.createQfile('他のファイル.txt', 'text/plain', 'This is the content of text file'));
+    engine.setData(pdfDef, existingFiles);
+
+    let reqCount = 0;
+    const assetId = 'asset:id-5';
+    const uploadUrl = 'https://example.com/uploadUrl5';
+    const statusUrl = 'https://example.com/statusUrl5';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateAssetRequest(request);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createAssetResponse(assetId, uploadUrl));
+        }
+        if (reqCount === 1) {
+            assertUploadHtmlRequest(request, uploadUrl, SAMPLE_HTML);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertHtmlToPdfRequest(request, assetId, LAYOUTS.A4_P);
+            const response = httpClient.createHttpResponse(201, 'application/json', '{}');
+            response.addHeader('Location', statusUrl);
+            reqCount++;
+            return response;
+        }
+        assertGetStatusRequest(request, statusUrl);
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('inprogress', null, null));
+    });
+    expect(main()).toEqual(false);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetStatusRequest(request, statusUrl);
+        return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('inprogress', null, null));
+    });
+    expect(proceed()).toEqual(false);
+
+    reqCount = 0;
+    const downloadUrl = 'https://example.com/downloadUrl5';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetStatusRequest(request, statusUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('done', downloadUrl, null));
+        }
+        assertDownloadRequest(request, downloadUrl);
+        return httpClient.createHttpResponse(200, 'application/pdf', 'This is the content of PDF');
+    });
+    expect(proceed()).toEqual(undefined);
+
+    // ファイル型データ項目の値をチェック
+    const files = engine.findData(pdfDef);
+    expect(files.size()).toEqual(1);
+    assertPdfFile(files.get(0), '変換後(3).pdf', 'This is the content of PDF');
 });
 
     ]]></test>
