@@ -1,0 +1,345 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT_TIMER</addon-type>
+    <last-modified>2023-07-28</last-modified>
+    <engine-type>3</engine-type>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Timer Start: kintone: the number of records</label>
+    <label locale="ja">タイマー開始: kintone: レコード数</label>
+    <summary>This item searches records in a Kintone App using a query.</summary>
+    <summary locale="ja">このアイテムは、kintone アプリから検索クエリに合致するレコード数の数だけ、プロセスを開始します。各プロセスの文字型データ項目には、それぞれのレコード
+        ID が設定されます。
+    </summary>
+    <configs>
+        <config name="conf_auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Authorization Setting in which API Token is set</label>
+            <label locale="ja">C1: API トークンを設定した認証設定</label>
+        </config>
+        <config name="conf_basic" required="false" form-type="OAUTH2" auth-type="BASIC">
+            <label>C2: Basic Auth Setting (required if enabled on Kintone)</label>
+            <label locale="ja">C2: Basic 認証設定（kintone で設定されている場合のみ）</label>
+        </config>
+        <config name="conf_domain" required="true" form-type="TEXTFIELD">
+            <label>C3: Domain (such as xxxxx.kintone.com or xxxxx.cybozu.com)</label>
+            <label locale="ja">C3: ドメイン（xxxxx.kintone.com または xxxxx.cybozu.com）</label>
+        </config>
+        <config name="conf_guestSpaceId" required="false" form-type="TEXTFIELD">
+            <label>C4: Guest Space ID (required if the App is in a Guest Space)</label>
+            <label locale="ja">C4: ゲストスペース ID（ゲストスペース内のアプリの場合のみ）</label>
+        </config>
+        <config name="conf_appId" required="true" form-type="TEXTFIELD">
+            <label>C5: App ID</label>
+            <label locale="ja">C5: アプリ ID</label>
+        </config>
+        <config name="conf_query" required="false" form-type="TEXTAREA" el-enabled="true">
+            <label>C6: Search Query</label>
+            <label locale="ja">C6: 検索クエリ</label>
+        </config>
+        <config name="conf_recordIds" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C7: Data item to save Record IDs</label>
+            <label locale="ja">C7: レコード ID を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-timer-kintone-record/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-timer-kintone-record/
+    </help-page-url>
+
+    <script><![CDATA[
+function list(limit) {
+//// == 工程コンフィグの参照 / Config Retrieving ==
+    const auth = configs.getObject("conf_auth");
+    const basic = configs.getObject("conf_basic");
+    const domain = configs.get("conf_domain");
+    const guestSpaceId = configs.get("conf_guestSpaceId");
+    const appId = configs.get("conf_appId");
+    const query = configs.get("conf_query");
+
+//// == ワークフローデータの参照 / Data Retrieving ==
+    const apiUri = determineApiUri(domain, guestSpaceId);
+    checkAppId(appId);
+
+    return getRecords(apiUri, auth.getToken(), basic, {app: appId, query}, limit);
+}
+
+/**
+ * kintone REST API のレコード取得の URI を決定する
+ * ドメインが空、または kintone のドメインとして不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ * @param {String} guestSpaceId  ゲストスペース ID
+ * @return {String} apiUri  API の URI
+ */
+function determineApiUri(domain, guestSpaceId) {
+    checkDomain(domain);
+    let apiUri;
+    if (guestSpaceId === "" || guestSpaceId === null) {
+        apiUri = `https://${domain}/k/v1/`;
+    } else {
+        if (!isValidId(guestSpaceId)) {
+            throw new Error("Invalid Guest Space ID.");
+        }
+        apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
+    }
+    return apiUri;
+}
+
+/**
+ * ドメインが空または不正な文字列であればエラーとする
+ * @param {String} domain  ドメイン
+ */
+function checkDomain(domain) {
+    if (domain === "" || domain === null) { // required="true" なので空になることはないが、チェック
+        throw new Error("Domain is empty.");
+    }
+    const reg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
+    if (!reg.test(domain)) {
+        throw new Error("Invalid Kintone domain.");
+    }
+}
+
+/**
+ * アプリ ID が空または不正な文字列であればエラーとする
+ * @param {String} appId  アプリ ID
+ */
+function checkAppId(appId) {
+    if (appId === "" || appId === null) { // required="true" なので空になることはないが、チェック
+        throw new Error("App ID is empty.");
+    }
+    if (!isValidId(appId)) {
+        throw new Error("Invalid App ID.");
+    }
+}
+
+/**
+ * ID が有効か（自然数か）を判定する
+ * @param {String} idString  ID の文字列
+ * @return {Boolean}  有効な ID かどうか
+ */
+function isValidId(idString) {
+    const idReg = new RegExp('^[1-9][0-9]*$');
+    return idReg.test(idString);
+}
+
+/**
+ * kintone REST API にレコード取得の GET リクエストを送信する
+ * 未取得のレコードがなくなるまで再帰的に実行される
+ * @param {String} apiUri  API の URI
+ * @param {String} apiToken  API トークン
+ * @param {String} basic  Basic 認証設定
+ * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
+ *   プロパティ:  {String} app  アプリ ID
+ *              {String} query  検索クエリ
+ * @param {Number} limit  1 回のリクエストで取得するレコード数
+ * @return {Array<String>} records  レコード ID の配列
+ */
+function getRecords(apiUri, apiToken, basic, {app, query}, limit) {
+    const getRecordsUri = `${apiUri}records.json`;
+    let request = httpClient.begin()
+        .queryParam("app", app)
+        .header("X-Cybozu-API-Token", apiToken);
+    if (basic !== null) {
+        request = request.authSetting(basic);
+    }
+    // query パラメータの設定
+    if (query === "" || query === null) {
+        request = request.queryParam("query", `order by $id asc limit ${limit}`);
+    } else {
+        request = request.queryParam("query", `( ${query} ) order by $id asc limit ${limit}`);
+    }
+    request = request.queryParam('fields[0]', '$id');
+    const response = request.get(getRecordsUri);
+    //when error thrown
+    const responseStr = response.getResponseAsString();
+    const status = response.getStatusCode();
+    if (status >= 300) {
+        engine.log(`---GET request--- ${status}\n${responseStr}\n`);
+        throw new Error(`Failed to get records. status: ${status}`);
+    }
+    const json = JSON.parse(responseStr);
+    return json.records.map(record => record.$id.value);
+}
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEAElEQVRYR8VXXWhTVxz/nZubNLlJ
+        bVbd6nSDglFwKkOrY+zDdAzBB1mHDoZSX/wAqw9WnPRBNzuHMJljsuksbPPBiQ4RpThlMLGNL+Jg
+        iiAbaARfrNqa2ObjNuQm9y/n3N7b3JvcNI6OnKfk/L9+9/f/OOcw1HmxWuMPtc1R/I3KWonwAYCl
+        AFoBvDRh/wzAAwC3dIaBXFo9P+fvIbUW31MCyLS3zi7qcg8YthHgr9FpDoQ+j1Q4FBp88LiaTVUA
+        o+3ztxHRYQYEawns1CEgyxj7LDx4r8/N3hXAWDTyIwFd/yWw04YBx5ti8e2VfFUEMBqddxpg66cj
+        +KQPOhOO3d9QAZx9azq/vBYmbAzwnIPo+PR+ucMbY12lNWEB4NWukRx3KzhpVguIdFBipCo+z4LF
+        KN6946rDC9PLChGzOywAYysj3xFDd5ml1wel52t4P1wjRNqf/VC/2QtoeZuq/NZKKPu+BZsRBiVH
+        oH7ZjcLtvyoCYYQjTdfiu7hQAOBDJhhSEs4+967qQGD3V2D+gM0R5cYxfngvtCsXwcLNCB7sg2cR
+        n032Vbh5HernO0DZtE3AgFw2o87kw0oASLZHOiXCr6VanshChH7qB5hLpxIhs7UD/p1fQF6y3JXy
+        wo0Ysj1byuQ6w8bmwfgp4X00GvkFwKZSrdDR3yBF3gB0HUyxzyFSs4AkgZJPIb36GiidAgs1ij1r
+        FYugTEqkJLWmrYwFACfCsfhmE8DNiflu2YeOnbVopfQYmF8RMsqpYI1Nxu/ECNjMlw0bTQONZ4WM
+        Uy70ZVmIUuveqVS8t8Kx+DITQLLkYBFGnAHP4jYLEGUzyJ8/iYbOListvNhY8wQAAPrwI2gDl9Hw
+        6WYb5elP3oP+9IkzDc/CsXizCYCcUicAXvVULAJkqLKAIpzy9uRpEl8dmgE9MQJp1iu1AEA4Fjcq
+        bDQaKQMQ/OGMvbh42/HgvgaD/tQYtIFLkN+OQuIseH3GvoMVvufCgA1AWQrkFe9D6f0eLBiayLHB
+        gNmSvBVzR3rh69gAz8I3J1PlAKDF/oDauxMgvWoKyorQ4FlCoHs/fB+tnxw8stegO9gIPcnpboHZ
+        FRycWZj6k4dQ921H8d4/zsDmf1sRlrVhqZU0ey58H3dCer0Vctu7FgtWDQjuCXpiGPn+06L98hdO
+        uQU29yfbsNIgqmTNB45y6GdrLtgA8E68+jvUA2LCTrlsg8htFFf0InkQ2HMQvtVroQ8PQWqZK7qB
+        j9ziv7enDCwy6xzFfNP1MHJxyScgnxPM60X+8rmaAptKZYcRF0x1HL9QhCrKrscxt6nrhcQEXdcr
+        mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+/**
+ * 設定の準備
+ * @param domain
+ * @param guestSpaceId
+ * @param appId
+ * @param query
+ * @return dataDefList
+ */
+const prepareConfigs = (domain, guestSpaceId, appId, query) => {
+    const auth = httpClient.createAuthSettingToken('kintone', 'token');
+    configs.putObject('conf_auth', auth);
+    configs.put('conf_domain', domain);
+    configs.put('conf_guestSpaceId', guestSpaceId);
+    configs.put('conf_appId', appId);
+    configs.put('conf_query', query);
+};
+
+/**
+ * レコード取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param domain
+ * @param guestSpaceId
+ * @param appId
+ * @param query
+ * @param limit
+ */
+const assertGetRecordsRequest = ({url, method}, domain, guestSpaceId, appId, query, limit) => {
+    expect(method).toEqual('GET');
+    let expectedUrl;
+    if (guestSpaceId === '') { // ゲストスペース外のアプリの場合
+        expectedUrl = `https://${domain}/k/v1/records.json?app=${appId}`;
+    } else { // ゲストスペース内のアプリの場合
+        expectedUrl = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json?app=${appId}`;
+    }
+    if (query === '') { // 検索クエリが空の場合
+        query = `order by $id asc limit ${limit}`;
+    } else { // 検索クエリが空でない場合
+        query = `( ${query} ) order by $id asc limit ${limit}`;
+    }
+    expectedUrl += '&query=' + encodeURIComponent(query)
+        + '&' + encodeURIComponent('fields[0]') + '=' + encodeURIComponent('$id');
+    expect(url).toEqual(expectedUrl.replace(/%20/g, '+').replace(/\(/g, '%28').replace(/\)/g, '%29'));
+};
+
+/**
+ * レコード取得のレスポンスを準備
+ * @param from レコード取得開始位置
+ * @param recordNum レコード数
+ * @return responseObj
+ */
+const prepareGetRecordsResponse = (from, recordNum) => {
+    const responseObj = {
+        "records": []
+    };
+    for (let i = from; i < from + recordNum; i++) {
+        const record = {
+            '$id': {
+                "type": '__ID__',
+                "value": `${i}`
+            }
+        };
+        responseObj.records.push(record);
+    }
+    return responseObj;
+};
+
+/**
+ * ドメインが不正な文字列でエラーになる場合
+ */
+test('Invalid Kintone domain', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('invalidDomain', '1', '2', '$id < 10');
+
+    try {
+        list(100);
+    } catch (e) {
+        expect(e.message).toEqual('Invalid Kintone domain.');
+    }
+});
+
+/**
+ * ゲストスペース ID が不正な文字列でエラーになる場合
+ */
+test('Invalid Guest Space ID', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('xxxxx.kintone.com', 'invalidId', '2', '$id < 10');
+
+    try {
+        list(100);
+    } catch (e) {
+        expect(e.message).toEqual('Invalid Guest Space ID.');
+    }
+});
+
+/**
+ * アプリ ID が不正な文字列でエラーになる場合
+ */
+test('Invalid App ID', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('xxxxx.kintone.com', '1', 'invalidId', '$id < 10');
+
+    try {
+        list(100);
+    } catch (e) {
+        expect(e.message).toEqual('Invalid App ID.');
+    }
+});
+
+/**
+ * 検索結果が0件
+ */
+test('200 Success - with guestSpaceId no records', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('xxxxx.kintone.com', '123', '456', '文字列__1行_ = アイウエオ');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRecordsRequest(request, 'xxxxx.kintone.com', '123', '456', '文字列__1行_ = アイウエオ', 100);
+        return httpClient.createHttpResponse(200, 'application/json', '{ "records": [] }');
+    });
+
+    expect(list(100)).toEqual([]);
+});
+
+/**
+ * レコード検索成功
+ * ゲストスペース外のアプリ
+ * クエリ指定
+ */
+test('200 Success - without guestSpaceId', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 500 \n and 数値 > 0');
+
+    let requestCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertGetRecordsRequest(request, 'xxxxx.kintone.com', '', '123', '$id < 500 \n and 数値 > 0', 100);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 100)));
+    });
+
+    // <script> のスクリプトを実行
+    const items = list(100);
+
+    expect(items.length).toEqual(100);
+    for (let i = 0; i < items.length; i++) {
+        expect(items[i]).toEqual(`${i + 1}`);
+    }
+});
+]]></test>
+
+</service-task-definition>
