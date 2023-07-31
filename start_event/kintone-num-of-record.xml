@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT_TIMER</addon-type>
-    <last-modified>2023-07-28</last-modified>
+    <last-modified>2023-07-31</last-modified>
     <engine-type>3</engine-type>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Timer Start: kintone: the number of records</label>
@@ -141,9 +141,9 @@ function getRecords(apiUri, apiToken, basic, {app, query}, limit) {
     }
     // query パラメータの設定
     if (query === "" || query === null) {
-        request = request.queryParam("query", `order by $id asc limit ${limit}`);
+        request = request.queryParam("query", `order by $id asc limit ${limit + 1}`);
     } else {
-        request = request.queryParam("query", `( ${query} ) order by $id asc limit ${limit}`);
+        request = request.queryParam("query", `( ${query} ) order by $id asc limit ${limit + 1}`);
     }
     request = request.queryParam('fields[0]', '$id');
     const response = request.get(getRecordsUri);
@@ -154,8 +154,11 @@ function getRecords(apiUri, apiToken, basic, {app, query}, limit) {
         engine.log(`---GET request--- ${status}\n${responseStr}\n`);
         throw new Error(`Failed to get records. status: ${status}`);
     }
-    const json = JSON.parse(responseStr);
-    return json.records.map(record => record.$id.value);
+    const records = JSON.parse(responseStr).records;
+    if (records.length > limit) {
+        throw new Error(`The number of records exceeds the limit ${limit}.`);
+    }
+    return records.map(record => record.$id.value);
 }
 ]]></script>
 
@@ -219,9 +222,9 @@ const assertGetRecordsRequest = ({url, method}, domain, guestSpaceId, appId, que
         expectedUrl = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json?app=${appId}`;
     }
     if (query === '') { // 検索クエリが空の場合
-        query = `order by $id asc limit ${limit}`;
+        query = `order by $id asc limit ${limit + 1}`;
     } else { // 検索クエリが空でない場合
-        query = `( ${query} ) order by $id asc limit ${limit}`;
+        query = `( ${query} ) order by $id asc limit ${limit + 1}`;
     }
     expectedUrl += '&query=' + encodeURIComponent(query)
         + '&' + encodeURIComponent('fields[0]') + '=' + encodeURIComponent('$id');
@@ -308,11 +311,11 @@ test('200 Success - with guestSpaceId no records', () => {
     prepareConfigs('xxxxx.kintone.com', '123', '456', '文字列__1行_ = アイウエオ');
 
     httpClient.setRequestHandler((request) => {
-        assertGetRecordsRequest(request, 'xxxxx.kintone.com', '123', '456', '文字列__1行_ = アイウエオ', 100);
+        assertGetRecordsRequest(request, 'xxxxx.kintone.com', '123', '456', '文字列__1行_ = アイウエオ', 50);
         return httpClient.createHttpResponse(200, 'application/json', '{ "records": [] }');
     });
 
-    expect(list(100)).toEqual([]);
+    expect(list(50)).toEqual([]);
 });
 
 /**
@@ -326,7 +329,6 @@ test('200 Success - without guestSpaceId', () => {
 
     prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 500 \n and 数値 > 0');
 
-    let requestCount = 0;
     httpClient.setRequestHandler((request) => {
         assertGetRecordsRequest(request, 'xxxxx.kintone.com', '', '123', '$id < 500 \n and 数値 > 0', 100);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 100)));
@@ -338,6 +340,31 @@ test('200 Success - without guestSpaceId', () => {
     expect(items.length).toEqual(100);
     for (let i = 0; i < items.length; i++) {
         expect(items[i]).toEqual(`${i + 1}`);
+    }
+});
+
+/**
+ * レコード検索成功
+ * ゲストスペースのアプリ
+ * クエリ指定なし
+ * 件数が limit 越え
+ */
+test('over the limit - with guestSpaceId', () => {
+    // <script> のスクリプトを読み込み
+    execute();
+
+    prepareConfigs('xxxxx.kintone.com', '789', '12', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRecordsRequest(request, 'xxxxx.kintone.com', '789', '12', '', 10);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetRecordsResponse(1, 11)));
+    });
+
+    // <script> のスクリプトを実行
+    try {
+        list(10);
+    } catch (e) {
+        expect(e.message).toEqual('The number of records exceeds the limit 10.');
     }
 });
 ]]></test>
