@@ -1,0 +1,877 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <last-modified>2023-07-13</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Twilio SendGrid: Add or Update Contact</label>
+    <label locale="ja">Twilio SendGrid: 宛先追加/更新</label>
+    <summary>This item adds or updates a contact on SendGrid. If a contact with the specified email address already exists, the contact will be updated.</summary>
+    <summary locale="ja">この工程は、SendGrid の宛先を追加または更新します。指定したメールアドレスの宛先がすでにある場合、その宛先が更新されます。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-sendgrid-contact-upsert/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-sendgrid-contact-upsert/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Authorization Setting in which API Key is set as token</label>
+            <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
+        </config>
+        <config name="conf_Email" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Email Address</label>
+            <label locale="ja">C2: メールアドレス</label>
+        </config>
+        <config name="conf_ListIds" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C3: List IDs to add the contact to (write one per line)</label>
+            <label locale="ja">C3: 宛先を追加するリストの ID（文字型データ項目の場合、1 行に 1 つ）</label>
+        </config>
+        <config name="conf_AlternateEmails" form-type="SELECT" select-data-type="STRING">
+            <label>C4: Alternate Email Addresses (write one per line, up to five)</label>
+            <label locale="ja">C4: 代替メールアドレス（1 行に 1 つ、最大 5 件）</label>
+        </config>
+        <config name="conf_LastName" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Last Name</label>
+            <label locale="ja">C5: 姓</label>
+        </config>
+        <config name="conf_FirstName" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: First Name</label>
+            <label locale="ja">C6: 名</label>
+        </config>
+        <config name="conf_Country" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C7: Country</label>
+            <label locale="ja">C7: 国</label>
+        </config>
+        <config name="conf_PostalCode" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C8: Postal Code</label>
+            <label locale="ja">C8: 郵便番号</label>
+        </config>
+        <config name="conf_Region" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C9: State, Province, or Region</label>
+            <label locale="ja">C9: 都道府県</label>
+        </config>
+        <config name="conf_City" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C10: City</label>
+            <label locale="ja">C10: 市区町村</label>
+        </config>
+        <config name="conf_Address1" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C11: Address 1st Line</label>
+            <label locale="ja">C11: 住所 1 行目</label>
+        </config>
+        <config name="conf_Address2" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C12: Address 2nd Line</label>
+            <label locale="ja">C12: 住所 2 行目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const MAX_EMAIL_LENGTH = 254;
+const MAX_ALTERNATE_EMAIL_NUM = 5;
+const MAX_NAME_LENGTH = 50;
+const MAX_POSTAL_CODE_LENGTH = 60; // API ドキュメントに記載がないが、試したところ 60 文字だった
+const MAX_CITY_LENGTH = 60;
+const MAX_FIELD_VALUE_LENGTH = 1000;
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const listIds = retrieveListIds();
+    const contact = retrieveContact();
+
+    //// == Calculating / 演算 ==
+    const jobId = upsertContact(auth, listIds, contact);
+
+    // 処理状況を確認し、未完了なら proceed() に進む
+    if (checkStatus(auth, jobId) === false) {
+        engine.saveTemporaryData(jobId);
+        return false;
+    }
+}
+
+function proceed() {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+
+    //// == Restoring Temporary Data / 一時データの読み出し ==
+    const jobId = engine.restoreTemporaryData();
+    if (jobId === null) {
+        throw 'Temporary data has not been saved.';
+    }
+
+    //// == 演算 / Calculating ==
+    if (checkStatus(auth, jobId) === false) {
+        return false;
+    }
+}
+
+/**
+  * config に設定されたリスト ID 一覧を読み出す
+  * - データ項目が設定されていない場合、null を返す（更新対象から除外するため）
+  * - データ項目が設定されていて値が空の場合、空のリストを返す（空の値で更新するため）
+  * @return {Array<String>} listIds
+  */
+function retrieveListIds() {
+    const listIdsDef = configs.getObject('conf_ListIds');
+    if (listIdsDef === null) {
+        return null;
+    }
+    if (listIdsDef.matchDataType('STRING')) {
+        const listIdsStr = engine.findData(listIdsDef);
+        if (listIdsStr === null) {
+            return [];
+        }
+        const listIds = listIdsStr.split('\n')
+            .filter(id => id !== '');
+        // API ドキュメントに List ID 上限数の記載なしのため、上限数はチェックしない
+        return listIds;
+    }
+    if (listIdsDef.matchDataType('SELECT')) {
+        const listIdItems = engine.findData(listIdsDef); // List<ItemView>
+        if (listIdItems === null || listIdItems.size() === 0) {
+            return [];
+        }
+        // 選択肢 ID のリストを返す
+        const listIds = [];
+        listIdItems.forEach(item => {
+            listIds.push(item.getValue()); // 選択肢 ID を格納
+        });
+        return listIds;
+    }
+}
+
+/**
+  * config に設定された宛先情報を、API リクエストボディに設定する形式で読み出す
+  * ただし、データ項目が設定されていない項目は含めない（更新の場合に、更新対象から除外するため）
+  * @return {Object} contact
+  * @return {String} contact.email
+  * @return {Array<String>} contact.alternate_emails
+  * @return {String} contact.last_name
+  * @return {String} contact.first_name
+  * @return {String} contact.country
+  * @return {String} contact.postal_code
+  * @return {String} contact.state_province_region
+  * @return {String} contact.city
+  * @return {String} contact.address_line_1
+  * @return {String} contact.address_line_2
+  */
+function retrieveContact() {
+    const email = retrieveConfig('conf_Email', true, MAX_EMAIL_LENGTH, 'Email Address');
+    const alternateEmails = retrieveAlternateEmails();
+    const lastName = retrieveConfig('conf_LastName', false, MAX_NAME_LENGTH, 'Last Name');
+    const firstName = retrieveConfig('conf_FirstName', false, MAX_NAME_LENGTH, 'First Name');
+    const country = retrieveConfig('conf_Country', false, MAX_NAME_LENGTH, 'Country');
+    const postalCode = retrieveConfig('conf_PostalCode', false, MAX_POSTAL_CODE_LENGTH, 'Postal Code');
+    const region = retrieveConfig('conf_Region', false, MAX_NAME_LENGTH, 'Region');
+    const city = retrieveConfig('conf_City', false, MAX_CITY_LENGTH, 'City');
+    const address1 = retrieveConfig('conf_Address1', false, MAX_FIELD_VALUE_LENGTH, 'Address 1st Line');
+    const address2 = retrieveConfig('conf_Address2', false, MAX_FIELD_VALUE_LENGTH, 'Address 2nd Line');
+
+    const contact = {
+        email,
+        alternate_emails: alternateEmails,
+        last_name: lastName,
+        first_name: firstName,
+        country,
+        postal_code: postalCode,
+        state_province_region: region,
+        city,
+        address_line_1: address1,
+        address_line_2: address2
+    };
+
+    // 値が null のものを削除
+    Object.keys(contact).forEach(key => {
+        if (contact[key] === null) {
+            delete contact[key];
+        }
+    });
+
+    return contact;
+}
+
+/**
+  * config に設定された文字型データ項目の値を読み出す
+  * required が false で
+  * - データ項目が設定されていない場合、null を返す（更新対象から除外するため）
+  * - データ項目が設定されていて値が空の場合、空の文字列を返す（空の値で更新するため）
+  * @param {String} confName 設定項目名
+  * @param {boolean} required 必須項目かどうか
+  * @param {Number} maxLength 最大文字数
+  * @param {String} label エラー出力用ラベル
+  * @return {String} value
+  */
+function retrieveConfig(confName, required, maxLength, label) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) { // required が true の場合、dataDef は null にならない
+        return null;
+    }
+    const value = engine.findData(dataDef);
+    if (value === null) {
+        if (required) {
+            throw `${label} is blank.`;
+        }
+        return '';
+    }
+    if (value.length > maxLength) {
+        throw `${label} must be within ${maxLength} characters.`;
+    }
+    return value;
+}
+
+/**
+  * config に設定された代替メールアドレスの一覧を読み出す
+  * - データ項目が設定されていない場合、null を返す（更新対象から除外するため）
+  * - データ項目が設定されていて値が空の場合、空のリストを返す（空の値で更新するため）
+  * @return {Array<String>} alternateEmails
+  */
+function retrieveAlternateEmails() {
+    const alternateEmailsDef = configs.getObject('conf_AlternateEmails');
+    if (alternateEmailsDef === null) {
+        return null;
+    }
+    const alternateEmailsStr = engine.findData(alternateEmailsDef);
+    if (alternateEmailsStr === null) {
+        return [];
+    }
+    const alternateEmails = alternateEmailsStr.split('\n')
+        .filter(email => email !== '');
+    if (alternateEmails.length > MAX_ALTERNATE_EMAIL_NUM) {
+        throw `The maximum number of alternate emails is ${MAX_ALTERNATE_EMAIL_NUM}.`;
+    }
+    // API ドキュメントに上限文字数の記載はないが、メインのメールアドレスと同様にチェック
+    if (alternateEmails.some(email => email.length > MAX_EMAIL_LENGTH)) {
+        throw `Each alternate email must be within ${MAX_EMAIL_LENGTH} characters.`;
+    }
+    return alternateEmails;
+}
+
+/**
+  * 宛先を追加/更新する
+  * @param {String} auth 認証設定名
+  * @param {Array<String>} listIds 宛先を追加するリスト ID の一覧
+  * @param {Object} contact 宛先情報
+  * @return {String} jobId
+  */
+function upsertContact(auth, listIds, contact) {
+    const requestBody = {
+        "list_ids": listIds,
+        "contacts": [contact]
+    };
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .put('https://api.sendgrid.com/v3/marketing/contacts');
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 202) {
+        engine.log(responseStr);
+        throw `Failed to upsert contact. status: ${status}`;
+    }
+    return JSON.parse(responseStr).job_id;
+}
+
+/**
+  * ジョブの処理状況を確認する
+  * @param {String} auth 認証設定名
+  * @param {String} jobId ジョブ ID
+  * @return {boolean} true: 完了, false: 未完了
+  */
+function checkStatus(auth, jobId) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get upsert status. status: ${status}`;
+    }
+    const jobStatus = JSON.parse(responseStr).status;
+    switch (jobStatus) {
+        case 'pending': // 処理中
+            return false;
+        case 'completed': // 完了
+            return true;
+        default: // errored or failed
+            engine.log(responseStr);
+            throw 'Failed to complete upserting the contact.';
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADBUlEQVRYR8WXS08TURTH/5cWBeXZ
+        ipHFjBh3JIYSdKELYePGZCYS4jMxtiauwU+gJm40JpYPYKhxodEoj+4R4lYrjQsXimKrUhKRNxNC
+        22vuTMcZ5s50psLgbCY5c++c3zn33PMg+M8PqUh/MnMOFN0gJAKgCQB7s2cKwCIoZe8JyOKo1/+6
+        AwwvNCG42g9KB0AIU+r+ULoIQuLI1w2it3mx3IbyAGPfo0DxoWfFVk0qCGKQxBEnCGeAZDYOoN/d
+        XA8rKI1DFm/arbQHSGYSALnm4dfel1CagCzGrBt4ABfL+w7V4lhDNae4LkiwmqecPKsU8Ci7pssH
+        IQkD5kVbAdiZEzpUzqzJUy04HdrLLfm4mse9z8uc/OzBWlxMzZvktNccEwYAi/bAyle3gHMCSC1t
+        ouvNHAfwpDOEq+9/G3IWmIX6I/rtMACS2dsAbrkd6rYBNAV3IAlMHwyAsQy7u427AsC8IIvNBgDL
+        cCDDbsrZ9x3yAAAtFjQP2ET+DXE/zrTUcEztddVorani5OO/NvBNySNICIIECBCCKgJMr+Vxf3rF
+        zjb1RmgAY9kJEHSbVz3vCuN8ay238ct6AUfHZzn565Mt6Anzt2Mkp6D3rfkWlLZSTEIWenQPzAA4
+        7AfAq5yCPjsAVsAkoVMH4DLITnngxayCC+9sPMCslQTiO8Czn+u4nDLlAbObTQC+HcHTH+u4Yk5E
+        BkAakhBxDMKXx8OINOzhgq1IKeY2ipz8UmoeoycOcPLhnIK7n/gUDUsQcqV3qCOEWJp3XaV5oExu
+        MV1Dm0TkP4A5Eam5YGsq9hWA0iXIotreORYjXwFsi5FWjmf0guQbALO+UN/Gl2P1GIyG5EF7I8LV
+        AS6G2vYFwLof6/NheRPX0wse6plTQ6Jv3clmlMf52wfon3avKQV9DEmMWpl2py03BZ13ALVPUEex
+        hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
+        chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * リスト ID を文字型データ項目で指定する場合
+  * @param email
+  * @param listIds
+  * @param alternateEmails
+  * @param lastName
+  * @param firstName
+  * @param country
+  * @param postalCode
+  * @param region
+  * @param city
+  * @param address1
+  * @param address2
+  */
+const prepareConfigs = (email, listIds, alternateEmails, lastName, firstName, country, 
+                        postalCode, region, city, address1, address2) => {
+    configs.put('conf_Auth', 'SendGrid');
+    setDataItem('Email', 1, 'STRING_TEXTFIELD', email);
+    setDataItem('ListIds', 2, 'STRING_TEXTAREA', listIds);
+    setDataItem('AlternateEmails', 3, 'STRING_TEXTAREA', alternateEmails);
+    setDataItem('LastName', 4, 'STRING_TEXTFIELD', lastName);
+    setDataItem('FirstName', 5, 'STRING_TEXTFIELD', firstName);
+    setDataItem('Country', 6, 'STRING_TEXTFIELD', country);
+    setDataItem('PostalCode', 7, 'STRING_TEXTFIELD', postalCode);
+    setDataItem('Region', 8, 'STRING_TEXTFIELD', region);
+    setDataItem('City', 9, 'STRING_TEXTFIELD', city);
+    setDataItem('Address1', 10, 'STRING_TEXTFIELD', address1);
+    setDataItem('Address2', 11, 'STRING_TEXTFIELD', address2);
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定個数のデータを改行区切りにした文字列を生成する
+  * @param num
+  * @return string
+  */
+const createListString = (num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `item${i}\n`;
+    }
+    return string;
+};
+
+/**
+  * 指定の長さの文字列を作成
+  * @param length
+  * @return string
+  */
+const createString = (length) => {
+    const sourceStr = 'abcdefghijklmnopqrstuvwxyz';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * メールアドレスが空
+ */
+test('Email Address is blank', () => {
+    prepareConfigs(null, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+    assertError(main, `Email Address is blank.`);
+});
+
+/**
+ * メールアドレスが長すぎる
+ */
+test('Email Address is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+    assertError(main, `Email Address must be within ${MAX_EMAIL_LENGTH} characters.`);
+});
+
+/**
+ * 代替メールアドレスの個数が多すぎる
+ */
+test('Alternate Emails are too many', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const alternateEmailsStr = createListString(MAX_ALTERNATE_EMAIL_NUM + 1);
+    prepareConfigs(email, 'list1\nlist2', alternateEmailsStr, null, null, null, null, null, null, null, null);
+    assertError(main, `The maximum number of alternate emails is ${MAX_ALTERNATE_EMAIL_NUM}.`);
+});
+
+/**
+ * 代替メールアドレスが長すぎる
+ */
+test('Alternate Email is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const alternateEmailsStr = createListString(MAX_ALTERNATE_EMAIL_NUM - 1)
+        + createString(MAX_EMAIL_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', alternateEmailsStr, null, null, null, null, null, null, null, null);
+    assertError(main, `Each alternate email must be within ${MAX_EMAIL_LENGTH} characters.`);
+});
+
+/**
+ * 姓が長すぎる
+ */
+test('Last Name is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const lastName = createString(MAX_NAME_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, lastName, null, null, null, null, null, null, null);
+    assertError(main, `Last Name must be within ${MAX_NAME_LENGTH} characters.`);
+});
+
+/**
+ * 名が長すぎる
+ */
+test('First Name is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const firstName = createString(MAX_NAME_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, firstName, null, null, null, null, null, null);
+    assertError(main, `First Name must be within ${MAX_NAME_LENGTH} characters.`);
+});
+
+/**
+ * 国が長すぎる
+ */
+test('Country is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const country = createString(MAX_NAME_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, country, null, null, null, null, null);
+    assertError(main, `Country must be within ${MAX_NAME_LENGTH} characters.`);
+});
+
+/**
+ * 郵便番号が長すぎる
+ */
+test('Postal Code is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const postalCode = createString(MAX_POSTAL_CODE_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, postalCode, null, null, null, null);
+    assertError(main, `Postal Code must be within ${MAX_POSTAL_CODE_LENGTH} characters.`);
+});
+
+/**
+ * 都道府県が長すぎる
+ */
+test('Region is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const region = createString(MAX_NAME_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, region, null, null, null);
+    assertError(main, `Region must be within ${MAX_NAME_LENGTH} characters.`);
+});
+
+/**
+ * 市区町村が長すぎる
+ */
+test('City is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const city = createString(MAX_CITY_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, city, null, null);
+    assertError(main, `City must be within ${MAX_CITY_LENGTH} characters.`);
+});
+
+/**
+ * 住所 1 が長すぎる
+ */
+test('Address 1st Line is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const address1 = createString(MAX_FIELD_VALUE_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, address1, null);
+    assertError(main, `Address 1st Line must be within ${MAX_FIELD_VALUE_LENGTH} characters.`);
+});
+
+/**
+ * 住所 2 が長すぎる
+ */
+test('Address 2nd Line is too long', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const address2 = createString(MAX_FIELD_VALUE_LENGTH + 1);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, address2);
+    assertError(main, `Address 2nd Line must be within ${MAX_FIELD_VALUE_LENGTH} characters.`);
+});
+
+/**
+  * 宛先を追加/更新する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param listIds
+  * @param contact
+  */
+const assertUpsertRequest = ({url, method, contentType, body}, listIds, contact) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/marketing/contacts');
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.list_ids).toEqual(listIds);
+    expect(bodyObj.contacts[0]).toEqual(contact);
+};
+
+/**
+  * リクエストボディのアサート用の宛先オブジェクトを作成する
+  * 同じロジックだとテストにならないので、別のロジックで作成
+  * @param email
+  * @param alternateEmails
+  * @param lastName
+  * @param firstName
+  * @param country
+  * @param postalCode
+  * @param region
+  * @param city
+  * @param address1
+  * @param address2
+  * @return contact
+  */
+const createContact = (email, alternateEmails, lastName, firstName, country, postalCode, region,
+                        city, address1, address2) => {
+    const contact = {email};
+    assignIfNotNull(contact, 'alternate_emails', alternateEmails);
+    assignIfNotNull(contact, 'last_name', lastName);
+    assignIfNotNull(contact, 'first_name', firstName);
+    assignIfNotNull(contact, 'country', country);
+    assignIfNotNull(contact, 'postal_code', postalCode);
+    assignIfNotNull(contact, 'state_province_region', region);
+    assignIfNotNull(contact, 'city', city);
+    assignIfNotNull(contact, 'address_line_1', address1);
+    assignIfNotNull(contact, 'address_line_2', address2);
+    return contact;
+};
+
+/**
+  * 値が null でない場合のみ、オブジェクトに追加する
+  * @param obj
+  * @param key
+  * @param value
+  */
+const assignIfNotNull = (obj, key, value) => {
+    if (value !== null) {
+        Object.assign(obj, {[key]: value});
+    }
+};
+
+/**
+  * 宛先を追加/更新する API リクエストでエラー
+  */
+test('Fail to upsert contact', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertUpsertRequest(request, listIds, contact);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to upsert contact. status: 400');
+});
+
+/**
+  * ジョブの処理状況を確認する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param jobId
+  */
+const assertCheckStatusRequest = ({url, method}, jobId) => {
+    expect(url).toEqual(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * ジョブの処理状況を確認する API リクエストでエラー
+  */
+test('Fail to get upsert status', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get upsert status. status: 400');
+});
+
+/**
+  * 1 回目のステータス確認で、ジョブが異常終了
+  */
+test('Fail to complete upserting in main()', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "failed"}');
+    });
+
+    assertError(main, 'Failed to complete upserting the contact.');
+});
+
+/**
+  * 成功
+  * リスト ID を文字型データ項目で指定
+  * その他のフィールドはすべて空
+  */
+test('Succeed - List IDs set by STRING, the other fields are blank', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        assertCheckStatusRequest(request, 'job1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * リスト ID を文字型データ項目で指定し、値が空
+  * その他のフィールドはすべて指定
+  */
+test('Succeed - List IDs set by STRING with its value null, the other fields set at max length', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    const alternateEmailsStr = createListString(MAX_ALTERNATE_EMAIL_NUM);
+    const lastName = createString(MAX_NAME_LENGTH);
+    const firstName = createString(MAX_NAME_LENGTH);
+    const country = createString(MAX_NAME_LENGTH);
+    const postalCode = createString(MAX_POSTAL_CODE_LENGTH);
+    const region = createString(MAX_NAME_LENGTH);
+    const city = createString(MAX_CITY_LENGTH);
+    const address1 = createString(MAX_FIELD_VALUE_LENGTH);
+    const address2 = createString(MAX_FIELD_VALUE_LENGTH);
+    prepareConfigs(email, null, alternateEmailsStr, lastName, firstName, country, postalCode, region, city, address1, address2);
+
+    const listIds = [];
+    const alternateEmails = alternateEmailsStr.split('\n').filter(email => email !== '');
+    expect(alternateEmails.length).toEqual(MAX_ALTERNATE_EMAIL_NUM);
+    const contact = createContact(email, alternateEmails, lastName, firstName, country, postalCode, region, city, address1, address2);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job2"}');
+        }
+        assertCheckStatusRequest(request, 'job2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * メールアドレス以外の全フィールド、データ項目の指定なし
+  */
+test('Succeed - Only Email is set', () => {
+    const email = 'test@example.com';
+    const dummy = 'dummy';
+    prepareConfigs(email, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy);
+    configs.put('conf_ListIds', '');
+    configs.put('conf_AlternateEmails', '');
+    configs.put('conf_LastName', '');
+    configs.put('conf_FirstName', '');
+    configs.put('conf_Country', '');
+    configs.put('conf_PostalCode', '');
+    configs.put('conf_Region', '');
+    configs.put('conf_City', '');
+    configs.put('conf_Address1', '');
+    configs.put('conf_Address2', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, undefined, {email}); // メールアドレスのみ
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job3"}');
+        }
+        assertCheckStatusRequest(request, 'job3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * リスト ID を選択型データ項目で指定
+  * その他のフィールドはすべて空
+  */
+test('Succeed - List IDs set by SELECT, the other fields are blank', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'dummy', null, null, null, null, null, null, null, null, null);
+    const listIdsSelect = new java.util.ArrayList();
+    for (let i = 0; i < 5; i++) {
+        const item = engine.createItem(`list${i+1}`, `リスト ${i+1}`);
+        listIdsSelect.add(item);
+    }
+    setDataItem('ListIds', 12, 'SELECT_CHECKBOX', listIdsSelect);
+
+    const listIds = ['list1', 'list2', 'list3', 'list4', 'list5'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job4"}');
+        }
+        assertCheckStatusRequest(request, 'job4');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 成功
+  * リスト ID を選択型データ項目で指定し、何も選択されていない
+  * その他のフィールドはすべて空
+  */
+test('Succeed - List IDs set by SELECT with none selected, the other fields are blank', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'dummy', null, null, null, null, null, null, null, null, null);
+    const listIdsSelect = new java.util.ArrayList();
+    setDataItem('ListIds', 12, 'SELECT_CHECKBOX', listIdsSelect);
+
+    const listIds = [];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job5"}');
+        }
+        assertCheckStatusRequest(request, 'job5');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+  * 2 回目のステータス確認で、ジョブが異常終了
+  */
+test('Fail to complete upserting in proceed()', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job6"}');
+        }
+        assertCheckStatusRequest(request, 'job6');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('job6');
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job6');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "errored"}');
+    });
+    assertError(proceed, 'Failed to complete upserting the contact.');
+});
+
+/**
+  * 成功
+  * proceed() のテスト
+  * 3 回目のステータス確認で、ジョブが完了
+  */
+test('Succeed - Complete in 3rd request', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job6"}');
+        }
+        assertCheckStatusRequest(request, 'job6');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('job6');
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job6');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(proceed()).toEqual(false);
+
+    httpClient.setRequestHandler((request) => {
+        assertCheckStatusRequest(request, 'job6');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(proceed()).toEqual(undefined);
+});
+
+    ]]></test>
+
+</service-task-definition>

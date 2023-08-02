@@ -1,0 +1,636 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Trello: Create Card</label>
+    <label locale="ja">Trello: カード作成</label>
+    <last-modified>2023-07-03</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item creates a card on Trello.</summary>
+    <summary locale="ja">この工程は、Trello のカードを作成します。</summary>
+    <configs>
+        <config name="conf_ApiKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Authorization Setting in which API Key is set</label>
+            <label locale="ja">C1: API キーを設定した認証設定</label>
+        </config>
+        <config name="conf_ApiToken" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Authorization Setting in which API Token is set</label>
+            <label locale="ja">C2: API トークンを設定した認証設定</label>
+        </config>
+        <config name="conf_ListId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
+            <label>C3: List ID to create the card in</label>
+            <label locale="ja">C3: カードを作成するリストの ID</label>
+        </config>
+        <config name="conf_Name" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C4: Card Title</label>
+            <label locale="ja">C4: カードのタイトル</label>
+        </config>
+        <config name="conf_Desc" form-type="TEXTAREA" el-enabled="true">
+            <label>C5: Card Description</label>
+            <label locale="ja">C5: カードの説明</label>
+        </config>
+        <config name="conf_LabelIds" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C6: Label Ids to add to the card (write one per line)</label>
+            <label locale="ja">C6: カードに設定するラベルの ID（文字型データ項目の場合、1 行に 1 つ）</label>
+        </config>
+        <config name="conf_MemberIds" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C7: Member Ids to add to the card (write one per line)</label>
+            <label locale="ja">C7: カードに設定するメンバの ID（文字型データ項目の場合、1 行に 1 つ）</label>
+        </config>
+        <config name="conf_Start" form-type="SELECT" select-data-type="DATE_YMD">
+            <label>C8: Start Date</label>
+            <label locale="ja">C8: 開始日</label>
+        </config>
+        <config name="conf_Due" form-type="SELECT" select-data-type="DATETIME">
+            <label>C9-1: Due Datetime</label>
+            <label locale="ja">C9-1: 期限</label>
+        </config>
+        <config name="conf_DueReminder" form-type="SELECT_ITEM">
+            <label>C9-2: Reminder Setting (only effective when C9-1 is set)</label>
+            <label locale="ja">C9-2: リマインダの設定（期限を設定した場合にのみ、リマインダが設定されます）</label>
+            <item value="0">
+                <label>At time of Due Datetime</label>
+                <label locale="ja">期限になったとき</label>
+            </item>
+            <item value="5">
+                <label>5 Minutes before</label>
+                <label locale="ja">5 分前</label>
+            </item>
+            <item value="10">
+                <label>10 Minutes before</label>
+                <label locale="ja">10 分前</label>
+            </item>
+            <item value="15">
+                <label>15 Minutes before</label>
+                <label locale="ja">15 分前</label>
+            </item>
+            <item value="60">
+                <label>1 Hour before</label>
+                <label locale="ja">1 時間前</label>
+            </item>
+            <item value="120">
+                <label>2 Hours before</label>
+                <label locale="ja">5 時間前</label>
+            </item>
+            <item value="1440">
+                <label>1 Day before</label>
+                <label locale="ja">1 日前</label>
+            </item>
+            <item value="2880">
+                <label>2 Days before</label>
+                <label locale="ja">2 日前</label>
+            </item>
+        </config>
+        <config name="conf_CardId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C10: Data item to save ID of the card</label>
+            <label locale="ja">C10: カード ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_CardUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C11: Data item to save URL of the card detail page</label>
+            <label locale="ja">C11: カード詳細ページの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-trello-card-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-trello-card-create/</help-page-url>
+
+    <script><![CDATA[
+
+function main() {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = retrieveAuth(); // {apiKey, apiToken}
+    const listId = retrieveListId();
+    const name = retrieveName();
+    const desc = configs.get('conf_Desc');
+    const labelIds = retrieveIdsAsList('conf_LabelIds');
+    const memberIds = retrieveIdsAsList('conf_MemberIds');
+    const start = retrieveStart();
+    const due = retrieveDue();
+    const dueReminder = retrieveDueReminder();
+    const cardIdDef = configs.getObject('conf_CardId');
+    const cardUrlDef = configs.getObject('conf_CardUrl');
+
+    //// == Calculating / 演算 ==
+    const card = createCard(auth, listId, name, desc, labelIds, memberIds, start, due, dueReminder);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    setData(cardIdDef, card.id);
+    setData(cardUrlDef, card.url);
+}
+
+/**
+  * config の認証設定から API キーと API トークンを読み出す
+  * @return {Object} auth
+  * @return {String} auth.apiKey
+  * @return {String} auth.apiToken
+  */
+function retrieveAuth() {
+    const apiKeySetting = configs.get('conf_ApiKey');
+    const apiKey = httpClient.getOAuth2Token(apiKeySetting);
+    const apiTokenSetting = configs.get('conf_ApiToken');
+    const apiToken = httpClient.getOAuth2Token(apiTokenSetting);
+    return {apiKey, apiToken};
+}
+
+/**
+  * config からリスト ID を読み出す
+  * @return {String} listId
+  */
+function retrieveListId() {
+    const listIdDef = configs.getObject('conf_ListId');
+    if (listIdDef === null) { // 固定値で指定。必須項目なので、空文字列はありえない
+        return configs.get('conf_ListId');
+    }
+    // 文字型データ項目の場合
+    if (listIdDef.matchDataType('STRING_TEXTFIELD')) {
+        const listId = engine.findData(listIdDef);
+        if (listId === null) {
+            throw 'List ID is blank.';
+        }
+        return listId;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(listIdDef);
+    if (selects === null || selects.size() === 0) {
+        throw 'List ID is not selected.';
+    }
+    return selects.get(0).getValue();
+}
+
+/**
+  * config からカードのタイトルを読み出す
+  * @return {String} name
+  */
+function retrieveName() {
+    const name = configs.get('conf_Name');
+    if (name === null || name === '') {
+        throw 'Card Title is blank.';
+    }
+    return name;
+}
+
+/**
+  * config に設定された ID 一覧を読み出す
+  * @param {String} confName 設定名
+  * @return {Array<String>} ids
+  */
+function retrieveIdsAsList(confName) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return [];
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING')) {
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        return dataObj.split('\n').filter(id => id !== '');
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return [];
+    }
+    const ids = [];
+    selects.forEach(item => {
+        ids.push(item.getValue()); // 選択肢 ID を格納
+    });
+    return ids;
+}
+
+/**
+  * config から開始日を文字列として読み出す
+  * @return {String} start
+  */
+function retrieveStart() {
+    const startDef = configs.getObject('conf_Start');
+    if (startDef === null) {
+        return null;
+    }
+    const startObj = engine.findData(startDef); // AddableDate
+    if (startObj === null) {
+        return null;
+    }
+    return startObj.toString(); // yyyy-MM-dd
+}
+
+/**
+  * config から期限を文字列として読み出す
+  * @return {String} due
+  */
+function retrieveDue() {
+    const dueDef = configs.getObject('conf_Due');
+    if (dueDef === null) {
+        return null;
+    }
+    const dueObj = engine.findData(dueDef); // AddableTimestamp
+    if (dueObj === null) {
+        return null;
+    }
+    return dateFormatter.format('UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'", dueObj);
+}
+
+/**
+  * config からリマインダーの設定を読み出す
+  * @return {Number} dueReminder
+  */
+function retrieveDueReminder() {
+    const dueReminder = configs.get('conf_DueReminder');
+    if (dueReminder === null || dueReminder === '') {
+        return null;
+    }
+    return parseInt(dueReminder, 10);
+}
+
+/**
+  * カードを作成する
+  * @param {Object} auth
+  * @param {String} auth.apiKey
+  * @param {String} auth.apiToken
+  * @param {String} listId
+  * @param {String} name
+  * @param {String} desc
+  * @param {Array<String>} labelIds
+  * @param {Array<String>} memberIds
+  * @param {String} start
+  * @param {String} due
+  * @param {Number} dueReminder
+  * @return {Object} card
+  */
+function createCard({apiKey, apiToken}, listId, name, desc, labelIds, memberIds, start, due, dueReminder) {
+    const requestBody = {
+        idList: listId,
+        name,
+        desc,
+        idLabels: labelIds,
+        idMembers: memberIds,
+        start,
+        due,
+        dueReminder
+    };
+    const response = httpClient.begin()
+        .body(JSON.stringify(requestBody), 'application/json')
+        .post(`https://api.trello.com/1/cards?key=${apiKey}&token=${apiToken}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to create card. status: ${status}`;
+    }
+    return JSON.parse(responseStr);
+}
+
+/**
+  * データ項目にデータを保存する
+  * @param {DataDefinitionView} dataDef データ項目の DataDefinitionView
+  * @param {Object} value 保存する値
+  */
+function setData(dataDef, value) {
+    if (dataDef !== null) {
+        engine.setData(dataDef, value);
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAzBJREFUWEfF
+        l11IFFEUx/93xnH9iPzow0jBaIOsSNJWI+glX6KHJLcvkiKwF7WXolJ76iWiSLBeUortoSSLcDfp
+        pZfwJXrQVV8MIsNEjFbwI5T1e/bGndnZnRlnZ8ZZau/b3HvuOb97zrnnniFI8SC27Z8KZoGPeMHz
+        x0FpGSh2gSBP2k8xC4IxEDIEUeyFyPnxwbNgR7c1wLm+HRBJM0DqAWTYUQpgCaAd4OlDvKsMme0x
+        B6gJ1oOgFUC2TcN6sTAobiHg6Ui0PzGAN/gUQINDw/pt7fB7Go10GQPU9L8GIRfZhgyBQ3qadaSM
+        lM8tivFpSrsQqKjVy63XHD15aXEmAs1u7C5wOXbCyhqF79MUGp+NKzrWeUILIMe8nUl/uV+Co3ud
+        hl7L7G4cxujksjxJ0aDOiTiAlO3cDyXhlt6UwyU4c73eZQ8CIdzp/KVMh8FH9ii3I27B298GkOuK
+        1PLbck3s5xdF/AnLMXUJHLbnpMXsrIoUodlV6ZvjCHbmCSAq9taeSdx+OaHioo/hr7jBJmQxVmQE
+        TKvvuRogQgH+7IDmYCFfKQpyBWmutu0nuj7PxNZ914pRV7U19r0eAEtYxRZWrGSA032XwHGv1BbU
+        ACyZXBcGNQBjHQdRvC1dmjt5bwQfh+biBq8U4WZ1gRkAEIlcxvvKThngzIAPlNb9VwBCXqD78FUZ
+        wBtkxyv7rwDAEPyechmgJjgTe1iiFP88BOwBC3jyFQ9QTYABbASAZThLNGX0tLhRXZFrngNs1e+J
+        XhZvMCkApovdFDbYidRXkM0Z3AJZOAaQZAj03tN/GwLoQpBUEjoC0CShxTVcEymE89o6MPG8FIX5
+        ciGyGoYe0FxDi0LEDIxPrWB6fk2ylZnOoaTQbnOUIAc0hciiFFud0GrduhRLxcj8MbIyYrb+qGcS
+        TaaPEdute46/PjmA/UX23WwGcKTlG/pGwopIgueYLasakhOHNqO7yY1sF5fM4dE7PI+qu9/jOhI2
+        JIqIrhk9tm8TcrJ4RxCDowv4He0TogosWjLFjKopdWTZaJPtpjSBJ5IE2WBbHvNEKn9MFIiU/pqp
+        /Z6yn9Mkg2+1/S+COKkwjkUALAAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * 文字型/選択型データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 開始日、期限、リマインダ設定は指定なし
+  * @param listId
+  * @param name
+  * @param desc
+  * @param labelIdsStr
+  * @param memberIdsStr
+  * @return returnObj
+  * @return returnObj.idDef
+  * @return returnObj.urlDef
+  */
+const prepareConfigs = (listId, name, desc, labelIdsStr, memberIdsStr) => {
+    configs.put('conf_ApiKey', 'TrelloApiKey');
+    configs.put('conf_ApiToken', 'TrelloApiToken');
+    setDataItem('ListId', 1, 'STRING_TEXTFIELD', listId);
+    configs.put('conf_Name', name);
+    configs.put('conf_Desc', desc);
+    setDataItem('LabelIds', 2, 'STRING_TEXTAREA', labelIdsStr);
+    setDataItem('MemberIds', 3, 'STRING_TEXTAREA', memberIdsStr);
+
+    // ID を保存するデータ項目を作成し、設定
+    const idDef = setDataItem('CardId', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    // URL を保存するデータ項目を作成し、設定
+    const urlDef = setDataItem('CardUrl', 5, 'STRING_TEXTFIELD', '事前文字列');
+
+    return {idDef, urlDef};
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定個数のデータを改行区切りにした文字列を生成する
+  * @param num
+  * @return string
+  */
+const createListString = (num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `item${i}\n`;
+    }
+    return string;
+};
+
+/**
+  * リスト ID が空（文字型データ項目）
+  */
+test('List ID is blank - set by STRING', () => {
+    prepareConfigs(null, 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    assertError(main, 'List ID is blank.');
+});
+
+/**
+  * リスト ID が未選択（選択型データ項目）
+  */
+test('List ID is not selected - set by SELECT', () => {
+    prepareConfigs('dummy', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    setDataItem('ListId', 11, 'SELECT_SINGLE', new java.util.ArrayList());
+    assertError(main, 'List ID is not selected.');
+});
+
+/**
+  * カードタイトルが空
+  */
+test('Card Title is blank', () => {
+    prepareConfigs('listId1', '', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    assertError(main, 'Card Title is blank.');
+});
+
+/**
+  * カードを作成する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param listId
+  * @param name
+  * @param desc
+  * @param labelIds
+  * @param memberIds
+  * @param start
+  * @param due
+  * @param dueReminder
+  */
+const assertCreateRequest = ({url, method, contentType, body}, listId, name, desc, labelIds, memberIds, start, due, dueReminder) => {
+    expect(url).toEqual('https://api.trello.com/1/cards?key=token&token=token'); // 認証設定のトークンのテスト時の値は token
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.idList).toEqual(listId);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.desc).toEqual(desc);
+    expect(bodyObj.idLabels).toEqual(labelIds);
+    expect(bodyObj.idMembers).toEqual(memberIds);
+    expect(bodyObj.start).toEqual(start);
+    expect(bodyObj.due).toEqual(due);
+    expect(bodyObj.dueReminder).toEqual(dueReminder);
+};
+
+/**
+  * カードを作成する API リクエストでエラー
+  */
+test('Fail to create card', () => {
+    prepareConfigs('listId1', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2'], null, null, null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to create card. status: 400');
+});
+
+/**
+  * API のレスポンス文字列を作成
+  * @param cardId
+  * @param cardUrl
+  * @return requestBodyString
+  */
+const createCardResponse = (cardId, cardUrl) => {
+    const responseObj = {
+        id: cardId,
+        url: cardUrl
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+  * 成功
+  * 文字型/選択型データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 開始日、期限、リマインダ設定は指定なし
+  */
+test('Succeed - Configs set by STRING', () => {
+    const {idDef, urlDef} = prepareConfigs('listId1', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
+
+    const cardId = 'cardId1';
+    const cardUrl = 'https://trello.com/c/cardId1/1-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2'], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+/**
+  * 成功
+  * 文字型/選択型データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 説明、ラベル ID、メンバー ID は指定なし
+  * 開始日、期限、リマインダ設定は指定なし
+  */
+test('Succeed - Configs set by STRING; Description, LabelIds and MemberIds are blank', () => {
+    const {idDef, urlDef} = prepareConfigs('listId2', 'カードのタイトル', '', null, null);
+
+    const cardId = 'cardId2';
+    const cardUrl = 'https://trello.com/c/cardId2/2-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId2', 'カードのタイトル', '', [], [], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+/**
+  * 選択型データ設定用のオブジェクトを作成
+  * @param prefix
+  * @param num
+  * @return selects
+  */
+const prepareSelects = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const item = engine.createItem(`${prefix}${i+1}`, `${prefix}${i+1} を選択`);
+        selects.add(item);
+    }
+    return selects;
+};
+
+/**
+  * 成功
+  * 文字型/選択型データ項目を指定できる設定項目は、選択型データ項目で指定
+  * 開始日、期限、リマインダ設定は指定なし
+  */
+test('Succeed - Configs set by SELECT', () => {
+    const {idDef, urlDef} = prepareConfigs('dummy', 'Card Title', 'Card Description', 'dummy', 'dummy');
+    setDataItem('ListId', 11, 'SELECT_SINGLE', prepareSelects('listId', 1));
+    setDataItem('LabelIds', 12, 'SELECT_CHECKBOX', prepareSelects('labelId', 2));
+    setDataItem('MemberIds', 13, 'SELECT_CHECKBOX', prepareSelects('memberId', 3));
+
+    const cardId = 'cardId3';
+    const cardUrl = 'https://trello.com/c/cardId3/3-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2', 'memberId3'], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+/**
+  * 成功
+  * 文字型/選択型データ項目を指定できる設定項目は、選択型データ項目で指定
+  * ラベル ID、メンバー ID は指定なし
+  * 開始日、期限、リマインダ設定は指定なし
+  */
+test('Succeed - Configs set by SELECT; LabelIds and MemberIds are not selected', () => {
+    const {idDef, urlDef} = prepareConfigs('dummy', 'Card Title', 'Card Description', 'dummy', 'dummy');
+    setDataItem('ListId', 11, 'SELECT_SINGLE', prepareSelects('listId', 1));
+    setDataItem('LabelIds', 12, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    setDataItem('MemberIds', 13, 'SELECT_CHECKBOX', new java.util.ArrayList());
+
+    const cardId = 'cardId3';
+    const cardUrl = 'https://trello.com/c/cardId3/3-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', [], [], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+/**
+  * 成功
+  * リスト ID を固定値で指定
+  * 開始日、期限、リマインダ設定を指定
+  */
+test('Succeed - List ID set as fixed value, with Start, Due and DueReminder', () => {
+    const {idDef, urlDef} = prepareConfigs('dummy', 'Card Title', 'Card Description', '', '');
+    configs.put('conf_ListId', 'listId4');
+    setDataItem('Start', 11, 'DATE_YMD', java.sql.Date.valueOf('2025-01-01'));
+    const dueTimestamp = new com.questetra.bpms.util.AddableTimestamp().addDays(15);
+    setDataItem('Due', 12, 'DATETIME', dueTimestamp);
+    configs.put('conf_DueReminder', '10');
+
+    const due = dateFormatter.format('UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'", dueTimestamp);
+    const cardId = 'cardId4';
+    const cardUrl = 'https://trello.com/c/cardId4/4-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId4', 'Card Title', 'Card Description', [], [], '2025-01-01', due, 10);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+/**
+  * 成功
+  * 開始日、期限にデータ項目を設定し、値が空
+  */
+test('Succeed - Start and Due are blank', () => {
+    const {idDef, urlDef} = prepareConfigs('listId5', 'Card Title', 'Card Description', '', '');
+    setDataItem('Start', 11, 'DATE_YMD', null);
+    setDataItem('Due', 12, 'DATETIME', null);
+
+    const cardId = 'cardId5';
+    const cardUrl = 'https://trello.com/c/cardId5/5-card-title';
+    httpClient.setRequestHandler((request) => {
+        assertCreateRequest(request, 'listId5', 'Card Title', 'Card Description', [], [], null, null, null);
+        return httpClient.createHttpResponse(200, 'application/json', createCardResponse(cardId, cardUrl));
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual(cardId);
+    expect(engine.findData(urlDef)).toEqual(cardUrl);
+});
+
+    ]]></test>
+
+</service-task-definition>
