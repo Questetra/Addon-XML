@@ -40,11 +40,16 @@
     <script><![CDATA[
 const post = ({body, headers}) => {
     const secret = configs.getObject('conf_Secret').getToken();
-    verifyRequest(secret, {body, headers});
+    if (!verifyRequest(secret, {body, headers})) {
+        return {
+            status: 400
+        };
+    }
 
     const json = JSON.parse(body);
     switch (json.type) {
         case 'url_verification':
+            engine.log(`succeed to verification`);
             return {
                 'content-type': 'text/plain',
                 'body': json.challenge
@@ -55,13 +60,18 @@ const post = ({body, headers}) => {
                 'content-type': 'text/plain',
                 'body': ''
             };
+        default:
+            engine.log(body);
+            return {
+                status: 400
+            };
     }
-
-    return {
-        status: 400
-    };
 };
 
+/**
+ * event 受信処理
+ * @param json
+ */
 const receive = (json) => {
     const {
         type,
@@ -90,6 +100,11 @@ const receive = (json) => {
     engine.setStartProcess(true);
 };
 
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
 const saveData = (configName, data) => {
     const def = configs.getObject(configName);
     if (def === null) {
@@ -98,21 +113,32 @@ const saveData = (configName, data) => {
     engine.setData(def, data);
 };
 
+/**
+ * リクエストのチェック
+ * @param secret Singining Secret
+ * @param body リクエストボディ
+ * @param headers リクエストヘッダ
+ * @returns {boolean} false の場合、不正リクエスト
+ */
 const verifyRequest = (secret, {body, headers}) => {
     const signature = headers.getFirst('X-Slack-Signature');
     const timestamp = headers.getFirst('X-Slack-Request-Timestamp');
-    engine.log(body);
-    engine.log(`${timestamp} ${signature}`);
 
     if (Date.now() - timestamp * 1000 > 5 * 60 * 1000) {
-        throw new Error('Request is too old');
+        engine.log(`Timestamp: ${timestamp}`);
+        return false;
     }
     const baseString = `v0:${timestamp}:${body}`;
     const calcString = hex.encodeToString(hmac.sha256(secret, baseString));
-    engine.log(`hmac: ${calcString}`);
     if ('v0=' + calcString !== signature) {
-        throw new Error('Signature is not valid');
+        engine.log(`Timestamp: ${timestamp}`);
+        engine.log(`Signature: ${signature}`);
+        engine.log(body);
+        engine.log(`hmac: ${calcString}`);
+        return false;
     }
+
+    return true;
 };
 ]]></script>
 
