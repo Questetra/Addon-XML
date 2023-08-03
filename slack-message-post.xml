@@ -26,12 +26,17 @@
             <label>C3: Thread ID</label>
             <label locale="ja">C3: スレッド ID</label>
         </config>
+        <config name="conf_ReplyBroadcast" form-type="TOGGLE">
+            <label>C4: Reply will be broadcast to the whole channel</label>
+            <label locale="ja">C4: 返信をチャンネル全体にブロードキャストする</label>
+        </config>
         <config name="conf_Blocks" form-type="TEXTAREA" el-enabled="true">
-            <label>C4: Blocks (JSON)</label>
+            <label>C5: Message (Block Kit)</label>
+            <label locale="ja">C5: メッセージ (Block Kit)</label>
         </config>
         <config name="conf_Text" required="true" form-type="TEXTAREA" el-enabled="true">
-            <label>C5: Text</label>
-            <label locale="ja">C5: Text</label>
+            <label>C5: Message (Markdown)</label>
+            <label locale="ja">C6: メッセージ (Markdown)</label>
         </config>
     </configs>
     <script><![CDATA[
@@ -39,10 +44,11 @@ function main() {
     const auth = configs.getObject("conf_Token");
     const channel = readStringData('conf_Channel');
     const thread = readStringData('conf_Thread');
-    const text = configs.get("conf_Text") ?? '';
+    const replyBroadcast = configs.getObject('conf_ReplyBroadcast');
+    const text = readText();
     const blocks = readBlocks();
 
-    sendMessage(auth, channel, thread, blocks, text);
+    sendMessage(auth, channel, thread, replyBroadcast, blocks, text);
 }
 
 function readStringData(configName) {
@@ -55,17 +61,21 @@ function readStringData(configName) {
     return value === '' ? null : value;
 }
 
+function readText() {
+    const text = configs.get("conf_Text") ?? '';
+    if (text === '') {
+        throw new Error('Markdown must not be blank.');
+    }
+    return text;
+}
+
 function readBlocks() {
     const blocksText = configs.get('conf_Blocks') ?? '';
     if (blocksText === '') {
         return null;
     }
 
-    const errorMsg = `Config text must be JSON like below.
-    {
-        "blocks": [...]
-    }
-    `;
+    const errorMsg = `Block Kit must be JSON like below.\n{ "blocks": [...] }`;
     let blocks;
     try {
         blocks = JSON.parse(blocksText).blocks;
@@ -86,11 +96,12 @@ function readBlocks() {
  * @param {Object} blocks
  * @param {String} text
  */
-function sendMessage(auth, channel, thread, blocks, text) {
+function sendMessage(auth, channel, thread, replyBroadcast, blocks, text) {
     const jsonReq = {};
     jsonReq["channel"] = channel;
     if (thread !== null) {
         jsonReq["thread_ts"] = thread;
+        jsonReq["reply_broadcast"] = replyBroadcast;
     }
     if (blocks !== null) {
         jsonReq['blocks'] = blocks;
@@ -153,7 +164,7 @@ function sendMessage(auth, channel, thread, blocks, text) {
  * @param blocks
  * @param text
  */
-const prepareConfigs = (channel, thread, blocks, text) => {
+const prepareConfigs = (channel, thread, replyBroadcast, blocks, text) => {
     const auth = httpClient.createAuthSettingToken('Slack', 'Slack');
     configs.putObject('conf_Token', auth);
 
@@ -164,6 +175,8 @@ const prepareConfigs = (channel, thread, blocks, text) => {
     const threadDef = engine.createDataDefinition('スレッド', 2, 'q_thread', 'STRING_TEXTFIELD');
     engine.setData(threadDef, thread);
     configs.putObject('conf_Thread', threadDef);
+
+    configs.putObject('conf_ReplyBroadcast', replyBroadcast);
 
     configs.put('conf_Blocks', blocks === null ? '' : JSON.stringify(blocks));
     configs.put('conf_Text', text);
@@ -181,7 +194,7 @@ const prepareConfigs = (channel, thread, blocks, text) => {
  * @param blocks
  * @param text
  */
-const assertPostRequest = ({url, method, contentType, body}, channel, thread, blocks, text) => {
+const assertPostRequest = ({url, method, contentType, body}, channel, thread, replyBroadcast, blocks, text) => {
     expect(url).toEqual('https://slack.com/api/chat.postMessage');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json; charset=UTF-8');
@@ -189,8 +202,10 @@ const assertPostRequest = ({url, method, contentType, body}, channel, thread, bl
     expect(bodyObj.channel).toEqual(channel);
     if (thread === null) {
         expect(bodyObj['thread_ts']).toEqual(undefined);
+        expect(bodyObj['reply_broadcast']).toEqual(undefined);
     } else {
         expect(bodyObj['thread_ts']).toEqual(thread);
+        expect(bodyObj['reply_broadcast']).toEqual(replyBroadcast);
     }
     if (blocks === null) {
         expect(bodyObj.blocks).toEqual(undefined);
@@ -225,10 +240,10 @@ const preparePostResponse = (channel, text) => {
  * POST API リクエストでエラーになる場合（チャット投稿）
  */
 test('POST Failed', () => {
-    prepareConfigs('channel1', null, null, 'text1');
+    prepareConfigs('channel1', null, false, null, 'text1');
 
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'channel1', null, null, 'text1');
+        assertPostRequest(request, 'channel1', null, false, null, 'text1');
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -245,10 +260,10 @@ test('POST Failed', () => {
  * Blocks 指定なし
  */
 test('Success - no thread, no blocks', () => {
-    prepareConfigs('channel2', null, null, 'text2');
+    prepareConfigs('channel2', null, false, null, 'text2');
 
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'channel2', null, null, 'text2');
+        assertPostRequest(request, 'channel2', null, false, null, 'text2');
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel2', 'text2')));
     });
 
@@ -281,14 +296,75 @@ test('Success - with thread, with blocks', () => {
             }
         ]
     };
-    prepareConfigs('channel3', 'thread3', blocks, 'text3');
+    prepareConfigs('channel3', 'thread3', false, blocks, 'text3');
 
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'channel3', 'thread3', blocks, 'text3');
+        assertPostRequest(request, 'channel3', 'thread3', false, blocks, 'text3');
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel3', 'text3')));
     });
 
     main();
+});
+
+/**
+ * チャット投稿成功の場合
+ * スレッド指定あり
+ * reply_broadcast
+ * Blocks 指定なし
+ */
+test('Success - with thread, reply_broadcast, no blocks', () => {
+    prepareConfigs('channel4', 'thread4', true, null, 'text4');
+
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, 'channel4', 'thread4', true, null, 'text4');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(preparePostResponse('channel3', 'text3')));
+    });
+
+    main();
+});
+
+/**
+ * Block Kit が不正な場合
+ */
+test('Invalid Blocks - not JSON', () => {
+    prepareConfigs('channel4', null, false, 'text', 'text4');
+
+    try {
+        main();
+    } catch (e) {
+        const errorMsg = `Block Kit must be JSON like below.\n{ "blocks": [...] }`;
+        expect(e.message).toEqual(errorMsg);
+    }
+});
+
+/**
+ * Block Kit が不正な場合
+ */
+test('Invalid Blocks - root it not blocks', () => {
+    prepareConfigs('channel5', null, false, {type: 'text'}, 'text5');
+
+    try {
+        main();
+    } catch (e) {
+        const errorMsg = `Block Kit must be JSON like below.\n{ "blocks": [...] }`;
+        expect(e.message).toEqual(errorMsg);
+    }
+});
+
+/**
+ * Text が不正な場合
+ */
+test('Invalid Text - empty', () => {
+    prepareConfigs('channel6', null, false, {
+        'blocks': []
+    }, '');
+
+    try {
+        main();
+    } catch (e) {
+        const errorMsg = `Markdown must not be blank.`;
+        expect(e.message).toEqual(errorMsg);
+    }
 });
 ]]></test>
 </service-task-definition>
