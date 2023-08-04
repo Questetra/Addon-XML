@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2023-08-03</last-modified>
+    <addon-type>START_EVENT_WEBHOOK</addon-type>
+    <engine-type>3</engine-type>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Start: Slack: Message Received</label>
+    <label locale="ja">開始: Slack: メッセージ受信時</label>
+    <summary>This item starts a process when Slack Bot has received a direct message or a mentioned message.</summary>
+    <summary locale="ja">このアイテムは、Slack Bot がダイレクトメッセージかメンションされたメッセージを受信すると、プロセスを開始します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-slack-message-received/
+    </help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-slack-message-received/
+    </help-page-url>
+
+    <configs>
+        <config name="conf_Secret" form-type="OAUTH2" auth-type="TOKEN" required="true">
+            <label>C1: Signing Secret</label>
+        </config>
+        <config name="conf_Text" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C2: Data item to save Message</label>
+            <label locale="ja">C2: メッセージを保存するデータ項目</label>
+        </config>
+        <config name="conf_UserId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save Slack user ID</label>
+            <label locale="ja">C3: Slack ユーザ ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_ChannelId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: Data item to save Channel ID</label>
+            <label locale="ja">C4: チャンネル ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_ThreadId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save Thread ID</label>
+            <label locale="ja">C5: スレッド ID を保存するデータ項目</label>
+        </config>
+    </configs>
+
+
+    <script><![CDATA[
+const post = ({body, headers}) => {
+    const secret = configs.getObject('conf_Secret').getToken();
+    if (!verifyRequest(secret, {body, headers})) {
+        return {
+            status: 400
+        };
+    }
+
+    const json = JSON.parse(body);
+    switch (json.type) {
+        case 'url_verification':
+            engine.log(`succeed to verification`);
+            return {
+                'content-type': 'text/plain',
+                'body': json.challenge
+            };
+        case 'event_callback':
+            receive(json);
+            return {
+                'content-type': 'text/plain',
+                'body': ''
+            };
+        default:
+            engine.log(body);
+            return {
+                status: 400
+            };
+    }
+};
+
+/**
+ * event 受信処理
+ * @param json
+ */
+const receive = (json) => {
+    const {
+        type,
+        subtype,
+        channel,
+        user,
+        bot_id,
+        text,
+        ts,
+        thread_ts
+    } = json.event;
+    if (type !== 'message' && type !== 'app_mention') {
+        // event type が message または app_mention でないものは無視
+        engine.log(`ignore event. type: ${type}`);
+        return;
+    }
+    if (subtype !== undefined || bot_id !== undefined) {
+        // bot によるメッセージや subtype が指定されているものも無視
+        engine.log(`ignore event. subtype: ${subtype} bot_id: ${bot_id}`);
+        return;
+    }
+    saveData('conf_ChannelId', channel);
+    saveData('conf_UserId', user);
+    saveData('conf_Text', text);
+    saveData('conf_ThreadId', thread_ts === undefined ? ts : thread_ts);
+    engine.setStartProcess(true);
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+/**
+ * リクエストのチェック
+ * @param secret Singining Secret
+ * @param body リクエストボディ
+ * @param headers リクエストヘッダ
+ * @returns {boolean} false の場合、不正リクエスト
+ */
+const verifyRequest = (secret, {body, headers}) => {
+    const signature = headers.getFirst('X-Slack-Signature');
+    const timestamp = headers.getFirst('X-Slack-Request-Timestamp');
+
+    if (Date.now() - timestamp * 1000 > 5 * 60 * 1000) {
+        engine.log(`Timestamp: ${timestamp}`);
+        return false;
+    }
+    const baseString = `v0:${timestamp}:${body}`;
+    const calcString = hex.encodeToString(hmac.sha256(secret, baseString));
+    if ('v0=' + calcString !== signature) {
+        engine.log(`Failed to verification`);
+        engine.log(`Timestamp: ${timestamp}`);
+        engine.log(`Signature: ${signature}`);
+        engine.log(body);
+        engine.log(`hmac: ${calcString}`);
+        return false;
+    }
+
+    return true;
+};
+]]></script>
+
+    <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABFBJREFUWEfN
+        l39ME2cYx79vofwSEljXirCwLWOSYJRotjgnJDPZWNKjg4BYpDgnCCuYKCxmxLUu7pcJZupitmqY
+        XTfFLRnaqeXqYibbXExIdNQ/tj+WLMvCEjPoGGABxULf5b3Sy7W9a0+zhd0f/aP3Ps/zeZ/fR7DE
+        D1Fr31RgygrNh2pBsYmCrAXoYwDyFuUnAPI7AfWB4FtNqsbtueWZVaM7KYBRb8wnIN0UsALIUKMU
+        wF0CnKCgPV6/989EMgkBjIYqKyh9H8AylYZjj82AkL3esYETSvKKANzDnIMStD+g4SgxQnGc/4vv
+        kNMlC2A0cJ+DYuu/YVzUQfCFd4xvjNUZB6Dm5kUlRRj5ZUTUlZOXA41Gg6nxqYTMcp6IAliM+XEl
+        LcyQa9iFzGUZmJ6cxrbVL6PhNTO2dG4BIQS8i4ejW1E8rJaQdmlOiAAs2wHya6KEaznQjNqOWpHv
+        1MFTgvGMrHBxzAfnUV1YkyxyMwAtjlSHCMDpuaMU6EwkXVZRhoPn3hOPeD+7hBctlUhJTRH/4wxV
+        yQBAgA94P98lOIT9sCazEAyNq6lzBtHR0460jDSc+9CNtndb7xuA9YkUrUbHmpUAwBm4JkpxOha9
+        4PEVaHmrBfmP5ke9unc3CM9JDwb7B3Hx1oU4gFXrS9HU3YShr4dwofeirEcIwTZ+jO8LA+g5JwWa
+        Y0/2/XQaeYZIt43Xs+eFThy5dDgKwLyyAWd+7kOqNlUQ6GnrwdXzP8QJE+AT3s+3CABGfdUwQNfG
+        nhoY9QjZrfSwJDR3mZGemS4cCd4Lwv2RW/gv8jAvHd51REYF8Xn9A+sWAbi/JYNFPGz71IZnjRtk
+        7c/dmYOl1ILttu0w7TQJZxyvO6B/RI/63fViVbRteBWjI6NyOia8fv6hCABVumVxWTHWbFyNhfkF
+        TI3fDt90LohrA9dEEZYrLFSjf4xBl6/DqmdKMTt9B5fPXEZoIaToQa+fD/vXqOdkAXbsfwV1u+pA
+        NERwr/nJBnw81AvdCp1wq53rW4XbN7+5Q4y51NqkfxLW8nYEJgKyEFIA2RBIM1wuvr32XjTubUR2
+        brbiLRN0R2kI5JPw7G/9yMzOFJT7vvdh5vYsyk0bRWOsEZWVr0HhE4WKAM4DTrgdXyVOQqUyfPr5
+        p9D6TisCkwHYN9vReawrDsD1tgs21xsoWVcSZYTlzPB3PhyyHgINxUc4qgyVGlEs9j7nvjiAXH0u
+        snKy8OOVGwo3lXdOVCNS24rlAKSz4ObVm7BttiuGQ/IiuhWzF2qG0Z6ju1FpqRT19B/rR421Bto0
+        rfAfc/tLBdVJAeKGUbgUk4/j5UXL4bx+UuiOLK6NpRZhMFVUV4iJaq/fnwxAfhwLEOElNOFGwUpu
+        U91zuPLlIGYD4c2bTci0dC2uf3MjmXHlhSQiqWYlS25FIfFkltP/31L6X3jivtfyCMSSfpiIEEv5
+        aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+]]></test>
+
+</service-task-definition>
