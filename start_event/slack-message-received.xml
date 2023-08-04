@@ -167,6 +167,236 @@ const verifyRequest = (secret, {body, headers}) => {
     </icon>
 
     <test><![CDATA[
+/**
+ * 設定の準備
+ * @param singningSecret
+ */
+const prepareConfigs = (singningSecret) => {
+    const auth = httpClient.createAuthSettingToken('Slack', singningSecret);
+    configs.putObject('conf_Secret', auth);
+
+    const textDef = engine.createDataDefinition('テキスト', 1, 'q_text', 'STRING_TEXTAREA');
+    engine.setData(textDef, null);
+    configs.putObject('conf_Text', textDef);
+
+    const userDef = engine.createDataDefinition('ユーザ', 2, 'q_user', 'STRING_TEXTFIELD');
+    engine.setData(userDef, null);
+    configs.putObject('conf_UserId', userDef);
+
+    const channelDef = engine.createDataDefinition('チャンネル', 3, 'q_channel', 'STRING_TEXTFIELD');
+    engine.setData(channelDef, null);
+    configs.putObject('conf_ChannelId', channelDef);
+
+    const threadDef = engine.createDataDefinition('スレッド', 4, 'q_thread', 'STRING_TEXTFIELD');
+    engine.setData(threadDef, null);
+    configs.putObject('conf_ThreadId', threadDef);
+
+    return {
+        textDef,
+        userDef,
+        channelDef,
+        threadDef
+    };
+};
+
+/**
+ * ヘッダの準備
+ * @param singinigSecret
+ * @param body
+ * @returns {*}
+ */
+const prepareHeaders = (singinigSecret, body) => {
+    const timestamp = Math.floor(new Date().getTime() / 1000);
+    const baseString = `v0:${timestamp}:${body}`;
+    const signature = hex.encodeToString(hmac.sha256(singinigSecret, baseString));
+
+    const headers = engine.createHttpHeaders();
+    headers.set('X-Slack-Request-Timestamp', timestamp.toString());
+    headers.set('X-Slack-Signature', `v0=${signature}`);
+    return headers;
+};
+
+test('url_verification', () => {
+    execute();
+
+    prepareConfigs('secret');
+    const body = JSON.stringify({
+        type: 'url_verification',
+        challenge: 'success'
+    });
+
+    let headers = prepareHeaders('hogehoge', body);
+    expect(post({body, headers})).toEqual({
+        status: 400
+    });
+    expect(engine.isStartProcess()).toEqual(false);
+
+    headers = prepareHeaders('secret', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': 'success'
+    });
+    expect(engine.isStartProcess()).toEqual(false);
+});
+
+test('message.im', () => {
+    execute();
+
+    const {
+        textDef,
+        userDef,
+        channelDef,
+        threadDef
+    } = prepareConfigs('secret');
+    const body = JSON.stringify({
+            "token": "one-long-verification-token",
+            "team_id": "T061EG9R6",
+            "api_app_id": "A0PNCHHK2",
+            "event": {
+                "type": "message",
+                "channel": "D024BE91L",
+                "user": "U2147483697",
+                "text": "Hello hello can you hear me?",
+                "ts": "1355517523.000005",
+                "event_ts": "1355517523.000005",
+                "channel_type": "im"
+            },
+            "type": "event_callback",
+            "authed_teams": [
+                "T061EG9R6"
+            ],
+            "event_id": "Ev0PV52K21",
+            "event_time": 1355517523
+        }
+    );
+    const headers = prepareHeaders('secret', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    expect(engine.isStartProcess()).toEqual(true);
+    expect(engine.findData(textDef)).toEqual("Hello hello can you hear me?");
+    expect(engine.findData(userDef)).toEqual("U2147483697");
+    expect(engine.findData(channelDef)).toEqual("D024BE91L");
+    expect(engine.findData(threadDef)).toEqual("1355517523.000005");
+});
+
+test('app_mention', () => {
+    execute();
+
+    const {
+        textDef,
+        userDef,
+        channelDef,
+        threadDef
+    } = prepareConfigs('signing');
+    const body = JSON.stringify({
+        type: 'event_callback',
+        event: {
+            "type": "app_mention",
+            "user": "U061F7AUR",
+            "text": "<@U0LAN0Z89> is it everything a river should be?",
+            "thread_ts": "1482960137.003543",
+            "ts": "1515449522.000016",
+            "channel": "C123ABC456",
+            "event_ts": "1515449522000016"
+        }
+
+    });
+    let headers = prepareHeaders('secret', body);
+    expect(post({body, headers})).toEqual({
+        status: 400
+    });
+    expect(engine.isStartProcess()).toEqual(false);
+
+    headers = prepareHeaders('signing', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    expect(engine.isStartProcess()).toEqual(true);
+    expect(engine.findData(textDef)).toEqual("<@U0LAN0Z89> is it everything a river should be?");
+    expect(engine.findData(userDef)).toEqual("U061F7AUR");
+    expect(engine.findData(channelDef)).toEqual("C123ABC456");
+    expect(engine.findData(threadDef)).toEqual("1482960137.003543");
+});
+
+test('bot message', () => {
+    execute();
+
+    prepareConfigs('signing');
+    const body = JSON.stringify({
+        type: 'event_callback',
+        event: {
+            "type": "message",
+            "ts": "1358877455.000010",
+            "text": "Pushing is the answer",
+            "bot_id": "BB12033",
+            "username": "github",
+            "icons": {}
+        }
+    });
+    const headers = prepareHeaders('signing', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    // bot_id が含まれているので、無視される
+    expect(engine.isStartProcess()).toEqual(false);
+});
+
+test('message with subtype', () => {
+    execute();
+
+    prepareConfigs('signing');
+    const body = JSON.stringify({
+        type: 'event_callback',
+        event: {
+            "type": "message",
+            "subtype": "message_changed",
+            "hidden": true,
+            "channel": "C123ABC456",
+            "ts": "1358878755.000001",
+            "message": {
+                "type": "message",
+                "user": "U123ABC456",
+                "text": "Hello, world!",
+                "ts": "1355517523.000005",
+                "edited": {
+                    "user": "U123ABC456",
+                    "ts": "1358878755.000001"
+                }
+            }
+        }
+    });
+    const headers = prepareHeaders('signing', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    // subtype が含まれているので、無視される
+    expect(engine.isStartProcess()).toEqual(false);
+});
+
+test('not message type', () => {
+    execute();
+
+    prepareConfigs('signing');
+    const body = JSON.stringify({
+        type: 'event_callback',
+        event: {
+            "type": "team_join",
+            "user": {}
+        }
+    });
+    const headers = prepareHeaders('signing', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    // type が app_mention または message ではないので、無視される
+    expect(engine.isStartProcess()).toEqual(false);
+});
 ]]></test>
 
 </service-task-definition>
