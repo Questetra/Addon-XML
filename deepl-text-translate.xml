@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-08-01</last-modified>
+    <last-modified>2023-08-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>DeepL: Translate Text</label>
     <label locale="ja">DeepL: テキスト翻訳</label>
@@ -98,9 +98,12 @@
 
     <script><![CDATA[
 
+const API_URL_FREE = 'https://api-free.deepl.com/v2/translate';
+const API_URL_PRO = 'https://api.deepl.com/v2/translate';
+
 const main = () => {
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const authSetting = configs.getObject('conf_Auth');
+    const authSetting = configs.getObject('conf_Auth'); /// REQUIRED
     const sourceLangCode = configs.get('conf_SourceLangCode'); // NotRequired
     const sourceText = configs.get('conf_SourceText'); /// REQUIRED
     if (sourceText === '') {
@@ -118,6 +121,10 @@ const main = () => {
     engine.setData(translatedDef, translatedText);
 };
 
+/**
+ * formality パラメータの値を決定する
+ * @returns {String} formality
+ */
 const decideFormality = () => {
     let formality = configs.get('conf_Formality'); // NotRequired
     const failIfFormalityNotSupported = configs.getObject('conf_FailIfFormalityNotSupported');
@@ -127,9 +134,19 @@ const decideFormality = () => {
     return formality;
 };
 
+/**
+ * 翻訳する
+ * @param {AuthSettingWrapper} authSetting
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @returns {String} translatedText
+ */
 const translate = (authSetting, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
     /// (DeepL > Translating text)
-    /// https://www.deepl.com/docs-api/translating-text/
+    /// https://www.deepl.com/ja/docs-api/translate-text/
     const authKey = authSetting.getToken();
     const url = decideUrl(authKey);
     const body = buildBody(sourceLangCode, sourceText, sourceFormat, targetLangCode, formality);
@@ -150,14 +167,28 @@ const translate = (authSetting, sourceLangCode, sourceText, sourceFormat, target
     return translatedText;
 };
 
+/**
+ * API の URL を決定する
+ * @param {String} authKey
+ * @returns {String} url
+ */
 const decideUrl = (authKey) => {
     if (authKey.endsWith(':fx')) { // Free
-        return 'https://api-free.deepl.com/v2/translate';
+        return API_URL_FREE;
     }
     // Pro
-    return 'https://api.deepl.com/v2/translate';
+    return API_URL_PRO;
 };
 
+/**
+ * API のリクエストボディを作成する
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @returns {String} body
+ */
 const buildBody = (sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
     const bodyObj = {
         text: [sourceText],
@@ -199,4 +230,212 @@ const buildBody = (sourceLangCode, sourceText, sourceFormat, targetLangCode, for
     Q+l/uomRjeUshFMfJiyEU59m1kHktMfpKKNdtNofFmLMMLzOuicAAAAASUVORK5CYII=
     </icon>
 
+    <test><![CDATA[
+
+const AUTH_KEY_PRO = '0123456789';
+const AUTH_KEY_FREE = '1234567890:fx';
+
+/**
+ * 設定の準備
+ * @param {String} authKey
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @param {Boolean} failIfFormalityNotSupported
+ * @returns {DataDefinitionView} translatedDef
+ */
+const prepareConfigs = (authKey, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality, failIfFormalityNotSupported) => {
+    const authSetting = httpClient.createAuthSettingToken('DeepL API', authKey);
+    configs.putObject('conf_Auth', authSetting);
+
+    configs.put('conf_SourceLangCode', sourceLangCode);
+    configs.put('conf_SourceText', sourceText);
+    configs.put('conf_SourceFormat', sourceFormat);
+    configs.put('conf_TargetLangCode', targetLangCode);
+    configs.put('conf_Formality', formality);
+    configs.putObject('conf_FailIfFormalityNotSupported', failIfFormalityNotSupported);
+
+    const translatedDef = engine.createDataDefinition('翻訳後のテキスト', 1, 'q_Translated', 'STRING_TEXTAREA');
+    engine.setData(translatedDef, '事前文字列');
+    configs.putObject('conf_TranslatedDef', translatedDef);
+    return translatedDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 翻訳元ソーステキストが空
+ */
+test('Source Text is empty', () => {
+    prepareConfigs(AUTH_KEY_PRO, 'EN', '', 'text', 'JA', '', false);
+    assertError(main, 'Source Text is empty.');
+});
+
+/**
+ * テキスト翻訳の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} expectedUrl
+ * @param {String} authKey
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} tagHandling
+ * @param {String} targetLangCode
+ * @param {String} formality
+ */
+const assertRequest = ({url, method, contentType, body}, expectedUrl, authKey, sourceLangCode, sourceText, tagHandling, targetLangCode, formality) => {
+    expect(url).toEqual(`${expectedUrl}?auth_key=${encodeURIComponent(authKey)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    if (sourceLangCode !== null) {
+        expect(bodyObj.source_lang).toEqual(sourceLangCode);
+    }
+    expect(bodyObj.text[0]).toEqual(sourceText);
+    if (tagHandling !== null) {
+        expect(bodyObj.tag_handling).toEqual(tagHandling);
+    }
+    expect(bodyObj.target_lang).toEqual(targetLangCode);
+    if (formality !== null) {
+        expect(bodyObj.formality).toEqual(formality);
+    }
+};
+
+/**
+ * テキスト翻訳の API リクエストでエラー
+ */
+test('Fail to translate', () => {
+    prepareConfigs(AUTH_KEY_PRO, 'EN', 'Hello.', 'text', 'JA', '', false);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'EN', 'Hello.', null, 'JA', null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to translate. status: 400');
+});
+
+/**
+ * テキスト翻訳 API のレスポンスボディを作成
+ * @param {String} detectedSourceLangCode
+ * @param {String} translatedText
+ * @returns {String} response
+ */
+const createResponse = (detectedSourceLangCode, translatedText) => {
+    const responseObj = {
+        "translations": [
+            {
+                "detected_source_language": detectedSourceLangCode,
+                "text": translatedText
+            }
+        ]
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功
+ * Pro アカウント
+ * 英語から日本語（翻訳元言語コードを指定）
+ * プレーンテキスト
+ * formality 指定なし、formality に対応していなくても異常終了しない
+ */
+test('Success - pro account, with explicit source lang code, text, default formality', () => {
+    const sourceText = 'Hello.';
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'EN', sourceText, 'text', 'JA', '', false);
+
+    const translatedText = 'こんにちは。';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'EN', sourceText, null, 'JA', null);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('EN', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+/**
+ * 成功
+ * Pro アカウント
+ * 英語から日本語（翻訳元言語コードの指定なし）
+ * xml
+ * formality 指定なし、formality に対応していない場合は異常終了する
+ */
+test('Success - pro account, without source lang code, xml, default formality', () => {
+    const sourceText = '<message>Hello</message>';
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, '', sourceText, 'xml', 'JA', '', true);
+
+    const translatedText = '<message>こんにちは</message>';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, null, sourceText, 'xml', 'JA', null);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('EN', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+/**
+ * 成功
+ * Pro アカウント
+ * 日本語からイギリス英語
+ * html
+ * formality 指定あり、formality に対応していなくても異常終了しない（formality に prefer_ が付く）
+ */
+test('Success - pro account, with explicit source lang code, html, with preferred formality option', () => {
+    const sourceText = '<a href="http://example.com">こんにちは</a>';
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'JA', sourceText, 'html', 'EN-GB', 'more', false);
+
+    const translatedText = '<a href="http://example.com">Hello</a>';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'JA', sourceText, 'html', 'EN-GB', 'prefer_more');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('JA', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+/**
+ * 成功
+ * Free アカウント
+ * 中国語からフランス語
+ * html
+ * formality 指定あり、formality に対応していない場合は異常終了する（formality に prefer_ が付かない）
+ */
+test('Success - free account, with explicit source lang code, html, with formality option', () => {
+    const sourceText = '<a href="http://example.com">你好</a>';
+    const translatedDef = prepareConfigs(AUTH_KEY_FREE, 'ZH', sourceText, 'html', 'FR', 'less', true);
+
+    const translatedText = '<a href="http://example.com">Salut</a>';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_FREE, AUTH_KEY_FREE, 'ZH', sourceText, 'html', 'FR', 'less');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('ZH', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+    ]]></test>
 </service-task-definition>
