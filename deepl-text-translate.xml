@@ -1,0 +1,398 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <last-modified>2023-08-07</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>DeepL: Translate Text</label>
+    <label locale="ja">DeepL: テキスト翻訳</label>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-deepl-text-translate/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-deepl-text-translate/</help-page-url>
+    <summary>
+        This item translates text using DeepL API v2.
+        It is also possible to translate into more formal or broken sentences (Formality).
+    </summary>
+    <summary locale="ja">この工程は、DeepL API（v2）を用いて機械翻訳します。フォーマルな文章や砕けた文章に翻訳することも可能です。</summary>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Authorization Setting in which Authentication Key is set</label>
+            <label locale="ja">C1: 認証キーを設定した認証設定</label>
+        </config>
+        <config name="conf_SourceLangCode" required="false" form-type="SELECT_ITEM" editable="true">
+            <label>C2: Source Lang Code (if blank, auto-detected)</label>
+            <label locale="ja">C2: 翻訳元の言語コード（指定しない場合、自動検出されます）</label>
+            <item value="EN">
+                <label>EN (English)</label>
+                <label locale="ja">EN（英語）</label>
+            </item>
+            <item value="JA">
+                <label>JA (Japanese)</label>
+                <label locale="ja">JA（日本語）</label>
+            </item>
+            <item value="ZH">
+                <label>ZH (Chinese)</label>
+                <label locale="ja">ZH（中国語）</label>
+            </item>
+        </config>
+        <config name="conf_SourceText" required="true" el-enabled="true" form-type="TEXTAREA">
+            <label>C3: Source Text</label>
+            <label locale="ja">C3: 翻訳元ソーステキスト</label>
+        </config>
+        <config name="conf_SourceFormat" required="true" form-type="SELECT_ITEM">
+            <label>C4: Source Text Format</label>
+            <label locale="ja">C4: 翻訳元ソースのフォーマット</label>
+            <item value="text">
+                <label>Plain Text</label>
+                <label locale="ja">プレーンテキスト</label>
+            </item>
+            <item value="html">
+                <label>HTML</label>
+            </item>
+            <item value="xml">
+                <label>XML</label>
+            </item>
+        </config>
+        <config name="conf_TargetLangCode" required="true" form-type="SELECT_ITEM" editable="true">
+            <label>C5: Target Lang Code</label>
+            <label locale="ja">C5: 翻訳先の言語コード</label>
+            <item value="EN-GB">
+                <label>EN-GB (British English)</label>
+                <label locale="ja">EN-GB（イギリス英語）</label>
+            </item>
+            <item value="EN-US">
+                <label>EN-US (American English)</label>
+                <label locale="ja">EN-US（アメリカ英語）</label>
+            </item>
+            <item value="JA">
+                <label>JA (Japanese)</label>
+                <label locale="ja">JA（日本語）</label>
+            </item>
+            <item value="ZH">
+                <label>ZH (Chinese)</label>
+                <label locale="ja">ZH（中国語）</label>
+            </item>
+        </config>
+        <config name="conf_Formality" required="false" form-type="SELECT_ITEM">
+            <label>C6: Formality Option</label>
+            <label locale="ja">C6: フォーマル化オプション</label>
+            <item value="prefer_more">
+                <label>More formal</label>
+                <label locale="ja">よりフォーマルに</label>
+            </item>
+            <item value="prefer_less">
+                <label>Less formal</label>
+                <label locale="ja">より砕けて</label>
+            </item>
+        </config>
+        <config name="conf_TranslatedDef" required="true" form-type="SELECT" select-data-type="STRING">
+            <label>C7: Data item to save the translated text</label>
+            <label locale="ja">C7: 翻訳後のテキストを保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const API_URL_FREE = 'https://api-free.deepl.com/v2/translate';
+const API_URL_PRO = 'https://api.deepl.com/v2/translate';
+
+const main = () => {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const authSetting = configs.getObject('conf_Auth'); /// REQUIRED
+    const sourceLangCode = configs.get('conf_SourceLangCode'); // NotRequired
+    const sourceText = configs.get('conf_SourceText'); /// REQUIRED
+    if (sourceText === '') {
+        throw 'Source Text is empty.';
+    }
+    const sourceFormat = configs.get('conf_SourceFormat'); /// REQUIRED
+    const targetLangCode = configs.get('conf_TargetLangCode'); /// REQUIRED
+    const formality = configs.get('conf_Formality'); // NotRequired
+    const translatedDef = configs.getObject('conf_TranslatedDef'); /// REQUIRED
+
+    //// == Calculating / 演算 ==
+    const translatedText = translate(authSetting, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality);
+
+    //// == Data Updating / ワークフローデータへの代入 ==
+    engine.setData(translatedDef, translatedText);
+};
+
+/**
+ * 翻訳する
+ * @param {AuthSettingWrapper} authSetting
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @returns {String} translatedText
+ */
+const translate = (authSetting, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
+    /// (DeepL > Translating text)
+    /// https://www.deepl.com/ja/docs-api/translate-text/
+    const authKey = authSetting.getToken();
+    const url = decideUrl(authKey);
+    const body = buildBody(sourceLangCode, sourceText, sourceFormat, targetLangCode, formality);
+    const response = httpClient.begin() // HttpRequestWrapper
+        .queryParam('auth_key', authKey)
+        .body(body, 'application/json')
+        .post(url); // HttpResponseWrapper
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to translate. status: ${status}`;
+    }
+    const responseObj = JSON.parse(responseStr);
+    const detectedSourceLangCode = responseObj.translations[0].detected_source_language;
+    engine.log(`Detected source language code: ${detectedSourceLangCode}`);
+    const translatedText = responseObj.translations[0].text;
+    return translatedText;
+};
+
+/**
+ * API の URL を決定する
+ * @param {String} authKey
+ * @returns {String} url
+ */
+const decideUrl = (authKey) => {
+    if (authKey.endsWith(':fx')) { // Free
+        return API_URL_FREE;
+    }
+    // Pro
+    return API_URL_PRO;
+};
+
+/**
+ * API のリクエストボディを作成する
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @returns {String} body
+ */
+const buildBody = (sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
+    const bodyObj = {
+        text: [sourceText],
+        target_lang: targetLangCode
+    };
+    if (sourceLangCode !== '') {
+        Object.assign(bodyObj, { source_lang: sourceLangCode });
+    }
+    if (sourceFormat !== 'text') { // xml or html
+        Object.assign(bodyObj, { tag_handling: sourceFormat });
+    }
+    if (formality !== '') {
+        Object.assign(bodyObj, { formality });
+    }
+    return JSON.stringify(bodyObj);
+};
+
+    ]]></script>
+
+
+    <icon>
+    iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADwklEQVRYR8WXe0hTURzHv8dHTrdm
+    9sBIKKH+qEll+aisDDVXVBYoab4qX+GjUisweksGBVJWUoHZm8yw/tCo2BKLigIrKdgMShAps4fa
+    VtZ8ntjd7trmvXdXKXb/Gju/3+98zvk9D4GTPyJ2/ylBMV4/fxtiCUgEJXQeQPwB+Jj1uwHaSihp
+    oqANMk/J7faXdb/E2HYIIFWsmuxKBooAZAOQiDEKwADg3CB1O9ajvdshpCMI4K2IzqaElAKQitzY
+    XqyHULpLp1Wf49PnBZAHKM8AyBnlxvZqZ/UaVS6XLU4AeUD0dYAk/qPNzWZolV6jTrK3OQxA7Mk3
+    xq5ESuwKfOvS4URlNRpfN4vhHXYTNgBmn58VsrQkZA6KspMRFjwbbq6ujKj+Zw+q6+px/Hw12j9/
+    EwQhlOZYx4QFwBzt7/kCborvRJTsysLqyDBIPMZwbvK16zvKL99CWeVNIYieQeo2g80OC4A8QHkC
+    QAGXZkFGPLZuisOk8eMcXjOlFG+aW1B88iLqn77gky/Ta1SFxkUGgCkyht5Orjwv3ZuH9IQ1cHVx
+    YYwZevugfdeKaX6+mODjzQvUrfuBnSXluHXvIZeMQSbxmGAsVgyAXBGdAkKucknWnj+KZQvnWZbu
+    NjxD4rZDKMpJxs6sRHiMceeE6OsfQFllNY6UX+GGpDRVr1VfYwC8FcpKSpAuBuBtSxvyD5VhrMwL
+    K8JDkRATBblseJ1yBEAoLui0qgzTDQREvwLI32NakdjfALtk9HXrhw5UVNUifEEg87dihj+m+vky
+    vx0BALRJr1HPNwMou6wai81F8AGwQoNDQ7jz4Ck27ijBlqS1KC7MgJenRAQAuvUa1XgWgPJFkxCA
+    MSBb2j5CLpXi9OUaRIYFQbk0FC4uRAwA9BoVGTGAMbobnr2Cu7sb1I8bkRG/BnNmTQcxmbJ8jl0A
+    GwDRLqhVP0Fq4WGmLuzJS4XUy3N0WQAbF/AHoX0d+PSlExVVdVCGh2BBoGLYyVkaB3UANkEolIYy
+    qScObE9D4rrlnOlmf3w2O45X3MCV2/d5C5VtGgoUItbCzOlTUZSTglURi3h7QWe3Dqcu1TjqBSaT
+    1oVIqBTbHyFqcTAO5qdxBt6j501Ym7mb99RWC7al2FSM+JsRl8Vtm+OQuSEG0/wmW+JgBAC2zci4
+    gaN2zAVhHx8iAbjbsaknMEOo4EDCBRIydxb2bd2Evv5+rM/dL+gC3oGE1RI7kolxNIeM8Ej2F8KJ
+    Q+l/uomRjeUshFMfJiyEU59m1kHktMfpKKNdtNofFmLMMLzOuicAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+const AUTH_KEY_PRO = '0123456789';
+const AUTH_KEY_FREE = '1234567890:fx';
+
+/**
+ * 設定の準備
+ * @param {String} authKey
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} sourceFormat
+ * @param {String} targetLangCode
+ * @param {String} formality
+ * @returns {DataDefinitionView} translatedDef
+ */
+const prepareConfigs = (authKey, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
+    const authSetting = httpClient.createAuthSettingToken('DeepL API', authKey);
+    configs.putObject('conf_Auth', authSetting);
+
+    configs.put('conf_SourceLangCode', sourceLangCode);
+    configs.put('conf_SourceText', sourceText);
+    configs.put('conf_SourceFormat', sourceFormat);
+    configs.put('conf_TargetLangCode', targetLangCode);
+    configs.put('conf_Formality', formality);
+
+    const translatedDef = engine.createDataDefinition('翻訳後のテキスト', 1, 'q_Translated', 'STRING_TEXTAREA');
+    engine.setData(translatedDef, '事前文字列');
+    configs.putObject('conf_TranslatedDef', translatedDef);
+    return translatedDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 翻訳元ソーステキストが空
+ */
+test('Source Text is empty', () => {
+    prepareConfigs(AUTH_KEY_PRO, 'EN', '', 'text', 'JA', '');
+    assertError(main, 'Source Text is empty.');
+});
+
+/**
+ * テキスト翻訳の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} expectedUrl
+ * @param {String} authKey
+ * @param {String} sourceLangCode
+ * @param {String} sourceText
+ * @param {String} tagHandling
+ * @param {String} targetLangCode
+ * @param {String} formality
+ */
+const assertRequest = ({url, method, contentType, body}, expectedUrl, authKey, sourceLangCode, sourceText, tagHandling, targetLangCode, formality) => {
+    expect(url).toEqual(`${expectedUrl}?auth_key=${encodeURIComponent(authKey)}`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    if (sourceLangCode !== null) {
+        expect(bodyObj.source_lang).toEqual(sourceLangCode);
+    }
+    expect(bodyObj.text[0]).toEqual(sourceText);
+    if (tagHandling !== null) {
+        expect(bodyObj.tag_handling).toEqual(tagHandling);
+    }
+    expect(bodyObj.target_lang).toEqual(targetLangCode);
+    if (formality !== null) {
+        expect(bodyObj.formality).toEqual(formality);
+    }
+};
+
+/**
+ * テキスト翻訳の API リクエストでエラー
+ */
+test('Fail to translate', () => {
+    prepareConfigs(AUTH_KEY_PRO, 'EN', 'Hello.', 'text', 'JA', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'EN', 'Hello.', null, 'JA', null);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to translate. status: 400');
+});
+
+/**
+ * テキスト翻訳 API のレスポンスボディを作成
+ * @param {String} detectedSourceLangCode
+ * @param {String} translatedText
+ * @returns {String} response
+ */
+const createResponse = (detectedSourceLangCode, translatedText) => {
+    const responseObj = {
+        "translations": [
+            {
+                "detected_source_language": detectedSourceLangCode,
+                "text": translatedText
+            }
+        ]
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功
+ * Pro アカウント
+ * 英語から日本語（翻訳元言語コードを指定）
+ * プレーンテキスト
+ * formality 指定なし
+ */
+test('Success - pro account, with explicit source lang code, text, default formality', () => {
+    const sourceText = 'Hello.';
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'EN', sourceText, 'text', 'JA', '');
+
+    const translatedText = 'こんにちは。';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'EN', sourceText, null, 'JA', null);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('EN', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+/**
+ * 成功
+ * Pro アカウント
+ * 英語から日本語（翻訳元言語コードの指定なし）
+ * xml
+ * formality に prefer_more を指定
+ */
+test('Success - pro account, without source lang code, xml, default formality', () => {
+    const sourceText = '<message>Hello</message>';
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, '', sourceText, 'xml', 'JA', 'prefer_more');
+
+    const translatedText = '<message>こんにちは</message>';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, null, sourceText, 'xml', 'JA', 'prefer_more');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('EN', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+/**
+ * 成功
+ * Free アカウント
+ * 日本語からイギリス英語
+ * html
+ * formality に prefer_less を指定
+ */
+test('Success - pro account, with explicit source lang code, html, with preferred formality option', () => {
+    const sourceText = '<a href="http://example.com">こんにちは</a>';
+    const translatedDef = prepareConfigs(AUTH_KEY_FREE, 'JA', sourceText, 'html', 'EN-GB', 'prefer_less');
+
+    const translatedText = '<a href="http://example.com">Hello</a>';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, API_URL_FREE, AUTH_KEY_FREE, 'JA', sourceText, 'html', 'EN-GB', 'prefer_less');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('JA', translatedText));
+    });
+    expect(main()).toEqual(undefined);
+
+    // データ項目の値をチェック
+    expect(engine.findData(translatedDef)).toEqual(translatedText);
+});
+
+    ]]></test>
+</service-task-definition>
