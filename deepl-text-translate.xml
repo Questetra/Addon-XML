@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-08-04</last-modified>
+    <last-modified>2023-08-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>DeepL: Translate Text</label>
     <label locale="ja">DeepL: テキスト翻訳</label>
@@ -75,22 +75,18 @@
         <config name="conf_Formality" required="false" form-type="SELECT_ITEM">
             <label>C6: Formality Option</label>
             <label locale="ja">C6: フォーマル化オプション</label>
-            <item value="more">
+            <item value="prefer_more">
                 <label>More formal</label>
                 <label locale="ja">よりフォーマルに</label>
             </item>
-            <item value="less">
+            <item value="prefer_less">
                 <label>Less formal</label>
                 <label locale="ja">より砕けて</label>
             </item>
         </config>
-        <config name="conf_FailIfFormalityNotSupported" form-type="TOGGLE">
-            <label>C7: Abort if the formality option is not supported</label>
-            <label locale="ja">C7: 翻訳先の言語がフォーマル化オプションに対応していない場合、異常終了する</label>
-        </config>
         <config name="conf_TranslatedDef" required="true" form-type="SELECT" select-data-type="STRING">
-            <label>C8: Data item to save the translated text</label>
-            <label locale="ja">C8: 翻訳後のテキストを保存するデータ項目</label>
+            <label>C7: Data item to save the translated text</label>
+            <label locale="ja">C7: 翻訳後のテキストを保存するデータ項目</label>
         </config>
     </configs>
 
@@ -109,7 +105,7 @@ const main = () => {
     }
     const sourceFormat = configs.get('conf_SourceFormat'); /// REQUIRED
     const targetLangCode = configs.get('conf_TargetLangCode'); /// REQUIRED
-    const formality = decideFormality();
+    const formality = configs.get('conf_Formality'); // NotRequired
     const translatedDef = configs.getObject('conf_TranslatedDef'); /// REQUIRED
 
     //// == Calculating / 演算 ==
@@ -117,19 +113,6 @@ const main = () => {
 
     //// == Data Updating / ワークフローデータへの代入 ==
     engine.setData(translatedDef, translatedText);
-};
-
-/**
- * formality パラメータの値を決定する
- * @returns {String} formality
- */
-const decideFormality = () => {
-    let formality = configs.get('conf_Formality'); // NotRequired
-    const failIfFormalityNotSupported = configs.getObject('conf_FailIfFormalityNotSupported');
-    if (formality !== '' && !failIfFormalityNotSupported) {
-        formality = `prefer_${formality}`;
-    }
-    return formality;
 };
 
 /**
@@ -199,7 +182,7 @@ const buildBody = (sourceLangCode, sourceText, sourceFormat, targetLangCode, for
         Object.assign(bodyObj, { tag_handling: sourceFormat });
     }
     if (formality !== '') {
-        Object.assign(bodyObj, { formality: formality });
+        Object.assign(bodyObj, { formality });
     }
     return JSON.stringify(bodyObj);
 };
@@ -241,10 +224,9 @@ const AUTH_KEY_FREE = '1234567890:fx';
  * @param {String} sourceFormat
  * @param {String} targetLangCode
  * @param {String} formality
- * @param {Boolean} failIfFormalityNotSupported
  * @returns {DataDefinitionView} translatedDef
  */
-const prepareConfigs = (authKey, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality, failIfFormalityNotSupported) => {
+const prepareConfigs = (authKey, sourceLangCode, sourceText, sourceFormat, targetLangCode, formality) => {
     const authSetting = httpClient.createAuthSettingToken('DeepL API', authKey);
     configs.putObject('conf_Auth', authSetting);
 
@@ -253,7 +235,6 @@ const prepareConfigs = (authKey, sourceLangCode, sourceText, sourceFormat, targe
     configs.put('conf_SourceFormat', sourceFormat);
     configs.put('conf_TargetLangCode', targetLangCode);
     configs.put('conf_Formality', formality);
-    configs.putObject('conf_FailIfFormalityNotSupported', failIfFormalityNotSupported);
 
     const translatedDef = engine.createDataDefinition('翻訳後のテキスト', 1, 'q_Translated', 'STRING_TEXTAREA');
     engine.setData(translatedDef, '事前文字列');
@@ -279,7 +260,7 @@ const assertError = (func, errorMsg) => {
  * 翻訳元ソーステキストが空
  */
 test('Source Text is empty', () => {
-    prepareConfigs(AUTH_KEY_PRO, 'EN', '', 'text', 'JA', '', false);
+    prepareConfigs(AUTH_KEY_PRO, 'EN', '', 'text', 'JA', '');
     assertError(main, 'Source Text is empty.');
 });
 
@@ -320,7 +301,7 @@ const assertRequest = ({url, method, contentType, body}, expectedUrl, authKey, s
  * テキスト翻訳の API リクエストでエラー
  */
 test('Fail to translate', () => {
-    prepareConfigs(AUTH_KEY_PRO, 'EN', 'Hello.', 'text', 'JA', '', false);
+    prepareConfigs(AUTH_KEY_PRO, 'EN', 'Hello.', 'text', 'JA', '');
 
     httpClient.setRequestHandler((request) => {
         assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'EN', 'Hello.', null, 'JA', null);
@@ -352,11 +333,11 @@ const createResponse = (detectedSourceLangCode, translatedText) => {
  * Pro アカウント
  * 英語から日本語（翻訳元言語コードを指定）
  * プレーンテキスト
- * formality 指定なし、formality に対応していなくても異常終了しない
+ * formality 指定なし
  */
 test('Success - pro account, with explicit source lang code, text, default formality', () => {
     const sourceText = 'Hello.';
-    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'EN', sourceText, 'text', 'JA', '', false);
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'EN', sourceText, 'text', 'JA', '');
 
     const translatedText = 'こんにちは。';
     httpClient.setRequestHandler((request) => {
@@ -374,15 +355,15 @@ test('Success - pro account, with explicit source lang code, text, default forma
  * Pro アカウント
  * 英語から日本語（翻訳元言語コードの指定なし）
  * xml
- * formality 指定なし、formality に対応していない場合は異常終了する
+ * formality に prefer_more を指定
  */
 test('Success - pro account, without source lang code, xml, default formality', () => {
     const sourceText = '<message>Hello</message>';
-    const translatedDef = prepareConfigs(AUTH_KEY_PRO, '', sourceText, 'xml', 'JA', '', true);
+    const translatedDef = prepareConfigs(AUTH_KEY_PRO, '', sourceText, 'xml', 'JA', 'prefer_more');
 
     const translatedText = '<message>こんにちは</message>';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, null, sourceText, 'xml', 'JA', null);
+        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, null, sourceText, 'xml', 'JA', 'prefer_more');
         return httpClient.createHttpResponse(200, 'application/json', createResponse('EN', translatedText));
     });
     expect(main()).toEqual(undefined);
@@ -393,41 +374,19 @@ test('Success - pro account, without source lang code, xml, default formality', 
 
 /**
  * 成功
- * Pro アカウント
+ * Free アカウント
  * 日本語からイギリス英語
  * html
- * formality 指定あり、formality に対応していなくても異常終了しない（formality に prefer_ が付く）
+ * formality に prefer_less を指定
  */
 test('Success - pro account, with explicit source lang code, html, with preferred formality option', () => {
     const sourceText = '<a href="http://example.com">こんにちは</a>';
-    const translatedDef = prepareConfigs(AUTH_KEY_PRO, 'JA', sourceText, 'html', 'EN-GB', 'more', false);
+    const translatedDef = prepareConfigs(AUTH_KEY_FREE, 'JA', sourceText, 'html', 'EN-GB', 'prefer_less');
 
     const translatedText = '<a href="http://example.com">Hello</a>';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, API_URL_PRO, AUTH_KEY_PRO, 'JA', sourceText, 'html', 'EN-GB', 'prefer_more');
+        assertRequest(request, API_URL_FREE, AUTH_KEY_FREE, 'JA', sourceText, 'html', 'EN-GB', 'prefer_less');
         return httpClient.createHttpResponse(200, 'application/json', createResponse('JA', translatedText));
-    });
-    expect(main()).toEqual(undefined);
-
-    // データ項目の値をチェック
-    expect(engine.findData(translatedDef)).toEqual(translatedText);
-});
-
-/**
- * 成功
- * Free アカウント
- * 中国語からフランス語
- * html
- * formality 指定あり、formality に対応していない場合は異常終了する（formality に prefer_ が付かない）
- */
-test('Success - free account, with explicit source lang code, html, with formality option', () => {
-    const sourceText = '<a href="http://example.com">你好</a>';
-    const translatedDef = prepareConfigs(AUTH_KEY_FREE, 'ZH', sourceText, 'html', 'FR', 'less', true);
-
-    const translatedText = '<a href="http://example.com">Salut</a>';
-    httpClient.setRequestHandler((request) => {
-        assertRequest(request, API_URL_FREE, AUTH_KEY_FREE, 'ZH', sourceText, 'html', 'FR', 'less');
-        return httpClient.createHttpResponse(200, 'application/json', createResponse('ZH', translatedText));
     });
     expect(main()).toEqual(undefined);
 
