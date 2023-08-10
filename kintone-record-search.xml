@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>kintone: Search Records</label>
     <label locale="ja">kintone: レコード検索</label>
-    <last-modified>2023-08-07</last-modified>
+    <last-modified>2023-08-10</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <summary>This item searches records in a Kintone App using a query.</summary>
@@ -61,8 +61,8 @@
 main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const auth = configs.get("conf_auth");
-  const basic = configs.get("conf_basic");
+  const auth = configs.getObject("conf_auth");
+  const basic = configs.getObject("conf_basic");
   const domain = configs.get("conf_domain");
   const guestSpaceId = configs.get("conf_guestSpaceId");
   const appId = configs.get("conf_appId");
@@ -79,7 +79,7 @@ function main(){
   ];
 
   //// == ワークフローデータの参照 / Data Retrieving ==
-  const apiToken = httpClient.getOAuth2Token( auth );
+  const apiToken = auth.getToken();
 
   //// == 演算 / Calculating ==
   const singleLineFlag = checkFieldCodesAndDataDefs( fieldCodeList, dataDefList );
@@ -200,7 +200,7 @@ function isValidId( idString ) {
   *    ドロップダウン, ラジオボタン, ステータス, 作成日時, 更新日時
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {Set<String>} fields  フィールドコードの集合
   * @return {Number} requestNum  HTTP リクエスト回数（リクエストを送信したら 1, 送信しなければ 0）
@@ -218,7 +218,7 @@ function checkFields( apiUri, apiToken, basic, appId, fields ) {
   let request = httpClient.begin()
     .queryParam("app", appId)
     .header( "X-Cybozu-API-Token", apiToken );
-  if ( basic !== "" && basic !== null ) {
+  if (basic !== null) {
     request = request.authSetting(basic);
   }
   const response = request.get( getFieldsUri );
@@ -272,7 +272,7 @@ function prepareInitialParams( appId, fields, query ) {
   * 未取得のレコードがなくなるまで再帰的に実行される
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {Object} params  GET リクエストのパラメータに使用する情報が格納されたオブジェクト
   *   プロパティ:  {String} app  アプリ ID
   *              {Set<String>} fields  フィールドコードの集合
@@ -293,7 +293,7 @@ function getRecords( apiUri, apiToken, basic, { app, fields, query, lastRecordId
   let request = httpClient.begin()
     .queryParam("app", app)
     .header( "X-Cybozu-API-Token", apiToken );
-  if ( basic !== "" && basic !== null ) {
+  if (basic !== null) {
     request = request.authSetting(basic);
   }
   // query パラメータの設定
@@ -692,7 +692,10 @@ const CHECK_FIELDS_RESPONSE = { // フィールド一覧取得のレスポンス
  * @return dataDefList
  */
 const prepareConfigs = (domain, guestSpaceId, appId, query, fieldCode1, fieldCode2) => {
-  configs.put('conf_auth', 'kintone');
+  // 認証設定を準備
+  const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+  configs.putObject('conf_auth', auth);
+
   configs.put('conf_domain', domain);
   configs.put('conf_guestSpaceId', guestSpaceId);
   configs.put('conf_appId', appId);
@@ -719,17 +722,19 @@ const prepareConfigs = (domain, guestSpaceId, appId, query, fieldCode1, fieldCod
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param domain
  * @param guestSpaceId
  * @param appId
  */
-const assertCheckFieldsRequest = ({url, method}, domain, guestSpaceId, appId) => {
+const assertCheckFieldsRequest = ({url, method, headers}, domain, guestSpaceId, appId) => {
   expect(method).toEqual('GET');
   if (guestSpaceId === '') { // ゲストスペース外のアプリの場合
     expect(url).toEqual(`https://${domain}/k/v1/app/form/fields.json?app=${appId}`);
   } else { // ゲストスペース内のアプリの場合
     expect(url).toEqual(`https://${domain}/k/guest/${guestSpaceId}/v1/app/form/fields.json?app=${appId}`);
   }
+  expect(headers['X-Cybozu-API-Token']).toEqual('kintone-api-key-12345');
 };
 
 /**
@@ -737,6 +742,7 @@ const assertCheckFieldsRequest = ({url, method}, domain, guestSpaceId, appId) =>
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param domain
  * @param guestSpaceId
  * @param appId
@@ -744,7 +750,7 @@ const assertCheckFieldsRequest = ({url, method}, domain, guestSpaceId, appId) =>
  * @param fields
  * @param lastRecordId
  */
-const assertGetRecordsRequest = ({url, method}, domain, guestSpaceId, appId, query, fields, lastRecordId) => {
+const assertGetRecordsRequest = ({url, method, headers}, domain, guestSpaceId, appId, query, fields, lastRecordId) => {
   expect(method).toEqual('GET');
   let expectedUrl;
   if (guestSpaceId === '') { // ゲストスペース外のアプリの場合
@@ -762,6 +768,7 @@ const assertGetRecordsRequest = ({url, method}, domain, guestSpaceId, appId, que
     expectedUrl += '&' + encodeURIComponent(`fields[${i}]`) + '=' + encodeURIComponent(fieldCode);
   });
   expect(url).toEqual(expectedUrl.replace(/%20/g, '+').replace(/\(/g, '%28').replace(/\)/g, '%29'));
+  expect(headers['X-Cybozu-API-Token']).toEqual('kintone-api-key-12345');
 };
 
 /**
@@ -826,12 +833,10 @@ test('Invalid App ID', () => {
  * 保存先データ項目が一つも設定されておらずエラーになる場合
  */
 test('No data item to save the result is set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', '文字列__1行_');
-  configs.put('conf_labelField', '数値');
+  prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '', '');
+  configs.put('conf_recordIds', '');
+  configs.put('conf_ids', '');
+  configs.put('conf_labels', '');
 
   expect(execute).toThrow('No data item to save the result is set.');
 });
@@ -858,18 +863,8 @@ test('FieldCode2 is empty but the data item to save the values is set', () => {
  * フィールドコード_1 が設定されているのに保存先データ項目が設定されておらずエラーになる場合
  */
 test('Data item to save the values of FieldCode1 is not set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', '文字列__1行_');
-  configs.put('conf_labelField', '数値');
-
-  // 文字型データ項目（複数行）を準備（値_1 を保存するデータ項目は設定しない）
-  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
-  const value2DataDef = engine.createDataDefinition('値_2', 3, 'q_fieldValues2', 'STRING_TEXTAREA');
-  configs.putObject('conf_recordIds', recordIdDataDef);
-  configs.putObject('conf_labels', value2DataDef);
+  prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '文字列__1行_', '数値');
+  configs.put('conf_ids', '');
 
   expect(execute).toThrow('Data item to save the values of Field Code 1 is not set.');
 });
@@ -878,18 +873,8 @@ test('Data item to save the values of FieldCode1 is not set', () => {
  * フィールドコード_2 が設定されているのに保存先データ項目が設定されておらずエラーになる場合
  */
 test('Data item to save the values of FieldCode2 is not set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', '文字列__1行_');
-  configs.put('conf_labelField', '数値');
-
-  // 文字型データ項目（複数行）を準備（値_2 を保存するデータ項目は設定しない）
-  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
-  const value1DataDef = engine.createDataDefinition('値_1', 2, 'q_fieldValues1', 'STRING_TEXTAREA');
-  configs.putObject('conf_recordIds', recordIdDataDef);
-  configs.putObject('conf_ids', value1DataDef);
+  prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '文字列__1行_', '数値');
+  configs.put('conf_labels', '');
 
   expect(execute).toThrow('Data item to save the values of Field Code 2 is not set.');
 });
@@ -1290,22 +1275,10 @@ test('200 Success - FieldCode "$id" and "$revision" is also supported', () => {
  * レコード ID を保存するデータ項目が未設定
  */
 test('200 Success - Data item to save Record IDs is not set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', 'ルックアップ');
-  configs.put('conf_labelField', 'ステータス');
+  const dataDefList = prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', 'ルックアップ', 'ステータス');
+  configs.put('conf_recordIds', '');
   const fields = ['$id', 'ルックアップ', 'ステータス'];
   const types = ['__ID__', 'SINGLE_LINE_TEXT', 'STATUS'];
-
-  // 文字型データ項目（複数行）を準備（レコード ID 以外）
-  const value1DataDef = engine.createDataDefinition('値_1', 2, 'q_fieldValues1', 'STRING_TEXTAREA');
-  const value2DataDef = engine.createDataDefinition('値_2', 3, 'q_fieldValues2', 'STRING_TEXTAREA');
-  engine.setData(value1DataDef, '事前\n文字列');
-  engine.setData(value2DataDef, '事前\n文字列');
-  configs.putObject('conf_ids', value1DataDef);
-  configs.putObject('conf_labels', value2DataDef);
 
   let requestCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -1323,8 +1296,8 @@ test('200 Success - Data item to save Record IDs is not set', () => {
   execute();
 
   // 文字型データ項目の値をチェック
-  const values1 = engine.findData(value1DataDef).split('\n');
-  const values2 = engine.findData(value2DataDef).split('\n');
+  const values1 = engine.findData(dataDefList[1]).split('\n');
+  const values2 = engine.findData(dataDefList[2]).split('\n');
   expect(values1.length).toEqual(9);
   expect(values2.length).toEqual(9);
 
@@ -1339,22 +1312,10 @@ test('200 Success - Data item to save Record IDs is not set', () => {
  * フィールドコード_1 と、その値を保存するデータ項目が未設定
  */
 test('200 Success - FieldCode1 and Data item to save the values of it are not set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', ''); // 空
-  configs.put('conf_labelField', 'レコード番号');
+  const dataDefList = prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '', 'レコード番号');
+  configs.put('conf_ids', '');
   const fields = ['$id', 'レコード番号'];
   const types = ['__ID__', 'RECORD_NUMBER'];
-
-  // 文字型データ項目（複数行）を準備（値_1 以外）
-  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
-  const value2DataDef = engine.createDataDefinition('値_2', 3, 'q_fieldValues2', 'STRING_TEXTAREA');
-  engine.setData(recordIdDataDef, '事前\n文字列');
-  engine.setData(value2DataDef, '事前\n文字列');
-  configs.putObject('conf_recordIds', recordIdDataDef);
-  configs.putObject('conf_labels', value2DataDef);
 
   let requestCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -1372,8 +1333,8 @@ test('200 Success - FieldCode1 and Data item to save the values of it are not se
   execute();
 
   // 文字型データ項目の値をチェック
-  const recordIds = engine.findData(recordIdDataDef).split('\n');
-  const values2 = engine.findData(value2DataDef).split('\n');
+  const recordIds = engine.findData(dataDefList[0]).split('\n');
+  const values2 = engine.findData(dataDefList[2]).split('\n');
   expect(recordIds.length).toEqual(9);
   expect(values2.length).toEqual(9);
 
@@ -1388,22 +1349,10 @@ test('200 Success - FieldCode1 and Data item to save the values of it are not se
  * フィールドコード_2 と、その値を保存するデータ項目が未設定
  */
 test('200 Success - FieldCode2 and Data item to save the values of it are not set', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
-  configs.put('conf_idField', '作成日時');
-  configs.put('conf_labelField', ''); // 空
+  const dataDefList = prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '作成日時', '');
+  configs.put('conf_labels', '');
   const fields = ['$id', '作成日時'];
   const types = ['__ID__', 'CREATED_TIME'];
-
-  // 文字型データ項目（複数行）を準備（値_2 以外）
-  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
-  const value1DataDef = engine.createDataDefinition('値_1', 2, 'q_fieldValues1', 'STRING_TEXTAREA');
-  engine.setData(recordIdDataDef, '事前\n文字列');
-  engine.setData(value1DataDef, '事前\n文字列');
-  configs.putObject('conf_recordIds', recordIdDataDef);
-  configs.putObject('conf_ids', value1DataDef);
 
   let requestCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -1421,8 +1370,8 @@ test('200 Success - FieldCode2 and Data item to save the values of it are not se
   execute();
 
   // 文字型データ項目の値をチェック
-  const recordIds = engine.findData(recordIdDataDef).split('\n');
-  const values1 = engine.findData(value1DataDef).split('\n');
+  const recordIds = engine.findData(dataDefList[0]).split('\n');
+  const values1 = engine.findData(dataDefList[1]).split('\n');
   expect(recordIds.length).toEqual(9);
   expect(values1.length).toEqual(9);
 
@@ -1437,17 +1386,11 @@ test('200 Success - FieldCode2 and Data item to save the values of it are not se
  * レコード ID のみ保存
  */
 test('200 Success - Record IDs only', () => {
-  configs.put('conf_auth', 'kintone');
-  configs.put('conf_domain', 'xxxxx.kintone.com');
-  configs.put('conf_appId', '123');
-  configs.put('conf_query', '$id < 10');
+  const dataDefList = prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '', '');
+  configs.put('conf_ids', '');
+  configs.put('conf_labels', '');
   const fields = ['$id'];
   const types = ['__ID__'];
-
-  // 文字型データ項目（複数行）を準備（レコード ID を保存するデータ項目のみ）
-  const recordIdDataDef = engine.createDataDefinition('レコード ID', 1, 'q_recordIds', 'STRING_TEXTAREA');
-  engine.setData(recordIdDataDef, '事前\n文字列');
-  configs.putObject('conf_recordIds', recordIdDataDef);
 
   httpClient.setRequestHandler((request) => {
     // フィールド一覧のリクエストはなし
@@ -1459,7 +1402,7 @@ test('200 Success - Record IDs only', () => {
   execute();
 
   // 文字型データ項目の値をチェック
-  const recordIds = engine.findData(recordIdDataDef).split('\n');
+  const recordIds = engine.findData(dataDefList[0]).split('\n');
   expect(recordIds.length).toEqual(9);
 
   for (let i = 0; i < 9; i++) {
@@ -1473,6 +1416,7 @@ test('200 Success - Record IDs only', () => {
  */
 test('200 Success - Blank or null values are saved as a blank line', () => {
   const dataDefList = prepareConfigs('xxxxx.kintone.com', '', '123', '$id < 10', '時刻', 'ドロップダウン');
+
   const fields = ['$id', '時刻', 'ドロップダウン'];
   const types = ['__ID__', 'TIME', 'DROP_DOWN'];
 
