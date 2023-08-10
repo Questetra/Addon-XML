@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Download File</label>
 <label locale="ja">kintone: ファイルダウンロード</label>
-<last-modified>2023-08-07</last-modified>
+<last-modified>2023-08-10</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <summary>This item downloads files from an Attachment field of a record in a Kintone App.</summary>
@@ -48,8 +48,8 @@
 main();
 function main(){
   //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-  const auth = configs.get("conf_auth");
-  const basic = configs.get("conf_basic");
+  const auth = configs.getObject("conf_auth");
+  const basic = configs.getObject("conf_basic");
   const domain = configs.get("conf_domain");
   const guestSpaceId = configs.get("conf_guestSpaceId");
   const appId = configs.get("conf_appId");
@@ -57,7 +57,7 @@ function main(){
   const fieldCode = configs.get("conf_fieldCode");
   const filesDef = configs.getObject("conf_files");
 
-  const apiToken = httpClient.getOAuth2Token( auth );
+  const apiToken = auth.getToken();
   let files = engine.findData( filesDef );
   if (files === null) {
     files = new java.util.ArrayList();
@@ -148,7 +148,7 @@ function determineApiUri( domain, guestSpaceId ) {
   * kintone REST API にレコード取得の GET リクエストを送信し、添付ファイルの情報の配列を返す
   * @param {String} apiUri  API の URI（/v1/ まで）
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {String} recordId  レコード ID
   * @param {String} fieldCode  添付ファイルフィールドのフィールドコード
@@ -159,7 +159,7 @@ function getAttachmentsInfo( apiUri, apiToken, basic, appId, recordId, fieldCode
     .header( "X-Cybozu-API-Token", apiToken )
     .queryParam( "app", appId )
     .queryParam( "id", recordId );
-  if ( basic !== "" && basic !== null ) {
+  if (basic !== null) {
     request = request.authSetting(basic);
   }
   const response = request.get( `${apiUri}record.json` );
@@ -185,7 +185,7 @@ function getAttachmentsInfo( apiUri, apiToken, basic, appId, recordId, fieldCode
   * kintone REST API にファイルダウンロードの GET リクエストを送信し、添付ファイルを配列に追加する
   * @param {String} apiUri  API の URI（/v1/ まで）
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {Array<Object>} attachments  添付ファイル情報 {contentType, fileKey, name, size} の配列
   * @param {Array<Qfile>} files  ファイルの配列
   */
@@ -209,7 +209,7 @@ function getAndAddAttachments( apiUri, apiToken, basic, attachments, files ) {
   * kintone REST API にファイルダウンロードの GET リクエストを送信し、レスポンスを返す
   * @param {String} apiUri  API の URI（/v1/ まで）
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {Object} attachment  添付ファイル情報 {contentType, fileKey, name, size}
   * @return {HttpResponseWrapper} response  レスポンス
   */
@@ -217,7 +217,7 @@ function getAttachment( apiUri, apiToken, basic, attachment ) {
   let request = httpClient.begin()
     .header( "X-Cybozu-API-Token", apiToken )
     .queryParam( "fileKey", attachment.fileKey );
-  if ( basic !== "" && basic !== null ) {
+  if (basic !== null) {
     request = request.authSetting(basic);
   }
   const response = request.get( `${apiUri}file.json` );
@@ -264,7 +264,6 @@ const CONTENT_TYPE = "text/plain";
 
 /**
  * 設定の準備
- * @param basic
  * @param domain
  * @param guestSpaceId
  * @param appId
@@ -272,9 +271,11 @@ const CONTENT_TYPE = "text/plain";
  * @param files
  * @return fileDef
  */
-const prepareConfigs = (configs, basic, domain, guestSpaceId, appId, recordId, fieldCode, files) => {
-    configs.put('conf_auth', 'kintone');
-    configs.put('conf_basic', basic);
+const prepareConfigs = (domain, guestSpaceId, appId, recordId, fieldCode, files) => {
+    // 認証設定を準備
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
+
     configs.put('conf_domain', domain);
     configs.put('conf_guestSpaceId', guestSpaceId);
     configs.put('conf_appId', appId);
@@ -309,7 +310,7 @@ const createQfile = (name, size) => {
  * ドメインが不正な文字列でエラーになる場合
  */
 test('Invalid Kintone domain', () => {
-    prepareConfigs(configs, '', 'invalidDomain', '', '1', '1', "添付ファイル", null);
+    prepareConfigs('invalidDomain', '', '1', '1', "添付ファイル", null);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -323,7 +324,7 @@ test('Invalid Kintone domain', () => {
 test('Domain is empty', () => {
     const files = new java.util.ArrayList();
     files.add(createQfile(`file2.txt`, 2));
-    prepareConfigs(configs, '', '', '', '2', '2', "添付ファイル", files);
+    prepareConfigs('', '', '2', '2', "添付ファイル", files);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -335,7 +336,7 @@ test('Domain is empty', () => {
  * ゲストスペース ID が不正な文字列でエラーになる場合
  */
 test('Invalid Guest Space ID', () => {
-    prepareConfigs(configs, '', 'test.cybozu.com', '-1', '3', '3', "添付ファイル", null);
+    prepareConfigs('test.cybozu.com', '-1', '3', '3', "添付ファイル", null);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -347,7 +348,7 @@ test('Invalid Guest Space ID', () => {
  * アプリ ID が不正な文字列でエラーになる場合
  */
 test('Invalid App ID', () => {
-    prepareConfigs(configs, '', 'test.kintone.com', '1', '2.3', '4', "添付ファイル", null);
+    prepareConfigs('test.kintone.com', '1', '2.3', '4', "添付ファイル", null);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -359,7 +360,7 @@ test('Invalid App ID', () => {
  * アプリ ID が空でエラーになる場合
  */
 test('App ID is empty', () => {
-    prepareConfigs(configs, '', 'test.kintone.com', '1', '', '5', "添付ファイル", null);
+    prepareConfigs('test.kintone.com', '1', '', '5', "添付ファイル", null);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -373,7 +374,7 @@ test('App ID is empty', () => {
 test('Invalid Record ID', () => {
     const files = new java.util.ArrayList();
     files.add(createQfile(`file6.txt`, 6));
-    prepareConfigs(configs, '', 'test.kintone.com', '', '6', '-3.3', "添付ファイル", files);
+    prepareConfigs('test.kintone.com', '', '6', '-3.3', "添付ファイル", files);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -385,7 +386,7 @@ test('Invalid Record ID', () => {
  * レコード ID が空でエラーになる場合
  */
 test('Record ID is empty', () => {
-    prepareConfigs(configs, '', 'test.kintone.com', '', '7', '', "添付ファイル", null);
+    prepareConfigs('test.kintone.com', '', '7', '', "添付ファイル", null);
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
@@ -398,12 +399,13 @@ test('Record ID is empty', () => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param domain
  * @param guestSpaceId
  * @param appId
  * @param recordId
  */
-const assertGetRequest = ({ url, method, body }, domain, guestSpaceId, appId, recordId) => {
+const assertGetRequest = ({ url, method, headers }, domain, guestSpaceId, appId, recordId) => {
     expect(method).toEqual('GET');
 
     if (guestSpaceId === "" || guestSpaceId === null) {
@@ -411,6 +413,7 @@ const assertGetRequest = ({ url, method, body }, domain, guestSpaceId, appId, re
     } else {
         expect(url).toEqual(`https://${domain}/k/guest/${guestSpaceId}/v1/record.json?app=${appId}&id=${recordId}`);
     }
+    expect(headers['X-Cybozu-API-Token']).toEqual('kintone-api-key-12345');
 };
 
 
@@ -419,11 +422,12 @@ const assertGetRequest = ({ url, method, body }, domain, guestSpaceId, appId, re
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param domain
  * @param guestSpaceId
  * @param fileKey
  */
-const assertDownloadRequest = ({ url, method, body }, domain, guestSpaceId, fileKey) => {
+const assertDownloadRequest = ({ url, method, headers }, domain, guestSpaceId, fileKey) => {
     expect(method).toEqual('GET');
 
     if (guestSpaceId === "" || guestSpaceId === null) {
@@ -431,6 +435,7 @@ const assertDownloadRequest = ({ url, method, body }, domain, guestSpaceId, file
     } else {
         expect(url).toEqual(`https://${domain}/k/guest/${guestSpaceId}/v1/file.json?fileKey=${fileKey}`);
     }
+    expect(headers['X-Cybozu-API-Token']).toEqual('kintone-api-key-12345');
 };
 
 
@@ -508,7 +513,7 @@ test('GET Failed', () => {
     const appId = '1';
     const recordId = '1';
 
-    prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル", null);
+    prepareConfigs(domain, '', appId, recordId, "添付ファイル", null);
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, domain, '', appId, recordId);
@@ -528,7 +533,7 @@ test('fieldCode does not exist in the record', () => {
     const appId = '2';
     const recordId = '2';
 
-    prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル2", null);
+    prepareConfigs(domain, '', appId, recordId, "添付ファイル2", null);
 
     const attachFileFieldCode = "添付ファイル";
 
@@ -552,7 +557,7 @@ test('fieldCode is not an Attachment field', () => {
     const appId = '3';
     const recordId = '3';
 
-    prepareConfigs(configs, '', domain, '', appId, recordId, "文字列", null);
+    prepareConfigs(domain, '', appId, recordId, "文字列", null);
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, domain, '', appId, recordId);
@@ -580,7 +585,7 @@ test('Necessary HTTP requests exceeds the limit', () => {
     const appId = '4';
     const recordId = '4';
 
-    prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル", null);
+    prepareConfigs(domain, '', appId, recordId, "添付ファイル", null);
 
     const attachFileFieldCode = "添付ファイル";
 
@@ -604,7 +609,7 @@ test('DownLoad Failed', () => {
     const recordId = '5';
     const kNum = 1; //レコードに添付されているファイル数
 
-    prepareConfigs(configs, '', domain, '', appId, recordId, "添付ファイル", null);
+    prepareConfigs(domain, '', appId, recordId, "添付ファイル", null);
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル";
@@ -642,14 +647,16 @@ test('Success - basic and guestSpaseId - File is not null', () => {
     const fileSize2 = 8;
     files.add(createQfile(fileName2, fileSize2));
 
-    const basic = 'basic';
     const guestSpaceId = '7';
     const domain = 'test.cybozu.com';
     const appId = '7';
     const recordId = '7';
     const kNum = 1; //レコードに添付されているファイル数
 
-    const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル7", files);
+    const fileDef = prepareConfigs(domain, guestSpaceId, appId, recordId, "添付ファイル7", files);
+    // basic 認証設定(Authorization ヘッダの確認は省略)
+    const basic = httpClient.createAuthSettingBasic('kintone Basic Auth', 'user', 'pass');
+    configs.putObject('conf_basic', basic);
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル7";
@@ -683,14 +690,13 @@ test('Success - basic and guestSpaseId - File is not null', () => {
  * ファイル型データ項目は空の状態
  */
 test('Success - max-files - File is null', () => {
-    const basic = '';
     const guestSpaceId = '';
     const domain = 'test.kintone.com';
     const appId = '8';
     const recordId = '8';
     const kNum = httpClient.getRequestingLimit() - 1; //レコードに添付されているファイル数
 
-    const fileDef = prepareConfigs(configs, basic, domain, guestSpaceId, appId, recordId, "添付ファイル8", null);
+    const fileDef = prepareConfigs(domain, guestSpaceId, appId, recordId, "添付ファイル8", null);
 
     let reqCount = 0;
     const attachFileFieldCode = "添付ファイル8";
