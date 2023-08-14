@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <!--
+    <last-modified>2023-08-14</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Twilio SendGrid: Send Email</label>
+    <label locale="ja">Twilio SendGrid: メール送信</label>
+    <summary>This item sends an email to the specified email addresses in To/Cc/Bcc, using SendGrid.</summary>
+    <summary locale="ja">この工程は、SendGrid を使用して、To/Cc/Bcc に指定したメールアドレスにメールを送信します。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-sendgrid-email-send/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-sendgrid-email-send/</help-page-url>
+    <tabs>
+        <tab>
+            <label>API Key and Email Settings</label>
+            <label locale="ja">API キーと送信設定</label>
+            <configs>
+                <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+                    <label>C1: Authorization Setting in which API Key is set as token</label>
+                    <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
+                </config>
+                <config name="conf_From" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
+                    <label>C2: From Email Address (must be verified as sender on SendGrid)</label>
+                    <label locale="ja">C2: From メールアドレス（SendGrid で送信者として認証済みである必要があります）</label>
+                </config>
+                <config name="conf_SendAt" form-type="SELECT" select-data-type="DATETIME">
+                    <label>C3: Scheduled Datetime (if blank, sent immediately)</label>
+                    <label locale="ja">C3: 送信日時（指定しない場合、即座に送信されます）</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Send To</label>
+            <label locale="ja">送信先</label>
+            <configs>
+                <config name="conf_To" required="true" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C4-A: To Email Addresses (write one per line)</label>
+                    <label locale="ja">C4-A: To メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+                <config name="conf_Cc" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C4-B: Cc Email Addresses (write one per line)</label>
+                    <label locale="ja">C4-B: Cc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+                <config name="conf_Bcc" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C4-C: Bcc Email Addresses (write one per line)</label>
+                    <label locale="ja">C4-C: Bcc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Email Content</label>
+            <label locale="ja">メール本文</label>
+            <configs>
+                <config name="conf_TemplateId" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
+                    <label>C6-A: Template ID</label>
+                    <label locale="ja">C6-A: テンプレート ID</label>
+                </config>
+                <config name="conf_HasUniqueContent" form-type="TOGGLE">
+                    <label>C6-B: Configure the subject and content without using Template</label>
+                    <label locale="ja">C6-B: テンプレートを使用せず、件名と本文を直接指定する</label>
+                </config>
+                <config name="conf_Subject" depends-on="conf_HasUniqueContent" required="true" el-enabled="true" form-type="TEXTFIELD">
+                    <label>C6-B1: Subject</label>
+                    <label locale="ja">C6-B1: 件名</label>
+                </config>
+                <config name="conf_HtmlContent" depends-on="conf_HasUniqueContent" el-enabled="true" form-type="TEXTAREA">
+                    <label>C6-B2: HTML Content</label>
+                    <label locale="ja">C6-B2: HTML メールの本文</label>
+                </config>
+                <config name="conf_PlainContent" depends-on="conf_HasUniqueContent" el-enabled="true" form-type="TEXTAREA">
+                    <label>C6-B3: Plain Text Content</label>
+                    <label locale="ja">C6-B3: プレーンテキストメールの本文</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Additional Settings</label>
+            <label locale="ja">追加設定</label>
+            <configs>
+                <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C7: Categories for filtering logs (write one per line)</label>
+                    <label locale="ja">C7: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+            </configs>
+        </tab>
+    </tabs>
+
+    <script><![CDATA[
+
+const MAX_CATEGORY_NUM = 10;
+const MAX_CATEGORY_LENGTH = 255; // TODO 要確認
+const MAX_PERSONALIZATION_NUM = 1000; // TODO 要確認
+
+function main(){
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.get('conf_Auth');
+    const from = configs.get('conf_From'); // TODO いったん直接指定のみ対応
+    const sendAt = retrieveSendAt();
+    const sendTo = retrieveSendTo();
+    const content = retrieveContent();
+    const categories = retrieveCategories();
+
+    //// == Calculating / 演算 ==
+    sendMail(auth, from, sendAt, sendTo, content, categories);
+}
+
+/**
+  * config に設定されたカテゴリ一覧を読み出す
+  * 以下の場合はエラー
+  * - 件数が多すぎる
+  * - カテゴリが ASCII 文字でないものを含む
+  * - 文字数が多すぎる
+  * - カテゴリ指定が重複
+  * @return {Array<String>} categories
+  */
+function retrieveCategories() {
+    const categories = retrieveIdsAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
+    if (!categories.every(isAscii)) {
+        throw 'Categories cannot include non-ascii characters.';
+    }
+    // API ドキュメントに文字数制限の記載はないが、実際には制限がある
+    if (categories.some(category => category.length > MAX_CATEGORY_LENGTH)) {
+        throw `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`;
+    }
+    const set = new Set(categories);
+    if (categories.length !== set.size) {
+        throw 'The same category is set multiple times.';
+    }
+    return categories;
+}
+
+/**
+  * 文字列が ASCII 文字だけで構成されているかどうか
+  * @param {String} text テストする文字列
+  * @return {boolean} 文字列が ASCII 文字だけで構成されているかどうか
+  */
+function isAscii(text) {
+    const reg = new RegExp('^[\x00-\x7F]+$');
+    return reg.test(text);
+}
+
+/**
+  * config に設定された ID を数値として読み出す
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {Number} id
+  */
+function retrieveIdAsInt(confName, label) {
+    const idStr = retrieveId(confName, label);
+    return validateIdAndReturnAsInt(idStr, label);
+}
+
+/**
+  * config に設定された ID を読み出す
+  * ID が設定されていない場合はエラー
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {String} id
+  */
+function retrieveId(confName, label) {
+    const idDef = configs.getObject(confName);
+    if (idDef === null) { // 固定値で指定
+        const id = configs.get(confName);
+        if (id === null || id === '') {
+            throw `${label} is blank.`;
+        }
+        return id;
+    }
+    // 文字型データ項目で指定
+    if (idDef.matchDataType('STRING_TEXTFIELD')) {
+        const id = engine.findData(idDef);
+        if (id === null || id === '') {
+            throw `${label} is blank.`;
+        }
+        return id;
+    }
+    // 選択型データ項目で指定
+    const selects = engine.findData(idDef);
+    if (selects === null || selects.size() === 0) {
+        throw `${label} is not selected.`;
+    }
+    return selects.get(0).getValue();
+}
+
+/**
+  * ID 文字列のバリデーションを行い、数値として返す
+  * @param {String} idStr ID 文字列
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {Number} id
+  */
+function validateIdAndReturnAsInt(idStr, label) {
+    const reg = new RegExp('^\\d+$');
+    if (!reg.test(idStr)) {
+        throw `${label} must be integer.`;
+    }
+    return parseInt(idStr, 10);
+}
+
+/**
+  * config に設定された宛先情報を読み出す
+  * @return {Object} sendTo
+  * @return {Array<String>} sendTo.to
+  * @return {Array<String>} sendTo.cc
+  * @return {Array<String>} sendTo.bcc
+  */
+function retrieveSendTo() {
+    const to = retrieveIdsAsList('conf_To', 'To', MAX_PERSONALIZATION_NUM);
+    if (to.length === 0) {
+        throw 'At least one To Email Address is required.';
+    }
+    const cc = retrieveIdsAsList('conf_Cc', 'Cc', MAX_PERSONALIZATION_NUM);
+    const bcc = retrieveIdsAsList('conf_Bcc', 'Bcc', MAX_PERSONALIZATION_NUM);
+    return {to, cc, bcc};
+}
+
+/**
+  * config に設定された ID 一覧を読み出す
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @param {Number} maxNum 最大件数
+  * @return {Array<String>} ids
+  */
+function retrieveIdsAsList(confName, label, maxNum) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return [];
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING')) {
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        const ids = dataObj.split('\n')
+            .filter(id => id !== '');
+        if (ids.length > maxNum) {
+            throw `The maximum number of ${label} is ${maxNum}.`;
+        }
+        return ids;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return [];
+    }
+    const ids = [];
+    selects.forEach(item => {
+        ids.push(item.getValue()); // 選択肢 ID を格納
+    });
+    if (ids.length > maxNum) {
+        throw `The maximum number of ${label} is ${maxNum}.`;
+    }
+    return ids;
+}
+
+/**
+  * config に設定された送信日時を UNIX タイムスタンプとして読み出す
+  * データ項目が選択されていない場合は文字列 null を返す
+  * @return {Number} sendAt
+  */
+function retrieveSendAt() {
+    const dataDef = configs.getObject('conf_SendAt');
+    if (dataDef === null) {
+        return null;
+    }
+    const datetime = engine.findData(dataDef); // AddableTimestamp
+    if (datetime === null) {
+        throw 'Scheduled Datetime is selected but its data is null.';
+    }
+    if (datetime.getTime() <= Date.now()) {
+        throw 'Scheduled Datetime must be future.';
+    }
+    // TODO 72 時間以内のバリデーション
+    return Math.floor(datetime.getTime() / 1000);
+}
+
+/**
+  * config に設定されたメールの中身の情報を読み出す
+  * @return {Object} content メールの中身
+  * @return {String} content.templateId テンプレート ID
+  * @return {String} content.subject メールの件名
+  * @return {String} content.htmlContent HTML メールの本文
+  * @return {String} content.plainContent プレーンテキストメールの本文
+  */
+function retrieveContent() {
+    const hasUniqueContent = configs.getObject('conf_HasUniqueContent');
+    if (!hasUniqueContent) { // テンプレート ID を指定する場合
+        const templateId = retrieveId('conf_TemplateId', 'Template ID');
+        return {templateId};
+    }
+    // 件名、本文を直接指定する場合
+    throwErrorIfTemplateIdIsSet();
+    const subject = configs.get('conf_Subject');
+    if (subject === '') {
+        throw 'Subject is blank.';
+    }
+    const htmlContent = configs.get('conf_HtmlContent');
+    const plainContent = configs.get('conf_PlainContent');
+    if (htmlContent === '' && plainContent === '') {
+        throw 'HTML Content and Plain Content are blank. At least one of them is required.';
+    }
+    return {subject, htmlContent, plainContent};
+}
+
+/**
+  * config にテンプレート ID が設定されている場合、エラーをスローする
+  */
+function throwErrorIfTemplateIdIsSet() {
+    const confValue = configs.get('conf_TemplateId');
+    if (confValue !== '') {
+        throw 'Template ID is set while "Configure the subject and content without using Template" is enabled.';
+    }
+}
+
+/**
+  * メールを送信する
+  * @param {String} auth 認証設定名
+  * @param {String} from 送信元メールアドレス
+  * @param {Number} sendAt 送信日時
+  * @param {Object} sendTo 宛先情報
+  * @param {Object} content メールの中身
+  * @param {Array<String>} categories カテゴリ一覧
+  */
+function sendMail(auth, from, sendAt, sendTo, content, categories) {
+    const requestBody = buildRequestBody(from, sendAt, sendTo, content, categories);
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .post('https://api.sendgrid.com/v3/mail/send');
+    const status = response.getStatusCode();
+    if (status !== 202) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to send mail. status: ${status}`;
+    }
+    // リクエスト成功時のレスポンスは空
+}
+
+/**
+  * リクエストボディを作成
+  * @param {String} from 送信元メールアドレス
+  * @param {Number} sendAt 送信日時
+  * @param {Object} sendTo 宛先情報
+  * @param {Array<String>} sendTo.to To メールアドレス一覧
+  * @param {Array<String>} sendTo.cc Cc メールアドレス一覧
+  * @param {Array<String>} sendTo.bcc Bcc メールアドレス一覧
+  * @param {Object} content メールの中身
+  * @param {String} content.templateId テンプレート ID
+  * @param {String} content.subject メールの件名
+  * @param {String} content.htmlContent HTML メールの本文
+  * @param {String} content.plainContent プレーンテキストメールの本文
+  * @param {Array<String>} categories カテゴリ一覧
+  * @return {Object} requestBody
+  */
+function buildRequestBody(from, sendAt, sendTo, {templateId, subject, htmlContent, plainContent}, categories) {
+    const personalization = buildPersonalization(sendTo);
+    const content = []; // TODO あとで考える。テンプレート ID には一旦、非対応
+    if (plainContent !== '') { // プレーンテキストの本文がある場合、HTML 本文よりも先に設定する必要がある
+        content.push({
+            type: 'text/plain',
+            value: plainContent
+        });
+    }
+    if (htmlContent !== '') {
+        content.push({
+            type: 'text/html',
+            value: htmlContent
+        });
+    }
+    const requestBody = {
+        from: {
+            email: from
+        },
+        send_at: sendAt,
+        personalizations: [personalization],
+        subject,
+        content
+    };
+    if (categories.length > 0) {
+        Object.assign(requestBody, {categories});
+    }
+    return requestBody;
+}
+
+/**
+  * リクエストボディの personalization を作成
+  * @param {Object} sendTo 宛先情報
+  * @param {Array<String>} sendTo.to To メールアドレス一覧
+  * @param {Array<String>} sendTo.cc Cc メールアドレス一覧
+  * @param {Array<String>} sendTo.bcc Bcc メールアドレス一覧
+  * @return {Object} personalization
+  */
+function buildPersonalization({to, cc, bcc}) {
+    const personalization = {
+        to: to.map((email) => ({email}))
+    };
+    if (cc.length > 0) {
+        Object.assign(personalization, {cc: cc.map((email) => ({email}))});
+    }
+    if (bcc.length > 0) {
+        Object.assign(personalization, {bcc: bcc.map((email) => ({email}))});
+    }
+    return personalization;
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADBUlEQVRYR8WXS08TURTH/5cWBeXZ
+        ipHFjBh3JIYSdKELYePGZCYS4jMxtiauwU+gJm40JpYPYKhxodEoj+4R4lYrjQsXimKrUhKRNxNC
+        22vuTMcZ5s50psLgbCY5c++c3zn33PMg+M8PqUh/MnMOFN0gJAKgCQB7s2cKwCIoZe8JyOKo1/+6
+        AwwvNCG42g9KB0AIU+r+ULoIQuLI1w2it3mx3IbyAGPfo0DxoWfFVk0qCGKQxBEnCGeAZDYOoN/d
+        XA8rKI1DFm/arbQHSGYSALnm4dfel1CagCzGrBt4ABfL+w7V4lhDNae4LkiwmqecPKsU8Ci7pssH
+        IQkD5kVbAdiZEzpUzqzJUy04HdrLLfm4mse9z8uc/OzBWlxMzZvktNccEwYAi/bAyle3gHMCSC1t
+        ouvNHAfwpDOEq+9/G3IWmIX6I/rtMACS2dsAbrkd6rYBNAV3IAlMHwyAsQy7u427AsC8IIvNBgDL
+        cCDDbsrZ9x3yAAAtFjQP2ET+DXE/zrTUcEztddVorani5OO/NvBNySNICIIECBCCKgJMr+Vxf3rF
+        zjb1RmgAY9kJEHSbVz3vCuN8ay238ct6AUfHZzn565Mt6Anzt2Mkp6D3rfkWlLZSTEIWenQPzAA4
+        7AfAq5yCPjsAVsAkoVMH4DLITnngxayCC+9sPMCslQTiO8Czn+u4nDLlAbObTQC+HcHTH+u4Yk5E
+        BkAakhBxDMKXx8OINOzhgq1IKeY2ipz8UmoeoycOcPLhnIK7n/gUDUsQcqV3qCOEWJp3XaV5oExu
+        MV1Dm0TkP4A5Eam5YGsq9hWA0iXIotreORYjXwFsi5FWjmf0guQbALO+UN/Gl2P1GIyG5EF7I8LV
+        AS6G2vYFwLof6/NheRPX0wse6plTQ6Jv3clmlMf52wfon3avKQV9DEmMWpl2py03BZ13ALVPUEex
+        hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
+        chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+    ]]></test>
+
+</service-task-definition>
