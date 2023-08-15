@@ -2,9 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <!--
-    <last-modified>2023-08-14</last-modified>
-    -->
+    <last-modified>2023-08-15</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Email</label>
     <label locale="ja">Twilio SendGrid: メール送信</label>
@@ -100,11 +98,11 @@
 const MAX_CATEGORY_NUM = 10;
 const MAX_CATEGORY_LENGTH = 255;
 const MAX_RECIPIENT_NUM = 1000;
-const MAX_TIMESTAMP_DIFF = 259200; // 72 hours
+const MAX_SCHEDULABLE_HOURS = 72;
 
-function main(){
+function main() {
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const from = retrieveFrom();
     const sendAt = retrieveSendAt();
     const sendTo = retrieveSendTo();
@@ -123,10 +121,10 @@ function main(){
   */
 function retrieveFrom() {
     const email = retrieveId('conf_From', 'From Email Address');
-    const from = {email};
+    const from = { email };
     const name = configs.get('conf_FromName');
     if (name !== null && name !== '') {
-        Object.assign(from, {name});
+        Object.assign(from, { name });
     }
     return from;
 }
@@ -221,7 +219,7 @@ function retrieveSendTo() {
     if (recipientNum !== recipients.size) {
         throw 'Each email address must be unique between To, Cc, and Bcc.';
     }
-    return {to, cc, bcc};
+    return { to, cc, bcc };
 }
 
 /**
@@ -283,8 +281,8 @@ function retrieveSendAt() {
     if (sendAt <= now) {
         throw 'Scheduled Datetime must be future.';
     }
-    if (sendAt - now > MAX_TIMESTAMP_DIFF) {
-        throw 'Scheduled Datetime must be within 72 hours.';
+    if (sendAt - now > MAX_SCHEDULABLE_HOURS * 60 * 60) {
+        throw `Scheduled Datetime must be within ${MAX_SCHEDULABLE_HOURS} hours.`;
     }
     return sendAt;
 }
@@ -304,11 +302,11 @@ function retrieveContent() {
         const templateId = retrieveId('conf_TemplateId', 'Template ID');
         const templateDataStr = configs.get('conf_TemplateData');
         if (templateDataStr === '') {
-            return {templateId, templateData: {}};
+            return { templateId, templateData: {} };
         }
         try {
             const templateData = JSON.parse(templateDataStr);
-            return {templateId, templateData};
+            return { templateId, templateData };
         } catch (e) {
             throw 'Template Data is invalid as JSON.';
         }
@@ -324,7 +322,7 @@ function retrieveContent() {
     if (htmlContent === '' && plainContent === '') {
         throw 'HTML Content and Plain Content are blank. At least one of them is required.';
     }
-    return {subject, htmlContent, plainContent};
+    return { subject, htmlContent, plainContent };
 }
 
 /**
@@ -339,7 +337,7 @@ function throwErrorIfTemplateIdIsSet() {
 
 /**
   * メールを送信する
-  * @param {String} auth 認証設定名
+  * @param {AuthSettingWrapper} auth 認証設定
   * @param {Object} from 送信元
   * @param {Number} sendAt 送信日時
   * @param {Object} sendTo 宛先情報
@@ -377,7 +375,7 @@ function sendMail(auth, from, sendAt, sendTo, content, categories) {
   * @param {Array<String>} categories カテゴリ一覧
   * @return {Object} requestBody
   */
-function buildRequestBody(from, sendAt, sendTo, {templateId, templateData, subject, htmlContent, plainContent}, categories) {
+function buildRequestBody(from, sendAt, sendTo, { templateId, templateData, subject, htmlContent, plainContent }, categories) {
     const personalization = buildPersonalization(sendTo);
     const requestBody = {
         from,
@@ -385,15 +383,15 @@ function buildRequestBody(from, sendAt, sendTo, {templateId, templateData, subje
         personalizations: [personalization]
     };
     if (templateId !== undefined) { // テンプレート ID を指定する場合
-        Object.assign(requestBody, {template_id: templateId});
-        Object.assign(requestBody.personalizations[0], {dynamic_template_data: templateData});
+        Object.assign(requestBody, { template_id: templateId });
+        Object.assign(requestBody.personalizations[0], { dynamic_template_data: templateData });
     } else { // 件名、本文を直接指定する場合
-        Object.assign(requestBody, {subject});
+        Object.assign(requestBody, { subject });
         const content = buildContent(plainContent, htmlContent);
-        Object.assign(requestBody, {content});
+        Object.assign(requestBody, { content });
     }
     if (categories.length > 0) {
-        Object.assign(requestBody, {categories});
+        Object.assign(requestBody, { categories });
     }
     return requestBody;
 }
@@ -406,15 +404,15 @@ function buildRequestBody(from, sendAt, sendTo, {templateId, templateData, subje
   * @param {Array<String>} sendTo.bcc Bcc メールアドレス一覧
   * @return {Object} personalization
   */
-function buildPersonalization({to, cc, bcc}) {
+function buildPersonalization({ to, cc, bcc }) {
     const personalization = {
-        to: to.map((email) => ({email}))
+        to: to.map((email) => ({ email }))
     };
     if (cc.length > 0) {
-        Object.assign(personalization, {cc: cc.map((email) => ({email}))});
+        Object.assign(personalization, { cc: cc.map((email) => ({ email })) });
     }
     if (bcc.length > 0) {
-        Object.assign(personalization, {bcc: bcc.map((email) => ({email}))});
+        Object.assign(personalization, { bcc: bcc.map((email) => ({ email })) });
     }
     return personalization;
 }
@@ -464,6 +462,616 @@ function buildContent(plainContent, htmlContent) {
     </icon>
 
     <test><![CDATA[
+
+/**
+  * 設定の準備
+  * メールの内容をテンプレート ID で指定
+  * データ項目を指定できる設定項目は、文字型データ項目で指定
+  * 送信日時の指定なし
+  * @param fromEmail
+  * @param fromName
+  * @param to
+  * @param cc
+  * @param bcc
+  * @param templateId
+  * @param templateData
+  * @param categories
+  */
+const prepareConfigs = (fromEmail, fromName, to, cc, bcc, templateId, templateData, categories) => {
+    // 認証設定を準備
+    const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
+    configs.putObject('conf_Auth', auth);
+
+    setDataItem('From', 1, 'STRING_TEXTFIELD', fromEmail);
+    configs.put('conf_FromName', fromName);
+    setDataItem('To', 2, 'STRING_TEXTAREA', to);
+    setDataItem('Cc', 3, 'STRING_TEXTAREA', cc);
+    setDataItem('Bcc', 4, 'STRING_TEXTAREA', bcc);
+    setDataItem('TemplateId', 5, 'STRING_TEXTFIELD', templateId);
+    configs.put('conf_TemplateData', templateData);
+    setDataItem('Categories', 6, 'STRING_TEXTAREA', categories);
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定個数のデータを改行区切りにした文字列を生成する
+  * @param prefix
+  * @param num
+  * @return string
+  */
+const createListString = (prefix, num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `${prefix}${i}\n`;
+    }
+    return string;
+};
+
+/**
+  * 指定の長さの文字列を作成
+  * @param length
+  * @return string
+  */
+const createString = (length) => {
+    const sourceStr = 'abcdefghijklmnopqrstuvwxyz';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+};
+
+/**
+  * From メールアドレスが空（文字型データ項目）
+  */
+test('From Email Address is blank - set by STRING', () => {
+    prepareConfigs(null, '', 'to1@example.com', null, null, 'template1', '', null);
+    assertError(main, 'From Email Address is blank.');
+});
+
+/**
+  * To が空（文字型データ項目）
+  */
+test('To Email Address is blank - set by STRING', () => {
+    prepareConfigs('from@example.com', '', null, null, null, 'template1', '', null);
+    assertError(main, 'At least one To Email Address is required.');
+});
+
+/**
+  * To の個数が多すぎる（文字型データ項目）
+  */
+test('Too many To Email Addresses - set by STRING', () => {
+    const toStr = createListString('to', MAX_RECIPIENT_NUM + 1);
+    prepareConfigs('from@example.com', '', toStr, null, null, 'template1', '', null);
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * To, Cc, Bcc の合計個数が多すぎる（文字型データ項目）
+  */
+test('Too many recipients - set by STRING', () => {
+    const bccStr = createListString('bcc', MAX_RECIPIENT_NUM - 1);
+    prepareConfigs('from@example.com', '', 'to@example.com', 'cc@example.com', bccStr, 'template1', '', null);
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * To, Cc の指定が重複（文字型データ項目）
+  */
+test('Same email address between To and Cc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'test@example.com\nto@example.com', 'test@example.com', null, 'template1', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * Cc, Bcc の指定が重複（文字型データ項目）
+  */
+test('Same email address between Cc and Bcc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to@example.com', 'cc@example.com\ntest@example.com', 'test@example.com', 'template1', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * To, Bcc の指定が重複（文字型データ項目）
+  */
+test('Same email address between To and Bcc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to@example.com\ntest@example.com', null, 'test@example.com', 'template1', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * テンプレート ID が空（文字型データ項目）
+  */
+test('Template ID is blank - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, null, '', null);
+    assertError(main, 'Template ID is blank.');
+});
+
+/**
+  * テンプレートに埋め込む動的データが JSON 形式でない
+  */
+test('Template Data is invalid as JSON', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', 'invalidData', null);
+    assertError(main, 'Template Data is invalid as JSON.');
+});
+
+/**
+  * カテゴリの個数が多すぎる（文字型データ項目）
+  */
+test('Too many Categories - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM + 1);
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', categoriesStr);
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+});
+
+/**
+  * カテゴリに ASCII 文字以外を含む（文字型データ項目）
+  */
+test('Categories include invalid characters - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', 'categoryてすと');
+    assertError(main, 'Categories cannot include non-ascii characters.');
+});
+
+/**
+  * 長すぎるカテゴリを含む（文字型データ項目）
+  */
+test('Category is loo long - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', categoriesStr);
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+});
+
+/**
+  * カテゴリの指定が重複（文字型データ項目）
+  */
+test('Same category is set multiple times - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM - 1) + 'category1';
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', categoriesStr);
+    assertError(main, 'The same category is set multiple times.');
+});
+
+/**
+  * メールを送信する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param fromEmail
+  * @param fromName
+  * @param sendAt
+  * @param to
+  * @param cc
+  * @param bcc
+  * @param templateId
+  * @param subject
+  * @param htmlContent
+  * @param plainContent
+  * @param categories
+  */
+const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, sendAt, to, cc, bcc, templateId, templateData, subject, htmlContent, plainContent, categories) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/mail/send');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.from.email).toEqual(fromEmail);
+    expect(bodyObj.from.name).toEqual(fromName);
+    expect(bodyObj.send_at).toEqual(sendAt);
+    expect(bodyObj.personalizations.length).toEqual(1);
+    expect(bodyObj.personalizations[0].to.length).toEqual(to.length);
+    to.forEach((email, i) => {
+        expect(bodyObj.personalizations[0].to[i].email).toEqual(email);
+    });
+    if (cc !== undefined) {
+        expect(bodyObj.personalizations[0].cc.length).toEqual(cc.length);
+        cc.forEach((email, i) => {
+            expect(bodyObj.personalizations[0].cc[i].email).toEqual(email);
+        });
+    }
+    if (bcc !== undefined) {
+        expect(bodyObj.personalizations[0].bcc.length).toEqual(bcc.length);
+        bcc.forEach((email, i) => {
+            expect(bodyObj.personalizations[0].bcc[i].email).toEqual(email);
+        });
+    }
+    expect(bodyObj.template_id).toEqual(templateId);
+    expect(bodyObj.personalizations[0].dynamic_template_data).toEqual(templateData);
+    expect(bodyObj.subject).toEqual(subject);
+    let i = 0;
+    if (plainContent !== undefined) {
+        expect(bodyObj.content[i].type).toEqual('text/plain');
+        expect(bodyObj.content[i].value).toEqual(plainContent);
+        i++;
+    }
+    if (htmlContent !== undefined) {
+        expect(bodyObj.content[i].type).toEqual('text/html');
+        expect(bodyObj.content[i].value).toEqual(htmlContent);
+    }
+    expect(bodyObj.categories).toEqual(categories);
+};
+
+/**
+  * メールを送信する API リクエストでエラー
+  */
+test('Fail to send mail', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, 'template1', {}, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to send mail. status: 400');
+});
+
+/**
+  * 成功
+  * テンプレート ID で指定
+  * 動的データなし
+  * 送信日時指定なし
+  * カテゴリ指定なし
+  */
+test('Succeed - Content set by template ID, no template data, no schduled datetime, no categories', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, 'template1', {}, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * テンプレート ID で指定
+  * 動的データあり
+  * 送信日時指定なし
+  * カテゴリ指定あり
+  */
+test('Succeed - Content set by template ID, with template data, no schduled datetime, with categories', () => {
+    const templateData = {
+        title: 'Test Email',
+        number: 20
+    };
+    prepareConfigs('from@example.com', '', 'to1@example.com\nto2@example.com', null, null, 'template2', JSON.stringify(templateData), 'category1\ncategory2');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com', 'to2@example.com'], undefined, undefined, 'template2', templateData, undefined, undefined, undefined, ['category1', 'category2']);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 送信日時を設定
+  * @param timestamp
+  */
+const setSendAt = (timestamp) => {
+    const def = engine.createDataDefinition('送信日時', 10, 'q_sendAt', 'DATETIME');
+    if (timestamp !== null) {
+        engine.setData(def, timestamp);
+    }
+    configs.putObject('conf_SendAt', def);
+}
+
+/**
+  * 送信日時が選択されているのに、値が空
+  */
+test('Scheduled Datetime is null', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    setSendAt(null);
+    assertError(main, 'Scheduled Datetime is selected but its data is null.');
+});
+
+/**
+  * 送信日時が過去
+  */
+test('Scheduled Datetime has passed', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(-1);
+    setSendAt(timestamp);
+    assertError(main, 'Scheduled Datetime must be future.');
+});
+
+/**
+  * 送信日時が 72 時間以上先
+  */
+test('Scheduled Datetime is too late', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addHours(MAX_SCHEDULABLE_HOURS + 1);
+    setSendAt(timestamp);
+    assertError(main, `Scheduled Datetime must be within ${MAX_SCHEDULABLE_HOURS} hours.`);
+});
+
+/**
+  * 成功
+  * テンプレート ID で指定
+  * From 表示名あり
+  * 送信日時指定あり
+  */
+test('Succeed - Content set by template ID, with from display name, with schduled datetime', () => {
+    const to = createListString('to', 10);
+    const cc = createListString('cc', 20);
+    const bcc = createListString('bcc', MAX_RECIPIENT_NUM - 30);
+    const toList = to.split('\n').filter((email) => email !== '');
+    const ccList = cc.split('\n').filter((email) => email !== '');
+    const bccList = bcc.split('\n').filter((email) => email !== '');
+    prepareConfigs('from@example.com', 'From 表示名', to, cc, bcc, 'template3', '', null);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(30);
+    setSendAt(timestamp);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', 'From 表示名', Math.floor(timestamp.getTime() / 1000), toList, ccList, bccList, 'template3', {}, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 「テンプレートを使用せず、件名と本文を直接指定する」がオンなのに、テンプレート ID が文字型データ項目で指定されている
+  */
+test('Template ID is set by STRING while hasUniqueContent is enabled', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    configs.putObject('conf_HasUniqueContent', true);
+    assertError(main, 'Template ID is set while "Configure the subject and content without using Template" is enabled.');
+});
+
+/**
+  * 本文を直接指定
+  * @param subject
+  * @param htmlContent
+  * @param plainContent
+  */
+const setUniqueContent = (subject, htmlContent, plainContent) => {
+    configs.putObject('conf_HasUniqueContent', true);
+    configs.put('conf_TemplateId', '');
+    configs.put('conf_Subject', subject);
+    configs.put('conf_HtmlContent', htmlContent);
+    configs.put('conf_PlainContent', plainContent);
+}
+
+/**
+  * 「テンプレートを使用せず、件名と本文を直接指定する」がオンなのに、件名が空
+  */
+test('Subject is blank', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, null, '', null);
+    setUniqueContent('', 'メールの HTML 本文', '');
+    assertError(main, 'Subject is blank.');
+});
+
+/**
+  * 「テンプレートを使用せず、件名と本文を直接指定する」がオンなのに、HTML 本文とプレーンテキスト本文がともに空
+  */
+test('Content is Blank', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, null, '', null);
+    setUniqueContent('メールの件名', '', '');
+    assertError(main, 'HTML Content and Plain Content are blank. At least one of them is required.');
+});
+
+/**
+  * 成功
+  * 件名、本文を直接指定
+  * プレーンテキストメールの本文は指定なし
+  */
+test('Succeed - Has unique content, without plain text content', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, null, '', null);
+    const subject = 'メールの件名';
+    const htmlContent = 'HTML メールの本文\nこれは HTML メールの本文です';
+    setUniqueContent(subject, htmlContent, '');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, undefined, undefined, subject, htmlContent, undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * 件名、本文を直接指定
+  * HTML 本文とプレーンテキスト本文の両方を指定
+  */
+test('Succeed - Has unique content, with both html content and plain text content', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, null, '', null);
+    const subject = 'メールの件名';
+    const htmlContent = 'HTML メールの本文\nこれは HTML メールの本文です';
+    const plainContent = 'プレーンテキストメールの本文\nこれはプレーンテキストメールの本文です';
+    setUniqueContent(subject, htmlContent, plainContent);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, undefined, undefined, subject, htmlContent, plainContent, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 設定を固定値で上書き
+  * @param fromEmail
+  * @param templateId
+  */
+const updateConfigsWithFixedValues = (fromEmail, templateId) => {
+    configs.put('conf_From', fromEmail);
+    configs.put('conf_TemplateId', templateId);
+};
+
+/**
+  * テンプレート ID が空（固定値）
+  */
+test('Template ID is blank - set as fixed value', () => {
+    prepareConfigs('dummy', '', 'to1@example.com', null, null, 'dummy', '', null);
+    updateConfigsWithFixedValues('from@example.com', '');
+    assertError(main, 'Template ID is blank.');
+});
+
+/**
+  * 「テンプレートを使用せず、件名と本文を直接指定する」がオンなのに、テンプレート ID が固定値で指定されている
+  */
+test('Template ID is set as fixed value while hasUniqueContent is enabled', () => {
+    prepareConfigs('dummy', '', 'to1@example.com', null, null, 'dummy', '', null);
+    updateConfigsWithFixedValues('from@example.com', 'template1');
+    configs.putObject('conf_HasUniqueContent', true);
+    assertError(main, 'Template ID is set while "Configure the subject and content without using Template" is enabled.');
+});
+
+/**
+  * 成功
+  * From メールアドレス、テンプレート ID を固定値で指定
+  */
+test('Succeed - From Email Address and Template ID are set as fixed value', () => {
+    prepareConfigs('dummy', '', 'to1@example.com', null, null, 'dummy', '', null);
+    updateConfigsWithFixedValues('from2@example.com', 'template1');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from2@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, 'template1', {}, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 選択型データ設定用のオブジェクトを作成
+  * @param prefix
+  * @param num
+  * @return selects
+  */
+const prepareSelects = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const item = engine.createItem(`${prefix}${i + 1}`, `${prefix}${i + 1} を選択`);
+        selects.add(item);
+    }
+    return selects;
+};
+
+/**
+  * From メールアドレスが未選択（選択型データ項目）
+  */
+test('From Email Address is not selected - set by SELECT', () => {
+    prepareConfigs('dummy', '', 'to1@example.com', null, null, 'template1', '', null);
+    setDataItem('From', 21, 'SELECT_SINGLE', new java.util.ArrayList());
+    assertError(main, 'From Email Address is not selected.');
+});
+
+/**
+  * To, Cc, Bcc の合計個数が多すぎる（選択型データ項目）
+  */
+test('Too many recipients - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', null, null, null, 'template1', '', null);
+    setDataItem('To', 21, 'SELECT_CHECKBOX', prepareSelects('to_', 1));
+    setDataItem('Cc', 22, 'SELECT_CHECKBOX', prepareSelects('cc_', MAX_RECIPIENT_NUM));
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * カテゴリの個数が多すぎる（選択型データ項目）
+  */
+test('Too many Categories - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', prepareSelects('category_', MAX_CATEGORY_NUM + 1));
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+});
+
+/**
+  * カテゴリに ASCII 文字以外を含む（選択型データ項目）
+  */
+test('Categories include invalid characters - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    const categories = prepareSelects('category_', 3);
+    const invalidCategory = 'catえgory';
+    categories.set(1, engine.createItem(invalidCategory, `${invalidCategory} を選択`));
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
+    assertError(main, 'Categories cannot include non-ascii characters.');
+});
+
+/**
+  * 長すぎるカテゴリを含む（選択型データ項目）
+  */
+test('Category is loo long - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'template1', '', null);
+    const categories = prepareSelects('category_', 3);
+    const longCategory = createString(MAX_CATEGORY_LENGTH + 1);
+    categories.set(1, engine.createItem(longCategory, `${longCategory} を選択`));
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+});
+
+/**
+  * テンプレート ID が未選択（選択型データ項目）
+  */
+test('Template ID is not selected - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'dummy', '', null);
+    setDataItem('TemplateId', 21, 'SELECT_SINGLE', new java.util.ArrayList());
+    assertError(main, 'Template ID is not selected.');
+});
+
+/**
+  * 「テンプレートを使用せず、件名と本文を直接指定する」がオンなのに、テンプレート ID が選択型データ項目で指定されている
+  */
+test('Template ID is set by SELECT while hasUniqueContent is enabled', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, 'dummy', '', null);
+    setDataItem('TemplateId', 21, 'SELECT_SINGLE', new java.util.ArrayList()); // 未選択でもエラー
+    configs.putObject('conf_HasUniqueContent', true);
+    assertError(main, 'Template ID is set while "Configure the subject and content without using Template" is enabled.');
+});
+
+/**
+  * 成功
+  * データ項目で指定できるものは、すべて選択型データ項目で指定
+  * カテゴリ指定なし
+  */
+test('Succeed - Configured by SELECT, no categories', () => {
+    prepareConfigs('dummy', '', null, null, null, 'dummy', '', 'dummy');
+    setDataItem('From', 21, 'SELECT_SINGLE', prepareSelects('from', 1));
+    setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 2));
+    setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 3));
+    setDataItem('Bcc', 24, 'SELECT_CHECKBOX', prepareSelects('bcc', 1));
+    setDataItem('TemplateId', 25, 'SELECT_SINGLE', prepareSelects('template', 1));
+    setDataItem('Categories', 26, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from1', undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], 'template1', {}, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * データ項目で指定できるものは、すべて選択型データ項目で指定
+  * カテゴリ指定あり
+  */
+test('Succeed - Configured by SELECT, no categories', () => {
+    prepareConfigs('dummy', '', null, null, null, 'dummy', '', 'dummy');
+    setDataItem('From', 21, 'SELECT_SINGLE', prepareSelects('from', 1));
+    setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 1));
+    setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 2));
+    setDataItem('Bcc', 24, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    setDataItem('TemplateId', 25, 'SELECT_SINGLE', prepareSelects('template', 1));
+    setDataItem('Categories', 26, 'SELECT_CHECKBOX', prepareSelects('category', 2));
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from1', undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, 'template1', {}, undefined, undefined, undefined, ['category1', 'category2']);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
 
     ]]></test>
 
