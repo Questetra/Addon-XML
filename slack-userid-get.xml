@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-08-17</last-modified>
+    <last-modified>2023-08-18</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Slack: Get User ID</label>
@@ -29,24 +29,23 @@ main();
 function main() {
     const auth = configs.getObject("conf_Token");
 
-    const slackIdNum = decideSlackIdNum(auth);
+    const mailAddress = getmailAddress();
+    const slackUserId = usersLookupByEmail(auth, mailAddress).id;
+	
+    const userId = configs.get("conf_UserId");
 
-    const userID = configs.get("conf_UserId");
-
-    if (userID !== null && userID !== "") {
-        engine.setDataByNumber(userID, slackIdNum);
+    if (userId !== null && userId !== "") {
+        engine.setDataByNumber(userId, slackUserId);
     }
 }
 
 /**
  * ユーザのメールアドレス（Slack アカウント）をconfigから読み出す
- * メールアドレスから Slack ID を取得する関数を呼ぶ
- * @return {String} slackIdNum  Slack ID
+ * @return {String} mailAddress  mail address
  */
-function decideSlackIdNum(auth) {
+function getmailAddress(){
     let mailAddress = "";
-    let slackIdNum = "";
-    mailAddressDef = configs.getObject("conf_User");
+    const mailAddressDef = configs.getObject("conf_User");
 
     if (mailAddressDef === null) { //固定値
         mailAddress = configs.get("conf_User");
@@ -60,24 +59,21 @@ function decideSlackIdNum(auth) {
             mailAddress = user;
         }
     }
-
     if (mailAddress !== "" && mailAddress !== null) {
-        engine.log("email: " + mailAddress);
-        slackIdNum = usersLookupByEmail(auth, mailAddress);
+        engine.log("email: " + mailAddress);        
     } else {
-        throw `User or Email address is brank.`;
+        throw `No User or Email address.`;
     }
-
-    return slackIdNum;
+    return mailAddress;
 }
 
 
 /**
- * メールアドレスから Slack ID を取得する
+ * メールアドレスから Slack User オブジェクト を取得する
  * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
  * @param {String} auth
  * @param {String} email
- * @return {String} responseJson.user.id  Slack ID
+ * @return {String} responseBody  User オブジェクト
  */
 function usersLookupByEmail(auth, email) {
 
@@ -85,27 +81,27 @@ function usersLookupByEmail(auth, email) {
     const response = httpClient.begin()
         .authSetting(auth)
         .queryParam("email", email)
-        .post(url);
+        .get(url);
     const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString();
+    const responseJson = response.getResponseAsString();
 
-    let responseJson;
+    let responseBody;
     try {
-        responseJson = JSON.parse(responseTxt);
+        responseBody = JSON.parse(responseJson);
     } catch (e) {
         engine.log("failed to parse as json");
         engine.log(`status: ${status}`);
-        engine.log(responseTxt);
+        engine.log(responseJson);
         throw `Failed to users lookup By email. status: ${status}`;
     }
 
-    if (responseJson.ok !== true) {
+    if (responseBody.ok !== true) {
         const error = `Failed to get`;
         engine.log(`status: ${status}`);
-        engine.log(responseTxt);
+        engine.log(responseJson);
         throw error;
     }
-    return responseJson.user.id;
+    return responseBody.user;
 }
 ]]></script>
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABFBJREFUWEfN
@@ -172,7 +168,7 @@ const assertPostGetIdRequest = ({ url, method }, email) => {
     let newEmail = email.replace("@", "%40");
 
     expect(url).toEqual(`https://slack.com/api/users.lookupByEmail?email=${newEmail}`);
-    expect(method).toEqual('POST');
+    expect(method).toEqual('GET');
 };
 
 
@@ -180,9 +176,9 @@ const assertPostGetIdRequest = ({ url, method }, email) => {
  * ユーザ ID 取得失敗の場合
  * ユーザは文字型データ項目を選択していて空
  */
-test('User or Email address is brank.- User is a string data item', () => {
+test('No User or Email address.- User is a string data item', () => {
     prepareConfigs(configs, null,);
-    expect(execute).toThrow('User or Email address is brank.');
+    expect(execute).toThrow('No User or Email address.');
 });
 
 
@@ -190,7 +186,7 @@ test('User or Email address is brank.- User is a string data item', () => {
  * ユーザ ID 取得失敗の場合
  * ユーザはユーザ型データ項目で空
  */
-test('User or Email address is brank.- User is a user-type data items', () => {
+test('No User or Email address.- User is a user-type data items', () => {
     prepareConfigs(configs, null);
 
     // ユーザ型データ項目を準備して、config に指定
@@ -198,7 +194,7 @@ test('User or Email address is brank.- User is a user-type data items', () => {
     //conf_User の設定値を上書き
     configs.putObject('conf_User', userDef);
     engine.setData(userDef, null);
-    expect(execute).toThrow('User or Email address is brank.');
+    expect(execute).toThrow('No User or Email address.');
 });
 
 
