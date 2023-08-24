@@ -63,15 +63,15 @@
             <label>Email Content</label>
             <label locale="ja">メール本文</label>
             <configs>
-                <config name="conf_Subject" depends-on="conf_HasUniqueContent" required="true" el-enabled="true" form-type="TEXTFIELD">
+                <config name="conf_Subject" required="true" el-enabled="true" form-type="TEXTFIELD">
                     <label>C10: Subject</label>
                     <label locale="ja">C10: 件名</label>
                 </config>
-                <config name="conf_HtmlContent" depends-on="conf_HasUniqueContent" el-enabled="true" form-type="TEXTAREA">
+                <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
                     <label>C11: HTML Content</label>
                     <label locale="ja">C11: HTML メールの本文</label>
                 </config>
-                <config name="conf_PlainContent" depends-on="conf_HasUniqueContent" el-enabled="true" form-type="TEXTAREA">
+                <config name="conf_PlainContent" el-enabled="true" form-type="TEXTAREA">
                     <label>C12: Plain Text Content</label>
                     <label locale="ja">C12: プレーンテキストメールの本文</label>
                 </config>
@@ -127,7 +127,7 @@ function retrieveEmailAndName(emailConfName) {
     if (name !== null && name !== '') {
         Object.assign(obj, { name });
     }
-    return from;
+    return obj;
 }
 
 /**
@@ -401,6 +401,7 @@ function buildContent(plainContent, htmlContent) {
 /**
   * 設定の準備
   * データ項目を指定できる設定項目は、文字型データ項目で指定
+  * Reply-To 指定なし
   * 送信日時の指定なし
   * @param fromEmail
   * @param fromName
@@ -593,6 +594,8 @@ test('Same category is set multiple times - set by STRING', () => {
   * @param request.body
   * @param fromEmail
   * @param fromName
+  * @param replyToEmail
+  * @param replyToName
   * @param sendAt
   * @param to
   * @param cc
@@ -602,13 +605,17 @@ test('Same category is set multiple times - set by STRING', () => {
   * @param plainContent
   * @param categories
   */
-const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, sendAt, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
+const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, replyToEmail, replyToName, sendAt, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
     expect(url).toEqual('https://api.sendgrid.com/v3/mail/send');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     const bodyObj = JSON.parse(body);
     expect(bodyObj.from.email).toEqual(fromEmail);
     expect(bodyObj.from.name).toEqual(fromName);
+    if (replyToEmail !== undefined) {
+        expect(bodyObj.reply_to.email).toEqual(replyToEmail);
+        expect(bodyObj.reply_to.name).toEqual(replyToName);
+    }
     expect(bodyObj.send_at).toEqual(sendAt);
     expect(bodyObj.personalizations.length).toEqual(1);
     expect(bodyObj.personalizations[0].to.length).toEqual(to.length);
@@ -647,7 +654,7 @@ const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, 
 test('Fail to send mail', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, ['to1@example.com'], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to send mail. status: 400');
@@ -656,13 +663,14 @@ test('Fail to send mail', () => {
 /**
   * 成功
   * HTML 本文のみ指定
+  * Reply-To 指定なし
   * 送信日時指定なし
   * カテゴリ指定なし
   */
 test('Succeed - With HTML content, no schduled datetime, no categories', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, ['to1@example.com'], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -671,13 +679,15 @@ test('Succeed - With HTML content, no schduled datetime, no categories', () => {
 /**
   * 成功
   * HTML 本文、プレーンテキスト本文の両方を指定
+  * Reply-To のメールアドレスのみ指定
   * 送信日時指定なし
   * カテゴリ指定あり
   */
-test('Succeed - With both HTML content and plain text content, no schduled datetime, with categories', () => {
+test('Succeed - With both HTML content and plain text content, with reply-to email, no schduled datetime, with categories', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com\nto2@example.com', null, null, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', 'category1\ncategory2');
+    configs.put('conf_ReplyTo', 'replyto@example.com');
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, ['to1@example.com', 'to2@example.com'], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
+        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, ['to1@example.com', 'to2@example.com'], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -728,9 +738,10 @@ test('Scheduled Datetime is too late', () => {
   * 成功
   * プレーンテキスト本文のみ指定
   * From 表示名あり
+  * Reply-To 表示名あり
   * 送信日時指定あり
   */
-test('Succeed - With plain text content, with from display name, with schduled datetime', () => {
+test('Succeed - With plain text content, with from display name, with reply-to email and its display name, with schduled datetime', () => {
     const to = createListString('to', 10);
     const cc = createListString('cc', 20);
     const bcc = createListString('bcc', MAX_RECIPIENT_NUM - 30);
@@ -738,10 +749,12 @@ test('Succeed - With plain text content, with from display name, with schduled d
     const ccList = cc.split('\n').filter((email) => email !== '');
     const bccList = bcc.split('\n').filter((email) => email !== '');
     prepareConfigs('from@example.com', 'From 表示名', to, cc, bcc, '件名 3', '', 'プレーンテキストメールの本文', null);
+    configs.put('conf_ReplyTo', 'replyto@example.com');
+    configs.put('conf_ReplyToName', 'Reply-To 表示名');
     const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(30);
     setSendAt(timestamp);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', 'From 表示名', Math.floor(timestamp.getTime() / 1000), toList, ccList, bccList, '件名 3', undefined, 'プレーンテキストメールの本文', undefined);
+        assertRequest(request, 'from@example.com', 'From 表示名', 'replyto@example.com', 'Reply-To 表示名', Math.floor(timestamp.getTime() / 1000), toList, ccList, bccList, '件名 3', undefined, 'プレーンテキストメールの本文', undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -817,7 +830,7 @@ test('Succeed - Configured by SELECT, no categories', () => {
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', prepareSelects('bcc', 1));
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', new java.util.ArrayList());
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -835,7 +848,7 @@ test('Succeed - Configured by SELECT, with categories', () => {
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', new java.util.ArrayList());
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', prepareSelects('category', 2));
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
