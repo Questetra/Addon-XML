@@ -19,11 +19,11 @@
                     <label>C1: Authorization Setting in which API Key is set as token</label>
                     <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
                 </config>
-                <config name="conf_From" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
+                <config name="conf_From" required="true" form-type="TEXTFIELD">
                     <label>C2: From Email Address (must be verified as sender on SendGrid)</label>
                     <label locale="ja">C2: From メールアドレス（SendGrid で送信者として認証済みである必要があります）</label>
                 </config>
-                <config name="conf_FromName" form-type="TEXTFIELD" el-enabled="true">
+                <config name="conf_FromName" form-type="TEXTFIELD">
                     <label>C3: From Display Name</label>
                     <label locale="ja">C3: From 表示名</label>
                 </config>
@@ -108,7 +108,7 @@ function main() {
   * @return {String} from.name
   */
 function retrieveFrom() {
-    const email = retrieveId('conf_From', 'From Email Address');
+    const email = configs.get('conf_From');
     const from = { email };
     const name = configs.get('conf_FromName');
     if (name !== null && name !== '') {
@@ -150,38 +150,6 @@ function retrieveCategories() {
 function isAscii(text) {
     const reg = new RegExp('^[\x00-\x7F]+$');
     return reg.test(text);
-}
-
-/**
-  * config に設定された ID を読み出す
-  * ID が設定されていない場合はエラー
-  * @param {String} confName 設定名
-  * @param {String} label エラーメッセージ用ラベル
-  * @return {String} id
-  */
-function retrieveId(confName, label) {
-    const idDef = configs.getObject(confName);
-    if (idDef === null) { // 固定値で指定
-        const id = configs.get(confName);
-        if (id === null || id === '') {
-            throw `${label} is blank.`;
-        }
-        return id;
-    }
-    // 文字型データ項目で指定
-    if (idDef.matchDataType('STRING_TEXTFIELD')) {
-        const id = engine.findData(idDef);
-        if (id === null || id === '') {
-            throw `${label} is blank.`;
-        }
-        return id;
-    }
-    // 選択型データ項目で指定
-    const selects = engine.findData(idDef);
-    if (selects === null || selects.size() === 0) {
-        throw `${label} is not selected.`;
-    }
-    return selects.get(0).getValue();
 }
 
 /**
@@ -433,15 +401,15 @@ const prepareConfigs = (fromEmail, fromName, to, cc, bcc, subject, htmlContent, 
     const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
     configs.putObject('conf_Auth', auth);
 
-    setDataItem('From', 1, 'STRING_TEXTFIELD', fromEmail);
+    configs.put('conf_From', fromEmail);
     configs.put('conf_FromName', fromName);
-    setDataItem('To', 2, 'STRING_TEXTAREA', to);
-    setDataItem('Cc', 3, 'STRING_TEXTAREA', cc);
-    setDataItem('Bcc', 4, 'STRING_TEXTAREA', bcc);
+    setDataItem('To', 1, 'STRING_TEXTAREA', to);
+    setDataItem('Cc', 2, 'STRING_TEXTAREA', cc);
+    setDataItem('Bcc', 3, 'STRING_TEXTAREA', bcc);
     configs.put('conf_Subject', subject);
     configs.put('conf_HtmlContent', htmlContent);
     configs.put('conf_PlainContent', plainContent);
-    setDataItem('Categories', 6, 'STRING_TEXTAREA', categories);
+    setDataItem('Categories', 4, 'STRING_TEXTAREA', categories);
 };
 
 /**
@@ -498,14 +466,6 @@ const createString = (length) => {
         + sourceStr.slice(0, length % sourceStr.length);
     return string;
 };
-
-/**
-  * From メールアドレスが空（文字型データ項目）
-  */
-test('From Email Address is blank - set by STRING', () => {
-    prepareConfigs(null, '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
-    assertError(main, 'From Email Address is blank.');
-});
 
 /**
   * To が空（文字型データ項目）
@@ -772,20 +732,6 @@ test('Succeed - With plain text content, with from display name, with schduled d
 });
 
 /**
-  * 成功
-  * From メールアドレスを固定値で指定
-  */
-test('Succeed - From Email Address is set as fixed value', () => {
-    prepareConfigs('dummy', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
-    configs.put('conf_From', 'from2@example.com'); // 固定値で上書き
-    httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from2@example.com', undefined, undefined, ['to1@example.com'], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
-        return httpClient.createHttpResponse(202, 'application/json', '');
-    });
-    main();
-});
-
-/**
   * 選択型データ設定用のオブジェクトを作成
   * @param prefix
   * @param num
@@ -799,15 +745,6 @@ const prepareSelects = (prefix, num) => {
     }
     return selects;
 };
-
-/**
-  * From メールアドレスが未選択（選択型データ項目）
-  */
-test('From Email Address is not selected - set by SELECT', () => {
-    prepareConfigs('dummy', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
-    setDataItem('From', 21, 'SELECT_SINGLE', new java.util.ArrayList());
-    assertError(main, 'From Email Address is not selected.');
-});
 
 /**
   * To, Cc, Bcc の合計個数が多すぎる（選択型データ項目）
@@ -858,14 +795,13 @@ test('Category is loo long - set by SELECT', () => {
   * カテゴリ指定なし
   */
 test('Succeed - Configured by SELECT, no categories', () => {
-    prepareConfigs('dummy', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
-    setDataItem('From', 21, 'SELECT_SINGLE', prepareSelects('from', 1));
+    prepareConfigs('from1@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
     setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 2));
     setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 3));
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', prepareSelects('bcc', 1));
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', new java.util.ArrayList());
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1', undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from1@example.com', undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -877,14 +813,13 @@ test('Succeed - Configured by SELECT, no categories', () => {
   * カテゴリ指定あり
   */
 test('Succeed - Configured by SELECT, with categories', () => {
-    prepareConfigs('dummy', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
-    setDataItem('From', 21, 'SELECT_SINGLE', prepareSelects('from', 1));
+    prepareConfigs('from1@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
     setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 1));
     setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 2));
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', new java.util.ArrayList());
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', prepareSelects('category', 2));
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1', undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        assertRequest(request, 'from1@example.com', undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
