@@ -71,9 +71,17 @@
                     <label>C11: HTML Content</label>
                     <label locale="ja">C11: HTML メールの本文</label>
                 </config>
+                <config name="conf_InlineImages" form-type="SELECT" select-data-type="FILE">
+                    <label>C11-2: Inline Images to insert to HTML Content</label>
+                    <label locale="ja">C11-2: HTML メールに挿入するインライン画像</label>
+                </config>
                 <config name="conf_PlainContent" el-enabled="true" form-type="TEXTAREA">
                     <label>C12: Plain Text Content</label>
                     <label locale="ja">C12: プレーンテキストメールの本文</label>
+                </config>
+                <config name="conf_Attachments" form-type="SELECT" select-data-type="FILE">
+                    <label>C13: Attachments</label>
+                    <label locale="ja">C13: 添付ファイル</label>
                 </config>
             </configs>
         </tab>
@@ -82,8 +90,8 @@
             <label locale="ja">追加設定</label>
             <configs>
                 <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
-                    <label>C13: Categories for filtering logs (write one per line)</label>
-                    <label locale="ja">C13: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
+                    <label>C14: Categories for filtering logs (write one per line)</label>
+                    <label locale="ja">C14: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
             </configs>
         </tab>
@@ -104,10 +112,11 @@ function main() {
     const sendAt = retrieveSendAt();
     const sendTo = retrieveSendTo();
     const content = retrieveContent();
+    const attachments = retrieveAttachments();
     const categories = retrieveCategories();
 
     //// == Calculating / 演算 ==
-    sendMail(auth, from, replyTo, sendAt, sendTo, content, categories);
+    sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, categories);
 }
 
 /**
@@ -287,6 +296,54 @@ function retrieveContent() {
 }
 
 /**
+  * config に設定された添付ファイルの情報を読み出す
+  * @return {Array<Object>} attachments
+  */
+function retrieveAttachments() {
+    const attachments = [];
+    // インライン画像
+    const inlineImagesDef = configs.getObject('conf_InlineImages');
+    if (inlineImagesDef !== null) {
+        const qfiles = engine.findData(inlineImagesDef);
+        if (qfiles !== null) {
+            const varName = inlineImagesDef.getVarName();
+            for (let i = 0; i < qfiles.size(); i++) {
+                const qfile = qfiles.get(i);
+                const contentType = qfile.getContentType();
+                if (!contentType.startsWith('image/')) {
+                    throw `The content type of ${qfile.getName()} is ${contentType}. Only image/* is allowed for Inline Images.`;
+                }
+                const obj = {
+                    content: base64.encodeToString(fileRepository.readFile(qfile)),
+                    filename: qfile.getName(),
+                    type: contentType,
+                    disposition: 'inline',
+                    content_id: `${i}` // 0, 1, 2, ...
+                };
+                attachments.push(obj);
+            }
+        }
+    }
+    // 添付ファイル
+    const attachmentsDef = configs.getObject('conf_Attachments');
+    if (attachmentsDef !== null) {
+        const qfiles = engine.findData(attachmentsDef);
+        if (qfiles !== null) {
+            qfiles.forEach(qfile => {
+                const obj = {
+                    content: base64.encodeToString(fileRepository.readFile(qfile)),
+                    filename: qfile.getName(),
+                    type: qfile.getContentType(),
+                    disposition: 'attachment'
+                };
+                attachments.push(obj);
+            });
+        }
+    }
+    return attachments;
+}
+
+/**
   * メールを送信する
   * @param {AuthSettingWrapper} auth 認証設定
   * @param {Object} from 送信元
@@ -294,10 +351,11 @@ function retrieveContent() {
   * @param {Number} sendAt 送信日時
   * @param {Object} sendTo 宛先情報
   * @param {Object} content メールの中身
+  * @param {Array<Object>} attachments 添付ファイル
   * @param {Array<String>} categories カテゴリ一覧
   */
-function sendMail(auth, from, replyTo, sendAt, sendTo, content, categories) {
-    const requestBody = buildRequestBody(from, replyTo, sendAt, sendTo, content, categories);
+function sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, categories) {
+    const requestBody = buildRequestBody(from, replyTo, sendAt, sendTo, content, attachments, categories);
     const response = httpClient.begin()
         .authSetting(auth)
         .body(JSON.stringify(requestBody), 'application/json')
@@ -320,10 +378,11 @@ function sendMail(auth, from, replyTo, sendAt, sendTo, content, categories) {
   * @param {String} content.subject メールの件名
   * @param {String} content.htmlContent HTML メールの本文
   * @param {String} content.plainContent プレーンテキストメールの本文
+  * @param {Array<Object>} attachments 添付ファイル
   * @param {Array<String>} categories カテゴリ一覧
   * @return {Object} requestBody
   */
-function buildRequestBody(from, replyTo, sendAt, sendTo, { subject, htmlContent, plainContent }, categories) {
+function buildRequestBody(from, replyTo, sendAt, sendTo, { subject, htmlContent, plainContent }, attachments, categories) {
     const requestBody = {
         from,
         reply_to: replyTo,
@@ -332,6 +391,9 @@ function buildRequestBody(from, replyTo, sendAt, sendTo, { subject, htmlContent,
         subject,
         content: buildContent(plainContent, htmlContent)
     };
+    if (attachments.length > 0) {
+        Object.assign(requestBody, { attachments });
+    }
     if (categories.length > 0) {
         Object.assign(requestBody, { categories });
     }
