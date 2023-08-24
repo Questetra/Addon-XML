@@ -168,23 +168,23 @@ function isAscii(text) {
 /**
   * config に設定された宛先情報を読み出す
   * @return {Object} sendTo
-  * @return {Array<String>} sendTo.to
-  * @return {Array<String>} sendTo.cc
-  * @return {Array<String>} sendTo.bcc
+  * @return {Array<Object>} sendTo.to
+  * @return {Array<Object>} sendTo.cc
+  * @return {Array<Object>} sendTo.bcc
   */
 function retrieveSendTo() {
     const label = 'recipients (To + Cc + Bcc)'
-    const to = retrieveIdsAsList('conf_To', label, MAX_RECIPIENT_NUM);
+    const to = retrieveIdsAsList('conf_To', label, MAX_RECIPIENT_NUM, true);
     if (to.length === 0) {
         throw 'At least one To Email Address is required.';
     }
-    const cc = retrieveIdsAsList('conf_Cc', label, MAX_RECIPIENT_NUM);
-    const bcc = retrieveIdsAsList('conf_Bcc', label, MAX_RECIPIENT_NUM);
+    const cc = retrieveIdsAsList('conf_Cc', label, MAX_RECIPIENT_NUM, true);
+    const bcc = retrieveIdsAsList('conf_Bcc', label, MAX_RECIPIENT_NUM, true);
     const recipientNum = to.length + cc.length + bcc.length;
     if (recipientNum > MAX_RECIPIENT_NUM) {
         throw `The maximum number of ${label} is ${MAX_RECIPIENT_NUM}.`;
     }
-    const recipients = new Set(to.concat(cc).concat(bcc)); // 重複確認用
+    const recipients = new Set(to.map(obj => obj.email).concat(cc.map(obj => obj.email)).concat(bcc.map(obj => obj.email))); // 重複確認用
     if (recipientNum !== recipients.size) {
         throw 'Each email address must be unique between To, Cc, and Bcc.';
     }
@@ -196,9 +196,10 @@ function retrieveSendTo() {
   * @param {String} confName 設定名
   * @param {String} label エラーメッセージ用ラベル
   * @param {Number} maxNum 最大件数
-  * @return {Array<String>} ids
+  * @param {boolean} returnAsEmailObj true の場合、メールアドレスと表示名のオブジェクトの配列を返す
+  * @return {Array<Object>} ids
   */
-function retrieveIdsAsList(confName, label, maxNum) {
+function retrieveIdsAsList(confName, label, maxNum, returnAsEmailObj = false) {
     const dataDef = configs.getObject(confName);
     if (dataDef === null) {
         return [];
@@ -214,6 +215,9 @@ function retrieveIdsAsList(confName, label, maxNum) {
         if (ids.length > maxNum) {
             throw `The maximum number of ${label} is ${maxNum}.`;
         }
+        if (returnAsEmailObj) {
+            return ids.map((email) => ({ email }));
+        }
         return ids;
     }
     // 選択型データ項目の場合
@@ -223,7 +227,13 @@ function retrieveIdsAsList(confName, label, maxNum) {
     }
     const ids = [];
     selects.forEach(item => {
-        ids.push(item.getValue()); // 選択肢 ID を格納
+        if (returnAsEmailObj) {
+            const email = item.getValue();
+            const name = item.getDisplay();
+            ids.push({ email, name });
+            return;
+        }
+        ids.push(item.getValue());
     });
     if (ids.length > maxNum) {
         throw `The maximum number of ${label} is ${maxNum}.`;
@@ -306,9 +316,6 @@ function sendMail(auth, from, replyTo, sendAt, sendTo, content, categories) {
   * @param {Object} replyTo 返信先
   * @param {Number} sendAt 送信日時
   * @param {Object} sendTo 宛先情報
-  * @param {Array<String>} sendTo.to To メールアドレス一覧
-  * @param {Array<String>} sendTo.cc Cc メールアドレス一覧
-  * @param {Array<String>} sendTo.bcc Bcc メールアドレス一覧
   * @param {Object} content メールの中身
   * @param {String} content.subject メールの件名
   * @param {String} content.htmlContent HTML メールの本文
@@ -334,20 +341,18 @@ function buildRequestBody(from, replyTo, sendAt, sendTo, { subject, htmlContent,
 /**
   * リクエストボディの personalization を作成
   * @param {Object} sendTo 宛先情報
-  * @param {Array<String>} sendTo.to To メールアドレス一覧
-  * @param {Array<String>} sendTo.cc Cc メールアドレス一覧
-  * @param {Array<String>} sendTo.bcc Bcc メールアドレス一覧
+  * @param {Array<Object>} sendTo.to To メールアドレス一覧
+  * @param {Array<Object>} sendTo.cc Cc メールアドレス一覧
+  * @param {Array<Object>} sendTo.bcc Bcc メールアドレス一覧
   * @return {Object} personalization
   */
 function buildPersonalization({ to, cc, bcc }) {
-    const personalization = {
-        to: to.map((email) => ({ email }))
-    };
+    const personalization = { to };
     if (cc.length > 0) {
-        Object.assign(personalization, { cc: cc.map((email) => ({ email })) });
+        Object.assign(personalization, { cc });
     }
     if (bcc.length > 0) {
-        Object.assign(personalization, { bcc: bcc.map((email) => ({ email })) });
+        Object.assign(personalization, { bcc });
     }
     return personalization;
 }
@@ -619,19 +624,22 @@ const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, 
     expect(bodyObj.send_at).toEqual(sendAt);
     expect(bodyObj.personalizations.length).toEqual(1);
     expect(bodyObj.personalizations[0].to.length).toEqual(to.length);
-    to.forEach((email, i) => {
+    to.forEach(({ email, name }, i) => {
         expect(bodyObj.personalizations[0].to[i].email).toEqual(email);
+        expect(bodyObj.personalizations[0].to[i].name).toEqual(name);
     });
     if (cc !== undefined) {
         expect(bodyObj.personalizations[0].cc.length).toEqual(cc.length);
-        cc.forEach((email, i) => {
+        cc.forEach(({ email, name }, i) => {
             expect(bodyObj.personalizations[0].cc[i].email).toEqual(email);
+            expect(bodyObj.personalizations[0].cc[i].name).toEqual(name);
         });
     }
     if (bcc !== undefined) {
         expect(bodyObj.personalizations[0].bcc.length).toEqual(bcc.length);
-        bcc.forEach((email, i) => {
+        bcc.forEach(({ email, name }, i) => {
             expect(bodyObj.personalizations[0].bcc[i].email).toEqual(email);
+            expect(bodyObj.personalizations[0].bcc[i].name).toEqual(name);
         });
     }
     expect(bodyObj.subject).toEqual(subject);
@@ -654,7 +662,7 @@ const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, 
 test('Fail to send mail', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, ['to1@example.com'], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to send mail. status: 400');
@@ -670,7 +678,7 @@ test('Fail to send mail', () => {
 test('Succeed - With HTML content, no schduled datetime, no categories', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, ['to1@example.com'], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -687,7 +695,7 @@ test('Succeed - With both HTML content and plain text content, with reply-to ema
     prepareConfigs('from@example.com', '', 'to1@example.com\nto2@example.com', null, null, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', 'category1\ncategory2');
     configs.put('conf_ReplyTo', 'replyto@example.com');
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, ['to1@example.com', 'to2@example.com'], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
+        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, [{email: 'to1@example.com'}, {email: 'to2@example.com'}], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -745,9 +753,9 @@ test('Succeed - With plain text content, with from display name, with reply-to e
     const to = createListString('to', 10);
     const cc = createListString('cc', 20);
     const bcc = createListString('bcc', MAX_RECIPIENT_NUM - 30);
-    const toList = to.split('\n').filter((email) => email !== '');
-    const ccList = cc.split('\n').filter((email) => email !== '');
-    const bccList = bcc.split('\n').filter((email) => email !== '');
+    const toList = to.split('\n').filter((email) => email !== '').map(email => ({ email }));
+    const ccList = cc.split('\n').filter((email) => email !== '').map(email => ({ email }));
+    const bccList = bcc.split('\n').filter((email) => email !== '').map(email => ({ email }));
     prepareConfigs('from@example.com', 'From 表示名', to, cc, bcc, '件名 3', '', 'プレーンテキストメールの本文', null);
     configs.put('conf_ReplyTo', 'replyto@example.com');
     configs.put('conf_ReplyToName', 'Reply-To 表示名');
@@ -769,7 +777,7 @@ test('Succeed - With plain text content, with from display name, with reply-to e
 const prepareSelects = (prefix, num) => {
     const selects = new java.util.ArrayList();
     for (let i = 0; i < num; i++) {
-        const item = engine.createItem(`${prefix}${i + 1}`, `${prefix}${i + 1} を選択`);
+        const item = engine.createItem(`${prefix}${i + 1}`, `${prefix}${i + 1} のラベル`);
         selects.add(item);
     }
     return selects;
@@ -801,7 +809,7 @@ test('Categories include invalid characters - set by SELECT', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
     const categories = prepareSelects('category_', 3);
     const invalidCategory = 'catえgory';
-    categories.set(1, engine.createItem(invalidCategory, `${invalidCategory} を選択`));
+    categories.set(1, engine.createItem(invalidCategory, `${invalidCategory} のラベル`));
     setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
     assertError(main, 'Categories cannot include non-ascii characters.');
 });
@@ -813,7 +821,7 @@ test('Category is loo long - set by SELECT', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
     const categories = prepareSelects('category_', 3);
     const longCategory = createString(MAX_CATEGORY_LENGTH + 1);
-    categories.set(1, engine.createItem(longCategory, `${longCategory} を選択`));
+    categories.set(1, engine.createItem(longCategory, `${longCategory} のラベル`));
     setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
     assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
 });
@@ -829,8 +837,20 @@ test('Succeed - Configured by SELECT, no categories', () => {
     setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 3));
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', prepareSelects('bcc', 1));
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    const toList = [
+        {email: 'to1', name: 'to1 のラベル'},
+        {email: 'to2', name: 'to2 のラベル'}
+    ];
+    const ccList = [
+        {email: 'cc1', name: 'cc1 のラベル'},
+        {email: 'cc2', name: 'cc2 のラベル'},
+        {email: 'cc3', name: 'cc3 のラベル'}
+    ];
+    const bccList = [
+        {email: 'bcc1', name: 'bcc1 のラベル'}
+    ];
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, ['to1', 'to2'], ['cc1', 'cc2', 'cc3'], ['bcc1'], '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, toList, ccList, bccList, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -847,8 +867,15 @@ test('Succeed - Configured by SELECT, with categories', () => {
     setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 2));
     setDataItem('Bcc', 24, 'SELECT_CHECKBOX', new java.util.ArrayList());
     setDataItem('Categories', 26, 'SELECT_CHECKBOX', prepareSelects('category', 2));
+    const toList = [
+        {email: 'to1', name: 'to1 のラベル'}
+    ];
+    const ccList = [
+        {email: 'cc1', name: 'cc1 のラベル'},
+        {email: 'cc2', name: 'cc2 のラベル'}
+    ];
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, ['to1'], ['cc1', 'cc2'], undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, toList, ccList, undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
