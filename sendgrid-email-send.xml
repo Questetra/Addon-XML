@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-08-24</last-modified>
+    <last-modified>2023-08-25</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Email</label>
     <label locale="ja">Twilio SendGrid: メール送信</label>
@@ -311,7 +311,7 @@ function retrieveAttachments() {
                 const qfile = qfiles.get(i);
                 const contentType = qfile.getContentType();
                 if (!contentType.startsWith('image/')) {
-                    throw `The content type of ${qfile.getName()} is ${contentType}. Only image/* is allowed for Inline Images.`;
+                    throw `${qfile.getName()} is not an image.`;
                 }
                 const obj = {
                     content: base64.encodeToString(fileRepository.readFile(qfile)),
@@ -615,6 +615,16 @@ test('Subject is blank', () => {
 test('Content is Blank', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '', '', null);
     assertError(main, 'HTML Content and Plain Content are blank. At least one of them is required.');
+});
+
+/**
+  * インライン画像に画像ファイル以外を指定
+  */
+test('Content-Type of an inline image does not start with image/', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const file = engine.createQfile('画像でないファイル', 'text/plain', 'aaa');
+    setDataItem('InlineImages', 10, 'FILE', [file]);
+    assertError(main, '画像でないファイル is not an image.');
 });
 
 /**
@@ -938,6 +948,148 @@ test('Succeed - Configured by SELECT, with categories', () => {
     ];
     httpClient.setRequestHandler((request) => {
         assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, toList, ccList, undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * API リクエストの body に添付ファイルが含まれることをテスト
+  * @param requestBody
+  * @param index
+  * @param fileName
+  * @param contentType
+  * @param disposition
+  * @param contentId
+  */
+const assertAttachment = (requestBody, index, fileName, contentType, disposition, contentId) => {
+    const attachment = JSON.parse(requestBody).attachments[index];
+    // content のテストは省略
+    expect(attachment.filename).toEqual(fileName);
+    expect(attachment.type).toEqual(contentType);
+    expect(attachment.disposition).toEqual(disposition);
+    expect(attachment.content_id).toEqual(contentId);
+};
+
+/**
+  * 成功
+  * インライン画像、添付ファイルを指定
+  */
+test('Succeed - With inline images and attachments', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
+        assertAttachment(request.body, 3, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 4, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * 添付ファイルのみ指定。インライン画像はデータ項目を選択し、ファイル未添付
+  */
+test('Succeed - With attachments, with no inline images', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像はデータ項目を選択し、ファイル未添付
+    setDataItem('InlineImages', 10, 'FILE', null);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * 添付ファイルのみ指定。インライン画像はデータ項目の指定なし
+  */
+test('Succeed - With attachments, with inline images not selected', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * インライン画像のみ指定。添付ファイルはデータ項目を選択し、ファイル未添付
+  */
+test('Succeed - With inline images, with no attachments', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    // 添付ファイルはデータ項目を指定し、ファイル未添付
+    setDataItem('Attachments', 11, 'FILE', null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * インライン画像のみ指定。添付ファイルはデータ項目の指定なし
+  */
+test('Succeed - With inline images, with attachments not selected', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
