@@ -39,6 +39,10 @@
                     <label>C6: Scheduled Datetime (if blank, sent immediately)</label>
                     <label locale="ja">C6: 送信日時（指定しない場合、即座に送信されます）</label>
                 </config>
+                <config name="conf_TrackOpen" form-type="TOGGLE">
+                    <label>C7: Track if the email is opened</label>
+                    <label locale="ja">C7: メールの開封を検知する</label>
+                </config>
             </configs>
         </tab>
         <tab>
@@ -46,16 +50,16 @@
             <label locale="ja">送信先</label>
             <configs>
                 <config name="conf_To" required="true" form-type="SELECT" select-data-type="STRING|SELECT">
-                    <label>C7: To Email Addresses (write one per line)</label>
-                    <label locale="ja">C7: To メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                    <label>C8: To Email Addresses (write one per line)</label>
+                    <label locale="ja">C8: To メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
                 <config name="conf_Cc" form-type="SELECT" select-data-type="STRING|SELECT">
-                    <label>C8: Cc Email Addresses (write one per line)</label>
-                    <label locale="ja">C8: Cc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                    <label>C9: Cc Email Addresses (write one per line)</label>
+                    <label locale="ja">C9: Cc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
                 <config name="conf_Bcc" form-type="SELECT" select-data-type="STRING|SELECT">
-                    <label>C9: Bcc Email Addresses (write one per line)</label>
-                    <label locale="ja">C9: Bcc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                    <label>C10: Bcc Email Addresses (write one per line)</label>
+                    <label locale="ja">C10: Bcc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
             </configs>
         </tab>
@@ -64,20 +68,20 @@
             <label locale="ja">メール本文</label>
             <configs>
                 <config name="conf_Subject" required="true" el-enabled="true" form-type="TEXTFIELD">
-                    <label>C10: Subject</label>
-                    <label locale="ja">C10: 件名</label>
+                    <label>C11: Subject</label>
+                    <label locale="ja">C11: 件名</label>
                 </config>
                 <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
-                    <label>C11: HTML Content</label>
-                    <label locale="ja">C11: HTML メールの本文</label>
+                    <label>C12-A1: HTML Content</label>
+                    <label locale="ja">C12-A1: HTML メールの本文</label>
                 </config>
                 <config name="conf_InlineImages" form-type="SELECT" select-data-type="FILE">
-                    <label>C11-2: Inline Images to insert to HTML Content</label>
-                    <label locale="ja">C11-2: HTML メールに挿入するインライン画像</label>
+                    <label>C12-A2: Inline Images to insert to HTML Content</label>
+                    <label locale="ja">C12-A2: HTML メールに挿入するインライン画像</label>
                 </config>
                 <config name="conf_PlainContent" el-enabled="true" form-type="TEXTAREA">
-                    <label>C12: Plain Text Content</label>
-                    <label locale="ja">C12: プレーンテキストメールの本文</label>
+                    <label>C12-B: Plain Text Content</label>
+                    <label locale="ja">C12-B: プレーンテキストメールの本文</label>
                 </config>
                 <config name="conf_Attachments" form-type="SELECT" select-data-type="FILE">
                     <label>C13: Attachments</label>
@@ -110,13 +114,14 @@ function main() {
     const from = retrieveEmailAndName('conf_From');
     const replyTo = retrieveEmailAndName('conf_ReplyTo');
     const sendAt = retrieveSendAt();
+    const trackOpen = configs.getObject('conf_TrackOpen');
     const sendTo = retrieveSendTo();
     const content = retrieveContent();
     const attachments = retrieveAttachments();
     const categories = retrieveCategories();
 
     //// == Calculating / 演算 ==
-    sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, categories);
+    sendMail(auth, from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories);
 }
 
 /**
@@ -349,13 +354,14 @@ function retrieveAttachments() {
   * @param {Object} from 送信元
   * @param {Object} replyTo 返信先
   * @param {Number} sendAt 送信日時
+  * @param {Boolean} trackOpen 開封検知を行うかどうか
   * @param {Object} sendTo 宛先情報
   * @param {Object} content メールの中身
   * @param {Array<Object>} attachments 添付ファイル
   * @param {Array<String>} categories カテゴリ一覧
   */
-function sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, categories) {
-    const requestBody = buildRequestBody(from, replyTo, sendAt, sendTo, content, attachments, categories);
+function sendMail(auth, from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories) {
+    const requestBody = buildRequestBody(from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories);
     const response = httpClient.begin()
         .authSetting(auth)
         .body(JSON.stringify(requestBody), 'application/json')
@@ -373,6 +379,7 @@ function sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, cat
   * @param {Object} from 送信元
   * @param {Object} replyTo 返信先
   * @param {Number} sendAt 送信日時
+  * @param {Boolean} trackOpen 開封検知を行うかどうか
   * @param {Object} sendTo 宛先情報
   * @param {Object} content メールの中身
   * @param {String} content.subject メールの件名
@@ -382,11 +389,16 @@ function sendMail(auth, from, replyTo, sendAt, sendTo, content, attachments, cat
   * @param {Array<String>} categories カテゴリ一覧
   * @return {Object} requestBody
   */
-function buildRequestBody(from, replyTo, sendAt, sendTo, { subject, htmlContent, plainContent }, attachments, categories) {
+function buildRequestBody(from, replyTo, sendAt, trackOpen, sendTo, { subject, htmlContent, plainContent }, attachments, categories) {
     const requestBody = {
         from,
         reply_to: replyTo,
         send_at: sendAt,
+        tracking_settings: {
+            open_tracking: {
+                enable: trackOpen
+            }
+        },
         personalizations: [buildPersonalization(sendTo)],
         subject,
         content: buildContent(plainContent, htmlContent)
@@ -470,6 +482,7 @@ function buildContent(plainContent, htmlContent) {
   * データ項目を指定できる設定項目は、文字型データ項目で指定
   * Reply-To 指定なし
   * 送信日時の指定なし
+  * 開封検知の設定オフ
   * @param fromEmail
   * @param fromName
   * @param to
@@ -487,6 +500,7 @@ const prepareConfigs = (fromEmail, fromName, to, cc, bcc, subject, htmlContent, 
 
     configs.put('conf_From', fromEmail);
     configs.put('conf_FromName', fromName);
+    configs.putObject('conf_TrackOpen', false); // 初期値として false を設定しておく
     setDataItem('To', 1, 'STRING_TEXTAREA', to);
     setDataItem('Cc', 2, 'STRING_TEXTAREA', cc);
     setDataItem('Bcc', 3, 'STRING_TEXTAREA', bcc);
@@ -674,6 +688,7 @@ test('Same category is set multiple times - set by STRING', () => {
   * @param replyToEmail
   * @param replyToName
   * @param sendAt
+  * @param trackOpen
   * @param to
   * @param cc
   * @param bcc
@@ -682,7 +697,7 @@ test('Same category is set multiple times - set by STRING', () => {
   * @param plainContent
   * @param categories
   */
-const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, replyToEmail, replyToName, sendAt, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
+const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, replyToEmail, replyToName, sendAt, trackOpen, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
     expect(url).toEqual('https://api.sendgrid.com/v3/mail/send');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -694,6 +709,7 @@ const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, 
         expect(bodyObj.reply_to.name).toEqual(replyToName);
     }
     expect(bodyObj.send_at).toEqual(sendAt);
+    expect(bodyObj.tracking_settings.open_tracking.enable).toEqual(trackOpen);
     expect(bodyObj.personalizations.length).toEqual(1);
     expect(bodyObj.personalizations[0].to.length).toEqual(to.length);
     to.forEach(({ email, name }, i) => {
@@ -734,7 +750,7 @@ const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, 
 test('Fail to send mail', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to send mail. status: 400');
@@ -745,12 +761,13 @@ test('Fail to send mail', () => {
   * HTML 本文のみ指定
   * Reply-To 指定なし
   * 送信日時指定なし
+  * メール開封検知なし
   * カテゴリ指定なし
   */
 test('Succeed - With HTML content, no schduled datetime, no categories', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -761,13 +778,15 @@ test('Succeed - With HTML content, no schduled datetime, no categories', () => {
   * HTML 本文、プレーンテキスト本文の両方を指定
   * Reply-To のメールアドレスのみ指定
   * 送信日時指定なし
+  * メール開封検知あり
   * カテゴリ指定あり
   */
 test('Succeed - With both HTML content and plain text content, with reply-to email, no schduled datetime, with categories', () => {
     prepareConfigs('from@example.com', '', 'to1@example.com\nto2@example.com', null, null, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', 'category1\ncategory2');
     configs.put('conf_ReplyTo', 'replyto@example.com');
+    configs.putObject('conf_TrackOpen', true);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, [{email: 'to1@example.com'}, {email: 'to2@example.com'}], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
+        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, true, [{email: 'to1@example.com'}, {email: 'to2@example.com'}], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -834,7 +853,7 @@ test('Succeed - With plain text content, with from display name, with reply-to e
     const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(30);
     setSendAt(timestamp);
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', 'From 表示名', 'replyto@example.com', 'Reply-To 表示名', Math.floor(timestamp.getTime() / 1000), toList, ccList, bccList, '件名 3', undefined, 'プレーンテキストメールの本文', undefined);
+        assertRequest(request, 'from@example.com', 'From 表示名', 'replyto@example.com', 'Reply-To 表示名', Math.floor(timestamp.getTime() / 1000), false, toList, ccList, bccList, '件名 3', undefined, 'プレーンテキストメールの本文', undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -922,7 +941,7 @@ test('Succeed - Configured by SELECT, no categories', () => {
         {email: 'bcc1', name: 'bcc1 のラベル'}
     ];
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, toList, ccList, bccList, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, false, toList, ccList, bccList, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -947,7 +966,7 @@ test('Succeed - Configured by SELECT, with categories', () => {
         {email: 'cc2', name: 'cc2 のラベル'}
     ];
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, toList, ccList, undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, false, toList, ccList, undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
         return httpClient.createHttpResponse(202, 'application/json', '');
     });
     main();
@@ -990,7 +1009,7 @@ test('Succeed - With inline images and attachments', () => {
     setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
         assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
         assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
@@ -1017,7 +1036,7 @@ test('Succeed - With attachments, with no inline images', () => {
     setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
         assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
@@ -1038,7 +1057,7 @@ test('Succeed - With attachments, with inline images not selected', () => {
     setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
         assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
         return httpClient.createHttpResponse(202, 'application/json', '');
@@ -1063,7 +1082,7 @@ test('Succeed - With inline images, with no attachments', () => {
     setDataItem('Attachments', 11, 'FILE', null);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
         assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
         assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
@@ -1086,7 +1105,7 @@ test('Succeed - With inline images, with attachments not selected', () => {
     setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
         assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
         assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
         assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
