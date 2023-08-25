@@ -1,0 +1,1102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <last-modified>2023-08-25</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Twilio SendGrid: Send Email</label>
+    <label locale="ja">Twilio SendGrid: メール送信</label>
+    <summary>This item sends an email to the specified email addresses in To/Cc/Bcc, using SendGrid.</summary>
+    <summary locale="ja">この工程は、SendGrid を使用して、To/Cc/Bcc に指定したメールアドレスにメールを送信します。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-sendgrid-email-send/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-sendgrid-email-send/</help-page-url>
+    <tabs>
+        <tab>
+            <label>API Key and Email Settings</label>
+            <label locale="ja">API キーと送信設定</label>
+            <configs>
+                <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+                    <label>C1: Authorization Setting in which API Key is set as token</label>
+                    <label locale="ja">C1: API キーをトークンとして設定した認証設定</label>
+                </config>
+                <config name="conf_From" required="true" form-type="TEXTFIELD">
+                    <label>C2: From Email Address (must be verified as sender on SendGrid)</label>
+                    <label locale="ja">C2: From メールアドレス（SendGrid で送信者として認証済みである必要があります）</label>
+                </config>
+                <config name="conf_FromName" form-type="TEXTFIELD">
+                    <label>C3: From Display Name</label>
+                    <label locale="ja">C3: From 表示名</label>
+                </config>
+                <config name="conf_ReplyTo" form-type="TEXTFIELD">
+                    <label>C4: Reply-To Email Address</label>
+                    <label locale="ja">C4: Reply-To メールアドレス</label>
+                </config>
+                <config name="conf_ReplyToName" form-type="TEXTFIELD">
+                    <label>C5: Reply-To Display Name</label>
+                    <label locale="ja">C5: Reply-To 表示名</label>
+                </config>
+                <config name="conf_SendAt" form-type="SELECT" select-data-type="DATETIME">
+                    <label>C6: Scheduled Datetime (if blank, sent immediately)</label>
+                    <label locale="ja">C6: 送信日時（指定しない場合、即座に送信されます）</label>
+                </config>
+                <config name="conf_TrackOpen" form-type="TOGGLE">
+                    <label>C7: Track if the email is opened</label>
+                    <label locale="ja">C7: メールの開封を検知する</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Send To</label>
+            <label locale="ja">送信先</label>
+            <configs>
+                <config name="conf_To" required="true" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C8: To Email Addresses (write one per line)</label>
+                    <label locale="ja">C8: To メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+                <config name="conf_Cc" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C9: Cc Email Addresses (write one per line)</label>
+                    <label locale="ja">C9: Cc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+                <config name="conf_Bcc" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C10: Bcc Email Addresses (write one per line)</label>
+                    <label locale="ja">C10: Bcc メールアドレス（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Email Content</label>
+            <label locale="ja">メール本文</label>
+            <configs>
+                <config name="conf_Subject" required="true" el-enabled="true" form-type="TEXTFIELD">
+                    <label>C11: Subject</label>
+                    <label locale="ja">C11: 件名</label>
+                </config>
+                <config name="conf_HtmlContent" el-enabled="true" form-type="TEXTAREA">
+                    <label>C12-A1: HTML Content</label>
+                    <label locale="ja">C12-A1: HTML メールの本文</label>
+                </config>
+                <config name="conf_InlineImages" form-type="SELECT" select-data-type="FILE">
+                    <label>C12-A2: Inline Images to insert to HTML Content</label>
+                    <label locale="ja">C12-A2: HTML メールに挿入するインライン画像</label>
+                </config>
+                <config name="conf_PlainContent" el-enabled="true" form-type="TEXTAREA">
+                    <label>C12-B: Plain Text Content</label>
+                    <label locale="ja">C12-B: プレーンテキストメールの本文</label>
+                </config>
+                <config name="conf_Attachments" form-type="SELECT" select-data-type="FILE">
+                    <label>C13: Attachments</label>
+                    <label locale="ja">C13: 添付ファイル</label>
+                </config>
+            </configs>
+        </tab>
+        <tab>
+            <label>Additional Settings</label>
+            <label locale="ja">追加設定</label>
+            <configs>
+                <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
+                    <label>C14: Categories for filtering logs (write one per line)</label>
+                    <label locale="ja">C14: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
+                </config>
+            </configs>
+        </tab>
+    </tabs>
+
+    <script><![CDATA[
+
+const MAX_CATEGORY_NUM = 10;
+const MAX_CATEGORY_LENGTH = 255;
+const MAX_RECIPIENT_NUM = 1000;
+const MAX_SCHEDULABLE_HOURS = 72;
+
+function main() {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const auth = configs.getObject('conf_Auth');
+    const from = retrieveEmailAndName('conf_From');
+    const replyTo = retrieveEmailAndName('conf_ReplyTo');
+    const sendAt = retrieveSendAt();
+    const trackOpen = configs.getObject('conf_TrackOpen');
+    const sendTo = retrieveSendTo();
+    const content = retrieveContent();
+    const attachments = retrieveAttachments();
+    const categories = retrieveCategories();
+
+    //// == Calculating / 演算 ==
+    sendMail(auth, from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories);
+}
+
+/**
+  * config に設定されたメールアドレスと表示名の情報を読み出す
+  * @param {String} emailConfName
+  * @return {Object} obj
+  * @return {String} obj.email
+  * @return {String} obj.name
+  */
+function retrieveEmailAndName(emailConfName) {
+    const email = configs.get(emailConfName);
+    if (email === null || email === '') {
+        return null;
+    }
+    const obj = { email };
+    const name = configs.get(`${emailConfName}Name`);
+    if (name !== null && name !== '') {
+        Object.assign(obj, { name });
+    }
+    return obj;
+}
+
+/**
+  * config に設定されたカテゴリ一覧を読み出す
+  * 以下の場合はエラー
+  * - 件数が多すぎる
+  * - カテゴリが ASCII 文字でないものを含む
+  * - 文字数が多すぎる
+  * - カテゴリ指定が重複
+  * @return {Array<String>} categories
+  */
+function retrieveCategories() {
+    const categories = retrieveIdsAsList('conf_Categories');
+    if (categories.length > MAX_CATEGORY_NUM) {
+        throw `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`;
+    }
+    if (!categories.every(isAscii)) {
+        throw 'Categories cannot include non-ascii characters.';
+    }
+    // API ドキュメントに文字数制限の記載はないが、実際には制限がある
+    if (categories.some(category => category.length > MAX_CATEGORY_LENGTH)) {
+        throw `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`;
+    }
+    const set = new Set(categories); // 重複確認用
+    if (categories.length !== set.size) {
+        throw 'The same category is set multiple times.';
+    }
+    return categories;
+}
+
+/**
+  * 文字列が ASCII 文字だけで構成されているかどうか
+  * @param {String} text テストする文字列
+  * @return {boolean} 文字列が ASCII 文字だけで構成されているかどうか
+  */
+function isAscii(text) {
+    const reg = new RegExp('^[\x00-\x7F]+$');
+    return reg.test(text);
+}
+
+/**
+  * config に設定された宛先情報を読み出す
+  * @return {Object} sendTo
+  * @return {Array<Object>} sendTo.to
+  * @return {Array<Object>} sendTo.cc
+  * @return {Array<Object>} sendTo.bcc
+  */
+function retrieveSendTo() {
+    const to = retrieveIdsAsList('conf_To', true);
+    if (to.length === 0) { // SendGrid の仕様で、To は必須
+        throw 'At least one To Email Address is required.';
+    }
+    const cc = retrieveIdsAsList('conf_Cc', true);
+    const bcc = retrieveIdsAsList('conf_Bcc', true);
+    const recipientNum = to.length + cc.length + bcc.length;
+    if (recipientNum > MAX_RECIPIENT_NUM) {
+        throw `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`;
+    }
+    const recipients = new Set(to.map(obj => obj.email).concat(cc.map(obj => obj.email)).concat(bcc.map(obj => obj.email))); // 重複確認用
+    if (recipientNum !== recipients.size) {
+        throw 'Each email address must be unique between To, Cc, and Bcc.';
+    }
+    const sendTo = { to };
+    // Cc と Bcc は、空でない場合にのみ設定する
+    if (cc.length > 0) {
+        Object.assign(sendTo, { cc });
+    }
+    if (bcc.length > 0) {
+        Object.assign(sendTo, { bcc });
+    }
+    return sendTo;
+}
+
+/**
+  * config に設定された ID 一覧を読み出す
+  * @param {String} confName 設定名
+  * @param {boolean} returnAsEmailObj true の場合、メールアドレスと表示名のオブジェクトの配列を返す
+  * @return {Array<String>|Array<Object>} ids
+  */
+function retrieveIdsAsList(confName, returnAsEmailObj = false) {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return [];
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING')) {
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        const ids = dataObj.split('\n')
+            .filter(id => id !== '');
+        if (returnAsEmailObj) {
+            return ids.map((email) => ({ email }));
+        }
+        return ids;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return [];
+    }
+    const ids = [];
+    selects.forEach(item => {
+        if (returnAsEmailObj) {
+            const email = item.getValue();
+            const name = item.getDisplay();
+            ids.push({ email, name });
+            return;
+        }
+        ids.push(item.getValue());
+    });
+    return ids;
+}
+
+/**
+  * config に設定された送信日時を UNIX タイムスタンプとして読み出す
+  * データ項目が選択されていない場合は文字列 null を返す
+  * @return {Number} sendAt
+  */
+function retrieveSendAt() {
+    const dataDef = configs.getObject('conf_SendAt');
+    if (dataDef === null) {
+        return null;
+    }
+    const datetime = engine.findData(dataDef); // AddableTimestamp
+    if (datetime === null) {
+        throw 'Scheduled Datetime is selected but its data is null.';
+    }
+    const sendAt = Math.floor(datetime.getTime() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    if (sendAt <= now) {
+        throw 'Scheduled Datetime must be future.';
+    }
+    if (sendAt - now > MAX_SCHEDULABLE_HOURS * 60 * 60) {
+        throw `Scheduled Datetime must be within ${MAX_SCHEDULABLE_HOURS} hours.`;
+    }
+    return sendAt;
+}
+
+/**
+  * config に設定されたメールの中身の情報を読み出す
+  * @return {Object} content メールの中身
+  * @return {String} content.subject メールの件名
+  * @return {String} content.htmlContent HTML メールの本文
+  * @return {String} content.plainContent プレーンテキストメールの本文
+  */
+function retrieveContent() {
+    const subject = configs.get('conf_Subject');
+    if (subject === '') {
+        throw 'Subject is blank.';
+    }
+    const htmlContent = configs.get('conf_HtmlContent');
+    const plainContent = configs.get('conf_PlainContent');
+    if (htmlContent === '' && plainContent === '') {
+        throw 'HTML Content and Plain Content are blank. At least one of them is required.';
+    }
+    return { subject, htmlContent, plainContent };
+}
+
+/**
+  * config に設定された添付ファイルの情報を読み出す
+  * @return {Array<Object>} attachments
+  */
+function retrieveAttachments() {
+    const attachments = [];
+    // インライン画像
+    const inlineImagesDef = configs.getObject('conf_InlineImages');
+    if (inlineImagesDef !== null) {
+        const qfiles = engine.findData(inlineImagesDef);
+        if (qfiles !== null) {
+            const varName = inlineImagesDef.getVarName();
+            for (let i = 0; i < qfiles.size(); i++) {
+                const qfile = qfiles.get(i);
+                const contentType = qfile.getContentType();
+                if (!contentType.startsWith('image/')) {
+                    throw `${qfile.getName()} is not an image.`;
+                }
+                const obj = {
+                    content: base64.encodeToString(fileRepository.readFile(qfile)),
+                    filename: qfile.getName(),
+                    type: contentType,
+                    disposition: 'inline',
+                    content_id: `${i}` // 0, 1, 2, ...
+                };
+                attachments.push(obj);
+            }
+        }
+    }
+    // 添付ファイル
+    const attachmentsDef = configs.getObject('conf_Attachments');
+    if (attachmentsDef !== null) {
+        const qfiles = engine.findData(attachmentsDef);
+        if (qfiles !== null) {
+            qfiles.forEach(qfile => {
+                const obj = {
+                    content: base64.encodeToString(fileRepository.readFile(qfile)),
+                    filename: qfile.getName(),
+                    type: qfile.getContentType(),
+                    disposition: 'attachment'
+                };
+                attachments.push(obj);
+            });
+        }
+    }
+    return attachments;
+}
+
+/**
+  * メールを送信する
+  * @param {AuthSettingWrapper} auth 認証設定
+  * @param {Object} from 送信元
+  * @param {Object} replyTo 返信先
+  * @param {Number} sendAt 送信日時
+  * @param {Boolean} trackOpen 開封検知を行うかどうか
+  * @param {Object} sendTo 宛先情報
+  * @param {Object} content メールの中身
+  * @param {Array<Object>} attachments 添付ファイル
+  * @param {Array<String>} categories カテゴリ一覧
+  */
+function sendMail(auth, from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories) {
+    const requestBody = buildRequestBody(from, replyTo, sendAt, trackOpen, sendTo, content, attachments, categories);
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .post('https://api.sendgrid.com/v3/mail/send');
+    const status = response.getStatusCode();
+    if (status !== 202) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to send mail. status: ${status}`;
+    }
+    // リクエスト成功時のレスポンスは空
+}
+
+/**
+  * リクエストボディを作成
+  * @param {Object} from 送信元
+  * @param {Object} replyTo 返信先
+  * @param {Number} sendAt 送信日時
+  * @param {Boolean} trackOpen 開封検知を行うかどうか
+  * @param {Object} sendTo 宛先情報
+  * @param {Object} content メールの中身
+  * @param {String} content.subject メールの件名
+  * @param {String} content.htmlContent HTML メールの本文
+  * @param {String} content.plainContent プレーンテキストメールの本文
+  * @param {Array<Object>} attachments 添付ファイル
+  * @param {Array<String>} categories カテゴリ一覧
+  * @return {Object} requestBody
+  */
+function buildRequestBody(from, replyTo, sendAt, trackOpen, sendTo, { subject, htmlContent, plainContent }, attachments, categories) {
+    const requestBody = {
+        from,
+        reply_to: replyTo,
+        send_at: sendAt,
+        tracking_settings: {
+            open_tracking: {
+                enable: trackOpen
+            }
+        },
+        personalizations: [sendTo],
+        subject,
+        content: buildContent(plainContent, htmlContent)
+    };
+    if (attachments.length > 0) {
+        Object.assign(requestBody, { attachments });
+    }
+    if (categories.length > 0) {
+        Object.assign(requestBody, { categories });
+    }
+    return requestBody;
+}
+
+/**
+  * リクエストボディの content を作成
+  * @param {String} plainContent プレーンテキストメールの本文
+  * @param {String} htmlContent HTML メールの本文
+  * @return {Array<Object>} content
+  */
+function buildContent(plainContent, htmlContent) {
+    const content = [];
+    // プレーンテキストの本文がある場合、HTML 本文よりも先に設定する必要がある
+    if (plainContent !== '') {
+        content.push({
+            type: 'text/plain',
+            value: plainContent
+        });
+    }
+    if (htmlContent !== '') {
+        content.push({
+            type: 'text/html',
+            value: htmlContent
+        });
+    }
+    return content;
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADBUlEQVRYR8WXS08TURTH/5cWBeXZ
+        ipHFjBh3JIYSdKELYePGZCYS4jMxtiauwU+gJm40JpYPYKhxodEoj+4R4lYrjQsXimKrUhKRNxNC
+        22vuTMcZ5s50psLgbCY5c++c3zn33PMg+M8PqUh/MnMOFN0gJAKgCQB7s2cKwCIoZe8JyOKo1/+6
+        AwwvNCG42g9KB0AIU+r+ULoIQuLI1w2it3mx3IbyAGPfo0DxoWfFVk0qCGKQxBEnCGeAZDYOoN/d
+        XA8rKI1DFm/arbQHSGYSALnm4dfel1CagCzGrBt4ABfL+w7V4lhDNae4LkiwmqecPKsU8Ci7pssH
+        IQkD5kVbAdiZEzpUzqzJUy04HdrLLfm4mse9z8uc/OzBWlxMzZvktNccEwYAi/bAyle3gHMCSC1t
+        ouvNHAfwpDOEq+9/G3IWmIX6I/rtMACS2dsAbrkd6rYBNAV3IAlMHwyAsQy7u427AsC8IIvNBgDL
+        cCDDbsrZ9x3yAAAtFjQP2ET+DXE/zrTUcEztddVorani5OO/NvBNySNICIIECBCCKgJMr+Vxf3rF
+        zjb1RmgAY9kJEHSbVz3vCuN8ay238ct6AUfHZzn565Mt6Anzt2Mkp6D3rfkWlLZSTEIWenQPzAA4
+        7AfAq5yCPjsAVsAkoVMH4DLITnngxayCC+9sPMCslQTiO8Czn+u4nDLlAbObTQC+HcHTH+u4Yk5E
+        BkAakhBxDMKXx8OINOzhgq1IKeY2ipz8UmoeoycOcPLhnIK7n/gUDUsQcqV3qCOEWJp3XaV5oExu
+        MV1Dm0TkP4A5Eam5YGsq9hWA0iXIotreORYjXwFsi5FWjmf0guQbALO+UN/Gl2P1GIyG5EF7I8LV
+        AS6G2vYFwLof6/NheRPX0wse6plTQ6Jv3clmlMf52wfon3avKQV9DEmMWpl2py03BZ13ALVPUEex
+        hJdOyfbwWcARRP9tMNH/qI1mA6XRzLVlU7epitXRLL690cxqlpYxe0ARAVGH047SkjQo2Bg2BdCJ
+        chZXdgQeLtV2l/wBk2V1MIOcaTsAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備
+  * データ項目を指定できる設定項目は、文字型データ項目で指定
+  * Reply-To 指定なし
+  * 送信日時の指定なし
+  * 開封検知の設定オフ
+  * @param fromEmail
+  * @param fromName
+  * @param to
+  * @param cc
+  * @param bcc
+  * @param subject
+  * @param htmlContent
+  * @param plainContent
+  * @param categories
+  */
+const prepareConfigs = (fromEmail, fromName, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
+    // 認証設定を準備
+    const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
+    configs.putObject('conf_Auth', auth);
+
+    configs.put('conf_From', fromEmail);
+    configs.put('conf_FromName', fromName);
+    configs.putObject('conf_TrackOpen', false); // 初期値として false を設定しておく
+    setDataItem('To', 1, 'STRING_TEXTAREA', to);
+    setDataItem('Cc', 2, 'STRING_TEXTAREA', cc);
+    setDataItem('Bcc', 3, 'STRING_TEXTAREA', bcc);
+    configs.put('conf_Subject', subject);
+    configs.put('conf_HtmlContent', htmlContent);
+    configs.put('conf_PlainContent', plainContent);
+    setDataItem('Categories', 4, 'STRING_TEXTAREA', categories);
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+  * 指定個数のデータを改行区切りにした文字列を生成する
+  * @param prefix
+  * @param num
+  * @return string
+  */
+const createListString = (prefix, num) => {
+    let string = '';
+    for (let i = 0; i < num; i++) {
+        string += `${prefix}${i}\n`;
+    }
+    return string;
+};
+
+/**
+  * 指定の長さの文字列を作成
+  * @param length
+  * @return string
+  */
+const createString = (length) => {
+    const sourceStr = 'abcdefghijklmnopqrstuvwxyz';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+};
+
+/**
+  * To が空（文字型データ項目）
+  */
+test('To Email Address is blank - set by STRING', () => {
+    prepareConfigs('from@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, 'At least one To Email Address is required.');
+});
+
+/**
+  * To の個数が多すぎる（文字型データ項目）
+  */
+test('Too many To Email Addresses - set by STRING', () => {
+    const toStr = createListString('to', MAX_RECIPIENT_NUM + 1);
+    prepareConfigs('from@example.com', '', toStr, null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * To, Cc, Bcc の合計個数が多すぎる（文字型データ項目）
+  */
+test('Too many recipients - set by STRING', () => {
+    const bccStr = createListString('bcc', MAX_RECIPIENT_NUM - 1);
+    prepareConfigs('from@example.com', '', 'to@example.com', 'cc@example.com', bccStr, '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * To, Cc の指定が重複（文字型データ項目）
+  */
+test('Same email address between To and Cc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'test@example.com\nto@example.com', 'test@example.com', null, '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * Cc, Bcc の指定が重複（文字型データ項目）
+  */
+test('Same email address between Cc and Bcc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to@example.com', 'cc@example.com\ntest@example.com', 'test@example.com', '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * To, Bcc の指定が重複（文字型データ項目）
+  */
+test('Same email address between To and Bcc - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to@example.com\ntest@example.com', null, 'test@example.com', '件名', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, 'Each email address must be unique between To, Cc, and Bcc.');
+});
+
+/**
+  * 件名が空
+  */
+test('Subject is blank', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '', '<p>HTML メールの本文</p>', '', null);
+    assertError(main, 'Subject is blank.');
+});
+
+/**
+  * HTML 本文とプレーンテキスト本文がともに空
+  */
+test('Content is Blank', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '', '', null);
+    assertError(main, 'HTML Content and Plain Content are blank. At least one of them is required.');
+});
+
+/**
+  * インライン画像に画像ファイル以外を指定
+  */
+test('Content-Type of an inline image does not start with image/', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const file = engine.createQfile('画像でないファイル', 'text/plain', 'aaa');
+    setDataItem('InlineImages', 10, 'FILE', [file]);
+    assertError(main, '画像でないファイル is not an image.');
+});
+
+/**
+  * カテゴリの個数が多すぎる（文字型データ項目）
+  */
+test('Too many Categories - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM + 1);
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', categoriesStr);
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+});
+
+/**
+  * カテゴリに ASCII 文字以外を含む（文字型データ項目）
+  */
+test('Categories include invalid characters - set by STRING', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', 'categoryてすと');
+    assertError(main, 'Categories cannot include non-ascii characters.');
+});
+
+/**
+  * 長すぎるカテゴリを含む（文字型データ項目）
+  */
+test('Category is loo long - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', categoriesStr);
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+});
+
+/**
+  * カテゴリの指定が重複（文字型データ項目）
+  */
+test('Same category is set multiple times - set by STRING', () => {
+    const categoriesStr = createListString('category', MAX_CATEGORY_NUM - 1) + 'category1';
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', categoriesStr);
+    assertError(main, 'The same category is set multiple times.');
+});
+
+/**
+  * メールを送信する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param fromEmail
+  * @param fromName
+  * @param replyToEmail
+  * @param replyToName
+  * @param sendAt
+  * @param trackOpen
+  * @param to
+  * @param cc
+  * @param bcc
+  * @param subject
+  * @param htmlContent
+  * @param plainContent
+  * @param categories
+  */
+const assertRequest = ({ url, method, contentType, body }, fromEmail, fromName, replyToEmail, replyToName, sendAt, trackOpen, to, cc, bcc, subject, htmlContent, plainContent, categories) => {
+    expect(url).toEqual('https://api.sendgrid.com/v3/mail/send');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.from.email).toEqual(fromEmail);
+    expect(bodyObj.from.name).toEqual(fromName);
+    if (replyToEmail !== undefined) {
+        expect(bodyObj.reply_to.email).toEqual(replyToEmail);
+        expect(bodyObj.reply_to.name).toEqual(replyToName);
+    }
+    expect(bodyObj.send_at).toEqual(sendAt);
+    expect(bodyObj.tracking_settings.open_tracking.enable).toEqual(trackOpen);
+    expect(bodyObj.personalizations.length).toEqual(1);
+    expect(bodyObj.personalizations[0].to.length).toEqual(to.length);
+    to.forEach(({ email, name }, i) => {
+        expect(bodyObj.personalizations[0].to[i].email).toEqual(email);
+        expect(bodyObj.personalizations[0].to[i].name).toEqual(name);
+    });
+    if (cc !== undefined) {
+        expect(bodyObj.personalizations[0].cc.length).toEqual(cc.length);
+        cc.forEach(({ email, name }, i) => {
+            expect(bodyObj.personalizations[0].cc[i].email).toEqual(email);
+            expect(bodyObj.personalizations[0].cc[i].name).toEqual(name);
+        });
+    }
+    if (bcc !== undefined) {
+        expect(bodyObj.personalizations[0].bcc.length).toEqual(bcc.length);
+        bcc.forEach(({ email, name }, i) => {
+            expect(bodyObj.personalizations[0].bcc[i].email).toEqual(email);
+            expect(bodyObj.personalizations[0].bcc[i].name).toEqual(name);
+        });
+    }
+    expect(bodyObj.subject).toEqual(subject);
+    let i = 0;
+    if (plainContent !== undefined) {
+        expect(bodyObj.content[i].type).toEqual('text/plain');
+        expect(bodyObj.content[i].value).toEqual(plainContent);
+        i++;
+    }
+    if (htmlContent !== undefined) {
+        expect(bodyObj.content[i].type).toEqual('text/html');
+        expect(bodyObj.content[i].value).toEqual(htmlContent);
+    }
+    expect(bodyObj.categories).toEqual(categories);
+};
+
+/**
+  * メールを送信する API リクエストでエラー
+  */
+test('Fail to send mail', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to send mail. status: 400');
+});
+
+/**
+  * 成功
+  * HTML 本文のみ指定
+  * Reply-To 指定なし
+  * 送信日時指定なし
+  * メール開封検知なし
+  * カテゴリ指定なし
+  */
+test('Succeed - With HTML content, no schduled datetime, no categories', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * HTML 本文、プレーンテキスト本文の両方を指定
+  * Reply-To のメールアドレスのみ指定
+  * 送信日時指定なし
+  * メール開封検知あり
+  * カテゴリ指定あり
+  */
+test('Succeed - With both HTML content and plain text content, with reply-to email, no schduled datetime, with categories', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com\nto2@example.com', null, null, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', 'category1\ncategory2');
+    configs.put('conf_ReplyTo', 'replyto@example.com');
+    configs.putObject('conf_TrackOpen', true);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, 'replyto@example.com', undefined, undefined, true, [{email: 'to1@example.com'}, {email: 'to2@example.com'}], undefined, undefined, '件名 2', '<p>HTML メールの本文</p>', 'プレーンテキストメールの本文', ['category1', 'category2']);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 送信日時を設定
+  * @param timestamp
+  */
+const setSendAt = (timestamp) => {
+    const def = engine.createDataDefinition('送信日時', 10, 'q_sendAt', 'DATETIME');
+    if (timestamp !== null) {
+        engine.setData(def, timestamp);
+    }
+    configs.putObject('conf_SendAt', def);
+}
+
+/**
+  * 送信日時が選択されているのに、値が空
+  */
+test('Scheduled Datetime is null', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    setSendAt(null);
+    assertError(main, 'Scheduled Datetime is selected but its data is null.');
+});
+
+/**
+  * 送信日時が過去
+  */
+test('Scheduled Datetime has passed', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(-1);
+    setSendAt(timestamp);
+    assertError(main, 'Scheduled Datetime must be future.');
+});
+
+/**
+  * 送信日時が 72 時間以上先
+  */
+test('Scheduled Datetime is too late', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addHours(MAX_SCHEDULABLE_HOURS + 1);
+    setSendAt(timestamp);
+    assertError(main, `Scheduled Datetime must be within ${MAX_SCHEDULABLE_HOURS} hours.`);
+});
+
+/**
+  * 成功
+  * プレーンテキスト本文のみ指定
+  * From 表示名あり
+  * Reply-To 表示名あり
+  * 送信日時指定あり
+  */
+test('Succeed - With plain text content, with from display name, with reply-to email and its display name, with schduled datetime', () => {
+    const to = createListString('to', 10);
+    const cc = createListString('cc', 20);
+    const bcc = createListString('bcc', MAX_RECIPIENT_NUM - 30);
+    const toList = to.split('\n').filter((email) => email !== '').map(email => ({ email }));
+    const ccList = cc.split('\n').filter((email) => email !== '').map(email => ({ email }));
+    const bccList = bcc.split('\n').filter((email) => email !== '').map(email => ({ email }));
+    prepareConfigs('from@example.com', 'From 表示名', to, cc, bcc, '件名 3', '', 'プレーンテキストメールの本文', null);
+    configs.put('conf_ReplyTo', 'replyto@example.com');
+    configs.put('conf_ReplyToName', 'Reply-To 表示名');
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(30);
+    setSendAt(timestamp);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', 'From 表示名', 'replyto@example.com', 'Reply-To 表示名', Math.floor(timestamp.getTime() / 1000), false, toList, ccList, bccList, '件名 3', undefined, 'プレーンテキストメールの本文', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 選択型データ設定用のオブジェクトを作成
+  * @param prefix
+  * @param num
+  * @return selects
+  */
+const prepareSelects = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const item = engine.createItem(`${prefix}${i + 1}`, `${prefix}${i + 1} のラベル`);
+        selects.add(item);
+    }
+    return selects;
+};
+
+/**
+  * To, Cc, Bcc の合計個数が多すぎる（選択型データ項目）
+  */
+test('Too many recipients - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    setDataItem('To', 21, 'SELECT_CHECKBOX', prepareSelects('to_', 1));
+    setDataItem('Cc', 22, 'SELECT_CHECKBOX', prepareSelects('cc_', MAX_RECIPIENT_NUM));
+    assertError(main, `The maximum number of recipients (To + Cc + Bcc) is ${MAX_RECIPIENT_NUM}.`);
+});
+
+/**
+  * カテゴリの個数が多すぎる（選択型データ項目）
+  */
+test('Too many Categories - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', prepareSelects('category_', MAX_CATEGORY_NUM + 1));
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+});
+
+/**
+  * カテゴリに ASCII 文字以外を含む（選択型データ項目）
+  */
+test('Categories include invalid characters - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const categories = prepareSelects('category_', 3);
+    const invalidCategory = 'catえgory';
+    categories.set(1, engine.createItem(invalidCategory, `${invalidCategory} のラベル`));
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
+    assertError(main, 'Categories cannot include non-ascii characters.');
+});
+
+/**
+  * 長すぎるカテゴリを含む（選択型データ項目）
+  */
+test('Category is loo long - set by SELECT', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名', '<p>HTML メールの本文</p>', '', null);
+    const categories = prepareSelects('category_', 3);
+    const longCategory = createString(MAX_CATEGORY_LENGTH + 1);
+    categories.set(1, engine.createItem(longCategory, `${longCategory} のラベル`));
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', categories);
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+});
+
+/**
+  * 成功
+  * データ項目で指定できるものは、すべて選択型データ項目で指定
+  * カテゴリ指定なし
+  */
+test('Succeed - Configured by SELECT, no categories', () => {
+    prepareConfigs('from1@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
+    setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 2));
+    setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 3));
+    setDataItem('Bcc', 24, 'SELECT_CHECKBOX', prepareSelects('bcc', 1));
+    setDataItem('Categories', 26, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    const toList = [
+        {email: 'to1', name: 'to1 のラベル'},
+        {email: 'to2', name: 'to2 のラベル'}
+    ];
+    const ccList = [
+        {email: 'cc1', name: 'cc1 のラベル'},
+        {email: 'cc2', name: 'cc2 のラベル'},
+        {email: 'cc3', name: 'cc3 のラベル'}
+    ];
+    const bccList = [
+        {email: 'bcc1', name: 'bcc1 のラベル'}
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, false, toList, ccList, bccList, '件名', '<p>HTML メールの本文</p>', undefined, undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * データ項目で指定できるものは、すべて選択型データ項目で指定
+  * カテゴリ指定あり
+  */
+test('Succeed - Configured by SELECT, with categories', () => {
+    prepareConfigs('from1@example.com', '', null, null, null, '件名', '<p>HTML メールの本文</p>', '', 'dummy');
+    setDataItem('To', 22, 'SELECT_CHECKBOX', prepareSelects('to', 1));
+    setDataItem('Cc', 23, 'SELECT_CHECKBOX', prepareSelects('cc', 2));
+    setDataItem('Bcc', 24, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    setDataItem('Categories', 26, 'SELECT_CHECKBOX', prepareSelects('category', 2));
+    const toList = [
+        {email: 'to1', name: 'to1 のラベル'}
+    ];
+    const ccList = [
+        {email: 'cc1', name: 'cc1 のラベル'},
+        {email: 'cc2', name: 'cc2 のラベル'}
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from1@example.com', undefined, undefined, undefined, undefined, false, toList, ccList, undefined, '件名', '<p>HTML メールの本文</p>', undefined, ['category1', 'category2']);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * API リクエストの body に添付ファイルが含まれることをテスト
+  * @param requestBody
+  * @param index
+  * @param fileName
+  * @param contentType
+  * @param disposition
+  * @param contentId
+  */
+const assertAttachment = (requestBody, index, fileName, contentType, disposition, contentId) => {
+    const attachment = JSON.parse(requestBody).attachments[index];
+    // content のテストは省略
+    expect(attachment.filename).toEqual(fileName);
+    expect(attachment.type).toEqual(contentType);
+    expect(attachment.disposition).toEqual(disposition);
+    expect(attachment.content_id).toEqual(contentId);
+};
+
+/**
+  * 成功
+  * インライン画像、添付ファイルを指定
+  */
+test('Succeed - With inline images and attachments', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
+        assertAttachment(request.body, 3, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 4, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * 添付ファイルのみ指定。インライン画像はデータ項目を選択し、ファイル未添付
+  */
+test('Succeed - With attachments, with no inline images', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像はデータ項目を選択し、ファイル未添付
+    setDataItem('InlineImages', 10, 'FILE', null);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * 添付ファイルのみ指定。インライン画像はデータ項目の指定なし
+  */
+test('Succeed - With attachments, with inline images not selected', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // 添付ファイルを指定
+    const attachment1 = engine.createQfile('添付ファイル1.txt', 'text/plain', 'ddd');
+    const attachment2 = engine.createQfile('添付ファイル2.jpg', 'image/jpeg', 'eee');
+    setDataItem('Attachments', 11, 'FILE', [attachment1, attachment2]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, '添付ファイル1.txt', 'text/plain; charset=UTF-8', 'attachment', undefined);
+        assertAttachment(request.body, 1, '添付ファイル2.jpg', 'image/jpeg', 'attachment', undefined);
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * インライン画像のみ指定。添付ファイルはデータ項目を選択し、ファイル未添付
+  */
+test('Succeed - With inline images, with no attachments', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    // 添付ファイルはデータ項目を指定し、ファイル未添付
+    setDataItem('Attachments', 11, 'FILE', null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+/**
+  * 成功
+  * インライン画像のみ指定。添付ファイルはデータ項目の指定なし
+  */
+test('Succeed - With inline images, with attachments not selected', () => {
+    prepareConfigs('from@example.com', '', 'to1@example.com', null, null, '件名 1', '<p>HTML メールの本文</p>', '', null);
+
+    // インライン画像を指定
+    const inline1 = engine.createQfile('インライン画像1.png', 'image/png', 'aaa');
+    const inline2 = engine.createQfile('インライン画像2.jpg', 'image/jpeg', 'bbb');
+    const inline3 = engine.createQfile('インライン画像3.gif', 'image/gif', 'ccc');
+    setDataItem('InlineImages', 10, 'FILE', [inline1, inline2, inline3]);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'from@example.com', undefined, undefined, undefined, undefined, false, [{email: 'to1@example.com'}], undefined, undefined, '件名 1', '<p>HTML メールの本文</p>', undefined, undefined);
+        assertAttachment(request.body, 0, 'インライン画像1.png', 'image/png', 'inline', '0');
+        assertAttachment(request.body, 1, 'インライン画像2.jpg', 'image/jpeg', 'inline', '1');
+        assertAttachment(request.body, 2, 'インライン画像3.gif', 'image/gif', 'inline', '2');
+        return httpClient.createHttpResponse(202, 'application/json', '');
+    });
+    main();
+});
+
+    ]]></test>
+
+</service-task-definition>
