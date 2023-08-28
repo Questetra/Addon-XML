@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-08-08</last-modified>
+    <last-modified>2023-08-25</last-modified>
     <addon-type>START_EVENT_WEBHOOK</addon-type>
     <engine-type>3</engine-type>
     <license>(C) Questetra, Inc. (MIT License)</license>
@@ -89,9 +89,10 @@ const receive = (json) => {
         engine.log(`ignore event. type: ${type}`);
         return;
     }
-    if (subtype !== undefined || bot_id !== undefined) {
-        // bot によるメッセージや subtype が指定されているものも無視
-        engine.log(`ignore event. subtype: ${subtype} bot_id: ${bot_id}`);
+    if ((subtype !== undefined && subtype !== 'thread_broadcast') || bot_id !== undefined) {
+        // ユーザのメッセージ投稿以外によるイベントを無視するため、subtype に thread_broadcast 以外が指定されているものを無視
+        // bot によるメッセージも無視
+        engine.log(`ignore event. type: ${type} subtype: ${subtype} bot_id: ${bot_id}`);
         return;
     }
     saveData('conf_ChannelId', channel);
@@ -346,7 +347,7 @@ test('bot message', () => {
     expect(engine.isStartProcess()).toEqual(false);
 });
 
-test('message with subtype', () => {
+test('message with subtype other than thread_broadcast', () => {
     execute();
 
     prepareConfigs('signing');
@@ -377,6 +378,42 @@ test('message with subtype', () => {
     });
     // subtype が含まれているので、無視される
     expect(engine.isStartProcess()).toEqual(false);
+});
+
+test('message with subtype being thread_broadcast', () => {
+    execute();
+
+    const {
+        textDef,
+        userDef,
+        channelDef,
+        threadDef
+    } = prepareConfigs('signing');
+    const body = JSON.stringify({
+        type: "event_callback",
+        event: {
+            "type": "message",
+            "subtype": "thread_broadcast",
+            "channel": "D024BE91L",
+            "user": "U2147483697",
+            "text": "Hello, world!",
+            "ts": "1355517523.000005",
+            "event_ts": "1355517523.000005",
+            "thread_ts": "1355517523.000001",
+            "channel_type": "im"
+        }
+    });
+    const headers = prepareHeaders('signing', body);
+    expect(post({body, headers})).toEqual({
+        'content-type': 'text/plain',
+        'body': ''
+    });
+    // subtype が含まれているが、thread_broadcast なので、処理される
+    expect(engine.isStartProcess()).toEqual(true);
+    expect(engine.findData(textDef)).toEqual("Hello, world!");
+    expect(engine.findData(userDef)).toEqual("U2147483697");
+    expect(engine.findData(channelDef)).toEqual("D024BE91L");
+    expect(engine.findData(threadDef)).toEqual("1355517523.000001");
 });
 
 test('not message type', () => {
