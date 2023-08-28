@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <!--
     <last-modified>2023-08-28</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Slack: Get User Name</label>
@@ -146,6 +144,164 @@ function setData(dataDef, stringValue) {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * メールアドレスを文字型データ項目に保存する場合
+ * @param slackUserId
+ * @return returnObj
+ * @return returnObj.userNameDef
+ * @return returnObj.emailDef
+ */
+const prepareConfigs = (slackUserId) => {
+    // 認証設定を準備
+    const auth = httpClient.createAuthSettingToken('Slack Bot Token', 'slack-bot-token-12345');
+    configs.putObject('conf_Token', auth);
+
+    // 文字型データ項目を準備して、config に指定
+    const slackUserIdDef = engine.createDataDefinition('ユーザ ID', 1, 'q_userId', 'STRING_TEXTFIELD');
+    engine.setData(slackUserIdDef, slackUserId);
+    configs.putObject('conf_SlackUserId', slackUserIdDef);
+
+    const userNameDef = engine.createDataDefinition('ユーザ名', 2, 'q_userName', 'STRING_TEXTFIELD');
+    engine.setData(userNameDef, '事前文字列');
+    configs.putObject('conf_UserName', userNameDef);
+
+    const emailDef = engine.createDataDefinition('メールアドレス', 3, 'q_mailAddress', 'STRING_TEXTFIELD');
+    engine.setData(emailDef, '事前文字列');
+    configs.putObject('conf_Quser', emailDef);
+
+    return { userNameDef, emailDef };
+};
+
+/**
+ * ユーザ ID が空
+ */
+test('Slack User ID is blank', () => {
+    prepareConfigs(null);
+    expect(execute).toThrow('Slack User ID is blank.');
+});
+
+/**
+ * 保存先データ項目がいずれも未設定
+ */
+test('No data item to save the result is set', () => {
+    prepareConfigs('U12345678');
+    configs.put('conf_UserName', '');
+    configs.put('conf_Quser', '');
+    expect(execute).toThrow('No data item to save the result is set.');
+});
+
+/**
+ * ユーザ情報取得の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param slackUserId
+ */
+const assertRequest = ({ url, method }, slackUserId) => {
+    expect(url).toEqual(`https://slack.com/api/users.info?user=${slackUserId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * API リクエストに失敗 - レスポンスが JSON でない
+ */
+test('Failed to parse response as json', () => {
+    prepareConfigs('U12345678');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'U12345678');
+        return httpClient.createHttpResponse(403, 'text/plain', 'Forbidden.');
+    });
+    expect(execute).toThrow('Failed to get user info. status: 403');
+});
+
+/**
+ * API リクエストに失敗 - レスポンスが ok でない
+ */
+test('Response is not ok', () => {
+    prepareConfigs('U12345678');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'U12345678');
+        const errorResponse = {
+            ok: false,
+            error: 'missing_scope'
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(errorResponse));
+    });
+    expect(execute).toThrow('Response is not ok. error: missing_scope');
+});
+
+/**
+ * 成功
+ * メールアドレスを文字型データ項目に保存
+ */
+test('Success - Email Address is saved to String type data item', () => {
+    const { userNameDef, emailDef } = prepareConfigs('U12345678');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'U12345678');
+        const response = {
+            ok: true,
+            user: {
+                profile: {
+                    email: 'user1@example.com',
+                    real_name: 'User 1'
+                }
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    execute();
+    expect(engine.findData(userNameDef)).toEqual('User 1');
+    expect(engine.findData(emailDef)).toEqual('user1@example.com');
+});
+
+/**
+ * スコープの不足により、メールアドレスの取得に失敗
+ */
+test('Failed to get Email Address', () => {
+    prepareConfigs('U12345678');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'U12345678');
+        const response = { // リクエスト自体には成功するが、メールアドレスのフィールドがレスポンスに含まれない
+            ok: true,
+            user: {
+                profile: {
+                    real_name: 'User 1'
+                }
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+    expect(execute).toThrow('Failed to get Email Address. Scope users:read.email is required.');
+});
+
+/**
+ * 成功
+ * メールアドレスを保存しない場合
+ */
+test('Success - Email Address is not saved', () => {
+    const { userNameDef, emailDef } = prepareConfigs('U24680');
+    configs.put('conf_Quser', ''); // メールアドレスを保存するデータ項目の選択を解除
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'U24680');
+        // メールアドレスを保存しない場合は、メールアドレスがレスポンスに含まれなくてもエラーにならない
+        const response = {
+            ok: true,
+            user: {
+                profile: {
+                    real_name: 'User 2'
+                }
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    execute();
+    expect(engine.findData(userNameDef)).toEqual('User 2');
+    expect(engine.findData(emailDef)).toEqual('事前文字列');
+});
 
     ]]></test>
 </service-task-definition>
