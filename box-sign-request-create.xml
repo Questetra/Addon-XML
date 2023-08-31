@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-07-13</last-modified>
+    <!--
+    <last-modified>2023-08-31</last-modified>
+    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box Sign: Create Sign Request</label>
     <label locale="ja">Box Sign: 署名リクエスト作成</label>
     <summary>This item creates a signing document from the specified file on Box and sends a sign request.</summary>
@@ -57,10 +60,19 @@
 // - Consumer Key: (Get by Box Developer Console)
 // - Consumer Secret: (Get by Box Developer Console)
 
-main();
-function main(){
+const PROCESSING_STATUSES = [
+    'converting',
+    'created' // 送信完了まで待機するため、created も処理中扱いにする
+];
+
+const ERROR_STATUSES = [
+    'error_converting',
+    'error_sending'
+];
+
+function main() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const oauth2 = configs.get('conf_OAuth2');
+    const oauth2 = configs.getObject('conf_OAuth2');
     const fileId = decideEditable('conf_SourceFileId', 'Source File ID');
     const folderId = decideEditable('conf_FolderId', 'Folder ID');
     if (folderId === '0') {
@@ -73,9 +85,25 @@ function main(){
 
     //// == 演算 / Calculating ==
     const requestId = createRequest(oauth2, fileId, folderId, signers, subject, message);
+    if (checkStatusAndSaveRequestId(oauth2, requestId, requestIdDef) === false) {
+        engine.saveTemporaryData(requestId); // 署名リクエスト ID を一時データとして保存
+        return false;
+    }
+}
 
-    //// == Data Updating / ワークフローデータへの代入 ==
-    setData(requestIdDef, requestId);
+function proceed() {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const requestId = engine.restoreTemporaryData();
+    if (requestId === null) {
+        throw 'Sign Request ID has not been saved.';
+    }
+    const requestIdDef = configs.getObject('conf_RequestId');
+
+    //// == 演算 / Calculating ==
+    if (checkStatusAndSaveRequestId(oauth2, requestId, requestIdDef) === false) {
+        return false;
+    }
 }
 
 /**
@@ -164,7 +192,7 @@ function retrieveFilledArray(confName, label) {
 
 /**
   * Create Sign Request  署名リクエスト作成
-  * @param {String} oauth OAuth2 設定
+  * @param {AuthSettingWrapper} oauth OAuth2 設定
   * @param {String} fileId 元ファイルの ID
   * @param {String} folderId 保存先フォルダの ID
   * @param {Array<Object>} signers 署名者 {email, password} の配列
@@ -194,15 +222,55 @@ function createRequest(oauth2, fileId, folderId, signers, subject, message) {
         .authSetting(oauth2)
         .body(JSON.stringify(jsonBody), 'application/json; charset=UTF-8')
         .post(url);
-
     const status = response.getStatusCode();
     const responseTxt = response.getResponseAsString();
-
     if (status !== 201) {
         engine.log(responseTxt);
         throw `Failed to create Sign Request. status:${status}`;
     }
     return JSON.parse(responseTxt).id;
+}
+
+/**
+  * 署名リクエストのステータスを確認
+  * 処理中の場合は false を返し、処理完了の場合は署名リクエスト ID を保存
+  * @param {AuthSettingWrapper} oauth OAuth2 設定
+  * @param {String} requestId 署名リクエスト ID
+  * @param {DataDefinitionView} requestIdDef 署名リクエスト ID を保存するデータ項目
+  * @returns {boolean} 処理未完了の場合は false
+  */
+function checkStatusAndSaveRequestId(oauth2, requestId, requestIdDef) {
+    const status = getSignRequestStatus(oauth2, requestId);
+    // エラーステータスの場合、例外をスローする
+    if (ERROR_STATUSES.includes(status)) {
+        throw `The Sign Request failed in ${status} status.`;
+    }
+    // 処理中の場合、false を返す
+    if (PROCESSING_STATUSES.includes(status)) {
+        return false;
+    }
+    // 処理完了の場合、requestId を保存
+    setData(requestIdDef, requestId);
+}
+
+/**
+  * 署名リクエストのステータスを取得
+  * @param {AuthSettingWrapper} oauth2 OAuth2 設定
+  * @param {String} requestId 署名リクエストの ID
+  * @return {String} status 署名リクエストのステータス
+  */
+function getSignRequestStatus(oauth2, requestId) {
+    const url = `https://api.box.com/2.0/sign_requests/${requestId}`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .get(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseTxt);
+        throw `Failed to get Sign Request. status:${status}`;
+    }
+    return JSON.parse(responseTxt).status;
 }
 
 /**
@@ -256,7 +324,16 @@ function setData(dataDef, value) {
   * @return requestIdDef
   */
 const prepareConfigs = (fileId, folderId, emails, passwords, subject, message) => {
-    configs.put('conf_OAuth2', 'Box Sign');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box Sign',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'sign_requests.readwrite root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', auth);
 
     // ファイル ID を設定した文字型データ項目（単一行）を準備し、設定
     const fileIdDef = engine.createDataDefinition('ファイル ID', 1, 'q_FileId', 'STRING_TEXTFIELD');
@@ -291,11 +368,25 @@ const prepareConfigs = (fileId, folderId, emails, passwords, subject, message) =
 }
 
 /**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
   * ファイル ID をデータ項目で指定し、値が空でエラー
   */
 test('Source File ID is blank', () => {
     prepareConfigs(null, 'folderId-1', 'test1@example.com', 'password1', '', '');
-    expect(execute).toThrow('Source File ID is blank.');
+    assertError(main, 'Source File ID is blank.');
 });
 
 /**
@@ -303,7 +394,7 @@ test('Source File ID is blank', () => {
   */
 test('Folder ID is blank', () => {
     prepareConfigs('fileId-1', null, 'test1@example.com', 'password1', '', '');
-    expect(execute).toThrow('Folder ID is blank.');
+    assertError(main, 'Folder ID is blank.');
 });
 
 /**
@@ -311,7 +402,7 @@ test('Folder ID is blank', () => {
   */
 test('Root folder cannot be used', () => {
     prepareConfigs('fileId-1', '0', 'test1@example.com', 'password1', '', '');
-    expect(execute).toThrow('Root folder cannot be used.');
+    assertError(main, 'Root folder cannot be used.');
 });
 
 /**
@@ -319,7 +410,7 @@ test('Root folder cannot be used', () => {
   */
 test('No Email Address - Data item is set but its content is empty', () => {
     prepareConfigs('fileId-1', 'folderId-1', null, 'password1', '', '');
-    expect(execute).toThrow('Data item for Email Address is set but its content is empty.');
+    assertError(main, 'Data item for Email Address is set but its content is empty.');
 });
 
 /**
@@ -327,7 +418,7 @@ test('No Email Address - Data item is set but its content is empty', () => {
   */
 test('No Email Address - A blank line', () => {
     prepareConfigs('fileId-1', 'folderId-1', '\n', 'password1', '', '');
-    expect(execute).toThrow('Email Address at line 1 is blank.');
+    assertError(main, 'Email Address at line 1 is blank.');
 });
 
 /**
@@ -337,7 +428,7 @@ test('Number of Email Addresses exceeds the limit', () => {
     const emails = 'test@example.com\n'.repeat(36);
     const passwords = 'password\n'.repeat(36);
     prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
-    expect(execute).toThrow('Number of Email Addresses exceeds the limit. The maximum number is 35.');
+    assertError(main, 'Number of Email Addresses exceeds the limit. The maximum number is 35.');
 });
 
 /**
@@ -347,7 +438,7 @@ test('An Email Address is blank', () => {
     const emails = 'test1@example.com\n\ntest2@example.com'; // 2 件。2行目が空行
     const passwords = 'password1\npassword2'; // 2件
     prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
-    expect(execute).toThrow('Email Address at line 2 is blank.');
+    assertError(main, 'Email Address at line 2 is blank.');
 });
 
 /**
@@ -355,7 +446,7 @@ test('An Email Address is blank', () => {
   */
 test('Data item for Password is set but its content is empty', () => {
     prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', null, '', '');
-    expect(execute).toThrow('Data item for Password is set but its content is empty.');
+    assertError(main, 'Data item for Password is set but its content is empty.');
 });
 
 /**
@@ -365,7 +456,7 @@ test('A Password is blank', () => {
     const emails = 'test1@example.com\ntest2@example.com'; // 2 件
     const passwords = '\npassword1\npassword2'; // 2件。先頭に空行がある
     prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
-    expect(execute).toThrow('Password at line 1 is blank.');
+    assertError(main, 'Password at line 1 is blank.');
 });
 
 /**
@@ -373,7 +464,7 @@ test('A Password is blank', () => {
   */
 test('No Password - A blank line', () => {
     prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', '\n', '', '');
-    expect(execute).toThrow('Password at line 1 is blank.');
+    assertError(main, 'Password at line 1 is blank.');
 });
 
 /**
@@ -383,7 +474,7 @@ test('Number of Passwords does not match the number of Email Addresses', () => {
     const emails = 'test1@example.com\ntest2@example.com\ntest3@example.com'; // 3 件
     const passwords = 'password1\npassword2'; // 2件
     prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
-    expect(execute).toThrow('Number of Passwords does not match the number of Email Addresses.');
+    assertError(main, 'Number of Passwords does not match the number of Email Addresses.');
 });
 
 /**
@@ -435,15 +526,97 @@ test('Fail in POST Request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create Sign Request. status:400');
+    assertError(main, 'Failed to create Sign Request. status:400');
+});
+
+/**
+  * GET リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param requestId
+  */
+const assertGetRequest = ({url, method}, requestId) => {
+    expect(url).toEqual(`https://api.box.com/2.0/sign_requests/${requestId}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+  * GET リクエストで失敗
+  */
+test('Fail in GET Request', () => {
+    const email = 'test1@example.com';
+    const password = 'password1';
+    const signers = [{email, password}];
+    prepareConfigs('fileId-1', 'folderId-1', email, password, '', '');
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
+        }
+        assertGetRequest(request, 'requestId1');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get Sign Request. status:400');
+});
+
+/**
+  * 変換エラーで失敗
+  */
+test('Fail in converting', () => {
+    const email = 'test1@example.com';
+    const password = 'password1';
+    const signers = [{email, password}];
+    prepareConfigs('fileId-1', 'folderId-1', email, password, '', '');
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
+        }
+        assertGetRequest(request, 'requestId1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "error_converting"}');
+    });
+
+    assertError(main, 'The Sign Request failed in error_converting status.');
+});
+
+/**
+  * 送信エラーで失敗
+  */
+test('Fail in sending', () => {
+    const email = 'test1@example.com';
+    const password = 'password1';
+    const signers = [{email, password}];
+    prepareConfigs('fileId-1', 'folderId-1', email, password, '', '');
+    
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
+        }
+        assertGetRequest(request, 'requestId1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "error_sending"}');
+    });
+
+    assertError(main, 'The Sign Request failed in error_sending status.');
 });
 
 /**
   * 署名リクエスト作成成功
   * Box Sign の上限 35 件の署名者でテスト
   * パスワード設定あり
+  * 1 回目のステータス確認で sent
   */
-test('Success - 35 signers with passwords', () => {
+test('Success - 35 signers with passwords, completed in main()', () => {
     const emails = [];
     const passwords = [];
     const signers = [];
@@ -458,12 +631,17 @@ test('Success - 35 signers with passwords', () => {
     const passwordString = passwords.join('\n');
     const requestIdDef = prepareConfigs('fileId-1', 'folderId-1', emailString, passwordString, '', '');
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
+        }
+        assertGetRequest(request, 'requestId1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "sent"}');
     });
-
-    execute();
+    expect(main()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('requestId1');
 });
 
@@ -471,8 +649,9 @@ test('Success - 35 signers with passwords', () => {
   * 署名リクエスト作成成功
   * メールアドレスを単一行データ項目で指定
   * パスワード設定あり
+  * 3 回目のステータス確認で sent
   */
-test('Success - Email Address set with TEXTFIELD', () => {
+test('Success - Email Address set with TEXTFIELD, completed in proceed()', () => {
     const email = 'test2@example.com';
     const password = 'password2';
     const signers = [{email, password}];
@@ -485,18 +664,36 @@ test('Success - Email Address set with TEXTFIELD', () => {
     engine.setData(emailDef, email);
     configs.putObject('conf_EmailAddress', emailDef);
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-2', 'folderId-2', signers, '', '');
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId2"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-2', 'folderId-2', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId2"}');
+        }
+        assertGetRequest(request, 'requestId2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "converting"}');
     });
+    expect(main()).toEqual(false);
 
-    execute();
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'requestId2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "created"}'); // 送信済みになるまで待つ
+    });
+    expect(proceed()).toEqual(false);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'requestId2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "sent"}');
+    });
+    expect(proceed()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('requestId2');
 });
 
 /**
   * 署名リクエスト作成成功
   * パスワードを単一行データ項目で指定
+  * 1 回目のステータス確認で viewed
   */
 test('Success - Password set with TEXTFIELD', () => {
     const email = 'test3@example.com';
@@ -511,12 +708,17 @@ test('Success - Password set with TEXTFIELD', () => {
     engine.setData(passwordDef, password);
     configs.putObject('conf_Password', passwordDef);
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId3"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId3"}');
+        }
+        assertGetRequest(request, 'requestId3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "viewed"}');
     });
-
-    execute();
+    expect(main()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('requestId3');
 });
 
@@ -540,12 +742,17 @@ test('Success - Without passwords', () => {
     // パスワードの設定をクリア
     configs.put('conf_Password', '');
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId345"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId345"}');
+        }
+        assertGetRequest(request, 'requestId345');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "viewed"}');
     });
-
-    execute();
+    expect(main()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('requestId345');
 });
 
@@ -561,12 +768,17 @@ test('Success - With email subject and message', () => {
     const message = '署名リクエストです。\n署名をお願いします。';
     const requestIdDef = prepareConfigs('fileId-1', 'folderId-2', email, password, subject, message);
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-1', 'folderId-2', signers, subject, message);
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId123"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-1', 'folderId-2', signers, subject, message);
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId123"}');
+        }
+        assertGetRequest(request, 'requestId123');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "viewed"}');
     });
-
-    execute();
+    expect(main()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('requestId123');
 });
 
@@ -588,12 +800,17 @@ test('Success - File ID and Folder ID are set as fixed values', () => {
     configs.put('conf_SourceFileId', 'fileId-2');
     configs.put('conf_FolderId', 'folderId-1');
     
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-2', 'folderId-1', signers, '', '');
-        return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId456"}');
+        if (reqCount === 0) {
+            assertPostRequest(request, 'fileId-2', 'folderId-1', signers, '', '');
+            reqCount++;
+            return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId3"}');
+        }
+        assertGetRequest(request, 'requestId3');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "viewed"}');
     });
-
-    execute();
+    expect(main()).toEqual(undefined);
     expect(engine.findData(requestIdDef)).toEqual('事前文字列');
 });
 
