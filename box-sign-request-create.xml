@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <!--
     <last-modified>2023-08-31</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -64,6 +62,7 @@
 // - Consumer Key: (Get by Box Developer Console)
 // - Consumer Secret: (Get by Box Developer Console)
 
+const MAX_SIGNER_NUM = 35;
 const MAX_DAYS_VALID = 730;
 
 const PROCESSING_STATUSES = [
@@ -147,8 +146,8 @@ function retrieveSigners() {
     if (emails === null || emails.length === 0) {
         throw 'No Email Address.';
     }
-    if (emails.length > 35) { // Box Sign の仕様で最大35件まで
-        throw 'Number of Email Addresses exceeds the limit. The maximum number is 35.';
+    if (emails.length > MAX_SIGNER_NUM) {
+        throw `Number of Email Addresses exceeds the limit. The maximum number is ${MAX_SIGNER_NUM}.`;
     }
 
     // 署名者の配列を作成
@@ -204,7 +203,7 @@ function retrieveFilledArray(confName, label) {
 function retrieveDaysValid() {
     const daysValidStr = configs.get('conf_DaysValid');
     const error = `Days until expiration must be positive integer no greater than ${MAX_DAYS_VALID}.`;
-    if (daysValidStr === '') {
+    if (daysValidStr === null || daysValidStr === '') {
         return null;
     }
     const reg = new RegExp('^[1-9][0-9]{0,2}$');
@@ -289,6 +288,7 @@ function checkStatus(oauth2, requestId) {
     }
     // 処理中の場合、false を返す
     if (PROCESSING_STATUSES.includes(status)) {
+        engine.log(`current status: ${status}`);
         return false;
     }
 }
@@ -451,13 +451,13 @@ test('No Email Address - A blank line', () => {
 });
 
 /**
-  * メールアドレスが 35 件を超えていてエラー
+  * メールアドレスの件数が上限を超えていてエラー
   */
 test('Number of Email Addresses exceeds the limit', () => {
-    const emails = 'test@example.com\n'.repeat(36);
-    const passwords = 'password\n'.repeat(36);
+    const emails = 'test@example.com\n'.repeat(MAX_SIGNER_NUM + 1);
+    const passwords = 'password\n'.repeat(MAX_SIGNER_NUM + 1);
     prepareConfigs('fileId-1', 'folderId-1', emails, passwords, '', '');
-    assertError(main, 'Number of Email Addresses exceeds the limit. The maximum number is 35.');
+    assertError(main, `Number of Email Addresses exceeds the limit. The maximum number is ${MAX_SIGNER_NUM}.`);
 });
 
 /**
@@ -507,6 +507,33 @@ test('Number of Passwords does not match the number of Email Addresses', () => {
 });
 
 /**
+  * 期限までの日数が 0 でエラー
+  */
+test('Invalid days until expiration - zero', () => {
+    prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', 'password', '', '');
+    configs.put('conf_DaysValid', '0');
+    assertError(main, `Days until expiration must be positive integer no greater than ${MAX_DAYS_VALID}.`);
+});
+
+/**
+  * 期限までの日数が負の数でエラー
+  */
+test('Invalid days until expiration - negative integer', () => {
+    prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', 'password', '', '');
+    configs.put('conf_DaysValid', '-1');
+    assertError(main, `Days until expiration must be positive integer no greater than ${MAX_DAYS_VALID}.`);
+});
+
+/**
+  * 期限までの日数が整数でなくエラー
+  */
+test('Invalid days until expiration - not integer', () => {
+    prepareConfigs('fileId-1', 'folderId-1', 'test1@example.com', 'password', '', '');
+    configs.put('conf_DaysValid', '1.5'); // 小数
+    assertError(main, `Days until expiration must be positive integer no greater than ${MAX_DAYS_VALID}.`);
+});
+
+/**
   * POST リクエストのテスト
   * @param {Object} request
   * @param request.url
@@ -518,8 +545,9 @@ test('Number of Passwords does not match the number of Email Addresses', () => {
   * @param signers
   * @param subject
   * @param message
+  * @param daysValid
   */
-const assertPostRequest = ({url, method, contentType, body}, fileId, folderId, signers, subject, message) => {
+const assertPostRequest = ({url, method, contentType, body}, fileId, folderId, signers, subject, message, daysValid) => {
     expect(url).toEqual('https://api.box.com/2.0/sign_requests');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json; charset=UTF-8');
@@ -539,6 +567,7 @@ const assertPostRequest = ({url, method, contentType, body}, fileId, folderId, s
     } else {
         expect(bodyObj.email_message).toEqual(undefined);
     }
+    expect(bodyObj.days_valid).toEqual(daysValid);
 };
 
 /**
@@ -551,7 +580,7 @@ test('Fail in POST Request', () => {
     prepareConfigs('fileId-1', 'folderId-1', email, password, '', '');
     
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+        assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '', null);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -582,7 +611,7 @@ test('Fail in GET Request', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
         }
@@ -605,7 +634,7 @@ test('Fail in converting', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
         }
@@ -628,7 +657,7 @@ test('Fail in sending', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
         }
@@ -641,15 +670,16 @@ test('Fail in sending', () => {
 
 /**
   * 署名リクエスト作成成功
-  * Box Sign の上限 35 件の署名者でテスト
+  * Box Sign の署名者の上限数でテスト
   * パスワード設定あり
+  * 期限設定なし
   * 1 回目のステータス確認で sent
   */
-test('Success - 35 signers with passwords, completed in main()', () => {
+test('Success - Maximum number of signers with passwords, completed in main()', () => {
     const emails = [];
     const passwords = [];
     const signers = [];
-    for (let i = 0; i < 35; i++) {
+    for (let i = 0; i < MAX_SIGNER_NUM; i++) {
         const email = `test${i+1}@example.com`;
         const password = `password${i+1}`
         emails.push(email);
@@ -663,7 +693,7 @@ test('Success - 35 signers with passwords, completed in main()', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '');
+            assertPostRequest(request, 'fileId-1', 'folderId-1', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId1"}');
         }
@@ -678,6 +708,7 @@ test('Success - 35 signers with passwords, completed in main()', () => {
   * 署名リクエスト作成成功
   * メールアドレスを単一行データ項目で指定
   * パスワード設定あり
+  * 期限を最長日数後に設定
   * 3 回目のステータス確認で sent
   */
 test('Success - Email Address set with TEXTFIELD, completed in proceed()', () => {
@@ -692,11 +723,14 @@ test('Success - Email Address set with TEXTFIELD, completed in proceed()', () =>
     const emailDef = engine.createDataDefinition('メールアドレス (単一行)', 5, 'q_EmailAddressSingle', 'STRING_TEXTFIELD');
     engine.setData(emailDef, email);
     configs.putObject('conf_EmailAddress', emailDef);
+
+    // 期限までの日数を設定
+    configs.put('conf_DaysValid', `${MAX_DAYS_VALID}`);
     
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-2', 'folderId-2', signers, '', '');
+            assertPostRequest(request, 'fileId-2', 'folderId-2', signers, '', '', MAX_DAYS_VALID);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId2"}');
         }
@@ -722,6 +756,7 @@ test('Success - Email Address set with TEXTFIELD, completed in proceed()', () =>
 /**
   * 署名リクエスト作成成功
   * パスワードを単一行データ項目で指定
+  * 期限を 1 日後に設定
   * 1 回目のステータス確認で viewed
   */
 test('Success - Password set with TEXTFIELD', () => {
@@ -736,11 +771,14 @@ test('Success - Password set with TEXTFIELD', () => {
     const passwordDef = engine.createDataDefinition('パスワード (単一行)', 5, 'q_PasswordSingle', 'STRING_TEXTFIELD');
     engine.setData(passwordDef, password);
     configs.putObject('conf_Password', passwordDef);
+
+    // 期限までの日数を設定
+    configs.put('conf_DaysValid', '1');
     
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '', 1);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId3"}');
         }
@@ -774,7 +812,7 @@ test('Success - Without passwords', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '');
+            assertPostRequest(request, 'fileId-3', 'folderId-3', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId345"}');
         }
@@ -800,7 +838,7 @@ test('Success - With email subject and message', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-1', 'folderId-2', signers, subject, message);
+            assertPostRequest(request, 'fileId-1', 'folderId-2', signers, subject, message, null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId123"}');
         }
@@ -832,7 +870,7 @@ test('Success - File ID and Folder ID are set as fixed values', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertPostRequest(request, 'fileId-2', 'folderId-1', signers, '', '');
+            assertPostRequest(request, 'fileId-2', 'folderId-1', signers, '', '', null);
             reqCount++;
             return httpClient.createHttpResponse(201, 'application/json', '{"id": "requestId3"}');
         }
