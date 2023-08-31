@@ -45,9 +45,13 @@
             <label>C7: Message to include in the email (Default message if blank)</label>
             <label locale="ja">C7: メール本文に含めるメッセージ (空白の場合、デフォルトの文面が使用されます)</label>
         </config>
+        <config name="conf_DaysValid" form-type="TEXTFIELD">
+            <label>C8: Days until expiration (Never expires if blank)</label>
+            <label locale="ja">C8: 期限切れまでの日数 (空白の場合、期限は設定されません)</label>
+        </config>
         <config name="conf_RequestId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C8: Data item to save ID of the sign request</label>
-            <label locale="ja">C8: 署名リクエスト ID を保存するデータ項目</label>
+            <label>C9: Data item to save ID of the sign request</label>
+            <label locale="ja">C9: 署名リクエスト ID を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -59,6 +63,8 @@
 // - Scope: sign_requests.readwrite root_readwrite
 // - Consumer Key: (Get by Box Developer Console)
 // - Consumer Secret: (Get by Box Developer Console)
+
+const MAX_DAYS_VALID = 730;
 
 const PROCESSING_STATUSES = [
     'converting',
@@ -81,10 +87,11 @@ function main() {
     const signers = retrieveSigners();
     const subject = configs.get('conf_EmailSubject');
     const message = configs.get('conf_EmailMessage');
+    const daysValid = retrieveDaysValid();
     const requestIdDef = configs.getObject('conf_RequestId');
 
     //// == 演算 / Calculating ==
-    const requestId = createRequest(oauth2, fileId, folderId, signers, subject, message);
+    const requestId = createRequest(oauth2, fileId, folderId, signers, subject, message, daysValid);
     setData(requestIdDef, requestId);
     if (checkStatus(oauth2, requestId) === false) {
         engine.saveTemporaryData(requestId); // 署名リクエスト ID を一時データとして保存
@@ -191,6 +198,27 @@ function retrieveFilledArray(confName, label) {
 }
 
 /**
+  * config から署名リクエストが期限切れになるまでの日数を読み出す
+  * @return {Number} daysValid 署名リクエストが期限切れになるまでの日数
+  */
+function retrieveDaysValid() {
+    const daysValidStr = configs.get('conf_DaysValid');
+    const error = `Days until expiration must be positive integer no greater than ${MAX_DAYS_VALID}.`;
+    if (daysValidStr === '') {
+        return null;
+    }
+    const reg = new RegExp('^[1-9][0-9]{0,2}$');
+    if (!reg.test(daysValidStr)) {
+        throw error;
+    }
+    const daysValid = parseInt(daysValidStr, 10);
+    if (daysValid > MAX_DAYS_VALID) {
+        throw error;
+    }
+    return daysValid;
+}
+
+/**
   * Create Sign Request  署名リクエスト作成
   * @param {AuthSettingWrapper} oauth OAuth2 設定
   * @param {String} fileId 元ファイルの ID
@@ -198,10 +226,14 @@ function retrieveFilledArray(confName, label) {
   * @param {Array<Object>} signers 署名者 {email, password} の配列
   * @param {String} subject 送信メールの件名
   * @param {String} message 送信メールに含めるメッセージ
+  * @param {Number} daysValid 署名リクエストが期限切れになるまでの日数
   * @return {String} requestId 署名リクエストの ID
   */
-function createRequest(oauth2, fileId, folderId, signers, subject, message) {
-    const jsonBody = {signers};
+function createRequest(oauth2, fileId, folderId, signers, subject, message, daysValid) {
+    const jsonBody = {
+        signers,
+        days_valid: daysValid
+    };
     jsonBody['source_files'] = [{
         'id': fileId,
         'type': 'file'
