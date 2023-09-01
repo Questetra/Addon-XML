@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-08-28</last-modified>
+    <last-modified>2023-09-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Cancel Sign Request</label>
     <label locale="ja">Box Sign: 署名リクエストキャンセル</label>
-    <summary>This item cancels a sign request of the specified signing document on Box.
+    <summary>This item cancels a specified sign request on Box.
     </summary>
     <summary locale="ja">この工程は、Box 上の指定の署名リクエストをキャンセルします。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-sign-request-cancel/</help-page-url>
@@ -24,11 +25,10 @@
     </configs>
 
     <script><![CDATA[
-main();
 function main() {
     const oauth2 = configs.get("conf_OAuth2");
     const requestId = decideRequestId();
-    checkStatus(oauth2, requestId);
+    cancelRequest(oauth2, requestId);
 }
 
 /**
@@ -45,53 +45,9 @@ function decideRequestId() {
 }
 
 /**
- * 署名リクエストのステータスを確認後、署名リクエストをキャンセルする
- * 全員署名済、拒否、キャンセル済の場合は正常終了
- * 変換中の場合はエラーにする
- * @param {String} oauth OAuth2 設定
- * @param {String} requestId 署名リクエストの ID
- */
-function checkStatus(oauth2, requestId) {
-    const signRequest = getSignRequest(oauth2, requestId);
-    const status = signRequest.status;
-    if (status === 'signed') {
-        engine.log('Request signed.');
-        return;
-    } else if (status === 'declined') {
-        engine.log('Request declined.');
-        return;
-    } else if (status === 'cancelled') {
-        engine.log('Request has already cancelled.');
-        return;
-    } else if (status === 'converting') {
-        throw `Failed to Cancel. Request converting.`;
-    } else {
-        cancelRequest(oauth2, requestId);
-    }
-}
-
-/**
-  * 署名リクエストを取得
-  * @param {String} oauth2 OAuth2 設定
-  * @param {String} requestId 署名リクエストの ID
-  * @return {Object} signRequest 署名リクエスト
-  */
-function getSignRequest(oauth2, requestId) {
-    const url = `https://api.box.com/2.0/sign_requests/${requestId}`;
-    const response = httpClient.begin()
-        .authSetting(oauth2)
-        .get(url);
-    const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(responseTxt);
-        throw `Failed to get Sign Request. status: ${status}`;
-    }
-    return JSON.parse(responseTxt);
-}
-
-/**
  * 署名リクエストキャンセル
+ * 全員署名済、拒否、キャンセル済、変換中等、ステータスが原因でキャンセルに失敗する場合は正常終了
+ * ステータス以外が原因でキャンセルに失敗する場合はエラーにする
  * @param {String} oauth2 OAuth2 設定
  * @param {String} requestId 署名リクエストの ID
  */
@@ -101,11 +57,17 @@ function cancelRequest(oauth2, requestId) {
         .authSetting(oauth2)
         .post(url);
     const status = response.getStatusCode();
-    const responseTxt = response.getResponseAsString();
     if (status !== 200) {
-        const error = `Failed to cancel. status: ${status}`;
-        engine.log(responseTxt);
-        throw error;
+        const responseTxt = response.getResponseAsString();
+        const jsonRes = JSON.parse(responseTxt);
+        if (jsonRes.code === "bad_request") {
+            engine.log(jsonRes.context_info.errors[0].message);
+            return;
+        } else{
+            const error = `Failed to cancel. status: ${status}`;
+            engine.log(responseTxt);
+            throw error;
+        }
     }
     engine.log(`status: ${status} Request was cancelled, request ID: ${requestId}`);
 }
@@ -155,54 +117,55 @@ const prepareConfigs = (requestId) => {
     return requestIdDef;
 };
 
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+
 /**
  * リクエスト ID を指定し、値が空
  */
 test("No Request ID", () => {
     prepareConfigs(null);
-    expect(execute).toThrow("Request ID is blank");
+    assertError(main, 'Request ID is blank');
 });
 
 
 /**
- * GET リクエストのレスポンスを準備
+ * POST リクエストのエラーレスポンス（エラーの原因がステータス）を準備
  * @param id
- * @param status
  * @return responseObj
  */
-const prepareGetResponse = (id, status) => {
+const prepareErrorResponse = (id) => {
 
     const responseObj = {
+        "type":"error",
+        "code":"bad_request",
+        "status":400,
+        "message":"Bad request",
+        "help_url":"http://developers.box.com/docs/#errors",
         id,
-        status,
+        "context_info":
+            {
+                "errors":
+                    [{"name":"detail",
+	                    "message":"Signrequest already cancelled",
+		                "reason":"invalid_parameter"}]
+            }
     };
     return responseObj;
 };
-
-/**
- * GET リクエスト のテスト
- * @param url
- * @param method
- * @param requestId
- */
-const assertGetRequest = ({ url, method }, requestId) => {
-    expect(url).toEqual(`https://api.box.com/2.0/sign_requests/${requestId}`);
-    expect(method).toEqual('GET');
-};
-
-/**
- * GET リクエストで失敗
- */
-test("GET Failed", () => {
-    prepareConfigs("12345");
-
-    httpClient.setRequestHandler((request) => {
-        assertGetRequest(request, "12345");
-        return httpClient.createHttpResponse(400, "application/json", "{}");
-    });
-
-    expect(execute).toThrow("Failed to get Sign Request. status: 400");
-});
 
 
 /**
@@ -223,114 +186,40 @@ const assertPostRequest = ({ url, method }, requestId) => {
 test("POST Failed", () => {
     prepareConfigs("12345");
 
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRequest(request, "12345");
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("12345", "sent")));
-        }
         assertPostRequest(request, "12345");
-        return httpClient.createHttpResponse(400, "application/json", "{}");
+        return httpClient.createHttpResponse(404, "application/json", "{}");
     });
-
-    expect(execute).toThrow("Failed to cancel. status: 400");
+    assertError(main, 'Failed to cancel. status: 404');
 });
 
 
 /**
- * 正常系 ステータスは sent
+ * 正常系 ステータスは sent、viewed など
  */
-test("Success - sent", () => {
+test("Success - sent viewed", () => {
     const requestIdDef = prepareConfigs("00000");
-
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRequest(request, "00000");
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("00000", "sent")));
-        }
         assertPostRequest(request, "00000");
         return httpClient.createHttpResponse(200, "application/json", "{}");
     });
-    execute();
+    main();
     expect(engine.findData(requestIdDef)).toEqual("00000");
 });
 
-/**
- * 正常系 ステータスは viewed
- */
-test("Success - viewed", () => {
-    const requestIdDef = prepareConfigs("23456");
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetRequest(request, "23456");
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("23456", "viewed")));
-        }
-        assertPostRequest(request, "23456");
-        return httpClient.createHttpResponse(200, "application/json", "{}");
-    });
-    execute();
-    expect(engine.findData(requestIdDef)).toEqual('23456');
-});
-
 
 /**
- * 異常系 ステータスは converting
+ * キャンセル処理せずに正常終了 ステータスは declined、signed、cancelled、converting 等
  */
-test("Failed - converting", () => {
-    const requestIdDef = prepareConfigs("34567");
-
-    httpClient.setRequestHandler((request) => {
-        assertGetRequest(request, "34567");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("34567", "converting")));
-    });
-    expect(execute).toThrow("Failed to Cancel. Request converting.");
-});
-
-/**
- * 正常系 ステータスは declined キャンセル処理せずに正常終了
- */
-test("Success - declined", () => {
+test("Success - 400", () => {
     const requestIdDef = prepareConfigs("45678");
-
     httpClient.setRequestHandler((request) => {
-        assertGetRequest(request, "45678");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("45678", "declined")));
+        assertPostRequest(request, "45678");
+        return httpClient.createHttpResponse(400, 'application/json', JSON.stringify(prepareErrorResponse("45678")));
     });
-    execute();
+    main();
+    expect(engine.findData(requestIdDef)).toEqual("45678");
 });
-
-/**
- * 正常系 ステータスは signed キャンセル処理せずに正常終了
- */
-test("Success - signed", () => {
-    const requestIdDef = prepareConfigs("56789");
-
-    httpClient.setRequestHandler((request) => {
-        assertGetRequest(request, "56789");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("56789", "signed")));
-    });
-    execute();
-});
-
-/**
- * 正常系 ステータスは cancelled キャンセル処理せずに正常終了
- */
-test("Success - cancelled", () => {
-    const requestIdDef = prepareConfigs("67890");
-
-    httpClient.setRequestHandler((request) => {
-        assertGetRequest(request, "67890");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse("67890", "cancelled")));
-    });
-    execute();
-});
-
 
 ]]></test>
 
