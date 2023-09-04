@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <label>Start: Microsoft 365 Outlook for Business: Email Received</label>
+    <label locale="ja">開始: Microsoft 365 Outlook for Business: メール受信時</label>
+    <!--
+    <last-modified>2023-09-04</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <summary>This item starts a process when Outlook has received a new message.</summary>
+    <summary locale="ja">このアイテムは、Outlook が新しいメールを受信すると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Mail.Read">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_Category" form-type="TEXTAREA">
+            <label>C2: Category</label>
+            <label locale="ja">C2: カテゴリ</label>
+        </config>
+        <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save Message ID</label>
+            <label locale="ja">C3: メール ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Data item to save received time</label>
+            <label locale="ja">C4: 受信時刻を保存するデータ項目</label>
+        </config>
+        <config name="conf_rfc822msgIdData" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save RFC 822 Message-ID header</label>
+            <label locale="ja">C5: RFC 822 Message-ID ヘッダを保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-outlook-message-received/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-outlook-message-received/
+    </help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Mail.Read offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
+const OUTLOOK_MASSAGE_LIST_LIMIT = 1000; // 取得上限数
+
+/**
+ * configs から必要な情報の取り出し
+ * @returns {Object} setting 設定
+ * @returns {AuthSettingWrapper} setting.auth HTTP 認証設定
+ * @returns {Array} setting.categories カテゴリ名一覧
+ */
+const prepare = () => {
+    const auth = configs.getObject('conf_OAuth2');
+    const categories = configs.get('conf_Category').split('\n')
+        .map(categoryName => categoryName.trim())
+        .filter(categoryName => categoryName !== '');
+    return {
+        auth,
+        categories
+    };
+};
+
+/**
+ * 追加されたメールの検索
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id Gmail Message ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {auth, categories} = prepare();
+    const messages = getMessages(auth, categories, limit, timestampLowerLimit);
+    logMessages(messages);
+    return messages;
+};
+
+/**
+ * メッセージ一覧のログ出力
+ * @param {Array} messages メッセージ一覧
+ */
+const logMessages = (messages) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(DATETIME_FORMAT, value) : value;
+    messages.forEach(msg => engine.log(JSON.stringify(msg, replacer)));
+};
+
+/**
+ * Microsoft Graph API にメール一覧取得の GET リクエストを送信し、メッセージ一覧を返す
+ * @param {String} auth 認証設定
+ * @param {Array<String>} categories カテゴリ名一覧
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id メール ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+function getMessages(auth, categories, limit, timestampLowerLimit) {
+    limit = Math.min(limit, OUTLOOK_MASSAGE_LIST_LIMIT);
+    let query = `receivedDateTime ge ${dateFormatter.format('UTC', DATETIME_FORMAT, timestampLowerLimit)}`;
+    categories.forEach((category) => {
+        query += ` and categories/any(c:c eq '${category}')`;
+    });
+    engine.log(`search query: ${query}`);
+    const response = httpClient.begin().authSetting(auth)
+        .queryParam('$top', `${limit}`)
+        .queryParam('$select', 'id,receivedDateTime,internetMessageId')
+        .queryParam('$orderby', 'receivedDateTime DESC')
+        .queryParam('$filter', query)
+        .get('https://graph.microsoft.com/v1.0/me/messages');
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get messages. status: ${status}`;
+    }
+
+    const messages = JSON.parse(responseStr).value;
+    if (messages.length === 0) {
+        // 該当メッセージが無い
+        engine.log('no messages');
+        return [];
+    }
+
+    return messages
+        .filter(msg => !engine.isProcessStarted(msg.id)) // 既にプロセス開始済みのものを除く
+        .map(msg => {
+            return {
+                id: msg.id,
+                timestamp: dateFormatter.parse(DATETIME_FORMAT, msg.receivedDateTime),
+                rfc822msgId: msg.internetMessageId
+            };
+        });
+}
+
+]]>
+    </script>
+
+<!--
+    <icon>
+    </icon>
+-->
+
+    <test><![CDATA[
+
+    ]]></test>
+
+</service-task-definition>
