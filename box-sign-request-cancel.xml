@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-09-01</last-modified>
+    <last-modified>2023-09-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -26,7 +26,7 @@
 
     <script><![CDATA[
 function main() {
-    const oauth2 = configs.get("conf_OAuth2");
+    const oauth2 = configs.getObject("conf_OAuth2");
     const requestId = decideRequestId();
     cancelRequest(oauth2, requestId);
 }
@@ -48,7 +48,7 @@ function decideRequestId() {
  * 署名リクエストキャンセル
  * 全員署名済、拒否、キャンセル済、変換中等、ステータスが原因でキャンセルに失敗する場合は正常終了
  * ステータス以外が原因でキャンセルに失敗する場合はエラーにする
- * @param {String} oauth2 OAuth2 設定
+ * @param {AuthSettingWrapper} oauth OAuth2 設定
  * @param {String} requestId 署名リクエストの ID
  */
 function cancelRequest(oauth2, requestId) {
@@ -59,16 +59,19 @@ function cancelRequest(oauth2, requestId) {
     const status = response.getStatusCode();
     if (status !== 200) {
         const responseTxt = response.getResponseAsString();
-        const jsonRes = JSON.parse(responseTxt);
-        if (jsonRes.code === "bad_request") {
-            engine.log(jsonRes.context_info.errors[0].message);
-            return;
-        } else{
-            const error = `Failed to cancel. status: ${status}`;
-            engine.log(responseTxt);
-            throw error;
-        }
+        try {
+            const jsonRes = JSON.parse(responseTxt);
+            if (jsonRes.code === "bad_request") {
+                engine.log(jsonRes.context_info.errors[0].message);
+                return;
+            }
+        } catch (ignore) {}
+
+    const error = `Failed to cancel. status: ${status}`;
+    engine.log(responseTxt);
+    throw error;
     }
+
     engine.log(`status: ${status} Request was cancelled, request ID: ${requestId}`);
 }
 ]]></script>
@@ -104,7 +107,16 @@ function cancelRequest(oauth2, requestId) {
  * @return {Object}
  */
 const prepareConfigs = (requestId) => {
-    configs.put("conf_OAuth2", "Box");
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box Sign',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'sign_requests.readwrite root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', auth);
     const requestIdDef = engine.createDataDefinition(
         "リクエスト ID",
         3,
