@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Microsoft 365 Outlook for Business: Get Email Message</label>
+    <label locale="ja">Microsoft 365 Outlook for Business: メール取得</label>
+    <!--
+    <last-modified>2023-09-05</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>Get an email message in Outlook.</summary>
+    <summary locale="ja">Outlook のメールを取得します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Mail.Read">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_MessageId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Message ID</label>
+            <label locale="ja">C2: メール ID</label>
+        </config>
+        <config name="conf_FromAddress" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: String type data item that will save From Address</label>
+            <label locale="ja">C3: From メールアドレスを保存する文字型データ項目</label>
+        </config>
+        <config name="conf_FromName" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: String type data item that will save From Name</label>
+            <label locale="ja">C4: From 表示名を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_RecipientAddresses" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C5: String type data item that will save To/Cc/Bcc Addresses</label>
+            <label locale="ja">C5: To/Cc/Bcc メールアドレス一覧を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_RecipientNames" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C6: String type data item that will save To/Cc/Bcc Names</label>
+            <label locale="ja">C6: To/Cc/Bcc 表示名一覧を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_SentDatetime" required="false" form-type="SELECT" select-data-type="DATETIME">
+            <label>C7: Datetime type data item that will save Sent Date and Time</label>
+            <label locale="ja">C7: 送信日時を保存する日時型データ項目</label>
+        </config>
+        <config name="conf_Subject" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C8: String type data item that will save Subject</label>
+            <label locale="ja">C8: 件名を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_Body" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C9: String type data item that will save Body</label>
+            <label locale="ja">C9: 本文を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_Attachments" required="false" form-type="SELECT" select-data-type="FILE">
+            <label>C10: File type data item that will save Attachments</label>
+            <label locale="ja">C10: 添付ファイルを保存するファイル型データ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-outlook-message-get/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-outlook-message-get/</help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Mail.Read offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+function main(){
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_OAuth2');
+    const messageId = retrieveMessageId();
+    const defs = retrieveDefs();
+
+    //// == 演算 / Calculating ==
+    if (Object.values(defs).every(def => def === null)) {
+        return; // 保存先データ項目が１つも設定されていなければ、何もせず正常終了
+    }
+    const message = getMessage(auth, messageId);
+
+    const qfiles = new java.util.ArrayList(); // もともと添付されていたファイルはクリアする
+    if (defs.AttachmentsDef !== null) {
+        getAttachments(auth, messageId, qfiles);
+    }
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    setData(defs.FromAddressDef, message.fromAddress);
+    setData(defs.FromNameDef, message.fromName);
+    setData(defs.RecipientAddressesDef, message.recipientAddresses.join('\n'));
+    setData(defs.RecipientNamesDef, message.recipientNames.join('\n'));
+    setData(defs.SentDatetimeDef, dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", message.sentDateTime));
+    setData(defs.SubjectDef, message.subject);
+    setData(defs.BodyDef, message.body);
+    setData(defs.AttachmentsDef, qfiles);
+}
+
+/**
+ * config からメール ID を読み出す
+ * 空の場合はエラー
+ * @returns {String} メール ID
+ */
+function retrieveMessageId() {
+    const messageId = engine.findData(configs.getObject('conf_MessageId'));
+    if (messageId === null) {
+        throw 'Message ID is blank.';
+    }
+    return messageId;
+}
+
+/**
+ * config から保存先データ項目の ProcessDataDefinitionView を読み出す
+ * 値を保存するデータ項目が重複して設定されている場合はエラーとする
+ * @returns {Object} defs 保存先データ項目の ProcessDataDefinitionView を格納した JSON オブジェクト
+ */
+function retrieveDefs() {
+    const items = ['FromAddress', 'FromName', 'RecipientAddresses', 'RecipientNames', 'SentDatetime', 'Subject', 'Body', 'Attachments'];
+    const defs = {};
+    const dataItemNumSet = new Set(); // データ項目の重複確認用
+    items.forEach( item => {
+        const dataItemDef = configs.getObject(`conf_${item}`);
+        if ( dataItemDef !== null ) { // データ項目が設定されている場合は重複を確認する
+            const dataItemNum = dataItemDef.getNumber();
+            if ( dataItemNumSet.has( dataItemNum ) ) { // データ項目番号が重複していればエラー
+                throw 'The same data item is set multiple times.';
+            }
+            dataItemNumSet.add( dataItemNum ); // データ項目の重複確認用
+        }
+        defs[`${item}Def`] = dataItemDef;
+    });
+    return defs;
+}
+
+/**
+ * Microsoft Graph API にメール取得の GET リクエストを送信
+ * @param {AuthSettingWrapper} auth 認証設定
+ * @param {String} messageId メール ID
+ * @returns {Object} message メールの情報を格納した JSON オブジェクト
+ */
+function getMessage(auth, messageId) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .queryParam('$select', 'from,toRecipients,ccRecipients,bccRecipients,subject,body,sentDateTime')
+        .get(`https://graph.microsoft.com/v1.0/me/messages/${messageId}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get message. status: ${status}`;
+    }
+    const message = JSON.parse(responseStr);
+    const recipients = message.toRecipients.concat(message.ccRecipients, message.bccRecipients);
+    return {
+        fromAddress: message.from.emailAddress.address,
+        fromName: message.from.emailAddress.name,
+        recipientAddresses: recipients.map(recipient => recipient.emailAddress.address),
+        recipientNames: recipients.map(recipient => recipient.emailAddress.name),
+        sentDateTime: message.sentDateTime,
+        subject: message.subject,
+        body: message.body.content
+    };
+}
+
+/**
+ * メールの添付ファイルを取得する
+ * @param {AuthSettingWrapper} auth 認証設定
+ * @param {String} messageId メール ID
+ * @param {ArrayList<NewQfile>} qfiles 添付ファイルを格納する配列
+ */
+function getAttachments(auth, messageId, qfiles) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get attachments. status: ${status}`;
+    }
+    const attachments = JSON.parse(responseStr).value;
+    attachments.forEach(attachment => {
+        const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+            attachment.name,
+            attachment.contentType,
+            base64.decodeFromStringToByteArray(attachment.contentBytes) // ByteArrayWrapper
+        );
+        qfiles.add(qfile);
+    });
+}
+
+/**
+ * 保存先データ項目の ProcessDataDefinitionView が null でない場合のみ値を代入する
+ * @param {ProcessDataDefinitionView} def 保存先データ項目の ProcessDataDefinitionView
+ * @param {Object} value  データ項目に代入する値
+ */
+function setData(def, value) {
+    if (def === null) {
+        return; // データ項目が設定されていなければ何もしない
+    }
+    engine.setData(def, value);
+}
+
+    ]]></script>
+
+<!--
+    <icon>
+    </icon>
+-->
+
+    <test><![CDATA[
+
+    ]]></test>
+
+</service-task-definition>
