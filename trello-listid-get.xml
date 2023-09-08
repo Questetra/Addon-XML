@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Trello: Get List Id</label>
     <label locale="ja">Trello: リスト ID 取得</label>
-    <last-modified>2023-09-07</last-modified>
+    <last-modified>2023-09-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -21,7 +21,7 @@
             <label>C3: Board ID</label>
             <label locale="ja">C3: ボード ID</label>
         </config>
-        <config name="conf_ListName" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+        <config name="conf_ListName" required="true" form-type="TEXTFIELD">
             <label>C4: List Name</label>
             <label locale="ja">C4: リストの名前</label>
         </config>
@@ -40,8 +40,8 @@ function main() {
     const authKey = configs.getObject("conf_ApiKey");
     const authToken = configs.getObject("conf_ApiToken");
     const boardId = configs.get('conf_BoardId');//固定値指定のみ 必須
-    const listName = retrieveListName();
-    const listId = configs.get("conf_ListId");
+    const listName = configs.get('conf_ListName');//固定値指定のみ 必須
+    const listIdDef = configs.getObject('conf_ListId');
 
     const apiKey = authKey.getToken();
     const apiToken = authToken.getToken();
@@ -50,24 +50,7 @@ function main() {
     const listObj = getListInformation(apiKey, apiToken, boardId);
     const trelloListId = getListId(listObj, listName);
 
-    engine.setDataByNumber(listId, trelloListId);
-}
-
-
-/**
-  * config からリストの名前 を読み出す
-  * @return {String} listName
-  */
-function retrieveListName() {
-    const listNameDef = configs.getObject('conf_ListName');
-    if (listNameDef === null) { // 固定値で指定　必須
-        return configs.get('conf_ListName');
-    }
-    const listName = engine.findData(listNameDef);
-    if (listName === null) {
-        throw 'List Name is blank.';
-    }
-    return listName;
+    engine.setData(listIdDef, trelloListId);
 }
 
 
@@ -102,7 +85,7 @@ function getListInformation(apiKey, apiToken, boardId) {
 function getListId(listObj, listName) {
 
     let listId;
-    let index = listObj.findIndex((listObj) => listObj.name === listName);
+    let index = listObj.findIndex((listElement) => listElement.name === listName);
     if (index !== -1) {
         listId = listObj[index].id
     } else {
@@ -155,11 +138,7 @@ const prepareConfigs = (boardId, listName) => {
 
     configs.put('conf_BoardId', boardId);
 
-    // 文字型データ項目を準備して、config に指定
-    const listNameDef = engine.createDataDefinition('リスト名', 2, 'q_ListName', 'STRING_TEXTFIELD');
-    configs.putObject('conf_ListName', listNameDef);
-
-    engine.setData(listNameDef, listName);
+    configs.put('conf_ListName', listName);
 
     // 文字型データ項目を準備して、config に指定
     const listIdDef = engine.createDataDefinition('リスト ID を保存するデータ項目', 3, 'q_ListId', 'STRING_TEXTFIELD');
@@ -187,15 +166,6 @@ const assertError = (func, errorMsg) => {
 
 
 /**
-  * リスト名 が空
-  */
-test('List Name is blank - set by STRING', () => {
-    prepareConfigs('123ABC', null);
-    assertError(main, 'List Name is blank.');
-});
-
-
-/**
  * GET リクエスト のテスト
  * @param url
  * @param method
@@ -215,23 +185,19 @@ test("GET Failed", () => {
 
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "234BCD");
-        return httpClient.createHttpResponse(400, "application/json", "{}");
+        return httpClient.createHttpResponse(404, "application/json", "{}");
     });
-    assertError(main, 'Failed to get list information. status: 400');
+    assertError(main, 'Failed to get list information. status: 404');
 });
 
 
 /**
  * GET リクエストのレスポンス（ボード内のリスト情報を取得）を準備
- * @param id
- * @return responseObj
  */
-const prepareResponse = (id, name) => {
-
     const responseObj = [
         {
-            id,
-            name,
+            "id":"1234567890abcde",
+            "name":"作業中",
             "closed": true,
             "pos": 2154,
             "softLimit": "<string>",
@@ -257,8 +223,6 @@ const prepareResponse = (id, name) => {
             "subscribed": true
         }
     ];
-    return responseObj;
-};
 
 
 /**
@@ -268,7 +232,7 @@ test("Success - first list", () => {
     const listIdDef = prepareConfigs('123ABC', '作業中');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareResponse('1234567890abcde', '作業中')));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
     main();
     expect(engine.findData(listIdDef)).toEqual('1234567890abcde');
@@ -282,7 +246,7 @@ test("Success - third list", () => {
     const listIdDef = prepareConfigs('123ABC', 'ToDo');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareResponse('1234567890abcde', '作業中')));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
     main();
     expect(engine.findData(listIdDef)).toEqual('6789012345fghij');
@@ -296,7 +260,7 @@ test("Failed", () => {
     const listIdDef = prepareConfigs('123ABC', 'test');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareResponse('1234567890abcde', '作業中')));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
     assertError(main, 'List name: "test" not found in the Board');
 });
