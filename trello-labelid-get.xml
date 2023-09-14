@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Trello: Get Label Id</label>
     <label locale="ja">Trello: ラベル ID 取得</label>
-    <last-modified>2023-09-12</last-modified>
+    <last-modified>2023-09-14</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -40,27 +40,47 @@ function main() {
     const authKey = configs.getObject("conf_ApiKey");
     const authToken = configs.getObject("conf_ApiToken");
     const boardId = configs.get('conf_BoardId');//固定値指定のみ 必須
-    const labelNames = configs.get('conf_LabelNames');//固定値指定のみ 必須
+    const labelNamesArray = decideLabelNames();
     const labelIdDef = configs.getObject('conf_LabelId');
 
     const apiKey = authKey.getToken();
     const apiToken = authToken.getToken();
 
     //// == Calculating / 演算 ==
-    const labelObj = getLabelInformation(apiKey, apiToken, boardId);
+    const labelArray = getLabelInformation(apiKey, apiToken, boardId);
+    const numOfLines = labelNamesArray.length;
+    const labelIdsArray = [];
+    for (let i = 0; i < numOfLines; i++) {
+        labelIdsArray[i] = getLabelId(labelArray, labelNamesArray[i]);
+    }
 
-	let labelsArray = labelNames.split("\n");
-    labelsArray = labelsArray.filter(lines => lines !== ""); // 空文字列を削除
-    if (labelsArray.length === 0) {
+    engine.setData(labelIdDef, labelIdsArray.join("\n"));
+}
+
+
+/**
+  * config から設定値を読み出す
+  * 設定値が空行のみの場合はエラー
+  * 途中に改行がある場合はエラー
+  * @return {Array} labelNamesArray ラベル名の配列
+  */
+function decideLabelNames() {
+    const labelNames = configs.get('conf_LabelNames');//固定値指定のみ 必須
+    let labelNamesArray = labelNames.split("\n");
+
+    // まず、末尾に改行がある場合、順番に削除する
+    while (labelNamesArray[(labelNamesArray.length) - 1] === "") {
+        labelNamesArray.pop();
+    }
+    if (labelNamesArray.length === 0) {
         throw "Label Names aren't set.";
     }
-    const numOfLines = labelsArray.length;
-    let trelloLabelId = [];
-    for (let i = 0; i < numOfLines; i++) {
-        trelloLabelId[i] = getLabelId(labelObj, labelsArray[i]);
+    // 次に、先頭、途中の空文字列を削除する
+    const newLabelNamesArray = labelNamesArray.filter(lines => lines !== "");
+    if (newLabelNamesArray.length !== labelNamesArray.length) {
+        throw "Empty lines are set.";
     }
-
-    engine.setData(labelIdDef, trelloLabelId.join("\n"));
+    return labelNamesArray;
 }
 
 
@@ -69,7 +89,7 @@ function main() {
   * @param {String} auth.apiKey
   * @param {String} auth.apiToken
   * @param {String} boardId
-  * @return {Object} label
+  * @return {Array} labelArray
   */
 function getLabelInformation(apiKey, apiToken, boardId) {
 
@@ -89,16 +109,16 @@ function getLabelInformation(apiKey, apiToken, boardId) {
 /**
   * ラベル情報からラベル名に対応するラベル ID を取得する
   * ラベル名が複数ある場合、最初に名前が一致したラベルの ID を取得する
-  * @param {Object} labelObj  ラベル情報の JSON オブジェクト
+  * @param {Object} labelArray  ラベル情報の JSON 配列
   * @param {String} labelName ラベル名
   * @return {String} labelId  ラベル ID
   */
-function getLabelId(labelObj, labelName) {
+function getLabelId(labelArray, labelName) {
 
     let labelId;
-    let index = labelObj.findIndex((labelElement) => labelElement.name === labelName);
-    if (index !== -1) {
-        labelId = labelObj[index].id
+    let labelObj = labelArray.find(labelElement => labelElement.name === labelName);
+    if (labelObj !== undefined) {
+        labelId = labelObj.id
     } else {
         throw `Label name: "${labelName}" not found in the Board`;
     }
@@ -177,13 +197,31 @@ const assertError = (func, errorMsg) => {
 
 
 /**
+ * 改行のみ
+ */
+test("Failed - Label Names aren't set", () => {
+    prepareConfigs('234BCD', '\n\n\n');
+    assertError(main, 'Label Names aren\'t set.');
+});
+
+
+/**
+ * 先頭や、途中に空行がある
+ */
+test("Failed - Empty lines are set", () => {
+    prepareConfigs('234BCD', '\nnenhancement\n\nlow-priority');
+    assertError(main, 'Empty lines are set.');
+});
+
+
+/**
  * GET リクエスト のテスト
  * @param url
  * @param method
  * @param boardId
  */
 const assertRequest = ({ url, method }, boardId) => {
-    expect(url).toEqual(`https://api.trello.com/1/boards/${boardId}/labels?key=TrelloApiKey&token=TrelloApiToken`); 
+    expect(url).toEqual(`https://api.trello.com/1/boards/${boardId}/labels?key=TrelloApiKey&token=TrelloApiToken`);
     expect(method).toEqual('GET');
 };
 
@@ -205,60 +243,60 @@ test("GET Failed", () => {
 /**
  * GET リクエストのレスポンス（ボード内のラベル情報を取得）を準備
  */
-    const responseObj = [
-        {
-            "id":"1234567890abcde",
-            "idBoard":"0000011111",
-            "name":"enhancement",
-            "color":"red",
-            "users":1
-        },
-        {
-            "id":"234567890abcde1",
-            "idBoard":"0000022222",
-            "name":"",
-            "color":"sky",
-            "users":1
-        },
-        {
-            "id":"34567890abcde12",
-            "idBoard":"0000033333",
-            "name":"enhancement",
-            "color":"orange",
-            "users":1
-        },
-        {
-            "id":"4567890abcde123",
-            "idBoard":"0000044444",
-            "name":"low-priority",
-            "color":"green",
-            "users":1
-        },
-        {
-            "id":"567890abcde1234",
-            "idBoard":"0000055555",
-            "name":"midium-priority",
-            "color":"yellow",
-            "users":1
-        },
-        {
-            "id":"67890abcde12345",
-            "idBoard":"0000066666",
-            "name":"enhancement",
-            "color":"blue",
-            "users":1
-        }
-    ];
+const responseArray = [
+    {
+        "id": "1234567890abcde",
+        "idBoard": "0000011111",
+        "name": "enhancement",
+        "color": "red",
+        "users": 1
+    },
+    {
+        "id": "234567890abcde1",
+        "idBoard": "0000011111",
+        "name": "",
+        "color": "sky",
+        "users": 1
+    },
+    {
+        "id": "34567890abcde12",
+        "idBoard": "0000011111",
+        "name": "enhancement",
+        "color": "orange",
+        "users": 1
+    },
+    {
+        "id": "4567890abcde123",
+        "idBoard": "0000011111",
+        "name": "low-priority",
+        "color": "green",
+        "users": 1
+    },
+    {
+        "id": "567890abcde1234",
+        "idBoard": "0000011111",
+        "name": "midium-priority",
+        "color": "yellow",
+        "users": 1
+    },
+    {
+        "id": "67890abcde12345",
+        "idBoard": "0000011111",
+        "name": "enhancement",
+        "color": "blue",
+        "users": 1
+    }
+];
 
 
 /**
- * 成功 -　ラベル名を 1 つ指定　- ボード内に 1 つ目と 3 つ目と 6 つ目にラベル名がある場合
+ * 成功 -　ラベル名を 1 つ指定　- ボード内に 同じラベル名が 3 つある場合
  */
-test("Success - 1name - first-label third-label 6th-label", () => {
+test("Success - Three same label names on the board", () => {
     const labelIdDef = prepareConfigs('123ABC', 'enhancement');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseArray));
     });
     main();
     expect(engine.findData(labelIdDef)).toEqual('1234567890abcde');
@@ -266,13 +304,13 @@ test("Success - 1name - first-label third-label 6th-label", () => {
 
 
 /**
- * 成功 -　ラベル名を 2 つ指定 -　ボード内に 1 つずつラベル名がある場合
+ * 成功 -　ラベル名を 2 つ指定 -　ボード内に 1 つずつラベル名がある場合 - 末尾に改行がある
  */
-test("Success - 2names", () => {
-    const labelIdDef = prepareConfigs('123ABC', 'low-priority\nmidium-priority');
+test("Success - 2names - newlines at the end", () => {
+    const labelIdDef = prepareConfigs('123ABC', 'low-priority\nmidium-priority\n\n\n');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseArray));
     });
     main();
     expect(engine.findData(labelIdDef)).toEqual('4567890abcde123\n567890abcde1234');
@@ -282,11 +320,11 @@ test("Success - 2names", () => {
 /**
  * 失敗 -　ラベル名を 2 つ指定 - 1 つのラベル名が存在しない
  */
-test("Failed", () => {
+test("Failed - Label name does not exist", () => {
     prepareConfigs('123ABC', 'enhancement\ntest');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseArray));
     });
     assertError(main, 'Label name: "test" not found in the Board');
 });
