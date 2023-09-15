@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Trello: Get Label Id</label>
     <label locale="ja">Trello: ラベル ID 取得</label>
-    <last-modified>2023-09-14</last-modified>
+    <last-modified>2023-09-15</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -47,11 +47,11 @@ function main() {
     const apiToken = authToken.getToken();
 
     //// == Calculating / 演算 ==
-    const labelArray = getLabelInformation(apiKey, apiToken, boardId);
+    const labelsArray = getLabels(apiKey, apiToken, boardId);
     const numOfLines = labelNamesArray.length;
     const labelIdsArray = [];
     for (let i = 0; i < numOfLines; i++) {
-        labelIdsArray[i] = getLabelId(labelArray, labelNamesArray[i]);
+        labelIdsArray[i] = getLabelId(labelsArray, labelNamesArray[i]);
     }
 
     engine.setData(labelIdDef, labelIdsArray.join("\n"));
@@ -61,25 +61,28 @@ function main() {
 /**
   * config から設定値を読み出す
   * 設定値が空行のみの場合はエラー
-  * 途中に改行がある場合はエラー
+  * 途中に改行がある場合、末尾に改行が連続する場合はエラー
+　　* 末尾が改行 1 行で終わる場合だけ、それを除去して処理する
   * @return {Array} labelNamesArray ラベル名の配列
   */
 function decideLabelNames() {
     const labelNames = configs.get('conf_LabelNames');//固定値指定のみ 必須
     let labelNamesArray = labelNames.split("\n");
+    let newLabelNamesArray = [];
 
-    // まず、末尾に改行がある場合、順番に削除する
-    while (labelNamesArray[(labelNamesArray.length) - 1] === "") {
+    // まず、末尾に改行がある場合、1 行削除する
+    if (labelNamesArray[(labelNamesArray.length) - 1] === "") {
         labelNamesArray.pop();
     }
-    if (labelNamesArray.length === 0) {
+    // 次に、残っている空行を削除する
+    newLabelNamesArray = labelNamesArray.filter(lines => lines !== "");
+
+    if (newLabelNamesArray.length === 0) {
         throw "Label Names aren't set.";
-    }
-    // 次に、先頭、途中の空文字列を削除する
-    const newLabelNamesArray = labelNamesArray.filter(lines => lines !== "");
-    if (newLabelNamesArray.length !== labelNamesArray.length) {
+    } else if (newLabelNamesArray.length !== labelNamesArray.length) {
         throw "Empty lines are set.";
-    }
+    }    
+
     return labelNamesArray;
 }
 
@@ -89,9 +92,9 @@ function decideLabelNames() {
   * @param {String} auth.apiKey
   * @param {String} auth.apiToken
   * @param {String} boardId
-  * @return {Array} labelArray
+  * @return {Array} labelsArray
   */
-function getLabelInformation(apiKey, apiToken, boardId) {
+function getLabels(apiKey, apiToken, boardId) {
 
     const url = `https://api.trello.com/1/boards/${boardId}/labels?key=${apiKey}&token=${apiToken}`;
     const response = httpClient.begin()
@@ -109,21 +112,18 @@ function getLabelInformation(apiKey, apiToken, boardId) {
 /**
   * ラベル情報からラベル名に対応するラベル ID を取得する
   * ラベル名が複数ある場合、最初に名前が一致したラベルの ID を取得する
-  * @param {Object} labelArray  ラベル情報の JSON 配列
-  * @param {String} labelName ラベル名
-  * @return {String} labelId  ラベル ID
+  * @param {Object} labelsArray  ラベル情報の JSON 配列
+  * @param {String} labelName  ラベル名
+  * @return {String} labelObj.id  ラベル ID
   */
-function getLabelId(labelArray, labelName) {
+function getLabelId(labelsArray, labelName) {
 
-    let labelId;
-    let labelObj = labelArray.find(labelElement => labelElement.name === labelName);
+    let labelObj = labelsArray.find(labelElement => labelElement.name === labelName);
     if (labelObj !== undefined) {
-        labelId = labelObj.id
+        return labelObj.id;
     } else {
         throw `Label name: "${labelName}" not found in the Board`;
     }
-
-    return labelId;
 }
     ]]></script>
 
@@ -206,10 +206,10 @@ test("Failed - Label Names aren't set", () => {
 
 
 /**
- * 先頭や、途中に空行がある
+ * 先頭や、途中に空行がある 末尾に2行以上の改行がある
  */
 test("Failed - Empty lines are set", () => {
-    prepareConfigs('234BCD', '\nnenhancement\n\nlow-priority');
+    prepareConfigs('234BCD', '\nnenhancement\n\nlow-priority\n\n\n\n');
     assertError(main, 'Empty lines are set.');
 });
 
@@ -304,10 +304,10 @@ test("Success - Three same label names on the board", () => {
 
 
 /**
- * 成功 -　ラベル名を 2 つ指定 -　ボード内に 1 つずつラベル名がある場合 - 末尾に改行がある
+ * 成功 -　ラベル名を 2 つ指定 -　ボード内に 1 つずつラベル名がある場合 - 末尾にひとつ改行がある
  */
-test("Success - 2names - newlines at the end", () => {
-    const labelIdDef = prepareConfigs('123ABC', 'low-priority\nmidium-priority\n\n\n');
+test("Success - 2names - newline at the end", () => {
+    const labelIdDef = prepareConfigs('123ABC', 'low-priority\nmidium-priority\n');
     httpClient.setRequestHandler((request) => {
         assertRequest(request, "123ABC");
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseArray));
