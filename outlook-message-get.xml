@@ -1,0 +1,710 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Microsoft 365 Outlook for Business: Get Email Message</label>
+    <label locale="ja">Microsoft 365 Outlook for Business: メール取得</label>
+    <last-modified>2023-09-19</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item gets an email message in Outlook.</summary>
+    <summary locale="ja">この工程は、Outlook のメールを取得します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Mail.Read">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_MessageId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: Message ID</label>
+            <label locale="ja">C2: メール ID</label>
+        </config>
+        <config name="conf_FromAddress" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: String type data item that will save From Address</label>
+            <label locale="ja">C3: From メールアドレスを保存する文字型データ項目</label>
+        </config>
+        <config name="conf_FromName" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: String type data item that will save From Name</label>
+            <label locale="ja">C4: From 表示名を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_RecipientAddresses" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C5: String type data item that will save To/Cc/Bcc Addresses</label>
+            <label locale="ja">C5: To/Cc/Bcc メールアドレス一覧を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_RecipientNames" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C6: String type data item that will save To/Cc/Bcc Names</label>
+            <label locale="ja">C6: To/Cc/Bcc 表示名一覧を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_SentDatetime" required="false" form-type="SELECT" select-data-type="DATETIME">
+            <label>C7: Datetime type data item that will save Sent Date and Time</label>
+            <label locale="ja">C7: 送信日時を保存する日時型データ項目</label>
+        </config>
+        <config name="conf_Subject" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C8: String type data item that will save Subject</label>
+            <label locale="ja">C8: 件名を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_Body" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C9-1: String type data item that will save Body</label>
+            <label locale="ja">C9-1: 本文を保存する文字型データ項目</label>
+        </config>
+        <config name="conf_AsHTML" form-type="TOGGLE">
+            <label>C9-2: Get the body as HTML</label>
+            <label locale="ja">C9-2: 本文を HTML 形式で取得する</label>
+        </config>
+        <config name="conf_Attachments" required="false" form-type="SELECT" select-data-type="FILE">
+            <label>C10: File type data item that will save Attachments</label>
+            <label locale="ja">C10: 添付ファイルを保存するファイル型データ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-outlook-message-get/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-outlook-message-get/</help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Mail.Read offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+function main(){
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_OAuth2');
+    const messageId = retrieveMessageId();
+    const defs = retrieveDefs();
+    const asHtml = configs.getObject('conf_AsHTML');
+
+    //// == 演算 / Calculating ==
+    const message = getMessage(auth, messageId, asHtml);
+
+    const qfiles = new java.util.ArrayList(); // もともと添付されていたファイルはクリアする
+    if (defs.AttachmentsDef !== null) {
+        getAttachments(auth, messageId, qfiles);
+    }
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    setData(defs.FromAddressDef, message.fromAddress);
+    setData(defs.FromNameDef, message.fromName);
+    setData(defs.RecipientAddressesDef, message.recipientAddresses.join('\n'));
+    setData(defs.RecipientNamesDef, message.recipientNames.join('\n'));
+    setData(defs.SentDatetimeDef, dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", message.sentDateTime));
+    setData(defs.SubjectDef, message.subject);
+    setData(defs.BodyDef, message.body);
+    setData(defs.AttachmentsDef, qfiles);
+}
+
+/**
+ * config からメール ID を読み出す
+ * 空の場合はエラー
+ * @returns {String} メール ID
+ */
+function retrieveMessageId() {
+    const messageId = engine.findData(configs.getObject('conf_MessageId'));
+    if (messageId === null) {
+        throw 'Message ID is blank.';
+    }
+    return messageId;
+}
+
+/**
+ * config から保存先データ項目の ProcessDataDefinitionView を読み出す
+ * 以下の場合はエラー
+ * - 値を保存するデータ項目が重複して設定されている
+ * - 値を保存するデータ項目がひとつも設定されていない
+ * @returns {Object} defs 保存先データ項目の ProcessDataDefinitionView を格納した JSON オブジェクト
+ */
+function retrieveDefs() {
+    const items = ['FromAddress', 'FromName', 'RecipientAddresses', 'RecipientNames', 'SentDatetime', 'Subject', 'Body', 'Attachments'];
+    const defs = {};
+    const dataItemNumSet = new Set(); // データ項目の重複確認用
+    items.forEach( item => {
+        const dataItemDef = configs.getObject(`conf_${item}`);
+        if ( dataItemDef !== null ) { // データ項目が設定されている場合は重複を確認する
+            const dataItemNum = dataItemDef.getNumber();
+            if ( dataItemNumSet.has( dataItemNum ) ) { // データ項目番号が重複していればエラー
+                throw 'The same data item is set multiple times.';
+            }
+            dataItemNumSet.add( dataItemNum ); // データ項目の重複確認用
+        }
+        defs[`${item}Def`] = dataItemDef;
+    });
+    if (dataItemNumSet.size === 0) {
+        throw 'No data item to save the result is set.';
+    }
+    return defs;
+}
+
+/**
+ * Microsoft Graph API にメール取得の GET リクエストを送信
+ * @param {AuthSettingWrapper} auth 認証設定
+ * @param {String} messageId メール ID
+ * @param {Boolean} asHtml 本文を HTML 形式で取得するかどうか
+ * @returns {Object} message メールの情報を格納した JSON オブジェクト
+ */
+function getMessage(auth, messageId, asHtml) {
+    const preferredType = asHtml ? 'html' : 'text';
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .header('Prefer', `outlook.body-content-type="${preferredType}"`)
+        .queryParam('$select', 'from,toRecipients,ccRecipients,bccRecipients,subject,body,sentDateTime')
+        .get(`https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get message. status: ${status}`;
+    }
+    const message = JSON.parse(responseStr);
+    const recipients = message.toRecipients.concat(message.ccRecipients, message.bccRecipients);
+    // 下書きメールの場合、from が undefined になる
+    let fromAddress = '';
+    let fromName = '';
+    if (message.from !== undefined) {
+        fromAddress = message.from.emailAddress.address;
+        fromName = message.from.emailAddress.name;
+    }
+    return {
+        fromAddress,
+        fromName,
+        recipientAddresses: recipients.map(recipient => recipient.emailAddress.address),
+        recipientNames: recipients.map(recipient => recipient.emailAddress.name),
+        sentDateTime: message.sentDateTime,
+        subject: message.subject,
+        body: message.body.content
+    };
+}
+
+/**
+ * メールの添付ファイルを取得する
+ * @param {AuthSettingWrapper} auth 認証設定
+ * @param {String} messageId メール ID
+ * @param {ArrayList<NewQfile>} qfiles 添付ファイルを格納する配列
+ */
+function getAttachments(auth, messageId, qfiles) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}/attachments`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get attachments. status: ${status}`;
+    }
+    const attachments = JSON.parse(responseStr).value;
+    attachments.forEach(attachment => {
+        const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+            attachment.name,
+            attachment.contentType,
+            base64.decodeFromStringToByteArray(attachment.contentBytes) // ByteArrayWrapper
+        );
+        qfiles.add(qfile);
+    });
+}
+
+/**
+ * 保存先データ項目の ProcessDataDefinitionView が null でない場合のみ値を代入する
+ * @param {ProcessDataDefinitionView} def 保存先データ項目の ProcessDataDefinitionView
+ * @param {Object} value  データ項目に代入する値
+ */
+function setData(def, value) {
+    if (def === null) {
+        return; // データ項目が設定されていなければ何もしない
+    }
+    engine.setData(def, value);
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA/RJREFUWEfN
+        l1tsDFEYx/+z7W7X7rZFS1nLA42kCU0QEg9oS4IgfXF5ERVxefAg7n1o0bhkoy6RkIhEiMSt4pII
+        xYNu9cElrqUqhApFabub7W679z1yzsys2Z2ZnWlTYV52Zuec7/t95/y/73zD4R9fXL/8V34tAbjd
+        kjklwr2L/yWNAFxwjhWeta3rA6j8uifFsbZlkBo4x+7RGpge4E/EYqRa9hTepwdRBxhQ1Gp86hDK
+        AIPqXIRShpAD/BXn6hDJADqcP9k4AsWjjLq04A8TTKj9CW8wLhlPSqVZkgLQTrQsxw+MAacvd5ip
+        BWe6cfd9UGrWBaejVPzjjykd0dNJFOBJexg763vgWp+Pps9hVN/rYfburMnDT38cFXUeLC4yY9ss
+        mxIArReJFJUAJEc/qcCIeYVZsgU5sigX77uiOPm4F0cX56KuOYAVF91snK/GjjZ3FMXHfqFiqgVn
+        lw1TAQDgdDDfPACf7w1Sb/4aO6wm7bUORgk6e/k9duRkIEaAH74YbCYOw4YY1AHAa0EEkFW60D47
+        TBn8a0KANk8U0ThQmJcJg4QrHCNw9/EABTYeoKs3BqvJgOwsLg0ALdmOUgGgnUafVO1EgEiMYMaJ
+        TpSMz4LZyOHamwCaN41EViY/dcBbwM4MHQDHH/YiECHYPtvGHNJnuuxUYPRq+BTCjnpehE0b8vHD
+        F8fyC26UF5lRVZaN/Q0+VAkiTRFUEoAs/cQVWHreja2zbJg5zsTmP/oSRu0DP66uHK6VsYn32257
+        cbjJLx/vdAgZXSnPfxGA0tN9Xz3NwgxcehXAh+4oqsuy2fPrjghOP+1j9wcX5sATIGj8FMLy4iEJ
+        h4ea/Nh+25sWQFUDPSGCwtoOnCgfygxsueVF65YCpnJ6NbaFUHKqi93TNLQaOVao4gS48LIPK6dY
+        oAKgTwPUcChKcP9jiKmfilEUoBjSZ08M9z4EsW66lTl//j2C8nPdTCudVaMHBhDYa4dZULraZtMU
+        vN4SxArJclMBXnkdYFPyrYY0AHw1VC1E1OiSInPCd77FgPkTzWzPmzsi7P+brUFcbg5git2ImxV5
+        GJOTAV+IYFWdGzfeBrUAJIWIWlMQojRyegK+2jQSO+q9LAuUrl1zs1FdloNMA/DwSxhrr3rQsrlA
+        eQuSSjEDSN/3iQAvvkfw7FtYNQVzzQYsm8xnABUi1Y1chEqHEb8KsmwQPVmMHDy7RyfKsypBygta
+        xpec68atd5IjWYieDk1tSGSHkl5H+sclt2b/WUsmhqGzOdEfNR2ptyn9KxD9bcsHD8IlRK76qabd
+        8uhIUeWtGIxPs1TLrHWjjQs3R3iV8nGa2OtB/jjtn9r6Nfo39MDfMN80fiMAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param messageId
+ * @param asHtml
+ * @return dataDefs
+ */
+const prepareConfigs = (messageId, asHtml) => {
+    // 認証設定を作成し、指定
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Outlook',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Mail.Read offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+
+    // メール ID を設定
+    const messageIdDef = engine.createDataDefinition('メール ID', 1, 'q_MessageId', 'STRING_TEXTFIELD');
+    engine.setData(messageIdDef, messageId);
+    configs.putObject('conf_MessageId', messageIdDef);
+
+    // 本文の取得形式を設定
+    configs.putObject('conf_AsHTML', asHtml);
+
+    // 保存用データ項目を準備
+    const items = ['FromAddress', 'FromName', 'RecipientAddresses', 'RecipientNames', 'SentDatetime', 'Subject', 'Body', 'Attachments'];
+    const dataDefs = {};
+    items.forEach((item, i) => {
+        let dataType = 'STRING_TEXTFIELD';
+        let preValue = '事前文字列';
+        switch(item) {
+            case 'RecipientAddresses':
+            case 'RecipientNames':
+            case 'Body':
+                dataType = 'STRING_TEXTAREA';
+                preValue = '事前\n文字列';
+                break;
+            case 'SentDatetime':
+                dataType = 'DATETIME';
+                preValue = java.sql.Timestamp.valueOf('2000-01-01 00:00:00');
+                break;
+            case 'Attachments':
+                dataType = 'FILE';
+                preValue = new java.util.ArrayList();
+                preValue.add(new com.questetra.bpms.core.event.scripttask.NewQfile('事前ファイル.csv', 'text/csv', '1,2,3'));
+                break;
+        }
+        const dataDef = engine.createDataDefinition(item, i + 2, `q_${item}`, dataType);
+        engine.setData(dataDef, preValue); // 事前データをセット
+        configs.putObject(`conf_${item}`, dataDef);
+        dataDefs[item] = dataDef;
+    });
+
+    return dataDefs;
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * メール ID が空であればエラー
+ */
+test('Message ID is empty', () => {
+    prepareConfigs(null, false);
+    assertError(main, 'Message ID is blank.');
+});
+
+/**
+ * 保存先データ項目がひとつも設定されていなければエラー
+ */
+test('Data items not set', () => {
+    // 認証設定を作成し、指定
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Outlook',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Mail.Read offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+
+    // メール ID を設定
+    const messageId = 'messageId-1';
+    const messageIdDef = engine.createDataDefinition('メール ID', 1, 'q_MessageId', 'STRING_TEXTFIELD');
+    engine.setData(messageIdDef, messageId);
+    configs.putObject('conf_MessageId', messageIdDef);
+
+    assertError(main, 'No data item to save the result is set.');
+});
+
+/**
+ * 保存先データ項目が重複していればエラー
+ * fromAddress と subject が重複
+ */
+test('The same data item is set multiple times - fromAddress and subject', () => {
+    const dataDefs = prepareConfigs('messageId', false);
+    configs.putObject('conf_Subject', dataDefs.FromAddress);
+
+    assertError(main, 'The same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複していればエラー
+ * recipientNames と body が重複
+ */
+test('The same data item is set multiple times - recipientNames and body', () => {
+    const dataDefs = prepareConfigs('messageId', false);
+    configs.putObject('conf_RecipientNames', dataDefs.Body);
+
+    assertError(main, 'The same data item is set multiple times.');
+});
+
+/**
+ * メッセージ取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ * @param preferredType
+ */
+const assertGetMessageRequest = ({url, method, headers}, messageId, preferredType) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}`
+        + `?${generateQueryString('$select', 'from,toRecipients,ccRecipients,bccRecipients,subject,body,sentDateTime')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Prefer).toEqual(`outlook.body-content-type="${preferredType}"`);
+};
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value);
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * 添付ファイル取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ */
+const assertGetAttachmentsRequest = ({url, method}, messageId) => {
+    expect(url).toEqual(`https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}/attachments`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * メール取得の GET リクエストで失敗
+ */
+test('Fail in GET message request', () => {
+    const messageId = 'messageId-1';
+    prepareConfigs(messageId, false);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetMessageRequest(request, messageId, 'text');
+        return httpClient.createHttpResponse(400, 'application/json', `{}`);
+    });
+
+    assertError(main, 'Failed to get message. status: 400');
+});
+
+const SAMPLE_MESSAGE_TEXT = {
+    "from": {
+        "emailAddress": {
+            "address": "from1@example.com",
+            "name": "From 1 の表示名"
+        }
+    },
+    "toRecipients": [
+        {
+            "emailAddress": {
+                "address": "to1@example.com",
+                "name": "To 1 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "to2@example.com",
+                "name": "To 2 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "to3@example.com",
+                "name": "To 3 の表示名"
+            }
+        },
+    ],
+    "ccRecipients": [
+        {
+            "emailAddress": {
+                "address": "cc1@example.com",
+                "name": "Cc 1 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "cc2@example.com",
+                "name": "Cc 2 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "cc3@example.com",
+                "name": "Cc 3 の表示名"
+            }
+        },
+    ],
+    "bccRecipients": [
+        {
+            "emailAddress": {
+                "address": "bcc1@example.com",
+                "name": "Bcc 1 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "bcc2@example.com",
+                "name": "Bcc 2 の表示名"
+            }
+        },
+        {
+            "emailAddress": {
+                "address": "bcc3@example.com",
+                "name": "Bcc 3 の表示名"
+            }
+        },
+    ],
+    "subject": "メール 1 の件名",
+    "body": {
+        "contentType": "text/plain",
+        "content": "テキスト形式の\n本文です。"
+    },
+    "sentDateTime": "2023-09-14T00:00:00Z"
+};
+
+/**
+ * 成功
+ * 本文をテキスト形式で取得
+ * 添付ファイルなし
+ */
+test('Succeed - body in text, no attachments', () => {
+    const messageId = 'messageId-1';
+    const dataDefs = prepareConfigs(messageId, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId, 'text');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_TEXT));
+        }
+        assertGetAttachmentsRequest(request, messageId);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value": []}`);
+    });
+    expect(main()).toEqual(undefined);
+
+    // 保存先データ項目の値を確認
+    expect(engine.findData(dataDefs.FromAddress)).toEqual('from1@example.com');
+    expect(engine.findData(dataDefs.FromName)).toEqual('From 1 の表示名');
+    const recipientAddresses = [
+        'to1@example.com',
+        'to2@example.com',
+        'to3@example.com',
+        'cc1@example.com',
+        'cc2@example.com',
+        'cc3@example.com',
+        'bcc1@example.com',
+        'bcc2@example.com',
+        'bcc3@example.com'
+    ];
+    const recipientNames = [
+        'To 1 の表示名',
+        'To 2 の表示名',
+        'To 3 の表示名',
+        'Cc 1 の表示名',
+        'Cc 2 の表示名',
+        'Cc 3 の表示名',
+        'Bcc 1 の表示名',
+        'Bcc 2 の表示名',
+        'Bcc 3 の表示名'
+    ];
+    expect(engine.findData(dataDefs.RecipientAddresses)).toEqual(recipientAddresses.join('\n'));
+    expect(engine.findData(dataDefs.RecipientNames)).toEqual(recipientNames.join('\n'));
+    expect(engine.findData(dataDefs.Subject)).toEqual('メール 1 の件名');
+    expect(engine.findData(dataDefs.Body)).toEqual('テキスト形式の\n本文です。');
+    expect(engine.findData(dataDefs.SentDatetime)).toEqual(dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", '2023-09-14T00:00:00Z'));
+    expect(engine.findData(dataDefs.Attachments).size()).toEqual(0); // 事前に添付されていたファイルは削除される
+});
+
+/**
+ * 添付ファイル取得の GET リクエストで失敗
+ */
+test('Fail in GET attachments request', () => {
+    const messageId = 'messageId-1';
+    prepareConfigs(messageId, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId, 'text');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_TEXT));
+        }
+        assertGetAttachmentsRequest(request, messageId);
+        return httpClient.createHttpResponse(400, 'application/json', `{}`);
+    });
+
+    assertError(main, 'Failed to get attachments. status: 400');
+});
+
+const SAMPLE_MESSAGE_HTML = {
+    "from": {
+        "emailAddress": {
+            "address": "from2@example.com",
+            "name": ""
+        }
+    },
+    "toRecipients": [
+        {
+            "emailAddress": {
+                "address": "to1@example.com",
+                "name": ""
+            }
+        }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [
+        {
+            "emailAddress": {
+                "address": "bcc1@example.com",
+                "name": "Bcc 1 の表示名"
+            }
+        }
+    ],
+    "subject": "メール 2 の件名",
+    "body": {
+        "contentType": "text/html",
+        "content": "<html><body><p>HTML 形式の本文です。</p></body></html>"
+    },
+    "sentDateTime": "2023-09-01T00:00:00Z"
+};
+
+const SAMPLE_ATTACHMENT_1 = {
+    "name": "添付ファイル1.txt",
+    "contentType": "text/plain",
+    "contentBytes": "grGCzJNZlXSDdINAg0ODi4LNClNoaWZ0IEpJUwqCxYK3gUI="
+};
+
+const SAMPLE_ATTACHMENT_2 = {
+    "name": "添付ファイル2.png",
+    "contentType": "image/png",
+    "contentBytes": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPUlEQVRYR8WXX0hTURzHv2dzy5bb1HKKRH+"
+        + "gtx7K2izooXI+BVH41F+IglAJmhVICr2kgRG6DFRERXBpGIgkZA/Oeigir+VzIGQE1bTUyXYdy90Tu+5u997dea"
+        + "9p3PO2nd+fz/md359zCXReRKv/76cPW4ysoYKAnARoCSj2gCCP16dYAMEMQKYo6OuYhRsqHvnIarGtCjB7wlWEL"
+        + "NSCohJAthajACIg6MAKmhxvmJ9r6awJECgrrSSEPgKwTaNjuViYUnKncHyiI5N+RoC5clcbpaj6R8cSNULQXjDG"
+        + "VCvZUgQIlDn7CSHnN8O5YINSOlA4PnlBbjMNYDNPnuZMIRISgMSdt2/myeW2KCVV4pxIAvDZbsS0kHCGAgdsdQ0"
+        + "w2HPBPvchMvpCMxexWmGrb4SxqBiRl8NgB31i3TBi2CdURwqg3NUCCo8gme8b5g0IK8q8R7C+BuC4NUFMJU7YG7"
+        + "0gZnNSLnj3JuL6yUXgdYwxNfHfPEC8yWSxht/iOi949Q7IMkmcccFFLHquI/ZtRhEip/oWtlacS9tjB/sQ7nwi/"
+        + "j+yYuG2x5sVDxBwuy4RoE8soQTA71MOodaHWB4ZSh3IakWetwvG3XsVweJXEO5slexR4HKhn/HxALPu0m6AXtUE"
+        + "kBASrsR80AlbQ7Mk5HIKJQCA9Dj8E9cSAK5PAErWA8AHg2VBLBbV5FQGwJTDzxxaBShzzScHS8JcxitQdZcuoAh"
+        + "AseAYZ/KFCFC5WhoApQBRnV2AglyGCMDhZ1YtzrpdqgCxwA+w/b2wemoBYlCMQ+zrF4Sf9sBWd1+yrw6g4QriAP"
+        + "MXz8C4cxdyH3fxDUq8loeeIdTWDPORY7A3tqgDyK5ANQkFAN6ywQD7Ay/MzqOg0SiW7t1GdPIDv6UZAOIk1FCGE"
+        + "oDE+bYcd+PP1CS4pWDyxNoBRGWopREpASglglYASSNSasU7Rt+CmFL9fEMAA70Id7eJeaWtmK8E2TDKqfIg+9TZ"
+        + "ZOmtTH/m54DaMu0/AHtTqu3SUAgLN66A+zWXUpUPIx5ANo7VHG1gX3kcxw3q+iARTqTrk0yA0PVR+j8ise5neSo"
+        + "SOn6YCBC6fpqJS023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg=="
+};
+
+/**
+ * 成功
+ * 本文を HTML 形式で取得
+ * 添付ファイルあり
+ */
+test('Succeed - body in html, with attachments', () => {
+    const messageId = 'messageId-2';
+    const dataDefs = prepareConfigs(messageId, true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId, 'html');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_HTML));
+        }
+        assertGetAttachmentsRequest(request, messageId);
+        const attachments = [SAMPLE_ATTACHMENT_1, SAMPLE_ATTACHMENT_2];
+        return httpClient.createHttpResponse(200, 'application/json', `{"value": ${JSON.stringify(attachments)}}`);
+    });
+    expect(main()).toEqual(undefined);
+
+    // 保存先データ項目の値を確認
+    expect(engine.findData(dataDefs.FromAddress)).toEqual('from2@example.com');
+    expect(engine.findData(dataDefs.FromName)).toEqual('');
+    expect(engine.findData(dataDefs.RecipientAddresses)).toEqual('to1@example.com\nbcc1@example.com');
+    expect(engine.findData(dataDefs.RecipientNames)).toEqual('\nBcc 1 の表示名');
+    expect(engine.findData(dataDefs.Subject)).toEqual('メール 2 の件名');
+    expect(engine.findData(dataDefs.Body)).toEqual('<html><body><p>HTML 形式の本文です。</p></body></html>');
+    expect(engine.findData(dataDefs.SentDatetime)).toEqual(dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", '2023-09-01T00:00:00Z'));
+    expect(engine.findData(dataDefs.Attachments).size()).toEqual(2);
+    expect(engine.findData(dataDefs.Attachments)[0].getName()).toEqual('添付ファイル1.txt');
+    expect(engine.findData(dataDefs.Attachments)[1].getName()).toEqual('添付ファイル2.png');
+});
+
+/** from なしの下書きメール */
+const SAMPLE_MESSAGE_DRAFT = {
+    "toRecipients": [],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "subject": "",
+    "body": {
+        "contentType": "text/plain",
+        "content": ""
+    },
+    "sentDateTime": "2023-09-10T00:00:00Z"
+};
+
+/**
+ * 成功
+ * from なしの下書きメール
+ * 添付ファイルを保存しない
+ */
+test('Succeed - draft message without from, attachments not saved', () => {
+    const messageId = 'messageId-3';
+    const dataDefs = prepareConfigs(messageId, false);
+    configs.put('conf_Attachments', ''); // 添付ファイルの保存先データ項目を解除
+
+    // 添付ファイルを取得する API リクエストは発行されない
+    httpClient.setRequestHandler((request) => {
+        assertGetMessageRequest(request, messageId, 'text');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_DRAFT));
+    });
+    expect(main()).toEqual(undefined);
+
+    // 保存先データ項目の値を確認
+    expect(engine.findData(dataDefs.FromAddress)).toEqual('');
+    expect(engine.findData(dataDefs.FromName)).toEqual('');
+    expect(engine.findData(dataDefs.RecipientAddresses)).toEqual('');
+    expect(engine.findData(dataDefs.RecipientNames)).toEqual('');
+    expect(engine.findData(dataDefs.Subject)).toEqual('');
+    expect(engine.findData(dataDefs.Body)).toEqual('');
+    expect(engine.findData(dataDefs.SentDatetime)).toEqual(dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", '2023-09-10T00:00:00Z'));
+    expect(engine.findData(dataDefs.Attachments).size()).toEqual(1);
+    expect(engine.findData(dataDefs.Attachments)[0].getName()).toEqual('事前ファイル.csv');
+});
+
+    ]]></test>
+
+</service-task-definition>

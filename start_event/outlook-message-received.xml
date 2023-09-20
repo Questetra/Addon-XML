@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <label>Start: Microsoft 365 Outlook for Business: Email Received</label>
+    <label locale="ja">開始: Microsoft 365 Outlook for Business: メール受信時</label>
+    <last-modified>2023-09-14</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <summary>This item starts a process when Outlook has received a new message.</summary>
+    <summary locale="ja">このアイテムは、Outlook が新しいメールを受信すると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Mail.Read">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_Category" required="true" form-type="TEXTFIELD">
+            <label>C2: Category</label>
+            <label locale="ja">C2: カテゴリ</label>
+        </config>
+        <config name="conf_idData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save Message ID</label>
+            <label locale="ja">C3: メール ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Data item to save received time</label>
+            <label locale="ja">C4: 受信時刻を保存するデータ項目</label>
+        </config>
+        <config name="conf_rfc822msgIdData" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save RFC 822 Message-ID header</label>
+            <label locale="ja">C5: RFC 822 Message-ID ヘッダを保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-outlook-message-received/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-outlook-message-received/
+    </help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Mail.Read offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
+const OUTLOOK_MESSAGE_LIST_LIMIT = 1000; // 取得上限数
+
+/**
+ * configs から必要な情報の取り出し
+ * @returns {Object} setting 設定
+ * @returns {AuthSettingWrapper} setting.auth HTTP 認証設定
+ * @returns {String} setting.category カテゴリ名
+ */
+const prepare = () => {
+    const auth = configs.getObject('conf_OAuth2');
+    const category = configs.get('conf_Category');
+    return {
+        auth,
+        category
+    };
+};
+
+/**
+ * 追加されたメールの検索
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id Message ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {auth, category} = prepare();
+    const messages = getMessages(auth, category, limit, timestampLowerLimit);
+    logMessages(messages);
+    return messages;
+};
+
+/**
+ * メッセージ一覧のログ出力
+ * @param {Array} messages メッセージ一覧
+ */
+const logMessages = (messages) => {
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(DATETIME_FORMAT, value) : value;
+    messages.forEach(msg => engine.log(JSON.stringify(msg, replacer)));
+};
+
+/**
+ * Microsoft Graph API にメール一覧取得の GET リクエストを送信し、メッセージ一覧を返す
+ * @param {String} auth 認証設定
+ * @param {String} category カテゴリ名
+ * @param {Number} limit 取得上限数
+ * @param timestampLowerLimit timestamp の下限
+ * @returns {Array} messages メッセージ一覧
+ * @returns {string} messages[].id メール ID
+ * @returns {timestamp} messages[].timestamp メール受信時刻
+ * @returns {string} messages[].rfc822msgId RFC 822 Message-ID
+ */
+function getMessages(auth, category, limit, timestampLowerLimit) {
+    limit = Math.min(limit, OUTLOOK_MESSAGE_LIST_LIMIT); // limit のほうが小さくなるはずだが、念のため
+    const query = `receivedDateTime ge ${dateFormatter.format('UTC', DATETIME_FORMAT, timestampLowerLimit)} and categories/any(c:c eq '${category}')`;
+    const response = httpClient.begin().authSetting(auth)
+        .queryParam('$top', `${limit}`)
+        .queryParam('$select', 'id,receivedDateTime,internetMessageId')
+        .queryParam('$orderby', 'receivedDateTime DESC')
+        .queryParam('$filter', query)
+        .get('https://graph.microsoft.com/v1.0/me/messages');
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get messages. status: ${status}`;
+    }
+
+    const messages = JSON.parse(responseStr).value;
+    if (messages.length === 0) {
+        // 該当メッセージが無い
+        engine.log('no messages');
+        return [];
+    }
+
+    return messages
+        .filter(msg => !engine.isProcessStarted(msg.id)) // 既にプロセス開始済みのものを除く
+        .map(msg => {
+            return {
+                id: msg.id,
+                timestamp: dateFormatter.parse(DATETIME_FORMAT, msg.receivedDateTime),
+                rfc822msgId: msg.internetMessageId
+            };
+        });
+}
+
+]]>
+    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA/RJREFUWEfN
+        l1tsDFEYx/+z7W7X7rZFS1nLA42kCU0QEg9oS4IgfXF5ERVxefAg7n1o0bhkoy6RkIhEiMSt4pII
+        xYNu9cElrqUqhApFabub7W679z1yzsys2Z2ZnWlTYV52Zuec7/t95/y/73zD4R9fXL/8V34tAbjd
+        kjklwr2L/yWNAFxwjhWeta3rA6j8uifFsbZlkBo4x+7RGpge4E/EYqRa9hTepwdRBxhQ1Gp86hDK
+        AIPqXIRShpAD/BXn6hDJADqcP9k4AsWjjLq04A8TTKj9CW8wLhlPSqVZkgLQTrQsxw+MAacvd5ip
+        BWe6cfd9UGrWBaejVPzjjykd0dNJFOBJexg763vgWp+Pps9hVN/rYfburMnDT38cFXUeLC4yY9ss
+        mxIArReJFJUAJEc/qcCIeYVZsgU5sigX77uiOPm4F0cX56KuOYAVF91snK/GjjZ3FMXHfqFiqgVn
+        lw1TAQDgdDDfPACf7w1Sb/4aO6wm7bUORgk6e/k9duRkIEaAH74YbCYOw4YY1AHAa0EEkFW60D47
+        TBn8a0KANk8U0ThQmJcJg4QrHCNw9/EABTYeoKs3BqvJgOwsLg0ALdmOUgGgnUafVO1EgEiMYMaJ
+        TpSMz4LZyOHamwCaN41EViY/dcBbwM4MHQDHH/YiECHYPtvGHNJnuuxUYPRq+BTCjnpehE0b8vHD
+        F8fyC26UF5lRVZaN/Q0+VAkiTRFUEoAs/cQVWHreja2zbJg5zsTmP/oSRu0DP66uHK6VsYn32257
+        cbjJLx/vdAgZXSnPfxGA0tN9Xz3NwgxcehXAh+4oqsuy2fPrjghOP+1j9wcX5sATIGj8FMLy4iEJ
+        h4ea/Nh+25sWQFUDPSGCwtoOnCgfygxsueVF65YCpnJ6NbaFUHKqi93TNLQaOVao4gS48LIPK6dY
+        oAKgTwPUcChKcP9jiKmfilEUoBjSZ08M9z4EsW66lTl//j2C8nPdTCudVaMHBhDYa4dZULraZtMU
+        vN4SxArJclMBXnkdYFPyrYY0AHw1VC1E1OiSInPCd77FgPkTzWzPmzsi7P+brUFcbg5git2ImxV5
+        GJOTAV+IYFWdGzfeBrUAJIWIWlMQojRyegK+2jQSO+q9LAuUrl1zs1FdloNMA/DwSxhrr3rQsrlA
+        eQuSSjEDSN/3iQAvvkfw7FtYNQVzzQYsm8xnABUi1Y1chEqHEb8KsmwQPVmMHDy7RyfKsypBygta
+        xpec68atd5IjWYieDk1tSGSHkl5H+sclt2b/WUsmhqGzOdEfNR2ptyn9KxD9bcsHD8IlRK76qabd
+        8uhIUeWtGIxPs1TLrHWjjQs3R3iV8nGa2OtB/jjtn9r6Nfo39MDfMN80fiMAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param category カテゴリ名
+ */
+const prepareConfigs = (category) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Outlook',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Mail.Read offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_Category', category);
+};
+
+/**
+ * メール一覧を取得する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param category
+ * @param limit
+ * @param timestampLowerLimit
+ */
+const assertRequest = ({url, method}, category, limit, timestampLowerLimit) => {
+    const query = `receivedDateTime ge ${dateFormatter.format('UTC', DATETIME_FORMAT, timestampLowerLimit)} and categories/any(c:c eq '${category}')`;
+    const expectedUrl = 'https://graph.microsoft.com/v1.0/me/messages'
+        + `?${generateQueryString('$top', limit)}`
+        + `&${generateQueryString('$select', 'id,receivedDateTime,internetMessageId')}`
+        + `&${generateQueryString('$orderby', 'receivedDateTime DESC')}`
+        + `&${generateQueryString('$filter', query)}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#queryParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * 返り値の message のテスト
+ * @param message
+ * @param id
+ * @param timestampAsDatetimeStr
+ * @param rfc822msgId
+ */
+const assertMessage = (message, id, timestampAsDatetimeStr, rfc822msgId) => {
+    expect(message.id).toEqual(id);
+    expect(message.timestamp)
+        .toEqual(dateFormatter.parse(DATETIME_FORMAT, timestampAsDatetimeStr));
+    expect(message.rfc822msgId).toEqual(rfc822msgId);
+};
+
+const SAMPLE_MESSAGE_LIST_RES = {
+    "value": [
+        {
+            "id": "abc123",
+            "receivedDateTime": "2023-08-31T20:00:00Z",
+            "internetMessageId": "rfc822msgId-1234567"
+        },
+        {
+            "id": "def456",
+            "receivedDateTime": "2023-08-31T10:00:00Z",
+            "internetMessageId": "rfc822msgId-4567890"
+        },
+        {
+            "id": "efg789",
+            "receivedDateTime": "2023-08-31T05:00:00Z",
+            "internetMessageId": "rfc822msgId-7890123"
+        }
+    ]
+};
+
+/**
+ * 正常系のテストケース
+ */
+test('Success', () => {
+    prepareConfigs('カテゴリ 1');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2023-08-01T00:00:00+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'カテゴリ 1', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // 一覧取得のままの順序で返る
+    assertMessage(result[0],
+        'abc123',
+        '2023-08-31T20:00:00Z',
+        'rfc822msgId-1234567'
+    );
+    assertMessage(result[1],
+        'def456',
+        '2023-08-31T10:00:00Z',
+        'rfc822msgId-4567890'
+    );
+    assertMessage(result[2],
+        'efg789',
+        '2023-08-31T05:00:00Z',
+        'rfc822msgId-7890123'
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * プロセス開始済みのメールは一覧から除かれる
+ */
+test('Success - filtered by isProgressStarted', () => {
+    prepareConfigs('カテゴリ 2');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2023-08-01T00:00:00+09:00');
+
+    engine.addProcessStartedSet('def456'); // 2 件目のメールをプロセス開始済みにセット
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'カテゴリ 2', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_LIST_RES));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(2); // 2 件目のメールは除かれる
+
+    // 一覧取得のままの順序で返る
+    assertMessage(result[0],
+        'abc123',
+        '2023-08-31T20:00:00Z',
+        'rfc822msgId-1234567'
+    );
+    assertMessage(result[1],
+        'efg789',
+        '2023-08-31T05:00:00Z',
+        'rfc822msgId-7890123'
+    );
+});
+
+/**
+ * 正常系のテストケース
+ * メールが無い場合
+ */
+test('Success - no messages', () => {
+    prepareConfigs('カテゴリ 3');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2023-08-01T00:00:00+09:00');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'カテゴリ 3', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({"value": []}));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(0);
+});
+
+/**
+ * 異常系のテストケース
+ * メール一覧を取得する GET リクエストで 403 エラー
+ */
+test('Fail - 403 error in getting messages', () => {
+    prepareConfigs('カテゴリ 4');
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2023-08-01T00:00:00+09:00');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'カテゴリ 4', limit, timestampLowerLimit);
+        return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
+    });
+
+    try {
+        list(limit, timestampLowerLimit);
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual('Failed to get messages. status: 403');
+    }
+});
+
+    ]]></test>
+
+</service-task-definition>
