@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <last-modified>2022-08-26</last-modified>
+    <last-modified>2023-09-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
     <label>Start: Box: File Uploaded</label>
     <label locale="ja">開始: Box: ファイルアップロード時</label>
     <summary>This item starts a process when a file has been uploaded on a specified Box folder.</summary>
     <summary locale="ja">このアイテムは、Box の指定フォルダにファイルがアップロードされると、プロセスを開始します。</summary>
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://app.box.com/api/oauth2/root_readonly">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -31,18 +31,8 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-box-file-uploaded/</help-page-url>
 
     <script><![CDATA[
-/**
- * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
- */
 
-/** 日時フォーマッター */
-const datetimeFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
-
-/**
- * @param {string} str 日時文字列
- * @return {timestamp} java.sql.Timestamp オブジェクト
- */
-const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str).getTime());
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
 
 /**
  * configs から必要な情報を取り出す
@@ -51,7 +41,7 @@ const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str)
  * @returns {string} setting.oauth2 OAuth2 設定名
  */
 const prepare = () => {
-    const oauth2 = configs.get("conf_OAuth2");
+    const oauth2 = configs.getObject("conf_OAuth2");
     let folderId = configs.get("conf_FolderId");
     if (folderId === "" || folderId === null) {
         folderId = "0";
@@ -95,14 +85,14 @@ const logFiles = (files) => {
         engine.log("no files");
         return;
     }
-    const replacer = (key, value) => value instanceof java.sql.Timestamp ? datetimeFormatter.format(value) : value;
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(DATETIME_FORMAT, value) : value;
     files.forEach(file => engine.log(JSON.stringify(file, replacer)));
 };
 
 /**
  * 指定フォルダ内の、ファイルの取得
  * フォルダ内のアイテム (ファイル＋フォルダ） 数が 1000 を超える場合、エラー
- * @param {String} oauth2 OAuth2 設定
+ * @param {AuthSettingWrapper} oauth2 OAuth2 設定
  * @param {String} folderId 検索対象のフォルダ ID
  * @param {timestamp} timestampLowerLimit timestamp の下限
  * @returns {Array} files ファイル一覧
@@ -157,7 +147,7 @@ const formatFile = (file) => {
     } = file;
     return {
         id,
-        timestamp: parseDatetime(created_at)
+        timestamp: dateFormatter.parse(DATETIME_FORMAT, created_at)
     };
 };
 ]]></script>
@@ -190,7 +180,17 @@ const formatFile = (file) => {
  * @param folderId
  */
 const prepareConfigs = (folderId) => {
-    configs.put('conf_OAuth2', 'Box');
+    // 認証設定を作成し、指定
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readonly',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
     configs.put('conf_FolderId', folderId);
 };
 
@@ -222,8 +222,6 @@ const assertFile = (file, id, timestamp) => {
     expect(file.id).toEqual(id);
     expect(file.timestamp).toEqual(timestamp);
 };
-
-const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
 
 /**
  * 正常系のテストケース
