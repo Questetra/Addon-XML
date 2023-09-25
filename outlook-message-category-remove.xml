@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 Outlook for Business: Remove Category from Email</label>
     <label locale="ja">Microsoft 365 Outlook for Business: メールのカテゴリを解除</label>
-    <!--
     <last-modified>2023-09-25</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -47,7 +45,9 @@ function main(){
     //// == 演算 / Calculating ==
     const currentCategories = getMessageCategories(auth, messageId);
     const newCategories = currentCategories.filter(category => !categoriesToRemove.includes(category));
-    updateMessageCategories(auth, messageId, newCategories);
+    if (newCategories.length !== currentCategories.length) { // 差分がある場合のみ、更新
+        updateMessageCategories(auth, messageId, newCategories);
+    }
 }
 
 /**
@@ -142,6 +142,223 @@ function updateMessageCategories(auth, messageId, categories) {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param messageId
+ * @param categoryStr
+ */
+const prepareConfigs = (messageId, categoryStr) => {
+    // 認証設定を作成し、指定
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Outlook',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Mail.ReadWrite offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+
+    // メール ID を設定
+    const messageIdDef = engine.createDataDefinition('メール ID', 1, 'q_MessageId', 'STRING_TEXTFIELD');
+    engine.setData(messageIdDef, messageId);
+    configs.putObject('conf_MessageId', messageIdDef);
+
+    // カテゴリを設定
+    configs.put('conf_Category', categoryStr);
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * メール ID が空であればエラー
+ */
+test('Message ID is empty', () => {
+    prepareConfigs(null, '赤の分類');
+    assertError(main, 'Message ID is blank.');
+});
+
+/**
+ * カテゴリが空であればエラー
+ */
+test('No categories', () => {
+    prepareConfigs('messageId-1', '');
+    assertError(main, 'No categories to remove are set.');
+});
+
+/**
+ * カテゴリが改行のみであればエラー
+ */
+test('No categories - line break only', () => {
+    prepareConfigs('messageId-1', '\n');
+    assertError(main, 'No categories to remove are set.');
+});
+
+/**
+ * メッセージ取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ */
+const assertGetMessageRequest = ({url, method}, messageId) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}`
+        + `?${encodeURIComponent('$select')}=categories`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * メール取得の GET リクエストで失敗
+ */
+test('Fail in GET message request', () => {
+    const messageId = 'messageId-1';
+    prepareConfigs(messageId, '赤の分類');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetMessageRequest(request, messageId);
+        return httpClient.createHttpResponse(400, 'application/json', `{}`);
+    });
+
+    assertError(main, 'Failed to get message. status: 400');
+});
+
+/**
+ * メッセージ更新の PATCH リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param messageId
+ * @param categories
+ */
+const assertUpdateMessageRequest = ({url, method, body}, messageId, categories) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/me/messages/${encodeURI(messageId)}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('PATCH');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.categories).toEqual(categories);
+};
+
+const SAMPLE_MESSAGE = {
+    "categories": [
+        "赤の分類",
+        "青の分類",
+        "緑の分類"
+    ]
+};
+
+/**
+ * メール更新の PATCH リクエストで失敗
+ */
+test('Fail in PATCH message request', () => {
+    const messageId = 'messageId-1';
+    prepareConfigs(messageId, '赤の分類');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE));
+        }
+        assertUpdateMessageRequest(request, messageId, ['青の分類', '緑の分類']);
+        return httpClient.createHttpResponse(400, 'application/json', `{}`);
+    });
+
+    assertError(main, 'Failed to update message. status: 400');
+});
+
+/**
+ * 成功
+ * カテゴリを 1 つだけ解除
+ */
+test('Succeed - remove one category', () => {
+    const messageId = 'messageId-1';
+    const dataDefs = prepareConfigs(messageId, '赤の分類');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE));
+        }
+        assertUpdateMessageRequest(request, messageId, ['青の分類', '緑の分類']);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功
+ * カテゴリを複数解除し、カテゴリ設定が 1 つもなくなる場合
+ */
+test('Succeed - remove all categories', () => {
+    const messageId = 'messageId-2';
+    const dataDefs = prepareConfigs(messageId, '赤の分類\n緑の分類\n青の分類');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE));
+        }
+        assertUpdateMessageRequest(request, messageId, []);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功
+ * メールに設定されていないカテゴリのみを指定した場合、メールを更新せずに正常終了
+ */
+test('Succeed - message does not have the specified category', () => {
+    const messageId = 'messageId-2';
+    const dataDefs = prepareConfigs(messageId, 'オレンジの分類');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetMessageRequest(request, messageId);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE));
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功
+ * メールに設定されているカテゴリ、メールに設定されていないカテゴリを両方指定した場合
+ */
+test('Succeed - message includes one of the specified categories', () => {
+    const messageId = 'messageId-3';
+    const dataDefs = prepareConfigs(messageId, '青の分類\n\nオレンジの分類'); // 間に改行を含む
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetMessageRequest(request, messageId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE));
+        }
+        assertUpdateMessageRequest(request, messageId, ['赤の分類', '緑の分類']);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
 
     ]]></test>
 
