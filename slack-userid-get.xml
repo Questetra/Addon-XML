@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-09-22</last-modified>
+    <last-modified>2023-09-25</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Slack: Get User ID</label>
@@ -8,7 +8,7 @@
     <summary>This item gets a user ID on Slack.</summary>
     <summary locale="ja">この工程は、Slack のユーザ ID を取得します。</summary>
     <configs>
-        <config name="conf_OAuth2_V2" form-type="OAUTH2" auth-type="OAUTH2"
+        <config name="conf_OAuth2" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://slack.com/oauth2/chat:write,users:read,users:read.email">
             <label locale="ja">C1-a: HTTP 認証設定 (Questetra が登録済みの Bot を使用する場合) </label>
         </config>
@@ -50,18 +50,16 @@ function main() {
   * @return auth
   */
 function decideAuth() {
-    let auth;
-    const auth_OAuth2_V2 = configs.getObject("conf_OAuth2_V2");
+    const auth_OAuth2 = configs.getObject("conf_OAuth2");
     const auth_Token = configs.getObject("conf_Token")
 
-    if (auth_OAuth2_V2 !== "" && auth_OAuth2_V2 !== null ){
-        auth = auth_OAuth2_V2;
-    }else if (auth_OAuth2_V2 === "" || auth_OAuth2_V2 === null && auth_Token !== "" && auth_Token !== null){
-        auth = auth_Token;
+    if (auth_OAuth2 !== null ){
+        return auth_OAuth2;
+    }else if (auth_OAuth2 === null &&  auth_Token !== null){
+        return auth_Token;
     } else {
         throw `No Authorization Setting.`;
     }
-    return auth;
 }
 
 
@@ -97,7 +95,7 @@ function getmailAddress(){
 /**
  * メールアドレスから Slack User オブジェクト を取得する
  * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
- * @@param {AuthSettingWrapper} or {String} auth
+ * @@param {AuthSettingWrapper}
  * @param {String} email
  * @return {String} responseBody  User オブジェクト
  */
@@ -157,13 +155,13 @@ function usersLookupByEmail(auth, email) {
 
 
 /**
- * 設定の準備 auth_OAuth2_V2 conf_OAuth2_V2
+ * 設定の準備
  * @param configs
  * @param user
  */
 const prepareConfigs = (configs, user, oauth2, token) => {
-    if (oauth2 === "yes"){
-        const auth_OAuth2_V2 = httpClient.createAuthSettingOAuth2(
+    if (oauth2){
+        const auth_OAuth2 = httpClient.createAuthSettingOAuth2(
             'Slack',
             'https://slack.com/oauth/v2/authorize',
             'https://slack.com/api/oauth.v2.access',
@@ -172,12 +170,12 @@ const prepareConfigs = (configs, user, oauth2, token) => {
             'consumer_secret',
             'access_token'
         );
-        configs.putObject('conf_OAuth2_V2', auth_OAuth2_V2);
+        configs.putObject('conf_OAuth2', auth_OAuth2);
     } else {
-        configs.put('conf_OAuth2_V2', '');
+        configs.put('conf_OAuth2', '');
     }
 
-    if (token === "yes"){
+    if (token){
         const auth_Token = httpClient.createAuthSettingToken(
             'Slack Bot Token',
             'slack-bot-token'
@@ -225,7 +223,7 @@ const assertGetRequest = ({ url, method }, email) => {
  * 認証設定が両方されていない場合
  */
 test('No Authorization Setting', () => {
-    prepareConfigs(configs, null, 'no', 'no');
+    prepareConfigs(configs, null, false, false);
     expect(execute).toThrow('No Authorization Setting.');
 });
 
@@ -236,7 +234,7 @@ test('No Authorization Setting', () => {
  * ユーザは文字型データ項目を選択していて空
  */
 test('No Questetra User or Email address.- User is a string data item', () => {
-    prepareConfigs(configs, null, "yes", "no");
+    prepareConfigs(configs, null, true, false);
     expect(execute).toThrow('No Questetra User or Email address.');
 });
 
@@ -246,7 +244,7 @@ test('No Questetra User or Email address.- User is a string data item', () => {
  * ユーザはユーザ型データ項目で空
  */
 test('No Questetra User or Email address.- User is a user-type data items', () => {
-    prepareConfigs(configs, null, "no", "yes");
+    prepareConfigs(configs, null, false, true);
 
     // ユーザ型データ項目を準備して、config に指定
     const userDef = engine.createDataDefinition('ユーザ', 5, 'q_user', 'QUSER');
@@ -277,7 +275,7 @@ const prepareGetIdResponse = (id) => {
  * GET API リクエストでエラーになる場合（Slack ID 取得）
  */
 test('GET Failed', () => {
-    prepareConfigs(configs, 'SouthPole@questetra.com', "yes" , "yes");
+    prepareConfigs(configs, 'SouthPole@questetra.com', true , true);
 
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, 'SouthPole@questetra.com');
@@ -296,7 +294,7 @@ test('GET Failed', () => {
  * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 設定
  */
 test('Success - User is a string data item', () => {
-    const idDef = prepareConfigs(configs, 'SouthPole@questetra.com', "yes" , "yes");
+    const idDef = prepareConfigs(configs, 'SouthPole@questetra.com', true , true);
     httpClient.setRequestHandler((request) => {
         assertGetRequest(request, 'SouthPole@questetra.com');
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetIdResponse('56789FGHIJ')));
@@ -315,7 +313,7 @@ test('Success - User is a string data item', () => {
  * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 未設定
  */
 test('Success - User is a fixed value', () => {
-    const idDef = prepareConfigs(configs, '', "yes" , "no");
+    const idDef = prepareConfigs(configs, '', true , false);
     //conf_Quser の設定値を固定値で上書き
     configs.put('conf_Quser', 'SouthPole@questetra.com');
 
@@ -337,7 +335,7 @@ test('Success - User is a fixed value', () => {
  * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 設定
  */
 test('Success - User is a user-type data items', () => {
-    const idDef = prepareConfigs(configs, 'SouthPole@questetra.com', "no" , "yes");
+    const idDef = prepareConfigs(configs, 'SouthPole@questetra.com', false , true);
 
     // ユーザ型データ項目を準備して、config に指定
     const userDef = engine.createDataDefinition('ユーザ', 4, 'q_user', 'QUSER');
