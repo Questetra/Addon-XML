@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-08-04</last-modified>
+    <last-modified>2023-09-25</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
     <license>(C) Questetra, Inc. (MIT License)</license>
@@ -13,9 +13,13 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-slack-message-post/
     </help-page-url>
     <configs>
-        <config name="conf_Token" required="true" form-type="OAUTH2" auth-type="TOKEN">
-            <label>C1: Authorization Setting in which Bot Token is set</label>
-            <label locale="ja">C1: Bot トークンを設定した認証設定</label>
+        <config name="conf_OAuth2" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://slack.com/oauth2/chat:write,users:read,users:read.email">
+            <label locale="ja">C1-a: HTTP 認証設定 (Questetra が登録済みの Bot を使用する場合) </label>
+        </config>
+        <config name="conf_Token" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1-b: Authorization Setting ( Using a Bot registered yourself )</label>
+            <label locale="ja">C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合)</label>
         </config>
         <config name="conf_Channel" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
                 editable="true">
@@ -41,7 +45,7 @@
     </configs>
     <script><![CDATA[
 function main() {
-    const auth = configs.getObject("conf_Token");
+    const auth = decideAuth();
     const channel = readStringData('conf_Channel');
     if (channel === null) {
         throw new Error('Channel must not be blank.');
@@ -52,6 +56,25 @@ function main() {
     const blocks = readBlocks();
 
     sendMessage(auth, channel, thread, replyBroadcast, blocks, text);
+}
+
+/** 
+  * config から認証設定値を読み出す
+  * 両方とも設定されていれば、auth-type="OAUTH2" の方を優先
+  * 両方とも設定されていなければ、スクリプトエラー
+  * @return auth
+  */
+function decideAuth() {
+    const auth_OAuth2 = configs.getObject("conf_OAuth2");
+    const auth_Token = configs.getObject("conf_Token")
+
+    if (auth_OAuth2 !== null ){
+        return auth_OAuth2;
+    } else if (auth_Token !== null){
+        return auth_Token;
+    } else {
+        throw `No Authorization Setting.`;
+    }
 }
 
 function readStringData(configName) {
@@ -166,9 +189,31 @@ function sendMessage(auth, channel, thread, replyBroadcast, blocks, text) {
  * @param blocks
  * @param text
  */
-const prepareConfigs = (channel, thread, replyBroadcast, blocks, text) => {
-    const auth = httpClient.createAuthSettingToken('Slack', 'Slack');
-    configs.putObject('conf_Token', auth);
+const prepareConfigs = (channel, thread, replyBroadcast, blocks, text, oauth2, token) => {
+    if (oauth2){
+        const auth_OAuth2 = httpClient.createAuthSettingOAuth2(
+            'Slack',
+            'https://slack.com/oauth/v2/authorize',
+            'https://slack.com/api/oauth.v2.access',
+            'chat:write,users:read,users:read.email',
+            'consumer_key',
+            'consumer_secret',
+            'access_token'
+        );
+        configs.putObject('conf_OAuth2', auth_OAuth2);
+    } else {
+        configs.put('conf_OAuth2', '');
+    }
+
+    if (token){
+        const auth_Token = httpClient.createAuthSettingToken(
+            'Slack Bot Token',
+            'slack-bot-token'
+        );
+        configs.putObject('conf_Token', auth_Token);
+    } else {
+        configs.put('conf_Token', '');
+    }
 
     const channelDef = engine.createDataDefinition('チャンネル', 1, 'q_channel', 'STRING_TEXTFIELD');
     engine.setData(channelDef, channel);
@@ -183,6 +228,8 @@ const prepareConfigs = (channel, thread, replyBroadcast, blocks, text) => {
     configs.put('conf_Blocks', blocks === null ? '' : JSON.stringify(blocks));
     configs.put('conf_Text', text);
 };
+
+
 
 /**
  * POSTリクエストのテスト（チャット投稿）
@@ -238,11 +285,27 @@ const preparePostResponse = (channel, text) => {
     };
 };
 
+
+/**
+ * 認証設定が両方されていない場合
+ */
+test('No Authorization Setting', () => {
+    prepareConfigs('channel1', null, false, null, 'text1', false, false);
+
+    try {
+        main();
+    } catch (e) {
+        const errorMsg = 'No Authorization Setting.';
+        expect(e.message).toEqual(errorMsg);
+    }
+});
+
+
 /**
  * POST API リクエストでエラーになる場合（チャット投稿）
  */
 test('POST Failed', () => {
-    prepareConfigs('channel1', null, false, null, 'text1');
+    prepareConfigs('channel1', null, false, null, 'text1', true, false);
 
     httpClient.setRequestHandler((request) => {
         assertPostRequest(request, 'channel1', null, false, null, 'text1');
@@ -263,9 +326,11 @@ test('POST Failed', () => {
  * チャット投稿成功の場合
  * スレッド指定なし
  * Blocks 指定なし
+ * C1-a: HTTP 認証設定 (Questetra が登録済みの Bot を使用する場合) 設定
+ * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 設定
  */
 test('Success - no thread, no blocks', () => {
-    prepareConfigs('channel2', null, false, null, 'text2');
+    prepareConfigs('channel2', null, false, null, 'text2', true , true);
 
     httpClient.setRequestHandler((request) => {
         assertPostRequest(request, 'channel2', null, false, null, 'text2');
@@ -279,6 +344,8 @@ test('Success - no thread, no blocks', () => {
  * チャット投稿成功の場合
  * スレッド指定あり
  * Blocks 指定あり
+ * C1-a: HTTP 認証設定 (Questetra が登録済みの Bot を使用する場合) 設定
+ * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 未設定
  */
 test('Success - with thread, with blocks', () => {
     const blocks = {
@@ -301,7 +368,7 @@ test('Success - with thread, with blocks', () => {
             }
         ]
     };
-    prepareConfigs('channel3', 'thread3', false, blocks, 'text3');
+    prepareConfigs('channel3', 'thread3', false, blocks, 'text3', true , false);
 
     httpClient.setRequestHandler((request) => {
         assertPostRequest(request, 'channel3', 'thread3', false, blocks, 'text3');
@@ -316,9 +383,11 @@ test('Success - with thread, with blocks', () => {
  * スレッド指定あり
  * reply_broadcast
  * Blocks 指定なし
+ * C1-a: HTTP 認証設定 (Questetra が登録済みの Bot を使用する場合) 未設定
+ * C1-b: HTTP 認証設定 (独自に登録した Bot を使用する場合) 設定
  */
 test('Success - with thread, reply_broadcast, no blocks', () => {
-    prepareConfigs('channel4', 'thread4', true, null, 'text4');
+    prepareConfigs('channel4', 'thread4', true, null, 'text4, false , true);
 
     httpClient.setRequestHandler((request) => {
         assertPostRequest(request, 'channel4', 'thread4', true, null, 'text4');
