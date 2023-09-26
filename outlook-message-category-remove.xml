@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 Outlook for Business: Remove Category from Email</label>
     <label locale="ja">Microsoft 365 Outlook for Business: メールのカテゴリ解除</label>
-    <last-modified>2023-09-25</last-modified>
+    <last-modified>2023-09-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -65,15 +65,17 @@ function retrieveMessageId() {
 
 /**
  * ワークフローデータからカテゴリの一覧を読み出す
- * カテゴリの設定がない場合はエラー
+ * 末尾の改行のみ無視し、他の空行はエラー
  * @returns {Array<String>} categories カテゴリ一覧
  */
 function retrieveCategories() {
-    const categories = configs.get('conf_Category').split('\n')
-        .filter(category => category !== '');
-    // データ項目に改行のみ等、ラベルの設定がない場合はエラー
-    if (categories.length === 0) {
-        throw "No categories to remove are set.";
+    let categoriesStr = configs.get('conf_Category');
+    if (categoriesStr.endsWith('\n')) { // 末尾に空行がある場合、削除
+        categoriesStr = categoriesStr.slice(0, -1);
+    }
+    const categories = categoriesStr.split('\n');
+    if (categories.some(line => line === '')) {
+        throw 'Empty lines are not allowed for category.';
     }
     return categories;
 }
@@ -197,7 +199,7 @@ test('Message ID is empty', () => {
  */
 test('No categories', () => {
     prepareConfigs('messageId-1', '');
-    assertError(main, 'No categories to remove are set.');
+    assertError(main, 'Empty lines are not allowed for category.');
 });
 
 /**
@@ -205,7 +207,15 @@ test('No categories', () => {
  */
 test('No categories - line break only', () => {
     prepareConfigs('messageId-1', '\n');
-    assertError(main, 'No categories to remove are set.');
+    assertError(main, 'Empty lines are not allowed for category.');
+});
+
+/**
+ * カテゴリの途中に空行を含む場合はエラー
+ */
+test('Categories include an empty line', () => {
+    prepareConfigs('messageId-1', '赤の分類\n\n青の分類');
+    assertError(main, 'Empty lines are not allowed for category.');
 });
 
 /**
@@ -288,7 +298,7 @@ test('Fail in PATCH message request', () => {
  */
 test('Succeed - remove one category', () => {
     const messageId = 'messageId-1';
-    const dataDefs = prepareConfigs(messageId, '赤の分類');
+    const dataDefs = prepareConfigs(messageId, '赤の分類\n'); // カテゴリの末尾の改行は無視される
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -345,7 +355,7 @@ test('Succeed - message does not have the specified category', () => {
  */
 test('Succeed - message includes one of the specified categories', () => {
     const messageId = 'messageId-3';
-    const dataDefs = prepareConfigs(messageId, '青の分類\n\nオレンジの分類'); // 間に改行を含む
+    const dataDefs = prepareConfigs(messageId, '青の分類\nオレンジの分類');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
