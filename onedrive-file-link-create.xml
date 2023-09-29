@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <label>Microsoft 365 OneDrive for Business: Create Shared Link</label>
+    <label>Microsoft 365 OneDrive for Business: Create Sharing Link</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: 共有リンク作成</label>
-    <!--
     <last-modified>2023-09-28</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -25,8 +23,8 @@
             <label>C2: File / Folder URL to share</label>
             <label locale="ja">C2: 共有するファイル / フォルダの URL</label>
         </config>
-        <config name="conf_SharedLink" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C3: Data item to save the Shared Link</label>
+        <config name="conf_SharingLink" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save the Sharing Link</label>
             <label locale="ja">C3: 共有リンクを保存するデータ項目</label>
         </config>
     </configs>
@@ -48,14 +46,14 @@ function main() {
     //// == 工程コンフィグの参照 / Config Retrieving ==
     const oauth2 = configs.getObject('conf_OAuth2');
     const driveItemUrl = retrieveDriveItemUrl();
-    const sharedLinkDef = configs.getObject('conf_SharedLink');
+    const sharingLinkDef = configs.getObject('conf_SharingLink');
 
     //// == 演算 / Calculating ==
     const driveItemInfo = getDriveItemInfoByUrl(oauth2, driveItemUrl);
-    const sharedLink = createSharedLink(oauth2, driveItemInfo);
+    const sharingLink = createLink(oauth2, driveItemInfo);
 
     //// == ワークフローデータへの代入 / Data Updating ==
-    engine.setData(sharedLinkDef, sharedLink);
+    engine.setData(sharingLinkDef, sharingLink);
 }
 
 /**
@@ -127,9 +125,9 @@ function encodeSharingUrl(sharingUrl) {
   * @param {Object} driveItemInfo ファイル / フォルダ情報 {driveId, id}
   * @param {String} driveItemInfo.driveId  ドライブ ID
   * @param {String} driveItemInfo.id  ファイル / フォルダ ID
-  * @returns {String} sharedLink  共有リンク
+  * @returns {String} sharingLink  共有リンク
   */
-function createSharedLink(oauth2, {driveId, id}) {
+function createLink(oauth2, {driveId, id}) {
     const requestBodyObj = {
         type: 'view',
         scope: 'anonymous'
@@ -143,7 +141,7 @@ function createSharedLink(oauth2, {driveId, id}) {
     // 200: OK (returns the existing link), 201: Created
     if (status !== 200 && status !== 201) {
         engine.log(responseStr);
-        throw `Failed to create shared link. status: ${status}`;
+        throw `Failed to create sharing link. status: ${status}`;
     }
     return JSON.parse(responseStr).link.webUrl;
 }
@@ -173,7 +171,209 @@ function createSharedLink(oauth2, {driveId, id}) {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * @param driveItemUrl
+ * @param isFixed 固定値かどうか
+ * @return sharingLinkDef
+ */
+const prepareConfigs = (driveItemUrl, isFixed) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
 
+    if (isFixed) {
+        configs.put('conf_DriveItemUrl', driveItemUrl);
+    } else {
+        const driveItemUrlDef = engine.createDataDefinition('ファイル / フォルダ URL', 1, 'q_driveItemUrl', 'STRING_TEXTFIELD');
+        engine.setData(driveItemUrlDef, driveItemUrl);
+        configs.putObject('conf_DriveItemUrl', driveItemUrlDef);
+    }
+
+    const sharingLinkDef = engine.createDataDefinition('共有リンク', 2, 'q_sharingUrl', 'STRING_TEXTFIELD');
+    engine.setData(sharingLinkDef, '事前文字列');
+    configs.putObject('conf_SharingLink', sharingLinkDef);
+    return sharingLinkDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * ファイル / フォルダ URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('File / Folder URL is blank', () => {
+    prepareConfigs(null, false);
+    assertError(main, 'File / Folder URL is blank.');
+});
+
+/**
+ * ドライブアイテム取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param sharingUrl
+ */
+const assertGetDriveItemRequest = ({ url, method }, sharingUrl) => {
+    const encodedUrl = encodeSharingUrl(sharingUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/driveItem`
+        + `?select=${encodeURIComponent('id,parentReference')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ドライブアイテム取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false);
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get drive item. status: 400');
+});
+
+/**
+ * ドライブアイテム取得の GET リクエストのレスポンスを準備
+ * @param driveId
+ * @param id
+ * @return {Object} responseObj
+ */
+const prepareDriveItemResponse = (driveId, id) => {
+    return JSON.stringify(
+        {
+            id,
+            parentReference: { driveId }
+        }
+    );
+};
+
+/**
+ * 共有リンク作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param driveId
+ * @param id
+ */
+const assertCreateLinkRequest = ({ url, method, contentType, body }, driveId, id) => {
+    expect(url).toEqual(`${GRAPH_URI}drives/${driveId}/items/${id}/createLink`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.type).toEqual('view');
+    expect(bodyObj.scope).toEqual('anonymous');
+};
+
+/**
+ * 共有リンク作成の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false);
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const id = 'fileId-1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, fileUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, id));
+        }
+        assertCreateLinkRequest(request, driveId, id);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to create sharing link. status: 400');
+});
+
+/**
+ * 共有リンク作成の POST リクエストのレスポンスを準備
+ * @param id
+ * @param webUrl
+ * @return {Object} responseObj
+ */
+const prepareCreateLinkResponse = (id, webUrl) => {
+    return JSON.stringify(
+        {
+            link: { id, webUrl }
+        }
+    );
+};
+
+/**
+ * 成功
+ * URL は文字型データ項目で指定
+ * 共有リンクが新たに作成された場合（レスポンスステータス 201）
+ */
+test('Succeed - set URL by data item, response status 201', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const sharingLinkDef = prepareConfigs(fileUrl, false);
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const id = 'fileId-1';
+    const sharingLink = 'https://test-my.sharepoint.com/:i:/g/personal/aaa/1234567890';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, fileUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, id));
+        }
+        assertCreateLinkRequest(request, driveId, id);
+        return httpClient.createHttpResponse(201, 'application/json', prepareCreateLinkResponse('link-1', sharingLink));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(sharingLinkDef)).toEqual(sharingLink);
+});
+
+/**
+ * 成功
+ * URL は固定値で指定
+ * 既存の共有リンクが返される場合（レスポンスステータス 200）
+ */
+test('Succeed - set URL as fixed value, response status 200', () => {
+    const folderUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    const sharingLinkDef = prepareConfigs(folderUrl, true);
+
+    let reqCount = 0;
+    const driveId = 'driveId-2';
+    const id = 'folderId-1';
+    const sharingLink = 'https://test-my.sharepoint.com/:i:/g/personal/bbb/0987654321';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, folderUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, id));
+        }
+        assertCreateLinkRequest(request, driveId, id);
+        return httpClient.createHttpResponse(200, 'application/json', prepareCreateLinkResponse('link-2', sharingLink));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(sharingLinkDef)).toEqual(sharingLink);
+});
 
 ]]></test>
 
