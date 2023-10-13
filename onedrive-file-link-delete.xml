@@ -47,7 +47,7 @@ function main() {
     const sharingLinkId = retrieveSharingLinkId();
 
     //// == 演算 / Calculating ==
-    const driveItemInfo = getDriveItemInfoByUrl(oauth2, driveItemUrl);
+    const driveItemInfo = getDriveItemInfoByUrlAndCheckSharingLink(oauth2, driveItemUrl, sharingLinkId);
     deleteLink(oauth2, driveItemInfo, sharingLinkId);
 }
 
@@ -85,12 +85,14 @@ function retrieveSharingLinkId() {
 
 /**
   * OneDrive のファイル / フォルダのメタデータを取得し、JSONオブジェクトを返す
+  * 指定した ID の共有リンクがあるかどうかを確認し、ない場合はエラー
   * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
   * @param {String} sharingUrl  ファイル / フォルダの共有 URL
+  * @param {String} sharingLinkId  存在を確認する共有リンクの ID
   * @returns {Object} ファイル / フォルダ情報 {driveId, id}
   */
-function getDriveItemInfoByUrl(oauth2, sharingUrl) {
+function getDriveItemInfoByUrlAndCheckSharingLink(oauth2, sharingUrl, sharingLinkId) {
     // encoding sharing URL
     const encodedSharingUrl = encodeSharingUrl(sharingUrl);
 
@@ -98,6 +100,7 @@ function getDriveItemInfoByUrl(oauth2, sharingUrl) {
     const response = httpClient.begin()
         .authSetting(oauth2)
         .queryParam('select', 'id,parentReference')
+        .queryParam('expand', 'permissions(select=id,link)')
         .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -109,9 +112,27 @@ function getDriveItemInfoByUrl(oauth2, sharingUrl) {
         id,
         parentReference: {
             driveId
-        }
+        },
+        permissions
     } = JSON.parse(responseStr);
+    if (!hasSharingLink(permissions, sharingLinkId)) {
+        throw 'The specified sharing link not found in the file/folder.';
+    }
     return {driveId, id};
+}
+
+/**
+  * パーミションの一覧に指定した ID の共有リンクがあるかどうか
+  * @param {Array} permissions  パーミッションの一覧
+  * @param {String} sharingLinkId  存在を確認する共有リンクの ID
+  * @returns {boolean} 一覧に指定した ID の共有リンクがあるかどうか
+  */
+function hasSharingLink(permissions, sharingLinkId) {
+    return permissions.some(permission => {
+        if (permission.link !== undefined && permission.id === sharingLinkId) {
+            return true;
+        }
+    });
 }
 
 /**
