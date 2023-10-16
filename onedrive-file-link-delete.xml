@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Delete Sharing Link</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: 共有リンク削除</label>
-    <!--
-    <last-modified>2023-10-13</last-modified>
-    -->
+    <last-modified>2023-10-16</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -194,8 +192,309 @@ function deleteLink(oauth2, {driveId, id}, sharingLinkId) {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * @param driveItemUrl
+ * @param isFixed 固定値かどうか
+ * @param sharingLinkId
+ */
+const prepareConfigs = (driveItemUrl, isFixed, sharingLinkId) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
 
+    if (isFixed) {
+        configs.put('conf_DriveItemUrl', driveItemUrl);
+    } else {
+        const driveItemUrlDef = engine.createDataDefinition('ファイル / フォルダ URL', 1, 'q_driveItemUrl', 'STRING_TEXTFIELD');
+        engine.setData(driveItemUrlDef, driveItemUrl);
+        configs.putObject('conf_DriveItemUrl', driveItemUrlDef);
+    }
 
-]]></test>
+    const sharingLinkIdDef = engine.createDataDefinition('共有リンクの ID', 2, 'q_sharingLinkId', 'STRING_TEXTFIELD');
+    engine.setData(sharingLinkIdDef, sharingLinkId);
+    configs.putObject('conf_SharingLinkId', sharingLinkIdDef);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * ファイル / フォルダ URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('File / Folder URL is blank', () => {
+    prepareConfigs(null, false, '1234567890');
+    assertError(main, 'File / Folder URL is blank.');
+});
+
+/**
+ * ファイル / フォルダ URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('Sharing Link ID is blank', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, null);
+    assertError(main, 'Sharing Link ID is blank.');
+});
+
+/**
+ * ドライブアイテム取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param sharingUrl
+ */
+const assertGetDriveItemRequest = ({ url, method }, sharingUrl) => {
+    const encodedUrl = encodeSharingUrl(sharingUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/driveItem`
+        + `?select=${encodeURIComponent('id,parentReference')}`
+        + `&expand=${encodeURIComponent('permissions(select=id,link)')}`.replace(/\(/g, '%28').replace(/\)/g, '%29');
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ドライブアイテム取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, '1234567890');
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get drive item. status: 400');
+});
+
+/**
+ * ドライブアイテム取得の GET リクエストのレスポンスを準備
+ * @param driveId
+ * @param id
+ * @param permissions
+ * @return {Object} responseObj
+ */
+const prepareDriveItemResponse = (driveId, id, permissions) => {
+    return JSON.stringify(
+        {
+            id,
+            parentReference: { driveId },
+            permissions
+        }
+    );
+};
+
+/**
+ * 指定したドライブアイテムに指定した共有リンクがない場合のテスト
+ * 共有設定が 1 つもない場合
+ */
+test('The specified sharing link not found - No permissions', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, '1234567890');
+
+    const driveId = 'driveId-1';
+    const driveItemId = 'fileId-1';
+    const permissions = [];
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+    });
+    assertError(main, 'The specified sharing link not found in the file/folder.');
+});
+
+/**
+ * 指定したドライブアイテムに指定した共有リンクがない場合のテスト
+ * 共有設定はあるが、ID が一致しない場合
+ */
+test('The specified sharing link not found - Permission ID not found', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, '1234567890');
+
+    const driveId = 'driveId-1';
+    const driveItemId = 'fileId-1';
+    const permissions = [];
+    const perm1 = {
+        id: '2345678901',
+        link: {
+            type: 'view',
+            scope: 'anonymous',
+            webUrl: 'https://test-my.sharepoint.com/:i:/g/personal/aaa/abcdef'
+        }
+    };
+    permissions.push(perm1);
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+    });
+    assertError(main, 'The specified sharing link not found in the file/folder.');
+});
+
+/**
+ * 指定したドライブアイテムに指定した共有リンクがない場合のテスト
+ * ID の一致する共有設定はあるが、共有リンクでない場合
+ */
+test('The specified sharing link not found - Permission is not a sharing link', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, '1234567890');
+
+    const driveId = 'driveId-1';
+    const driveItemId = 'fileId-1';
+    const permissions = [];
+    const perm1 = {
+        id: '1234567890'
+    };
+    permissions.push(perm1);
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+    });
+    assertError(main, 'The specified sharing link not found in the file/folder.');
+});
+
+/**
+ * 共有リンク削除の DELETE リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param driveId
+ * @param id
+ * @param sharingLinkId
+ */
+const assertDeleteLinkRequest = ({ url, method }, driveId, id, sharingLinkId) => {
+    expect(url).toEqual(`${GRAPH_URI}drives/${driveId}/items/${id}/permissions/${encodeURIComponent(sharingLinkId)}`);
+    expect(method).toEqual('DELETE');
+};
+
+/**
+ * 共有リンク削除の DELETE リクエストでエラー
+ */
+test('Fail in DELETE request', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const sharingLinkId = '1234567890';
+    prepareConfigs(fileUrl, false, sharingLinkId);
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const driveItemId = 'fileId-1';
+    const permissions = [];
+    const perm1 = {
+        id: sharingLinkId,
+        link: {
+            type: 'view',
+            scope: 'anonymous',
+            webUrl: 'https://test-my.sharepoint.com/:i:/g/personal/aaa/abcdef'
+        }
+    };
+    permissions.push(perm1);
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, fileUrl);
+            reqCount++;
+            return httpClient
+                .createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+        }
+        assertDeleteLinkRequest(request, driveId, driveItemId, sharingLinkId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to delete sharing link. status: 400');
+});
+
+/**
+ * 成功
+ * URL は文字型データ項目で指定
+ */
+test('Succeed - set URL by data item', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const sharingLinkId = '1234567890';
+    prepareConfigs(fileUrl, false, sharingLinkId);
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const driveItemId = 'fileId-1';
+    const permissions = [];
+    const perm1 = {
+        id: sharingLinkId,
+        link: {
+            type: 'view',
+            scope: 'anonymous',
+            webUrl: 'https://test-my.sharepoint.com/:i:/g/personal/aaa/abcdef'
+        }
+    };
+    permissions.push(perm1);
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, fileUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+        }
+        assertDeleteLinkRequest(request, driveId, driveItemId, sharingLinkId);
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功
+ * URL は固定値で指定
+ */
+test('Succeed - set URL as fixed value', () => {
+    const folderUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    const sharingLinkId = '2345678901';
+    prepareConfigs(folderUrl, true, sharingLinkId);
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const driveItemId = 'folderId-1';
+    const permissions = [];
+    const perm1 = {
+        id: '1234567890',
+        link: {
+            type: 'view',
+            scope: 'organization',
+            webUrl: 'https://test-my.sharepoint.com/:i:/g/personal/aaa/abcdef'
+        }
+    };
+    const perm2 = {
+        id: sharingLinkId,
+        link: {
+            type: 'view',
+            scope: 'anonymous',
+            webUrl: 'https://test-my.sharepoint.com/:i:/g/personal/aaa/defghi'
+        }
+    };
+    permissions.push(perm1);
+    permissions.push(perm2);
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetDriveItemRequest(request, folderUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, driveItemId, permissions));
+        }
+        assertDeleteLinkRequest(request, driveId, driveItemId, sharingLinkId);
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+    ]]></test>
 
 </service-task-definition>
