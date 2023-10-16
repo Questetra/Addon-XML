@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Create Sharing Link</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: 共有リンク作成</label>
-    <last-modified>2023-09-28</last-modified>
+    <last-modified>2023-10-13</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -18,7 +18,7 @@
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
-        <config name="conf_DriveItemUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+        <config name="conf_DriveItemUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
                 editable="true">
             <label>C2: File / Folder URL to share</label>
             <label locale="ja">C2: 共有するファイル / フォルダの URL</label>
@@ -26,6 +26,10 @@
         <config name="conf_SharingLink" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
             <label>C3: Data item to save the Sharing Link</label>
             <label locale="ja">C3: 共有リンクを保存するデータ項目</label>
+        </config>
+        <config name="conf_SharingLinkId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: Data item to save the Sharing Link ID</label>
+            <label locale="ja">C4: 共有リンクの ID を保存するデータ項目</label>
         </config>
     </configs>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-onedrive-file-link-create/</help-page-url>
@@ -47,13 +51,17 @@ function main() {
     const oauth2 = configs.getObject('conf_OAuth2');
     const driveItemUrl = retrieveDriveItemUrl();
     const sharingLinkDef = configs.getObject('conf_SharingLink');
+    const sharingLinkIdDef = configs.getObject('conf_SharingLinkId');
 
     //// == 演算 / Calculating ==
     const driveItemInfo = getDriveItemInfoByUrl(oauth2, driveItemUrl);
-    const sharingLink = createLink(oauth2, driveItemInfo);
+    const {sharingLink, id} = createLink(oauth2, driveItemInfo);
 
     //// == ワークフローデータへの代入 / Data Updating ==
     engine.setData(sharingLinkDef, sharingLink);
+    if (sharingLinkIdDef !== null) {
+        engine.setData(sharingLinkIdDef, id);
+    }
 }
 
 /**
@@ -125,7 +133,9 @@ function encodeSharingUrl(sharingUrl) {
   * @param {Object} driveItemInfo ファイル / フォルダ情報 {driveId, id}
   * @param {String} driveItemInfo.driveId  ドライブ ID
   * @param {String} driveItemInfo.id  ファイル / フォルダ ID
-  * @returns {String} sharingLink  共有リンク
+  * @returns {Object} result
+  * @returns {String} result.id  共有リンクの ID
+  * @returns {String} result.sharingLink  共有リンク
   */
 function createLink(oauth2, {driveId, id}) {
     const requestBodyObj = {
@@ -143,7 +153,12 @@ function createLink(oauth2, {driveId, id}) {
         engine.log(responseStr);
         throw `Failed to create sharing link. status: ${status}`;
     }
-    return JSON.parse(responseStr).link.webUrl;
+    const responseJson = JSON.parse(responseStr);
+    // id と url を返す
+    return {
+        id: responseJson.id,
+        sharingLink: responseJson.link.webUrl
+    };
 }
 
     ]]></script>
@@ -316,7 +331,8 @@ test('Fail in POST request', () => {
 const prepareCreateLinkResponse = (id, webUrl) => {
     return JSON.stringify(
         {
-            link: { id, webUrl }
+            id,
+            link: { webUrl }
         }
     );
 };
@@ -325,6 +341,7 @@ const prepareCreateLinkResponse = (id, webUrl) => {
  * 成功
  * URL は文字型データ項目で指定
  * 共有リンクが新たに作成された場合（レスポンスステータス 201）
+ * 共有リンクの ID は保存しない
  */
 test('Succeed - set URL by data item, response status 201', () => {
     const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
@@ -352,10 +369,14 @@ test('Succeed - set URL by data item, response status 201', () => {
  * 成功
  * URL は固定値で指定
  * 既存の共有リンクが返される場合（レスポンスステータス 200）
+ * 共有リンクの ID を保存する
  */
 test('Succeed - set URL as fixed value, response status 200', () => {
     const folderUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
     const sharingLinkDef = prepareConfigs(folderUrl, true);
+    const sharingLinkIdDef = engine.createDataDefinition('共有リンクの ID', 3, 'q_sharingLinkId', 'STRING_TEXTFIELD');
+    engine.setData(sharingLinkIdDef, '事前文字列');
+    configs.putObject('conf_SharingLinkId', sharingLinkIdDef);
 
     let reqCount = 0;
     const driveId = 'driveId-2';
@@ -373,6 +394,7 @@ test('Succeed - set URL as fixed value, response status 200', () => {
     expect(main()).toEqual(undefined);
 
     expect(engine.findData(sharingLinkDef)).toEqual(sharingLink);
+    expect(engine.findData(sharingLinkIdDef)).toEqual('link-2');
 });
 
 ]]></test>
