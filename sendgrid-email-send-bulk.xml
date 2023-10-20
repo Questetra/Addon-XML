@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-08-25</last-modified>
+    <last-modified>2023-10-20</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Bulk Email</label>
     <label locale="ja">Twilio SendGrid: メール一斉送信</label>
@@ -77,7 +77,7 @@
             <label>Additional Settings</label>
             <label locale="ja">追加設定</label>
             <configs>
-                <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
+                <config name="conf_Categories" depends-on="conf_HasUniqueContent" form-type="SELECT" select-data-type="STRING|SELECT">
                     <label>C7: Categories for filtering logs (write one per line)</label>
                     <label locale="ja">C7: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
@@ -108,11 +108,17 @@ function main(){
     const sendTo = retrieveSendTo();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
     const content = retrieveContent();
-    const categories = retrieveCategories();
+    let categories;
+    if (content.designId === undefined) { // デザインを使用しない場合のみ、config からカテゴリを読み出す
+        categories = retrieveCategories();
+    }
     const singleSendIdDef = configs.getObject('conf_SingleSendId');
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
     //// == Calculating / 演算 ==
+    if (content.designId !== undefined) { // デザインを使用する場合は、デザインからカテゴリを取得
+        categories = getCategoriesOfDesign(auth, content.designId);
+    }
     const singleSendId = createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, content);
     scheduleSingleSend(auth, singleSendId, sendAt);
 
@@ -131,7 +137,7 @@ function main(){
   * @return {Array<String>} categories
   */
 function retrieveCategories() {
-    const categories = retrieveIdsAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
+    const categories = retrieveValuesAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
     if (!categories.every(isAscii)) {
         throw 'Categories cannot include non-ascii characters.';
     }
@@ -220,8 +226,8 @@ function validateIdAndReturnAsInt(idStr, label) {
   * @return {Array<String>} sendTo.segmentIds
   */
 function retrieveSendTo() {
-    const listIds = retrieveIdsAsList('conf_ListIds', 'List IDs', MAX_LIST_ID_NUM);
-    const segmentIds = retrieveIdsAsList('conf_SegmentIds', 'Segment IDs', MAX_SEGMENT_ID_NUM);
+    const listIds = retrieveValuesAsList('conf_ListIds', 'List IDs', MAX_LIST_ID_NUM);
+    const segmentIds = retrieveValuesAsList('conf_SegmentIds', 'Segment IDs', MAX_SEGMENT_ID_NUM);
     if (listIds.length === 0 && segmentIds.length === 0) {
         throw 'No List IDs or Segment IDs.';
     }
@@ -235,7 +241,7 @@ function retrieveSendTo() {
   * @param {Number} maxNum 最大件数
   * @return {Array<String>} ids
   */
-function retrieveIdsAsList(confName, label, maxNum) {
+function retrieveValuesAsList(confName, label, maxNum) {
     const dataDef = configs.getObject(confName);
     if (dataDef === null) {
         return [];
@@ -324,6 +330,31 @@ function throwErrorIfDesignIdIsSet() {
     if (confValue !== '') {
         throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
     }
+}
+
+/**
+  * デザインに設定されたカテゴリ一覧を取得する
+  * @param {AuthSettingWrapper} auth 認証設定
+  * @param {String} designId デザイン ID
+  * @return {Array<String>} categories
+  */
+function getCategoriesOfDesign(auth, designId) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://api.sendgrid.com/v3/designs/${encodeURIComponent(designId)}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    switch (status) {
+        case 200:
+            break;
+        case 403:
+            engine.log(responseStr);
+            throw `Failed to get design. Read Access to Design Library is required for your API Key. status: ${status}`;
+        default:
+            engine.log(responseStr);
+            throw `Failed to get design. status: ${status}`;
+    }
+    return JSON.parse(responseStr).categories;
 }
 
 /**
