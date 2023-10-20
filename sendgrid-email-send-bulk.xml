@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-08-25</last-modified>
+    <last-modified>2023-10-20</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Send Bulk Email</label>
     <label locale="ja">Twilio SendGrid: メール一斉送信</label>
@@ -77,7 +77,7 @@
             <label>Additional Settings</label>
             <label locale="ja">追加設定</label>
             <configs>
-                <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
+                <config name="conf_Categories" depends-on="conf_HasUniqueContent" form-type="SELECT" select-data-type="STRING|SELECT">
                     <label>C7: Categories for filtering logs (write one per line)</label>
                     <label locale="ja">C7: メール送信ログ検索用カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
                 </config>
@@ -108,11 +108,16 @@ function main(){
     const sendTo = retrieveSendTo();
     const unsubscribeGroupId = retrieveIdAsInt('conf_UnsubscribeGroupId', 'Unsubscribe Group ID');
     const content = retrieveContent();
-    const categories = retrieveCategories();
     const singleSendIdDef = configs.getObject('conf_SingleSendId');
     const singleSendUrlDef = configs.getObject('conf_SingleSendUrl');
 
     //// == Calculating / 演算 ==
+    let categories;
+    if (content.designId === undefined) { // デザインを使用しない場合のみ、config からカテゴリを読み出す
+        categories = retrieveCategories();
+    } else { // デザインを使用する場合は、デザインからカテゴリを取得する
+        categories = getCategoriesOfDesign(auth, content.designId);
+    }
     const singleSendId = createSingleSend(auth, categories, senderId, sendTo, unsubscribeGroupId, content);
     scheduleSingleSend(auth, singleSendId, sendAt);
 
@@ -131,7 +136,7 @@ function main(){
   * @return {Array<String>} categories
   */
 function retrieveCategories() {
-    const categories = retrieveIdsAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
+    const categories = retrieveValuesAsList('conf_Categories', 'Categories', MAX_CATEGORY_NUM);
     if (!categories.every(isAscii)) {
         throw 'Categories cannot include non-ascii characters.';
     }
@@ -208,7 +213,7 @@ function retrieveId(confName, label) {
 function validateIdAndReturnAsInt(idStr, label) {
     const reg = new RegExp('^\\d+$');
     if (!reg.test(idStr)) {
-        throw `${label} must be integer.`;
+        throw `${label} must be non-negative integer.`;
     }
     return parseInt(idStr, 10);
 }
@@ -220,8 +225,8 @@ function validateIdAndReturnAsInt(idStr, label) {
   * @return {Array<String>} sendTo.segmentIds
   */
 function retrieveSendTo() {
-    const listIds = retrieveIdsAsList('conf_ListIds', 'List IDs', MAX_LIST_ID_NUM);
-    const segmentIds = retrieveIdsAsList('conf_SegmentIds', 'Segment IDs', MAX_SEGMENT_ID_NUM);
+    const listIds = retrieveValuesAsList('conf_ListIds', 'List IDs', MAX_LIST_ID_NUM);
+    const segmentIds = retrieveValuesAsList('conf_SegmentIds', 'Segment IDs', MAX_SEGMENT_ID_NUM);
     if (listIds.length === 0 && segmentIds.length === 0) {
         throw 'No List IDs or Segment IDs.';
     }
@@ -235,7 +240,7 @@ function retrieveSendTo() {
   * @param {Number} maxNum 最大件数
   * @return {Array<String>} ids
   */
-function retrieveIdsAsList(confName, label, maxNum) {
+function retrieveValuesAsList(confName, label, maxNum) {
     const dataDef = configs.getObject(confName);
     if (dataDef === null) {
         return [];
@@ -324,6 +329,31 @@ function throwErrorIfDesignIdIsSet() {
     if (confValue !== '') {
         throw 'Design ID is set while "Configure the subject and content without using Design" is enabled.';
     }
+}
+
+/**
+  * デザインに設定されたカテゴリ一覧を取得する
+  * @param {AuthSettingWrapper} auth 認証設定
+  * @param {String} designId デザイン ID
+  * @return {Array<String>} categories
+  */
+function getCategoriesOfDesign(auth, designId) {
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .get(`https://api.sendgrid.com/v3/designs/${encodeURIComponent(designId)}`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    switch (status) {
+        case 200:
+            break;
+        case 403:
+            engine.log(responseStr);
+            throw `Failed to get design. Read Access to Design Library is required for your API Key. status: ${status}`;
+        default:
+            engine.log(responseStr);
+            throw `Failed to get design. status: ${status}`;
+    }
+    return JSON.parse(responseStr).categories;
 }
 
 /**
@@ -547,41 +577,6 @@ const createString = (length) => {
 }
 
 /**
- * カテゴリの個数が多すぎる（文字型データ項目）
- */
-test('Too many Categories - set by STRING', () => {
-    const categoriesStr = createListString(MAX_CATEGORY_NUM + 1);
-    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
-});
-
-/**
- * カテゴリに ASCII 文字以外を含む（文字型データ項目）
- */
-test('Categories include invalid characters - set by STRING', () => {
-    prepareConfigs('categoryあ', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    assertError(main, 'Categories cannot include non-ascii characters.');
-});
-
-/**
- * 長すぎるカテゴリを含む（文字型データ項目）
- */
-test('Category is loo long - set by STRING', () => {
-    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
-    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
-});
-
-/**
- * カテゴリの指定が重複（文字型データ項目）
- */
-test('Same category is set multiple times - set by STRING', () => {
-    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + 'item1';
-    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
-    assertError(main, 'The same category is set multiple times.');
-});
-
-/**
  * 送信者 ID が空
  */
 test('Sender ID is blank', () => {
@@ -594,7 +589,7 @@ test('Sender ID is blank', () => {
  */
 test('Sender ID is not integer', () => {
     prepareConfigs(null, 'invalidId', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
-    assertError(main, 'Sender ID must be integer.');
+    assertError(main, 'Sender ID must be non-negative integer.');
 });
 
 /**
@@ -610,7 +605,7 @@ test('Unsubscribe Group ID is blank - set by STRING', () => {
  */
 test('Unsubscribe Group ID is not integer - set by STRING', () => {
     prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', 'invalidId', 'design1');
-    assertError(main, 'Unsubscribe Group ID must be integer.');
+    assertError(main, 'Unsubscribe Group ID must be non-negative integer.');
 });
 
 /**
@@ -645,6 +640,48 @@ test('Too many Segment IDs - set by STRING', () => {
 test('Design ID is blank - set by STRING', () => {
     prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', null);
     assertError(main, 'Design ID is blank.');
+});
+
+/**
+ * デザインのカテゴリ一覧を取得する API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param designId
+ */
+const assertGetDesignRequest = ({url, method}, designId) => {
+    expect(url).toEqual(`https://api.sendgrid.com/v3/designs/${encodeURIComponent(designId)}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * デザインのカテゴリ一覧を取得する API リクエストでエラー
+ * 403 エラーの場合
+ */
+test('Fail to get design - 403 error', () => {
+    prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetDesignRequest(request, 'design1');
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get design. Read Access to Design Library is required for your API Key. status: 403');
+});
+
+/**
+ * デザインのカテゴリ一覧を取得する API リクエストでエラー
+ * 403 以外のエラーの場合
+ */
+test('Fail to get design - other than 403 error', () => {
+    prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetDesignRequest(request, 'design1');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get design. status: 400');
 });
 
 /**
@@ -685,13 +722,34 @@ const assertCreateRequest = ({url, method, contentType, body}, categories, sende
 };
 
 /**
+ * デザインのカテゴリ一覧を取得する API リクエストのレスポンスを準備
+ * @param id
+ * @param categories
+ */
+const prepareDesignResponse = (id, categories) => {
+    const designObj = {
+        id,
+        name: 'デザインの名前',
+        categories
+    };
+    return JSON.stringify(designObj);
+};
+
+/**
  * Single Send のドラフトを作成する API リクエストでエラー
  */
 test('Fail to create Single Send', () => {
     prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
 
+    let reqCount = 0;
+    const designCategories = ['category1', 'cateogry2'];
     httpClient.setRequestHandler((request) => {
-        assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+        if (reqCount === 0) {
+            assertGetDesignRequest(request, 'design1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design1', designCategories));
+        }
+        assertCreateRequest(request, designCategories, 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
@@ -723,9 +781,15 @@ test('Fail to schedule Single Send', () => {
     prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
 
     let reqCount = 0;
+    const designCategories = ['category1', 'cateogry2'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design1', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
         }
@@ -738,17 +802,22 @@ test('Fail to schedule Single Send', () => {
 
 /**
  * 成功
- * デザイン ID で指定
- * カテゴリ指定なし
+ * デザイン ID で指定 -> カテゴリはデザインからコピーされる
  * 送信日時指定なし
  */
 test('Succeed - Content set by design ID, no categories, no schduled datetime', () => {
     const {idDef, urlDef} = prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
 
     let reqCount = 0;
+    const designCategories = ['category1', 'cateogry2'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, [], 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design1', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 123, ['list1', 'list2'], ['segment1', 'segment2'], 456, 'design1', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
         }
@@ -796,20 +865,25 @@ test('Scheduled Datetime has passed', () => {
 
 /**
  * 成功
- * デザイン ID で指定
+ * デザイン ID で指定 -> カテゴリはデザインからコピーされる（config にカテゴリ指定があっても無視される）
  * リストのみ指定し、セグメント指定なし
- * カテゴリ指定あり
  * 送信日時指定あり
  */
-test('Succeed - Content set by design ID, no segments, with categories, with schduled datetime', () => {
-    const {idDef, urlDef} = prepareConfigs('category1\ncategory2\ncategory3', '1', 'list1', null, '4', 'design2');
+test('Succeed - Content set by design ID, no segments, with schduled datetime', () => {
+    const {idDef, urlDef} = prepareConfigs('dummy_category', '1', 'list1', null, '4', 'design2');
     const timestamp = new com.questetra.bpms.util.AddableTimestamp().addMinutes(3);
     setSendAt(timestamp);
 
     let reqCount = 0;
+    const designCategories = []; // デザインにカテゴリ指定がない場合
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, ['category1', 'category2', 'category3'], 1, ['list1'], [], 4, 'design2', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design2');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design2', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 1, ['list1'], [], 4, 'design2', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend2"}');
         }
@@ -826,21 +900,26 @@ test('Succeed - Content set by design ID, no segments, with categories, with sch
 
 /**
  * 成功
- * デザイン ID で指定
+ * デザイン ID で指定 -> カテゴリはデザインからコピーされる
  * セグメントのみ指定し、リスト指定なし
- * カテゴリ指定あり
  * 送信日時指定なし
  * データ項目に保存しない
  */
-test('Succeed - Content set by design ID, no lists, with categories, no schduled datetime, not save', () => {
-    const {idDef, urlDef} = prepareConfigs('category1', '1000', null, 'segment1', '4000', 'design3');
+test('Succeed - Content set by design ID, no lists, no schduled datetime, not save', () => {
+    const {idDef, urlDef} = prepareConfigs('dummy_category', '1000', null, 'segment1', '4000', 'design3');
     configs.put('conf_SingleSendId', '');
     configs.put('conf_SingleSendUrl', '');
 
     let reqCount = 0;
+    const designCategories = ['category1', 'cateogry2', 'category3'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, ['category1'], 1000, [], ['segment1'], 4000, 'design3', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design3');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design3', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 1000, [], ['segment1'], 4000, 'design3', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend3"}');
         }
@@ -853,35 +932,6 @@ test('Succeed - Content set by design ID, no lists, with categories, no schduled
     // データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
     expect(engine.findData(urlDef)).toEqual('事前文字列');
-});
-
-/**
- * 成功
- * デザイン ID で指定
- * カテゴリ、リスト ID、セグメント ID を最大個数指定し、API リクエストの確認を省略
- */
-test('Succeed - Maximum number of categories, listIds and segmentIds', () => {
-    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH);
-    const listIdsStr = createListString(MAX_LIST_ID_NUM);
-    const segmentIdsStr = createListString(MAX_SEGMENT_ID_NUM);
-    const {idDef, urlDef} = prepareConfigs(categoriesStr, '1', listIdsStr, segmentIdsStr, '4', 'design2');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            // API リクエストの確認を省略
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
-        }
-        assertScheduleRequest(request, 'singleSend1', 'now');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
-    });
-
-    main();
-
-    // データ項目の値をチェック
-    expect(engine.findData(idDef)).toEqual('singleSend1');
-    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend1/stats');
 });
 
 /**
@@ -926,11 +976,83 @@ test('HTML Content is Blank', () => {
 });
 
 /**
+ * カテゴリの個数が多すぎる（文字型データ項目）
+ */
+test('Too many Categories - set by STRING', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM + 1);
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
+    assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
+});
+
+/**
+ * カテゴリに ASCII 文字以外を含む（文字型データ項目）
+ */
+test('Categories include invalid characters - set by STRING', () => {
+    prepareConfigs('categoryあ', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
+    assertError(main, 'Categories cannot include non-ascii characters.');
+});
+
+/**
+ * 長すぎるカテゴリを含む（文字型データ項目）
+ */
+test('Category is loo long - set by STRING', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH + 1);
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
+    assertError(main, `Each category must be within ${MAX_CATEGORY_LENGTH} characters.`);
+});
+
+/**
+ * カテゴリの指定が重複（文字型データ項目）
+ */
+test('Same category is set multiple times - set by STRING', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + 'item1';
+    prepareConfigs(categoriesStr, '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
+    assertError(main, 'The same category is set multiple times.');
+});
+
+/**
  * 成功
  * 件名、本文を直接指定
+ * カテゴリ、リスト ID、セグメント ID を最大個数指定。API リクエストの確認は省略
+ */
+test('Succeed - Maximum number of categories, listIds and segmentIds', () => {
+    const categoriesStr = createListString(MAX_CATEGORY_NUM - 1) + createString(MAX_CATEGORY_LENGTH);
+    const listIdsStr = createListString(MAX_LIST_ID_NUM);
+    const segmentIdsStr = createListString(MAX_SEGMENT_ID_NUM);
+    const {idDef, urlDef} = prepareConfigs(categoriesStr, '1', listIdsStr, segmentIdsStr, '4', 'summyDesignId');
+    const subject = 'メールの件名';
+    const htmlContent = 'HTML メールの本文\nこれは HTML メールの本文です';
+    setUniqueContent(subject, htmlContent, '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            // API リクエストの確認を省略
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
+        }
+        assertScheduleRequest(request, 'singleSend1', 'now');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(idDef)).toEqual('singleSend1');
+    expect(engine.findData(urlDef)).toEqual('https://mc.sendgrid.com/single-sends/singleSend1/stats');
+});
+
+/**
+ * 成功
+ * 件名、本文を直接指定
+ * カテゴリ指定なし
  * プレーンテキストメールの本文は指定なし
  */
-test('Succeed - Has unique content, without plain text content', () => {
+test('Succeed - Has unique content, no categories, without plain text content', () => {
     const {idDef, urlDef} = prepareConfigs(null, '1', 'list1', null, '4', 'dummyDesignId');
     const subject = 'メールの件名';
     const htmlContent = 'HTML メールの本文\nこれは HTML メールの本文です';
@@ -957,10 +1079,11 @@ test('Succeed - Has unique content, without plain text content', () => {
 /**
  * 成功
  * 件名、本文を直接指定
+ * カテゴリ指定あり
  * プレーンテキストメールの本文の指定あり
  */
-test('Succeed - Has unique content, with plain text content', () => {
-    const {idDef, urlDef} = prepareConfigs(null, '1', 'list1', null, '4', 'dummyDesignId');
+test('Succeed - Has unique content, with categories, with plain text content', () => {
+    const {idDef, urlDef} = prepareConfigs('category1\ncategory2', '1', 'list1', null, '4', 'dummyDesignId');
     const subject = 'メールの件名';
     const htmlContent = 'HTML メールの 本文\nこれは HTML メールの本文です';
     const plainContent = 'プレーンテキストメールの本文\nこれはプレーンテキストメールの本文です';
@@ -969,7 +1092,7 @@ test('Succeed - Has unique content, with plain text content', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, [], 1, ['list1'], [], 4, undefined, subject, htmlContent, plainContent);
+            assertCreateRequest(request, ['category1', 'category2'], 1, ['list1'], [], 4, undefined, subject, htmlContent, plainContent);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend5"}');
         }
@@ -1016,16 +1139,22 @@ test('Design ID is set as fixed value while hasUniqueContent is enabled', () => 
 
 /**
  * 成功
- * 配信停止グループ ID、デザイン ID を固定値で指定
+ * 配信停止グループ ID、デザイン ID を固定値で指定 -> カテゴリはデザインからコピーされる
  */
 test('Succeed - Unsubscribe Group ID and Design ID are set as fixed value', () => {
     const {idDef, urlDef} = prepareConfigs(null, '123', 'list1', null, 'dummyId', 'dummyId');
     updateConfigsWithFixedValues('456', 'design1');
 
     let reqCount = 0;
+    const designCategories = ['category1'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, [], 123, ['list1'], [], 456, 'design1', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design1', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 123, ['list1'], [], 456, 'design1', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend11"}');
         }
@@ -1059,7 +1188,8 @@ const prepareSelects = (prefix, num) => {
  * カテゴリの個数が多すぎる（選択型データ項目）
  */
 test('Too many Categories - set by SELECT', () => {
-    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
     setDataItem('Categories', 21, 'SELECT_CHECKBOX', prepareSelects('category_', MAX_CATEGORY_NUM + 1));
     assertError(main, `The maximum number of Categories is ${MAX_CATEGORY_NUM}.`);
 });
@@ -1068,7 +1198,8 @@ test('Too many Categories - set by SELECT', () => {
  * カテゴリに ASCII 文字以外を含む（選択型データ項目）
  */
 test('Categories include invalid characters - set by SELECT', () => {
-    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
     const categories = prepareSelects('category_', 3);
     const invalidCategory = 'catえgory';
     categories.set(1, engine.createItem(invalidCategory, `${invalidCategory} を選択`));
@@ -1080,7 +1211,8 @@ test('Categories include invalid characters - set by SELECT', () => {
  * 長すぎるカテゴリを含む（選択型データ項目）
  */
 test('Category is loo long - set by SELECT', () => {
-    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'design1');
+    prepareConfigs('dummy', '123', 'list1\nlist2', 'segment1\nsegment2', '456', 'dummyDesignId');
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
     const categories = prepareSelects('category_', 3);
     const longCategory = createString(MAX_CATEGORY_LENGTH + 1);
     categories.set(1, engine.createItem(longCategory, `${longCategory} を選択`));
@@ -1103,7 +1235,7 @@ test('Unsubscribe Group ID is not selected - set by SELECT', () => {
 test('Unsubscribe Group ID is not integer - set by SELECT', () => {
     prepareConfigs(null, '123', 'list1\nlist2', 'segment1\nsegment2', '123', 'design1');
     setDataItem('UnsubscribeGroupId', 23, 'SELECT_SINGLE', prepareSelects('invalidId', 1));
-    assertError(main, 'Unsubscribe Group ID must be integer.');
+    assertError(main, 'Unsubscribe Group ID must be non-negative integer.');
 });
 
 /**
@@ -1156,19 +1288,18 @@ test('Design ID is set by SELECT while hasUniqueContent is enabled', () => {
 /**
  * 成功
  * データ項目で指定できるものは、すべて選択型データ項目で指定
- * デザイン ID で指定
- * カテゴリ指定なし
+ * デザイン ID で指定 -> カテゴリはデザインからコピーされる
  * リスト ID のみ指定
  * 送信日時指定なし
  */
-test('Succeed - Configured by SELECT, content set by design ID, no categories, no schduled datetime', () => {
+test('Succeed - Configured by SELECT, content set by design ID, no schduled datetime', () => {
     // 認証設定を準備
     const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
     configs.putObject('conf_Auth', auth);
 
     const idDef = setDataItem('SingleSendId', 11, 'STRING_TEXTFIELD', '事前文字列');
     const urlDef = setDataItem('SingleSendUrl', 12, 'STRING_TEXTFIELD', '事前文字列');
-    setDataItem('Categories', 21, 'SELECT_CHECKBOX', new java.util.ArrayList());
+    setDataItem('Categories', 21, 'SELECT_CHECKBOX', prepareSelects('category', 3)); // カテゴリ指定は無視される
     configs.put('conf_SenderId', '123');
     setDataItem('ListIds', 22, 'SELECT_CHECKBOX', prepareSelects('list', 2));
     setDataItem('SegmentIds', 23, 'SELECT_CHECKBOX', new java.util.ArrayList());
@@ -1176,9 +1307,15 @@ test('Succeed - Configured by SELECT, content set by design ID, no categories, n
     setDataItem('DesignId', 25, 'SELECT_SINGLE', prepareSelects('design', 1));
 
     let reqCount = 0;
+    const designCategories = ['category1', 'cateogry2', 'category3'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertCreateRequest(request, [], 123, ['list1', 'list2'], [], 1, 'design1', undefined, undefined, undefined);
+            assertGetDesignRequest(request, 'design1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDesignResponse('design1', designCategories));
+        }
+        if (reqCount === 1) {
+            assertCreateRequest(request, designCategories, 123, ['list1', 'list2'], [], 1, 'design1', undefined, undefined, undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend1"}');
         }
@@ -1196,12 +1333,12 @@ test('Succeed - Configured by SELECT, content set by design ID, no categories, n
 /**
  * 成功
  * データ項目で指定できるものは、すべて選択型データ項目で指定
- * デザイン ID で指定
+ * 件名、本文は直接指定
  * カテゴリ指定あり
  * セグメント ID のみ指定
  * 送信日時指定なし
  */
-test('Succeed - Configured by SELECT, content set by design ID, with categories, no schduled datetime', () => {
+test('Succeed - Configured by SELECT, has unique content, with categories, no schduled datetime', () => {
     // 認証設定を準備
     const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
     configs.putObject('conf_Auth', auth);
@@ -1214,12 +1351,13 @@ test('Succeed - Configured by SELECT, content set by design ID, with categories,
     setDataItem('SegmentIds', 23, 'SELECT_CHECKBOX', prepareSelects('segment', 2));
     setDataItem('UnsubscribeGroupId', 24, 'SELECT_SINGLE', prepareSelects('', 1)); // 整数にするため、prefix を空に
     setDataItem('DesignId', 25, 'SELECT_SINGLE', prepareSelects('design', 1));
+    setUniqueContent('メールの件名', 'HTML メールの本文', '');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertCreateRequest(request, ['category1', 'category2', 'category3'], 123, [], ['segment1', 'segment2'],
-                                1, 'design1', undefined, undefined, undefined);
+                                1, undefined, 'メールの件名', 'HTML メールの本文', undefined);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', '{"id": "singleSend2"}');
         }
