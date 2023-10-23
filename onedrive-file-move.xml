@@ -1,0 +1,485 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <last-modified>2023-10-23</last-modified>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Microsoft 365 OneDrive for Business: Move File / Folder</label>
+    <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダ移動</label>
+    <summary>This item moves the specified file/folder to the specified folder on OneDrive. The file/folder cannot be moved between drives.</summary>
+    <summary locale="ja">この工程は、OneDrive 上のファイル / フォルダを、指定フォルダに移動します。ドライブをまたぐ移動はできません。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-onedrive-file-move/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-onedrive-file-move/</help-page-url>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_SourceUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C2: File / Folder URL to move</label>
+            <label locale="ja">C2: 移動させるファイル / フォルダの URL</label>
+        </config>
+        <config name="conf_DestUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C3: Folder URL to move to</label>
+            <label locale="ja">C3: 移動先フォルダの URL</label>
+        </config>
+        <config name="conf_NewUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: Data item to save new file / folder URL after being moved</label>
+            <label locale="ja">C4: 移動後のファイル / フォルダの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+// グローバル変数
+const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
+
+function main() {
+    //// == Config Retrieving / 工程コンフィグの参照 ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const sourceUrl = retrieveSourceUrl();
+    const destUrl = retrieveDestUrl();
+    const newUrlDef = configs.getObject('conf_NewUrl');
+
+    //// == Calculating / 演算 ==
+    // getting itemInfo for Requesting Copy and Updating Data
+    const sourceInfo = getItemInfoByUrl(oauth2, sourceUrl);
+    const destInfo = getItemInfoByUrl(oauth2, destUrl);
+    // sending Move Request
+    const newUrl = moveDriveItem(oauth2, sourceInfo, destInfo);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    if (newUrlDef !== null) {
+        engine.setData(newUrlDef, newUrl);
+    }
+}
+
+/**
+  * config から移動するアイテムの URL を読み出す
+  * 文字型データ項目のみ
+  * 空の場合はエラー
+  * @return {String} sourceUrl
+  */
+function retrieveSourceUrl() {
+    const sourceUrl = engine.findData(configs.getObject('conf_SourceUrl'));
+    if (sourceUrl === null) {
+        throw 'Source file / folder URL is blank.';
+    }
+    return sourceUrl;
+}
+
+/**
+  * config から移動先フォルダの URL を読み出す
+  * 文字型データ項目、または固定値
+  * 空の場合はエラー
+  * @return {String} destUrl
+  */
+function retrieveDestUrl() {
+    const destUrlDef = configs.getObject('conf_DestUrl');
+    let destUrl = configs.get('conf_DestUrl');
+    if (destUrlDef !== null) {
+        destUrl = engine.findData(destUrlDef);
+    }
+    if (destUrl === '' || destUrl === null) {
+        throw 'Destination folder URL is blank.';
+    }
+    return destUrl;
+}
+
+/**
+  * ドライブアイテムの URL からアイテム情報（ドライブ ID とアイテム ID）を取得し、オブジェクトで返す
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {String} driveItemUrl  ドライブアイテム（ファイル、フォルダ）のURL
+  * @return {Object} itemInfo  ドライブアイテム情報 {driveId, id}
+  */
+function getItemInfoByUrl(oauth2, driveItemUrl) {
+    const {
+        id,
+        parentReference: {
+            driveId
+        }
+    } = getObjBySharingUrl(oauth2, driveItemUrl);
+    return {driveId, id};
+}
+
+/**
+  * OneDrive のドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSON オブジェクトを返す
+  * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+  * @param {String} oauth2  OAuth2 認証設定
+  * @param {String} sharingUrl  ドライブアイテムの共有URL
+  * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
+  */
+function getObjBySharingUrl(oauth2, sharingUrl) {
+    const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('select', 'id,parentReference/driveId')
+        .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get drive item. status: ${status}`;
+    }
+    return JSON.parse(responseStr);
+}
+
+/**
+  * 共有 URL を unpadded base64url 形式にエンコードする
+  * @param {String} sharingUrl  共有URL
+  * @return {String} encodedSharingUrl  エンコードされた共有URL
+  */
+function encodeSharingUrl(sharingUrl) {
+    let encodedSharingUrl = base64.encodeToUrlSafeString(sharingUrl);
+    while (encodedSharingUrl.slice(-1) === '=') {
+        encodedSharingUrl = encodedSharingUrl.slice(0, -1);
+    }
+    return `u!${encodedSharingUrl}`;
+}
+
+/**
+  * ファイル / フォルダを移動する
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {Object} sourceInfo  移動するアイテム情報 {driveId, id}
+  * @param {Object} destInfo  移動先フォルダ情報 {driveId, id}
+  * @return {String} newUrl  移動したアイテムの新しい URL
+  */
+function moveDriveItem(oauth2, sourceInfo, destInfo) {
+    if (sourceInfo.driveId !== destInfo.driveId) {
+        throw 'Cannot move between drives. Copy the file/folder instead.';
+    }
+    const apiUri = `${GRAPH_URI}drives/${sourceInfo.driveId}/items/${sourceInfo.id}`;
+    const requestBodyObj = {
+        parentReference: {
+            id: destInfo.id
+        }
+    };
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .body(JSON.stringify(requestBodyObj), 'application/json')
+        .patch(apiUri);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to move. status: ${status}`;
+    }
+    return JSON.parse(responseStr).webUrl;
+}
+
+    ]]></script>
+
+
+    <icon>
+    iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADXUlEQVRYR8WXW0hUURSG/33GbC5e
+    8pJJF6nM6YKUmsFAIAZSONOM4FtqL/mQVg9GhXR5iCIiEAqF9KEMsvKpi06OZoRPGaRmVoSGU4om
+    aqaMzeXYOLPjTJ7R41w8k8bZLwNn1r/Wt9dee+29CSQeRHR8vVEpd7vzGTAHKKXpADYDiJnTTwEY
+    IIR0u+FuYxnmCYx6uxjfSwKotE2JbuoqB0EJALkYpwBYUNQwRHbDZtKNBtMEBVBqG0ooSAUAlcjA
+    i81sBPSs3ZRXE0gfEECuM94mlJb+Y2CBjBJSzTbpT/jz5RdAoTU+BGjBSgSf90EeOUz6wsU+fQBW
+    cuaLg/nLhABgbs2rV3bmQm8EtHRhTXgBPNUOV/8yCk4st42BbBu/O7wAitzGmyAoE+tlWXYUtxzN
+    htOcj78AeqNS4aI/Q9jneH5Ng0x1DCLkMlhZFz59m0ZZ9UfPr4jBOmQkjmtWHgC5rqGIUFIXTHih
+    QI3UzVHoH7HhsCYROzZF+JgPjNqxq/iViPgAJfQo25T3wAOg1BnvUkqP+VNGKsLQXpmF5PXCXmR1
+    zKJvyAqL3Yn4qHCoN0ZCHs6gvm0YxRXdS0IQQmrtTfpiD4BC2/gOANfffUbjVQ1yMtYKvnNZGJlg
+    kZESDeVqGSy2WbzoHPdkpdtswcnKniUBAHQ7TIYMHmBywcEiEPfey0FSgsL7zWJzosc8jazdcQI7
+    l5tiwvIbUaowTE47UfXMjMqnX4OBTDlMhlgegC62TNmgwp0z6UhLjsaqMMbzN5f25o4x5O5bhwhF
+    WNBZ2mdcyDn3Gu/NloB2DpOBBAToqs7GzqRIr/j7BIu+4V9I2xqN2KhwMSlGbcsgTlV9EAXgswSW
+    Bp135pQCrV3jOJSZICowb2RjXWjtHEfh9U5/OsES+BThj8daqOQyb+q/DFuRkbImJADOmKuNg+Xt
+    ePOZm6NgzBehv21YfzETek0iGIZgxun2OMjeEx8yACfIv/wWLR1jAq1gGwZqROePqLE/NRZjUzOo
+    ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
+    FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
+    TkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param sourceUrl
+ * @param destUrl
+ * @param isFixed 移動先フォルダ URL を固定値で設定するかどうか
+ * @return newUrlDef
+ */
+const prepareConfigs = (sourceUrl, destUrl, isFixed) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+
+    // 移動させるファイル / フォルダの URL を保存する文字型データ項目（単一行）を準備
+    const sourceUrlDef = engine.createDataDefinition('移動させるファイル / フォルダの URL', 1, 'q_source_url', 'STRING_TEXTFIELD');
+    engine.setData(sourceUrlDef, sourceUrl);
+    configs.putObject('conf_SourceUrl', sourceUrlDef);
+
+    if (isFixed) { // 移動先フォルダの URL を固定値で指定
+        configs.put('conf_DestUrl', destUrl);
+    } else { // 移動先フォルダの URL  を保存する文字型データ項目（単一行）を準備
+        const destUrlDef = engine.createDataDefinition('移動先フォルダの URL', 2, 'q_dest_url', 'STRING_TEXTFIELD');
+        engine.setData(destUrlDef, destUrl);
+        configs.putObject('conf_DestUrl', destUrlDef);
+    }
+    
+
+    // 移動後のファイル / フォルダの URL を保存する文字型データ項目（単一行）を準備
+    const newUrlDef = engine.createDataDefinition('移動後のファイル / フォルダの URL', 3, 'q_data_for_url', 'STRING_TEXTFIELD');
+    engine.setData(newUrlDef, '事前文字列');
+    configs.putObject('conf_NewUrl', newUrlDef);
+
+    return newUrlDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * ファイル / フォルダ URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('Source file / folder URL is blank', () => {
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(null, destUrl, false);
+    assertError(main, 'Source file / folder URL is blank.');
+});
+
+/**
+ * ファイル / フォルダ URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('Destination folder URL is blank - Set by data item', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(sourceUrl, null, false);
+    assertError(main, 'Destination folder URL is blank.');
+});
+
+/**
+ * ファイル / フォルダ URL を固定値で指定し、値が空でエラー
+ */
+test('Destination folder URL is blank - Set as fixed value', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(sourceUrl, '', true);
+    assertError(main, 'Destination folder URL is blank.');
+});
+
+/**
+ * GET リクエストのテスト - ドライブアイテム取得
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param sharingUrl
+ */
+const assertGetRequest = ({ url, method }, sharingUrl) => {
+    const encodedUrl = encodeSharingUrl(sharingUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/driveItem`
+        + `?select=${encodeURIComponent('id,parentReference/driveId')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * GET リクエストでエラー - コピー元ファイル / フォルダの URL
+ */
+test('GET Failed - Source Url', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(sourceUrl, destUrl, false);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, sourceUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get drive item. status: 400');
+});
+
+/**
+ * GET リクエスト（ドライブアイテム取得）のレスポンスを準備
+ * @param id
+ * @param driveId
+ * @return {String} responseBody
+ */
+const prepareDriveItemResponse = (id, driveId) => {
+    return JSON.stringify(
+        {
+            id,
+            parentReference: { driveId }
+        }
+    );
+};
+
+/**
+ * GET リクエストでエラー - 移動先フォルダの URL
+ */
+test('GET Failed - Destination Url', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(sourceUrl, destUrl, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, sourceUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FileId001', 'DriveId001'));
+        }
+        assertGetRequest(request, destUrl);
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get drive item. status: 403');
+});
+
+/**
+ * 異なるドライブ間の移動はできない
+ */
+test('Cannot move between drives', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(sourceUrl, destUrl, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, sourceUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FileId001', 'DriveId001'));
+        }
+        assertGetRequest(request, destUrl);
+        return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FolderId001', 'DriveId002'));
+    });
+
+    assertError(main, 'Cannot move between drives. Copy the file/folder instead.');
+});
+
+/**
+ * PATCH リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param srcDriveId
+ * @param srcId
+ * @param destId
+ */
+const assertPatchRequest = ({ url, method, contentType, body }, srcDriveId, srcId, destId) => {
+    expect(url).toEqual(`${GRAPH_URI}drives/${srcDriveId}/items/${srcId}`);
+    expect(method).toEqual('PATCH');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.parentReference.id).toEqual(destId);
+};
+
+/**
+ * PATCH リクエストでエラー
+ */
+test('PATCH Failed', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(sourceUrl, destUrl, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, sourceUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FileId001', 'DriveId002'));
+        }
+        if (reqCount === 1) {
+            assertGetRequest(request, destUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FolderId001', 'DriveId002'));
+        }
+        assertPatchRequest(request, 'DriveId002', 'FileId001', 'FolderId001');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to move. status: 400');
+});
+
+/**
+ * 成功 - 移動先フォルダの URL を文字型データ項目で指定
+ */
+test('Succeed - Destination URL is set by data item', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    const newUrlDef = prepareConfigs(sourceUrl, destUrl, false);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, sourceUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FileId001', 'DriveId001'));
+        }
+        if (reqCount === 1) {
+            assertGetRequest(request, destUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FolderId001', 'DriveId001'));
+        }
+        const responseObj = { webUrl: 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/test1.txt' };
+        assertPatchRequest(request, 'DriveId001', 'FileId001', 'FolderId001');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(main()).toEqual(undefined);
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(newUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/test1.txt');
+});
+
+/**
+ * 成功 - 移動先フォルダの URL を固定値で指定
+ */
+test('Succeed - Destination URL is set as fixed value', () => {
+    const sourceUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test2.txt';
+    const destUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder2';
+    const newUrlDef = prepareConfigs(sourceUrl, destUrl, true);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, sourceUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FileId010', 'DriveId002'));
+        }
+        if (reqCount === 1) {
+            assertGetRequest(request, destUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse('FolderId100', 'DriveId002'));
+        }
+        const responseObj = { webUrl: 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder2/test2.txt' };
+        assertPatchRequest(request, 'DriveId002', 'FileId010', 'FolderId100');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(main()).toEqual(undefined);
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(newUrlDef)).toEqual('https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder2/test2.txt');
+});
+
+    ]]></test>
+
+</service-task-definition>
