@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <addon-type>START_EVENT</addon-type>
+    <!--
+    <last-modified>2023-10-11</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <label>Start: Microsoft 365 OneDrive for Business: File Uploaded</label>
+    <label locale="ja">開始: Microsoft 365 OneDrive for Business: ファイルアップロード時</label>
+    <summary>This item starts a process when a file has been uploaded on the specified OneDrive folder.</summary>
+    <summary locale="ja">このアイテムは、OneDrive の指定フォルダにファイルがアップロードされると、プロセスを開始します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_FolderUrl" form-type="TEXTFIELD">
+            <label>C2: Folder URL to monitor (Root Folder if blank)</label>
+            <label locale="ja">C2: 監視するフォルダの URL (空白の場合、ルートフォルダ)</label>
+        </config>
+        <config name="conf_urlData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Data item to save File URL</label>
+            <label locale="ja">C3: ファイル URL を保存するデータ項目</label>
+        </config>
+        <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Data item to save File Uploaded Datetime</label>
+            <label locale="ja">C4: ファイルがアップロードされた日時を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/start-event-onedrive-file-uploaded/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/start-event-onedrive-file-uploaded/</help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
+const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
+
+/**
+ * configs から必要な情報を取り出す
+ * @returns {Object} setting 設定
+ * @returns {string} setting.folderInfo 検索対象のフォルダの情報 {driveId, folderId}
+ * @returns {string} setting.oauth2 OAuth2 設定名
+ */
+const prepare = () => {
+    const oauth2 = configs.getObject('conf_OAuth2');
+    let folderUrl = configs.get('conf_FolderUrl');
+    const folderInfo = getFolderInfoByUrl(oauth2, folderUrl);
+
+    return {
+        oauth2,
+        folderInfo
+    };
+};
+
+/**
+  * フォルダの URL からフォルダ情報（ドライブ ID とフォルダ ID）を取得し、
+  * オブジェクトで返す（URL が空の場合はドライブ ID を me/drive、フォルダ ID を root にする）
+  * @param {String} oauth2  OAuth2 設定情報
+  * @param {String} folderUrl  フォルダのURL
+  * @return {Object} folderInfo  フォルダ情報
+  * @return {String} folderInfo.driveId  ドライブ ID
+  * @return {String} folderInfo.folderId  フォルダ ID
+  */
+function getFolderInfoByUrl(oauth2, folderUrl) {
+    if (folderUrl === '' || folderUrl === null) {
+        return {
+            driveId: 'me/drive',
+            folderId: 'root'
+        };
+    }
+    const driveItem = getObjBySharingUrl(folderUrl, oauth2);
+    if (driveItem.folder === undefined) {
+        throw 'The specified URL is not a folder.';
+    }
+    return {
+        driveId: `drives/${driveItem.parentReference.driveId}`,
+        folderId: driveItem.id
+    };
+}
+
+/**
+  * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
+  * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+  * @param {String} sharingUrl  ドライブアイテムの共有URL
+  * @param {String} oauth2  OAuth2 認証設定
+  * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
+  */
+function getObjBySharingUrl(sharingUrl, oauth2) {
+    if (sharingUrl === "" || sharingUrl === null) {
+        throw `Sharing URL is empty.`;
+    }
+
+    // encoding sharing URL
+    const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+
+    // API Request
+    const response = httpClient.begin() // HttpRequestWrapper
+        .authSetting(oauth2) // Request HEADER (OAuth2 Token)
+        .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`); // HttpResponseWrapper
+    const httpStatus = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (httpStatus >= 300) {
+        const accessLog = `---GET request--- ${httpStatus}\n${responseStr}\n`;
+        engine.log(accessLog);
+        throw `Failed to get drive item. status: ${httpStatus}`;
+    }
+    return JSON.parse(response.getResponseAsString());
+}
+
+/**
+  * 共有URLをunpadded base64url 形式にエンコードする
+  * @param {String} sharingUrl  共有URL
+  * @return {String} encodedSharingUrl  エンコードされた共有URL
+  */
+function encodeSharingUrl(sharingUrl) {
+    let encodedSharingUrl = base64.encodeToUrlSafeString(sharingUrl);
+    while (encodedSharingUrl.slice(-1) === '=') {
+        encodedSharingUrl = encodedSharingUrl.slice(0, -1);
+    }
+    return `u!${encodedSharingUrl}`;
+}
+
+/**
+ * ファイルの検索
+ * @param {number} limit ファイル数の上限
+ * @param {timestamp} timestampLowerLimit timestamp の下限
+ * @returns {Array} files ファイル一覧
+ * @returns {string} files[].id ファイル ID
+ * @returns {timestamp} files[].timestamp ファイルアップロード時刻
+ */
+const list = (limit, timestampLowerLimit) => {
+    const {
+        oauth2,
+        folderInfo
+    } = prepare();
+
+    const driveItems = getChildren(oauth2, folderInfo);
+    let files = driveItems.filter(driveItem => driveItem.file !== undefined) // ファイルのみに絞り込み
+        .map(formatFile) // 必要な情報のみ抜き出し、整形
+        .filter(file => file.timestamp.before(timestampLowerLimit)) // timestampLowerLimit 以降のデータのみに絞り込み
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()); // 新しい順に並べ替え
+    // 先頭から limit で切る
+    files = files.slice(0, limit);
+    logFiles(files);
+    return files;
+};
+
+/**
+ * 指定フォルダ内のドライブアイテムの一覧を取得する
+ * フォルダ内のドライブアイテム (ファイル＋フォルダ） 数が 1000 を超える場合、エラー
+ * @param {AuthSettingWrapper} oauth2 OAuth2 設定
+ * @param {Object} folderInfo 検索対象のフォルダ情報 {driveId, folderId}
+ * @returns {Array} driveItems ドライブアイテム一覧
+ * @returns {string} driveItems[].id ドライブアイテム ID
+ * @returns {timestamp} driveItems[].timestamp ファイルアップロード時刻
+ */
+const getChildren = (oauth2, folderInfo) => {
+    const url = `${GRAPH_URI}${folderInfo.driveId}/items/${folderInfo.folderId}/children`;
+    const LIMIT = 1000; // API の制限は明記されていない。1000 件以上のファイル/フォルダがある場合はエラーにする
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('$top', `${LIMIT}`)
+        .queryParam('$select', 'id,createdDateTime,file,webUrl')
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get children of the folder. status: ${status}`;
+    }
+    const json = JSON.parse(responseStr);
+
+    // 次のページを取得するリンクがある場合は、フォルダにまだファイル/フォルダがあるとみなして、エラーにする
+    const nextLink = json['@odata.nextLink'];
+    if (nextLink !== undefined) {
+        throw `More than ${LIMIT} items are in the specified folder.`;
+    }
+
+    return json.value;
+}
+
+/**
+ * OneDrive のファイルデータから、必要な部分のみ抜き出す
+ * @param file ファイルデータ
+ * @returns {Object} file ファイル
+ * @returns {string} file.id ファイル ID
+ * @returns {timestamp} file.timestamp ファイルアップロード時刻
+ */
+const formatFile = (file) => {
+    const {
+        id,
+        createdDateTime,
+        webUrl
+    } = file;
+    return {
+        id,
+        timestamp: dateFormatter.parse(DATETIME_FORMAT, createdDateTime),
+        url: webUrl
+    };
+};
+
+/**
+ * ファイルのログ出力
+ * @param {Array} files ファイル一覧
+ */
+const logFiles = (files) => {
+    if (files.length === 0) {
+        engine.log("no files");
+        return;
+    }
+    const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(DATETIME_FORMAT, value) : value;
+    files.forEach(file => engine.log(JSON.stringify(file, replacer)));
+};
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADXUlEQVRYR8WXW0hUURSG/33GbC5e
+        8pJJF6nM6YKUmsFAIAZSONOM4FtqL/mQVg9GhXR5iCIiEAqF9KEMsvKpi06OZoRPGaRmVoSGU4om
+        aqaMzeXYOLPjTJ7R41w8k8bZLwNn1r/Wt9dee+29CSQeRHR8vVEpd7vzGTAHKKXpADYDiJnTTwEY
+        IIR0u+FuYxnmCYx6uxjfSwKotE2JbuoqB0EJALkYpwBYUNQwRHbDZtKNBtMEBVBqG0ooSAUAlcjA
+        i81sBPSs3ZRXE0gfEECuM94mlJb+Y2CBjBJSzTbpT/jz5RdAoTU+BGjBSgSf90EeOUz6wsU+fQBW
+        cuaLg/nLhABgbs2rV3bmQm8EtHRhTXgBPNUOV/8yCk4st42BbBu/O7wAitzGmyAoE+tlWXYUtxzN
+        htOcj78AeqNS4aI/Q9jneH5Ng0x1DCLkMlhZFz59m0ZZ9UfPr4jBOmQkjmtWHgC5rqGIUFIXTHih
+        QI3UzVHoH7HhsCYROzZF+JgPjNqxq/iViPgAJfQo25T3wAOg1BnvUkqP+VNGKsLQXpmF5PXCXmR1
+        zKJvyAqL3Yn4qHCoN0ZCHs6gvm0YxRXdS0IQQmrtTfpiD4BC2/gOANfffUbjVQ1yMtYKvnNZGJlg
+        kZESDeVqGSy2WbzoHPdkpdtswcnKniUBAHQ7TIYMHmBywcEiEPfey0FSgsL7zWJzosc8jazdcQI7
+        l5tiwvIbUaowTE47UfXMjMqnX4OBTDlMhlgegC62TNmgwp0z6UhLjsaqMMbzN5f25o4x5O5bhwhF
+        WNBZ2mdcyDn3Gu/NloB2DpOBBAToqs7GzqRIr/j7BIu+4V9I2xqN2KhwMSlGbcsgTlV9EAXgswSW
+        Bp135pQCrV3jOJSZICowb2RjXWjtHEfh9U5/OsES+BThj8daqOQyb+q/DFuRkbImJADOmKuNg+Xt
+        ePOZm6NgzBehv21YfzETek0iGIZgxun2OMjeEx8yACfIv/wWLR1jAq1gGwZqROePqLE/NRZjUzOo
+        ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
+        FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
+        TkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+
+
+]]></test>
+
+</service-task-definition>
