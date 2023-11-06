@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <!--
-    <last-modified>2023-10-11</last-modified>
-    -->
+    <last-modified>2023-11-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Start: Microsoft 365 OneDrive for Business: File Uploaded</label>
@@ -21,11 +19,11 @@
             <label locale="ja">C2: 監視するフォルダの URL (空白の場合、ルートフォルダ)</label>
         </config>
         <config name="conf_urlData" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C3: Data item to save File URL</label>
+            <label>C3: Data item to save file URL</label>
             <label locale="ja">C3: ファイル URL を保存するデータ項目</label>
         </config>
         <config name="conf_timestampData" form-type="SELECT" select-data-type="DATETIME">
-            <label>C4: Data item to save File Uploaded Datetime</label>
+            <label>C4: Data item to save file uploaded datetime</label>
             <label locale="ja">C4: ファイルがアップロードされた日時を保存するデータ項目</label>
         </config>
     </configs>
@@ -42,6 +40,7 @@
 
 const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
 const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
+const LIMIT = 1000; // API の制限は明記されていない。1000 件以上のファイル/フォルダがある場合はエラーにする
 
 /**
  * configs から必要な情報を取り出す
@@ -94,16 +93,10 @@ function getFolderInfoByUrl(oauth2, folderUrl) {
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
 function getObjBySharingUrl(sharingUrl, oauth2) {
-    if (sharingUrl === "" || sharingUrl === null) {
-        throw `Sharing URL is empty.`;
-    }
-
-    // encoding sharing URL
     const encodedSharingUrl = encodeSharingUrl(sharingUrl);
-
-    // API Request
     const response = httpClient.begin() // HttpRequestWrapper
         .authSetting(oauth2) // Request HEADER (OAuth2 Token)
+        .queryParam('select', 'id,parentReference/driveId,folder')
         .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`); // HttpResponseWrapper
     const httpStatus = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -160,11 +153,12 @@ const list = (limit, timestampLowerLimit) => {
  * @param {Object} folderInfo 検索対象のフォルダ情報 {driveId, folderId}
  * @returns {Array} driveItems ドライブアイテム一覧
  * @returns {string} driveItems[].id ドライブアイテム ID
- * @returns {timestamp} driveItems[].timestamp ファイルアップロード時刻
+ * @returns {timestamp} driveItems[].createdDateTime ドライブアイテム作成日時
+ * @returns {Object} driveItems[].file ドライブアイテムのファイル情報（ファイルかどうかを判定するために使用）
+ * @returns {string} driveItems[].webUrl ドライブアイテムの URL
  */
 const getChildren = (oauth2, folderInfo) => {
     const url = `${GRAPH_URI}${folderInfo.driveId}/items/${folderInfo.folderId}/children`;
-    const LIMIT = 1000; // API の制限は明記されていない。1000 件以上のファイル/フォルダがある場合はエラーにする
     const response = httpClient.begin()
         .authSetting(oauth2)
         .queryParam('$top', `${LIMIT}`)
@@ -213,7 +207,7 @@ const formatFile = (file) => {
  */
 const logFiles = (files) => {
     if (files.length === 0) {
-        engine.log("no files");
+        engine.log('no files');
         return;
     }
     const replacer = (key, value) => value instanceof java.sql.Timestamp ? dateFormatter.format(DATETIME_FORMAT, value) : value;
@@ -244,7 +238,171 @@ const logFiles = (files) => {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * @param folderUrl
+ */
+const prepareConfigs = (folderUrl) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_FolderUrl', folderUrl);
+};
 
+/**
+ * URL からドライブアイテムの情報を取得する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param category
+ * @param limit
+ * @param timestampLowerLimit
+ */
+const assertGetRequest = ({ url, method, headers }, sharingUrl) => {
+    const encodedUrl = encodeSharingUrl(sharingUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/driveItem`
+        + `?${generateQueryString('select', 'id,parentReference/driveId,folder')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * ドライブアイテム取得の GET リクエストのレスポンスを準備
+ * @param driveId
+ * @param id
+ * @param childCount
+ * @return {Object} responseObj
+ */
+const prepareDriveItemResponse = (driveId, id, childCount = undefined) => {
+    const driveItem = {
+        id,
+        parentReference: { driveId }
+    };
+    if (childCount !== undefined) { // フォルダの場合のみ存在するプロパティ
+        Object.assign(driveItem, { folder: { childCount } });
+    }
+    return JSON.stringify(driveItem);
+};
+
+/**
+ * ドライブアイテム一覧を取得する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param category
+ * @param limit
+ * @param timestampLowerLimit
+ */
+const assertListRequest = ({ url, method, headers }, driveId, folderId) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/${driveId}/items/${folderId}/children`
+        + `?${generateQueryString('$top', LIMIT)}`
+        + `&${generateQueryString('$select', 'id,createdDateTime,file,webUrl')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value);
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * 返り値の file のテスト
+ * @param file
+ * @param id
+ * @param timestamp
+ * @param url
+ */
+const assertFile = (file, id, timestamp, url) => {
+    expect(file.id).toEqual(id);
+    expect(file.timestamp).toEqual(timestamp);
+    expect(file.url).toEqual(url);
+};
+
+/**
+ * 正常系のテストケース
+ */
+test('Success', () => {
+    const response = {
+        "value": [ // 作成日順とは限らない
+            {
+                "id": "12345",
+                "createdDateTime": "2012-12-12T12:00:00+09:00",
+                "webUrl": "https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file1.pdf",
+                "file" : {
+                    "mimeType": "application/pdf"
+                }
+            },
+            {
+                "id": "23456",
+                "createdDateTime": "2012-12-12T10:30:00+09:00",
+                "webUrl": "https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file2.txt",
+                "file" : {
+                    "mimeType": "text/plain"
+                }
+            },
+            {
+                "id": "34567",
+                "createdDateTime": "2012-12-25T10:00:00+09:00",
+                "webUrl": "https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file3.pdf",
+                "file" : {
+                    "mimeType": "application/pdf"
+                }
+            }
+        ]
+    };
+
+    const folderUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder';
+    prepareConfigs(folderUrl);
+
+    // <script> のスクリプトを実行
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    let reqCount = 0;
+    const driveId = 'driveId-1';
+    const folderId = 'folderId-1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, folderUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', prepareDriveItemResponse(driveId, folderId, 3));
+        }
+        assertListRequest(request, `drives/${driveId}`, folderId);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(3);
+
+    // 作成日の降順で返される
+    assertFile(result[0], '34567', dateFormatter.parse(DATETIME_FORMAT, '2012-12-25T10:00:00+09:00'),
+               'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file3.pdf');
+    assertFile(result[1], '12345', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T12:00:00+09;00'),
+               'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file1.pdf');
+    assertFile(result[2], '23456', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T10:30:00+09:00'),
+               'https://test-my.sharepoint.com/personal/aaa/Documents/TestFolder/file2.txt');
+});
 
 ]]></test>
 
