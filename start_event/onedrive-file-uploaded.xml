@@ -39,14 +39,14 @@
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
 
 const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
-const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
+const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
 const LIMIT = 1000; // API の制限は明記されていない。1000 件以上のファイル/フォルダがある場合はエラーにする
 
 /**
  * configs から必要な情報を取り出す
  * @returns {Object} setting 設定
  * @returns {string} setting.folderInfo 検索対象のフォルダの情報 {driveId, folderId}
- * @returns {string} setting.oauth2 OAuth2 設定名
+ * @returns {AuthSettingWrapper} setting.oauth2 OAuth2 設定
  */
 const prepare = () => {
     const oauth2 = configs.getObject('conf_OAuth2');
@@ -60,27 +60,27 @@ const prepare = () => {
 };
 
 /**
-  * フォルダの URL からフォルダ情報（ドライブ ID とフォルダ ID）を取得し、
-  * オブジェクトで返す（URL が空の場合はドライブ ID を me/drive、フォルダ ID を root にする）
-  * @param {String} oauth2  OAuth2 設定情報
+  * フォルダの URL からフォルダ情報（ドライブのパスとフォルダ ID）を取得し、
+  * オブジェクトで返す（URL が空の場合はドライブのパスを me/drive、フォルダ ID を root にする）
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} folderUrl  フォルダのURL
   * @return {Object} folderInfo  フォルダ情報
-  * @return {String} folderInfo.driveId  ドライブ ID
+  * @return {String} folderInfo.drivePath  ドライブのパス
   * @return {String} folderInfo.folderId  フォルダ ID
   */
 function getFolderInfoByUrl(oauth2, folderUrl) {
     if (folderUrl === '' || folderUrl === null) {
         return {
-            driveId: 'me/drive',
+            drivePath: 'me/drive',
             folderId: 'root'
         };
     }
-    const driveItem = getObjBySharingUrl(folderUrl, oauth2);
+    const driveItem = getObjBySharingUrl(oauth2, folderUrl);
     if (driveItem.folder === undefined) {
         throw 'The specified URL is not a folder.';
     }
     return {
-        driveId: `drives/${driveItem.parentReference.driveId}`,
+        drivePath: `drives/${driveItem.parentReference.driveId}`,
         folderId: driveItem.id
     };
 }
@@ -88,11 +88,11 @@ function getFolderInfoByUrl(oauth2, folderUrl) {
 /**
   * OneDriveのドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSONオブジェクトを返す
   * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
-  * @param {String} sharingUrl  ドライブアイテムの共有URL
-  * @param {String} oauth2  OAuth2 認証設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {String} sharingUrl  ドライブアイテムの共有 URL
   * @return {Object} responseObj  ドライブアイテムのメタデータのJSONオブジェクト
   */
-function getObjBySharingUrl(sharingUrl, oauth2) {
+function getObjBySharingUrl(oauth2, sharingUrl) {
     const encodedSharingUrl = encodeSharingUrl(sharingUrl);
     const response = httpClient.begin() // HttpRequestWrapper
         .authSetting(oauth2) // Request HEADER (OAuth2 Token)
@@ -150,7 +150,7 @@ const list = (limit, timestampLowerLimit) => {
  * 指定フォルダ内のドライブアイテムの一覧を取得する
  * フォルダ内のドライブアイテム (ファイル＋フォルダ） 数が 1000 を超える場合、エラー
  * @param {AuthSettingWrapper} oauth2 OAuth2 設定
- * @param {Object} folderInfo 検索対象のフォルダ情報 {driveId, folderId}
+ * @param {Object} folderInfo 検索対象のフォルダ情報 {drivePath, folderId}
  * @returns {Array} driveItems ドライブアイテム一覧
  * @returns {string} driveItems[].id ドライブアイテム ID
  * @returns {timestamp} driveItems[].createdDateTime ドライブアイテム作成日時
@@ -158,7 +158,7 @@ const list = (limit, timestampLowerLimit) => {
  * @returns {string} driveItems[].webUrl ドライブアイテムの URL
  */
 const getChildren = (oauth2, folderInfo) => {
-    const url = `${GRAPH_URI}${folderInfo.driveId}/items/${folderInfo.folderId}/children`;
+    const url = `${GRAPH_URI}${folderInfo.drivePath}/items/${folderInfo.folderId}/children`;
     const response = httpClient.begin()
         .authSetting(oauth2)
         .queryParam('$top', `${LIMIT}`)
@@ -303,8 +303,8 @@ const prepareDriveItemResponse = (driveId, id, childCount = undefined) => {
  * @param limit
  * @param timestampLowerLimit
  */
-const assertListRequest = ({ url, method, headers }, driveId, folderId) => {
-    const expectedUrl = `https://graph.microsoft.com/v1.0/${driveId}/items/${folderId}/children`
+const assertListRequest = ({ url, method, headers }, drivePath, folderId) => {
+    const expectedUrl = `https://graph.microsoft.com/v1.0/${drivePath}/items/${folderId}/children`
         + `?${generateQueryString('$top', LIMIT)}`
         + `&${generateQueryString('$select', 'id,createdDateTime,file,webUrl')}`;
     expect(url).toEqual(expectedUrl);
