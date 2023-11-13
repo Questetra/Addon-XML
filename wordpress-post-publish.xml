@@ -2,9 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <!--
     <last-modified>2023-11-13</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Publish Post</label>
     <label locale="ja">WordPress.com: 記事公開</label>
@@ -40,6 +38,9 @@
 // - Scope: posts
 // - Client ID: (Get by https://developer.wordpress.com/apps/)
 // - Client Secret: (Get by https://developer.wordpress.com/apps/)
+
+const API_VERSION = 'v1.1';
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
 
 const main = () => {
     const auth = configs.getObject('conf_Auth');
@@ -82,7 +83,7 @@ const retrieveDate = () => {
     if (datetimeObj === null) {
         throw 'Publish Datetime is selected but its data is null.';
     }
-    return dateFormatter.format("yyyy-MM-dd'T'HH:mm:ssX", datetimeObj);
+    return dateFormatter.format(DATETIME_FORMAT, datetimeObj);
 };
 
 /**
@@ -94,7 +95,7 @@ const retrieveDate = () => {
  * @returns {any}
  */
 const publishPost = (auth, domain, postId, date) => {
-    const url = `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(domain)}/posts/${postId}`;
+    const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`;
     const response = httpClient.begin().authSetting(auth)
         .queryParam('fields', 'URL,status,date')
         .formParam('status', 'publish')
@@ -106,7 +107,7 @@ const publishPost = (auth, domain, postId, date) => {
         engine.log(responseStr);
         throw `Failed to publish post. status: ${status}`;
     }
-    engine.log(`Successfully published post. ${responseStr}`);
+    engine.log(`Publish request succeeded. ${responseStr}`);
 };
 
     ]]></script>
@@ -146,6 +147,144 @@ const publishPost = (auth, domain, postId, date) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ * @param postId
+ */
+const prepareConfigs = (domain, postId) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+
+    const postIdDef = engine.createDataDefinition('投稿 ID', 1, 'q_postId', 'STRING_TEXTFIELD');
+    engine.setData(postIdDef, postId);
+    configs.putObject('conf_PostId', postIdDef);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 投稿 ID の値が空でエラー
+ */
+test('Post ID is blank', () => {
+    prepareConfigs('test1.example.com', null);
+    assertError(main, 'Post ID is blank.');
+});
+
+/**
+ * 投稿 ID の値に数字以外の文字が含まれていてエラー
+ */
+test('Post ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', '1-1');
+    assertError(main, 'Post ID must be a non-negative integer.');
+});
+
+/**
+ * 公開日時を設定する
+ * @param timestamp
+ */
+const setDate = (timestamp) => {
+    const dateDef = engine.createDataDefinition('公開日時', 2, 'q_date', 'DATETIME');
+    engine.setData(dateDef, timestamp);
+    configs.putObject('conf_Date', dateDef);
+};
+
+/**
+ * 公開日時が選択されているのに、値が空
+ */
+test('Publish Datetime is selected but its data is null', () => {
+    prepareConfigs('test1.example.com', '1');
+    setDate(null);
+    assertError(main, 'Publish Datetime is selected but its data is null.');
+});
+
+/**
+ * 記事公開の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param domain
+ * @param postId
+ * @param date
+ */
+const assertRequest = ({ url, method, headers, contentType, body }, domain, postId, date) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`
+        + `?fields=${encodeURIComponent('URL,status,date')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`status=publish&date=${encodeURIComponent(date)}`);
+};
+
+/**
+ * 記事公開の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, domain, postId, '');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to publish post. status: 400');
+});
+
+/**
+ * 成功 - 公開日時を指定せず、即時公開する場合
+ */
+test('Succeed - publish immediately', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, domain, postId, '');
+        return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - 公開日時を指定する場合
+ */
+test('Succeed - publish at a specific datetime', () => {
+    const domain = 'test2.example.com';
+    const postId = '12';
+    prepareConfigs(domain, postId);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addDays(1);
+    setDate(timestamp);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, domain, postId, dateFormatter.format(DATETIME_FORMAT, timestamp));
+        return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
+    });
+    expect(main()).toEqual(undefined);
+});
 
     ]]></test>
 
