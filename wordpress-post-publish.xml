@@ -246,6 +246,51 @@ test('Publish Datetime is selected but its data is null', () => {
 });
 
 /**
+ * 記事取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param domain
+ * @param postId
+ */
+const assertGetRequest = ({ url, method, headers }, domain, postId) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`
+        + `?fields=${encodeURIComponent('status')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * 記事取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, domain, postId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get post. status: 400');
+});
+
+/**
+ * 記事が下書き状態でない場合はエラー
+ */
+test('The status of the post is not draft', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, domain, postId);
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "publish"}');
+    });
+    assertError(main, 'The status of the post is not draft but publish.');
+});
+
+/**
  * 記事公開の POST リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -257,7 +302,7 @@ test('Publish Datetime is selected but its data is null', () => {
  * @param postId
  * @param date
  */
-const assertRequest = ({ url, method, headers, contentType, body }, domain, postId, date) => {
+const assertPostRequest = ({ url, method, headers, contentType, body }, domain, postId, date) => {
     const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`
         + `?fields=${encodeURIComponent('URL,status,date')}`;
     expect(url).toEqual(expectedUrl);
@@ -274,8 +319,15 @@ test('Fail in POST request', () => {
     const domain = 'test1.example.com';
     const postId = '1';
     prepareConfigs(domain, postId);
+
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, domain, postId, '');
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, '');
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to publish post. status: 400');
@@ -288,8 +340,15 @@ test('Succeed - publish immediately', () => {
     const domain = 'test1.example.com';
     const postId = '1';
     prepareConfigs(domain, postId);
+
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, domain, postId, '');
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, '');
         return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
     });
     expect(main()).toEqual(undefined);
@@ -304,8 +363,15 @@ test('Succeed - publish at a specific datetime', () => {
     prepareConfigs(domain, postId);
     const timestamp = new com.questetra.bpms.util.AddableTimestamp().addDays(1);
     setDate(timestamp);
+
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, domain, postId, dateFormatter.format(DATETIME_FORMAT, timestamp));
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, dateFormatter.format(DATETIME_FORMAT, timestamp));
         return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
     });
     expect(main()).toEqual(undefined);
