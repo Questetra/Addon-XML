@@ -1,0 +1,382 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <last-modified>2023-11-14</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>WordPress.com: Publish Post</label>
+    <label locale="ja">WordPress.com: 記事公開</label>
+    <summary>This item publishes a post in draft status on WordPress.com. When the publish datetime is not specified, the post will be immediately published.</summary>
+    <summary locale="ja">この工程は、WordPress.com で作成済みの下書き状態の記事（投稿）を公開します。公開日時を指定しない場合、即座に公開されます。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-wordpress-post-publish/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-wordpress-post-publish/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://public-api.wordpress.com/posts"
+        >
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_Domain" required="true" form-type="TEXTFIELD">
+            <label>C2: Domain of the WordPress.com site</label>
+            <label locale="ja">C2: WordPress.com サイトのドメイン</label>
+        </config>
+        <config name="conf_PostId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C3: Post ID</label>
+            <label locale="ja">C3: 投稿 ID</label>
+        </config>
+        <config name="conf_Date" form-type="SELECT" select-data-type="DATETIME">
+            <label>C4: Publish Datetime (If in future, schedule publish)</label>
+            <label locale="ja">C4: 公開日時（未来の日時を指定した場合、公開が予約されます）</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://public-api.wordpress.com/oauth2/authorize
+// - Token Endpoint URL: https://public-api.wordpress.com/oauth2/token
+// - Scope: posts
+// - Client ID: (Get by https://developer.wordpress.com/apps/)
+// - Client Secret: (Get by https://developer.wordpress.com/apps/)
+
+const API_VERSION = 'v1.1';
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
+
+const main = () => {
+    const auth = configs.getObject('conf_Auth');
+    const domain = configs.get('conf_Domain');
+    const postId = retrievePostId();
+    const date = retrieveDate();
+
+    checkPost(auth, domain, postId);
+    publishPost(auth, domain, postId, date);
+};
+
+/**
+ * config から投稿 ID を読み出す
+ * 空の場合、数字以外の文字が含まれる場合はエラー
+ * @returns {String} postId
+ */
+const retrievePostId = () => {
+    const postId = engine.findData(configs.getObject('conf_PostId'));
+    if (postId === null) {
+        throw 'Post ID is blank.';
+    }
+    const idReg = new RegExp('^[0-9]+$');
+    if (!idReg.test(postId)) {
+        throw 'Post ID must be a non-negative integer.';
+    }
+    return postId;
+};
+
+/**
+ * config から公開日時を文字列として読み出す
+ * データ項目が選択されていない場合、空文字列を返す
+ * データ項目が選択されていて値が空の場合は、エラー
+ * @returns {String} date
+ */
+const retrieveDate = () => {
+    const dateDef = configs.getObject('conf_Date');
+    if (dateDef === null) {
+        return '';
+    }
+    const datetimeObj = engine.findData(dateDef);
+    if (datetimeObj === null) {
+        throw 'Publish Datetime is selected but its data is null.';
+    }
+    return dateFormatter.format(DATETIME_FORMAT, datetimeObj);
+};
+
+/**
+ * 投稿のステータスを確認し、下書き状態でない場合はエラー
+ * @param {AuthSettingWrapper} auth
+ * @param {String} domain
+ * @param {String} postId
+ * @returns {any}
+ */
+const checkPost = (auth, domain, postId) => {
+    const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`;
+    const response = httpClient.begin().authSetting(auth)
+        .queryParam('fields', 'status')
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get post. status: ${status}`;
+    }
+    const postStatus = JSON.parse(responseStr).status;
+    if (postStatus !== 'draft') {
+        throw `The status of the post is not draft but ${postStatus}.`;
+    }
+};
+
+/**
+ * 投稿を公開 / 公開予約する
+ * @param {AuthSettingWrapper} auth
+ * @param {String} domain
+ * @param {String} postId
+ * @param {String} date
+ * @returns {any}
+ */
+const publishPost = (auth, domain, postId, date) => {
+    const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`;
+    const response = httpClient.begin().authSetting(auth)
+        .queryParam('fields', 'URL,status,date')
+        .formParam('status', 'publish')
+        .formParam('date', date)
+        .post(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to publish post. status: ${status}`;
+    }
+    engine.log(`Publish request succeeded. ${responseStr}`);
+};
+
+    ]]></script>
+
+    <icon>
+        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
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ * @param postId
+ */
+const prepareConfigs = (domain, postId) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+
+    const postIdDef = engine.createDataDefinition('投稿 ID', 1, 'q_postId', 'STRING_TEXTFIELD');
+    engine.setData(postIdDef, postId);
+    configs.putObject('conf_PostId', postIdDef);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 投稿 ID の値が空でエラー
+ */
+test('Post ID is blank', () => {
+    prepareConfigs('test1.example.com', null);
+    assertError(main, 'Post ID is blank.');
+});
+
+/**
+ * 投稿 ID の値に数字以外の文字が含まれていてエラー
+ */
+test('Post ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', '1-1');
+    assertError(main, 'Post ID must be a non-negative integer.');
+});
+
+/**
+ * 公開日時を設定する
+ * @param timestamp
+ */
+const setDate = (timestamp) => {
+    const dateDef = engine.createDataDefinition('公開日時', 2, 'q_date', 'DATETIME');
+    engine.setData(dateDef, timestamp);
+    configs.putObject('conf_Date', dateDef);
+};
+
+/**
+ * 公開日時が選択されているのに、値が空
+ */
+test('Publish Datetime is selected but its data is null', () => {
+    prepareConfigs('test1.example.com', '1');
+    setDate(null);
+    assertError(main, 'Publish Datetime is selected but its data is null.');
+});
+
+/**
+ * 記事取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param domain
+ * @param postId
+ */
+const assertGetRequest = ({ url, method, headers }, domain, postId) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`
+        + `?fields=${encodeURIComponent('status')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * 記事取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, domain, postId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get post. status: 400');
+});
+
+/**
+ * 記事が下書き状態でない場合はエラー
+ */
+test('The status of the post is not draft', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, domain, postId);
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "publish"}');
+    });
+    assertError(main, 'The status of the post is not draft but publish.');
+});
+
+/**
+ * 記事公開の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param domain
+ * @param postId
+ * @param date
+ */
+const assertPostRequest = ({ url, method, headers, contentType, body }, domain, postId, date) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/${postId}`
+        + `?fields=${encodeURIComponent('URL,status,date')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    expect(body).toEqual(`status=publish&date=${encodeURIComponent(date)}`);
+};
+
+/**
+ * 記事公開の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, '');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to publish post. status: 400');
+});
+
+/**
+ * 成功 - 公開日時を指定せず、即時公開する場合
+ */
+test('Succeed - publish immediately', () => {
+    const domain = 'test1.example.com';
+    const postId = '1';
+    prepareConfigs(domain, postId);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, '');
+        return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - 公開日時を指定する場合
+ */
+test('Succeed - publish at a specific datetime', () => {
+    const domain = 'test2.example.com';
+    const postId = '12';
+    prepareConfigs(domain, postId);
+    const timestamp = new com.questetra.bpms.util.AddableTimestamp().addDays(1);
+    setDate(timestamp);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, domain, postId);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
+        }
+        assertPostRequest(request, domain, postId, dateFormatter.format(DATETIME_FORMAT, timestamp));
+        return httpClient.createHttpResponse(200, 'application/json', '{}'); // 実際には URL, status, date が返る
+    });
+    expect(main()).toEqual(undefined);
+});
+
+    ]]></test>
+
+</service-task-definition>
