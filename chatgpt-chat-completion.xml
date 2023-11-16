@@ -60,6 +60,11 @@
             <label>U1: User Message</label>
             <label locale="ja">U1: ユーザメッセージ</label>
         </config>
+        <config name="conf_Images1" required="false" form-type="SELECT"
+                select-data-type="FILE">
+            <label>I1: Images to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
+        </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTAREA">
             <label>A1: Data item to save response from ChatGPT</label>
@@ -87,9 +92,10 @@ function main() {
     if (message1 === '') {
         throw new Error('User Message is empty.');
     }
+    const imageUrls1 = retrieveImageUrls('conf_Images1');
 
     ////// == 演算 / Calculating ==
-    const answer1 = createChat(auth, organizationId, model, maxTokens, requestUser, gptRole, message1);
+    const answer1 = createChat(auth, organizationId, model, maxTokens, requestUser, gptRole, message1, imageUrls1);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer1 ?? '');
@@ -112,6 +118,22 @@ const retrieveMaxTokens = () => {
     return parseInt(maxTokens, 10);
 };
 
+const retrieveImageUrls = (configName) => {
+    const imagesDef = configs.getObject(configName);
+    if (imagesDef === null) {
+        return [];
+    }
+    const images = engine.findData(imagesDef);
+    const imageUrls = [];
+    images.forEach(image => {
+        // TODO ファイルサイズの制限
+        // TODO Content-Type のチェック
+        const contentType = image.getContentType();
+        imageUrls.push(`data:${contentType};base64,${base64.encodeToString(fileRepository.readFile(image))}`);
+    });
+    return imageUrls;
+};
+
 /**
  * チャットの実行
  * @param auth
@@ -121,9 +143,10 @@ const retrieveMaxTokens = () => {
  * @param requestUser
  * @param gptRole
  * @param message1
+ * @param imageUrls1
  * @returns {String} answer1
  */
-const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole, message1) => {
+const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole, message1, imageUrls1) => {
     //// OpenAI API > Documentation > API REFERENCE > CHAT
     //// https://platform.openai.com/docs/api-reference/chat
 
@@ -138,9 +161,22 @@ const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole
             content: gptRole
         });
     }
+    const message1Content = [];
+    message1Content.push({
+        type: 'text',
+        text: message1
+    });
+    imageUrls1.forEach(imageUrl => {
+        message1Content.push({
+            type: 'image_url',
+            image_url: {
+                url: imageUrl
+            }
+        });
+    });
     requestJson.messages.push({
         role: 'user',
-        content: message1
+        content: message1Content
     });
 
     requestJson.n = 1;
