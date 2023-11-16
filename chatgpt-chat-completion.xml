@@ -68,6 +68,9 @@
     </configs>
 
     <script><![CDATA[
+
+const MAX_TOKENS_DEFAULT = 2048;
+
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');   /// REQUIRED
@@ -100,7 +103,7 @@ function main() {
 const retrieveMaxTokens = () => {
     const maxTokens = configs.get('conf_MaxTokens');
     if (maxTokens === '') {
-        return 2048;
+        return MAX_TOKENS_DEFAULT;
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
@@ -145,7 +148,7 @@ const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole
     requestJson.user = requestUser;
 
     let request = httpClient.begin().authSetting(auth)
-        .body(JSON.stringify(requestJson), "application/json");
+        .body(JSON.stringify(requestJson), 'application/json');
     if (organizationId !== null && organizationId !== '') {
         request = request.header('OpenAI-Organization', organizationId);
     }
@@ -212,16 +215,20 @@ const saveData = (configName, data) => {
 /**
  * 設定の準備
  * @param {String} authKey
+ * @param {String} organizationId
  * @param {String} model
+ * @param {String} maxTokens
  * @param {String} gptRole
  * @param {String} message
  * @returns {DataDefinitionView} answerDef
  */
-const prepareConfigs = (authKey, model, gptRole, message) => {
+const prepareConfigs = (authKey, organizationId, model, maxTokens, gptRole, message) => {
     const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
     configs.putObject('conf_Auth', authSetting);
 
+    configs.put('conf_OrganizationId', organizationId);
     configs.put('conf_Model', model);
+    configs.put('conf_MaxTokens', maxTokens);
     configs.put('conf_GPT_Role', gptRole);
     configs.put('conf_Message1', message);
 
@@ -248,8 +255,24 @@ const assertError = (errorMsg) => {
  * メッセージが空
  */
 test('Message is empty', () => {
-    prepareConfigs('key', 'gpt-4', '', '');
+    prepareConfigs('key', '', 'gpt-4', '', '', '');
     assertError('User Message is empty.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+    prepareConfigs('key', '', 'gpt-4', '1.1', '', '');
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - ゼロ
+ */
+test('Maximum number of tokens must be a positive integer - 0', () => {
+    prepareConfigs('key', '', 'gpt-4', '0', '', '');
+    assertError('Maximum number of tokens must be a positive integer.');
 });
 
 /**
@@ -258,9 +281,12 @@ test('Message is empty', () => {
  * @param request.url
  * @param request.method
  * @param request.contentType
+ * @param request.headers
  * @param request.body
  * @param {String} authKey
+ * @param {String} organizationId
  * @param {String} model
+ * @param {String} maxTokens
  * @param {String} gptRole
  * @param {String} message
  */
@@ -268,13 +294,19 @@ const assertRequest = ({
                            url,
                            method,
                            contentType,
+                           headers,
                            body
-                       }, authKey, model, gptRole, message) => {
-    expect(url).toEqual("https://api.openai.com/v1/chat/completions");
+                       }, authKey, organizationId, model, maxTokens, gptRole, message) => {
+    expect(url).toEqual('https://api.openai.com/v1/chat/completions');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
+    expect(headers['Authorization']).toEqual(`Bearer ${authKey}`);
+    if (organizationId !== '') {
+        expect(headers['OpenAI-Organization']).toEqual(organizationId);
+    }
     const bodyObj = JSON.parse(body);
     expect(bodyObj.model).toEqual(model);
+    expect(bodyObj.max_tokens).toEqual(maxTokens);
     if (gptRole === '') {
         expect(bodyObj.messages.length).toEqual(1);
     } else {
@@ -295,10 +327,10 @@ const assertRequest = ({
  * API リクエストでエラー
  */
 test('Fail to request', () => {
-    prepareConfigs('key2', 'gpt-3.5-turbo', '', 'こんにちは');
+    prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', 'こんにちは');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'key2', 'gpt-3.5-turbo', '', 'こんにちは');
+        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', 2048, '', 'こんにちは');
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -336,16 +368,48 @@ const createResponse = (answerText) => {
  * 成功
  */
 test('Success to request', () => {
-    const answerDef = prepareConfigs('key3', 'gpt-4', 'Robot', 'Hello World');
+    const answerDef = prepareConfigs('key3', '', 'gpt-4', '', 'Robot', 'Hello World');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key3', 'gpt-4', 'Robot', 'Hello World');
+        assertRequest(request, 'key3', '', 'gpt-4', MAX_TOKENS_DEFAULT, 'Robot', 'Hello World');
         return httpClient.createHttpResponse(200, 'application/json', createResponse("\n\nHello there, how may I assist you today?"));
     });
     main();
 
     // データ項目の値をチェック
     expect(engine.findData(answerDef)).toEqual("\n\nHello there, how may I assist you today?");
+});
+
+/**
+ * 成功 - 組織 ID を指定
+ */
+test('Success to request - with organization ID', () => {
+    const answerDef = prepareConfigs('key4', 'org-1', 'gpt-4-32k', '', '', 'Hi!');
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key4', 'org-1', 'gpt-4-32k', MAX_TOKENS_DEFAULT, '', 'Hi!');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! How can I help you?"));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("Hi! How can I help you?");
+});
+
+/**
+ * 成功 - 最大トークン数を指定
+ */
+test('Success to request - with max_tokens', () => {
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '100', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', 100, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("Hi! It's sunny today.");
 });
     ]]></test>
 </service-task-definition>
