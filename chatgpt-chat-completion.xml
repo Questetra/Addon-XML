@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <!--
-    <last-modified>2023-11-14</last-modified>
-    -->
+    <last-modified>2023-11-20</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -203,8 +201,8 @@ const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole
 
     const responseCode = response.getStatusCode();
     const responseBody = response.getResponseAsString();
-    engine.log(responseBody);
     if (responseCode !== 200) {
+        engine.log(responseBody);
         throw new Error(`Failed to request. status: ${responseCode}`);
     }
     const responseJson = JSON.parse(responseBody);
@@ -310,7 +308,7 @@ test('Message is empty', () => {
  * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
  */
 test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
-    prepareConfigs('key', '', 'gpt-4', '1.1', '', '');
+    prepareConfigs('key', '', 'gpt-4', '1.1', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
 });
 
@@ -318,8 +316,65 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
  * トークン数の最大値が正の整数でない - ゼロ
  */
 test('Maximum number of tokens must be a positive integer - 0', () => {
-    prepareConfigs('key', '', 'gpt-4', '0', '', '');
+    prepareConfigs('key', '', 'gpt-4', '0', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 添付画像のサイズが大きすぎる
+ */
+test('Image file is too large', () => {
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', 'こんにちは');
+
+    // 添付画像を指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE + 1);
+    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, [image1, image2]);
+    configs.putObject('conf_Images1', imagesDef);
+
+    assertError(`Attached image "画像2.jpg" is too large. Each file must be less than ${MAX_IMAGE_SIZE} bytes.`);
+});
+
+/**
+ * 添付画像の Content-Type がサポート外
+ */
+test('Content-Type of image file is not supported', () => {
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', 'こんにちは');
+
+    // 添付画像を指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', 100);
+    const image3 = createQfile('画像3.bmp', 'image/bmp', 100); // サポート外
+    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, [image1, image2, image3]);
+    configs.putObject('conf_Images1', imagesDef);
+
+    assertError(`Content-Type of "画像3.bmp" is not supported. Supported types are: ${AVAILABLE_IMAGE_TYPES.join(', ')}.`);
 });
 
 /**
@@ -336,6 +391,7 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
  * @param {String} maxTokens
  * @param {String} gptRole
  * @param {String} message
+ * @param {Array<String>} imageContentTypes
  */
 const assertRequest = ({
                            url,
@@ -343,7 +399,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, maxTokens, gptRole, message) => {
+                       }, authKey, organizationId, model, maxTokens, gptRole, message, imageContentTypes) => {
     expect(url).toEqual('https://api.openai.com/v1/chat/completions');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -364,10 +420,29 @@ const assertRequest = ({
         });
     }
     const userMessage = bodyObj.messages[bodyObj.messages.length - 1];
-    expect(userMessage).toEqual({
-        role: 'user',
-        content: message
+    expect(userMessage.role).toEqual('user');
+    expect(userMessage.content[0]).toEqual({
+        type: 'text',
+        text: message
     });
+    imageContentTypes.forEach((contentType, index) => {
+        assertAttachment(userMessage, index, contentType);
+    });
+};
+
+/**
+ * API リクエストの body 内のユーザメッセージオブジェクトに添付ファイルが含まれることをテスト
+ * @param userMessage
+ * @param index
+ * @param fileName
+ * @param contentType
+ */
+const assertAttachment = (userMessage, index, contentType) => {
+    const imageObj = userMessage.content[index + 1]; // 0 番目は text なので、1 加算
+    expect(imageObj.type).toEqual('image_url');
+    const url = imageObj.image_url.url;
+    expect(url.split(',')[0]).toEqual(`data:${contentType};base64`);
+    // ファイルのバイナリデータが base64 エンコードされた部分の確認は省略
 };
 
 /**
@@ -377,7 +452,7 @@ test('Fail to request', () => {
     prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', 'こんにちは');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', 2048, '', 'こんにちは');
+        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', 2048, '', 'こんにちは', []);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -418,7 +493,7 @@ test('Success to request', () => {
     const answerDef = prepareConfigs('key3', '', 'gpt-4', '', 'Robot', 'Hello World');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key3', '', 'gpt-4', MAX_TOKENS_DEFAULT, 'Robot', 'Hello World');
+        assertRequest(request, 'key3', '', 'gpt-4', MAX_TOKENS_DEFAULT, 'Robot', 'Hello World', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("\n\nHello there, how may I assist you today?"));
     });
     main();
@@ -434,7 +509,7 @@ test('Success to request - with organization ID', () => {
     const answerDef = prepareConfigs('key4', 'org-1', 'gpt-4-32k', '', '', 'Hi!');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key4', 'org-1', 'gpt-4-32k', MAX_TOKENS_DEFAULT, '', 'Hi!');
+        assertRequest(request, 'key4', 'org-1', 'gpt-4-32k', MAX_TOKENS_DEFAULT, '', 'Hi!', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! How can I help you?"));
     });
     main();
@@ -450,7 +525,7 @@ test('Success to request - with max_tokens', () => {
     const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '100', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', 100, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', 100, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -458,5 +533,32 @@ test('Success to request - with max_tokens', () => {
     // データ項目の値をチェック
     expect(engine.findData(answerDef)).toEqual("Hi! It's sunny today.");
 });
+
+/**
+ * 成功 - 画像を添付
+ */
+test('Success to request - with attached images', () => {
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '', '', 'Describe the images attached.');
+
+    // 添付画像を指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE);
+    const image3 = createQfile('画像3.gif', 'image/gif', 100);
+    const image4 = createQfile('画像4.webp', 'image/webp', 100);
+    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, [image1, image2, image3, image4]);
+    configs.putObject('conf_Images1', imagesDef);
+
+    const imageContentTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', MAX_TOKENS_DEFAULT, '', 'Describe the images attached.', imageContentTypes);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("The first one is a blue circle and the second one is a red square.");
+});
+
     ]]></test>
 </service-task-definition>
