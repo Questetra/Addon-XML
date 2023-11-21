@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Download File as PDF</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: ファイルを PDF でダウンロード</label>
-    <!--
-    <last-modified>2023-11-20</last-modified>
-    -->
+    <last-modified>2023-11-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -222,6 +220,112 @@ function saveFile(filesDef, fileName, contentType, content){
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param fileUrl
+ * @param isFileUrlFixed
+ * @param saveAs
+ * @param files
+ * @return filesDef
+ */
+const prepareConfigs = (fileUrl, isFileUrlFixed, saveAs, files) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+
+    if (isFileUrlFixed) {
+        configs.put('conf_FileUrl', fileUrl);
+    } else {
+        const fileUrlDef = engine.createDataDefinition('ファイル URL', 1, 'q_fileUrl', 'STRING_TEXTFIELD');
+        engine.setData(fileUrlDef, fileUrl);
+        configs.putObject('conf_FileUrl', fileUrlDef);
+    }
+
+    configs.put('conf_SaveAs', saveAs);
+
+    const filesDef = engine.createDataDefinition('ファイル', 2, 'q_files', 'FILE');
+    engine.setData(filesDef, files);
+    configs.putObject('conf_Files', filesDef);
+    return filesDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
+ * ファイル URL を文字型データ項目で指定し、値が空でエラー
+ */
+test('File URL is blank', () => {
+    prepareConfigs(null, false, '', null);
+    assertError(main, 'File URL is blank.');
+});
+
+/**
+ * ドライブアイテム取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param sharingUrl
+ */
+const assertGetDriveItemRequest = ({ url, method, headers }, sharingUrl) => {
+    const encodedUrl = encodeSharingUrl(sharingUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/driveItem`
+        + `?select=${encodeURIComponent('name,id,parentReference/driveId,file')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * ドライブアイテム取得の GET リクエストでエラー
+ */
+test('Fail in 1st GET request', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/test1.txt';
+    prepareConfigs(fileUrl, false, '', null);
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get drive item. status: 400');
+});
+
+/**
+ * 指定した URL がファイルでない場合、エラー
+ */
+test('The specified URL is not a file', () => {
+    const fileUrl = 'https://test-my.sharepoint.com/personal/aaa/Documents/folder1';
+    prepareConfigs(fileUrl, false, '', null);
+    const folderObj = {
+        name: 'folder1',
+        parentReference: { driveId: 'driveId-1' },
+        id: 'folderId-1'
+    };
+    httpClient.setRequestHandler((request) => {
+        assertGetDriveItemRequest(request, fileUrl);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(folderObj));
+    });
+    assertError(main, 'The specified URL is not a file.');
+});
 
 ]]></test>
 
