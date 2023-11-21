@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Microsoft 365 OneDrive for Business: Download File as PDF/Image</label>
+    <label locale="ja">Microsoft 365 OneDrive for Business: ファイルを PDF/画像でダウンロード</label>
+    <!--
+    <last-modified>2023-11-20</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item downloads the specified file in OneDrive in the specified file format.</summary>
+    <summary locale="ja">この工程は、OneDrive 内の指定ファイルを指定形式でダウンロードします。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_FileUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+                editable="true">
+            <label>C2: File URL to download</label>
+            <label locale="ja">C2: ダウンロードするファイルの URL</label>
+        </config>
+        <config name="conf_Format" required="true" form-type="SELECT_ITEM">
+            <label>C3: File Format in which to download the file</label>
+            <label locale="ja">C3: ダウンロードするファイル形式</label>
+            <item value="pdf">
+                <label>PDF</label>
+            </item>
+        </config>
+        <config name="conf_SaveAs" form-type="TEXTFIELD" el-enabled="true">
+            <label>C4: File Name (named with the file name in OneDrive if blank)</label>
+            <label locale="ja">C4: ファイル名（空白の場合、OneDrive でのファイル名で保存されます）</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C5: Data item to add the downloaded file</label>
+            <label locale="ja">C5: ダウンロードファイルを追加保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-onedrive-file-format-download/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-onedrive-file-format-download/</help-page-url>
+
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
+
+function main() {
+    //// == 工程コンフィグの参照 / Config Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const fileUrl = retrieveFileUrl();
+    const format = configs.get('conf_Format');
+    let saveAs = configs.get('conf_SaveAs');
+    const filesDef = configs.getObject('conf_Files');
+
+    //// == 演算 / Calculating ==
+    const {fileName, driveId, fileId} = getFileInfoByUrl(oauth2, fileUrl);
+    const {contentType, content} = downloadFormat(oauth2, driveId, fileId, format);
+    if (saveAs === '') {
+        saveAs = fileName;
+    }
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    saveFile(filesDef, saveAs, contentType, content);
+}
+
+/**
+  * config からファイル URL の値を読み出す
+  * ファイル URL が設定されていない場合はエラー
+  * @returns {String} fileUrl ファイル URL
+  */
+function retrieveFileUrl() {
+    const fileUrlDef = configs.getObject('conf_FileUrl');
+    let fileUrl = '';
+    if (fileUrlDef === null) {
+        fileUrl = configs.get('conf_FileUrl');
+    } else {
+        fileUrl = engine.findData(fileUrlDef);
+    }
+    if (fileUrl === null || fileUrl === '') {
+        throw 'File URL is blank.';
+    }
+    return fileUrl;
+}
+
+/**
+  * OneDrive のファイルのメタデータを取得し、JSONオブジェクトを返す
+  * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+  * @param {String} sharingUrl  ファイルの共有 URL
+  * @returns {Object} ファイル情報 {fileName, driveId, fileId}
+  */
+function getFileInfoByUrl(oauth2, sharingUrl) {
+    // encoding sharing URL
+    const encodedSharingUrl = encodeSharingUrl(sharingUrl);
+
+    // preparing for API Request
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('select', 'name,id,parentReference/driveId,file')
+        .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw `Failed to get drive item. status: ${status}`;
+    }
+    const json = JSON.parse(responseStr);
+    if (json.file === undefined) { // フォルダ URL を指定した場合など
+        throw 'The specified URL is not a file.';
+    }
+    const fileName = json.name;
+    const driveId = json.parentReference.driveId;
+    const fileId = json.id;
+    return {fileName, driveId, fileId};
+}
+
+/**
+  * 共有URLを unpadded base64url 形式にエンコードする
+  * @param {String} sharingUrl  共有URL
+  * @returns {String} encodedSharingUrl  エンコードされた共有URL
+  */
+function encodeSharingUrl(sharingUrl) {
+    let encodedSharingUrl = base64.encodeToUrlSafeString(sharingUrl);
+    while (encodedSharingUrl.slice(-1) === '=') {
+        encodedSharingUrl = encodedSharingUrl.slice(0, -1);
+    }
+    return `u!${encodedSharingUrl}`;
+}
+
+/**
+  * OneDrive のファイルについて、指定形式でダウンロードする
+  * APIの仕様: https://learn.microsoft.com/ja-jp/onedrive/developer/rest-api/api/driveitem_get_content_format?view=odsp-graph-online
+  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+  * @param {String} driveId  ドライブ ID
+  * @param {String} fileId  ファイル ID
+  * @param {String} format  ファイル形式
+  * @returns {Object} response
+  * @returns {String} response.contentType
+  * @returns {ByteArrayWrapper} response.content
+  */
+function downloadFormat(oauth2, driveId, fileId, format) {
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('format', format)
+        .get(`${GRAPH_URI}drives/${driveId}/items/${fileId}/content`);
+    const status = response.getStatusCode();
+    if (status === 200) { // ドキュメントには記載がないが、直接 200 レスポンスが返ることもある
+        return {
+            contentType: response.getContentType(),
+            content: response.getResponse()
+        };
+    }
+    if (status === 302) { // ドキュメントの記載通り、ダウンロード URL が返る場合
+        const downloadUrl = response.getResponseHeader('Location');
+        return download(downloadUrl);
+    }
+    // 上記いずれのレスポンスステータスでもない場合、エラー
+    engine.log(response.getResponseAsString());
+    throw `Failed to download ${format} format. status: ${status}`;
+}
+
+/**
+  * ファイルをダウンロードする
+  * @param {String} downloadUrl ダウンロード URL
+  * @returns {Object} response
+  * @returns {String} response.contentType
+  * @returns {ByteArrayWrapper} response.content
+  */
+function download(downloadUrl) {
+    const response = httpClient.begin().get(downloadUrl);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw `Failed to download. status: ${status}`;
+    }
+    return {
+        contentType: response.getContentType(),
+        content: response.getResponse()
+    };
+}
+
+/**
+  * ダウンロードしたファイルを保存する
+  * @param {ProcessDataDefinitionView} filesDef  保存先データ項目
+  * @param {String} fileName  保存する際のファイル名
+  * @param {String} contentType
+  * @param {ByteArrayWrapper} content
+  */
+function saveFile(filesDef, fileName, contentType, content){
+    let files = engine.findData(filesDef);
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName, contentType, content
+    );
+    files.add(qfile);
+    engine.setData(filesDef, files);
+}
+
+    ]]></script>
+
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADXUlEQVRYR8WXW0hUURSG/33GbC5e
+        8pJJF6nM6YKUmsFAIAZSONOM4FtqL/mQVg9GhXR5iCIiEAqF9KEMsvKpi06OZoRPGaRmVoSGU4om
+        aqaMzeXYOLPjTJ7R41w8k8bZLwNn1r/Wt9dee+29CSQeRHR8vVEpd7vzGTAHKKXpADYDiJnTTwEY
+        IIR0u+FuYxnmCYx6uxjfSwKotE2JbuoqB0EJALkYpwBYUNQwRHbDZtKNBtMEBVBqG0ooSAUAlcjA
+        i81sBPSs3ZRXE0gfEECuM94mlJb+Y2CBjBJSzTbpT/jz5RdAoTU+BGjBSgSf90EeOUz6wsU+fQBW
+        cuaLg/nLhABgbs2rV3bmQm8EtHRhTXgBPNUOV/8yCk4st42BbBu/O7wAitzGmyAoE+tlWXYUtxzN
+        htOcj78AeqNS4aI/Q9jneH5Ng0x1DCLkMlhZFz59m0ZZ9UfPr4jBOmQkjmtWHgC5rqGIUFIXTHih
+        QI3UzVHoH7HhsCYROzZF+JgPjNqxq/iViPgAJfQo25T3wAOg1BnvUkqP+VNGKsLQXpmF5PXCXmR1
+        zKJvyAqL3Yn4qHCoN0ZCHs6gvm0YxRXdS0IQQmrtTfpiD4BC2/gOANfffUbjVQ1yMtYKvnNZGJlg
+        kZESDeVqGSy2WbzoHPdkpdtswcnKniUBAHQ7TIYMHmBywcEiEPfey0FSgsL7zWJzosc8jazdcQI7
+        l5tiwvIbUaowTE47UfXMjMqnX4OBTDlMhlgegC62TNmgwp0z6UhLjsaqMMbzN5f25o4x5O5bhwhF
+        WNBZ2mdcyDn3Gu/NloB2DpOBBAToqs7GzqRIr/j7BIu+4V9I2xqN2KhwMSlGbcsgTlV9EAXgswSW
+        Bp135pQCrV3jOJSZICowb2RjXWjtHEfh9U5/OsES+BThj8daqOQyb+q/DFuRkbImJADOmKuNg+Xt
+        ePOZm6NgzBehv21YfzETek0iGIZgxun2OMjeEx8yACfIv/wWLR1jAq1gGwZqROePqLE/NRZjUzOo
+        ezmE++V7ER8tbv35aFzm0o63+YALGlEorfhS0XZsSVSKysTgmANX6nr92QpbMWch7WHEncFSH8dc
+        FiS9kPALJemVjIeQ9FL6PzIR8rWch5D0YcJDSPo0E3QQqR6nolreMoz+ACVfiTBvFfnjAAAAAElF
+        TkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+]]></test>
+
+</service-task-definition>
