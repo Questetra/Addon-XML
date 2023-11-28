@@ -40,6 +40,7 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
 
     <script><![CDATA[
+
 function main() {
     const awsKey = configs.getObject("conf_AccessKey").getToken();
     const awsSecret = configs.getObject("conf_SecretKey").getToken();
@@ -82,6 +83,10 @@ function retrieveBucket() {
     const bucket = getConfSelectValue("conf_Bucket");
     if (bucket === "") {
         throw new Error("Bucket Name is blank.");
+    }
+    const reg = new RegExp("^[0-9a-z][0-9a-z-.]{1,61}[0-9a-z]$");
+    if (!reg.test(bucket) || bucket.includes("..")) {
+        throw new Error("Bucket Name is invalid.");
     }
     return bucket;
 }
@@ -161,5 +166,171 @@ function uploadFile(key, secret, region, bucket, folder, file) {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param bucket
+ * @param folder
+ * @param isFixed バケット名とフォルダパスを固定値で指定するか
+ * @param files
+ */
+const prepareConfigs = (key, secret, region, bucket, folder, isFixed, files) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    if (isFixed) {
+        configs.put('conf_Bucket', bucket);
+        configs.put('conf_Folder', folder);
+    } else {
+        const bucketDef = engine.createDataDefinition('Bucket Name', 1, 'q_bucket', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Bucket', bucketDef);
+        engine.setData(bucketDef, bucket);
+        const folderDef = engine.createDataDefinition('Folder Path', 2, 'q_folder', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Folder', folderDef);
+        engine.setData(folderDef, folder);
+    }
+
+    const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+    engine.setData(filesDef, files);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * バケット名をデータ項目で指定し、値が空
+ */
+test('Bucket Name is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    prepareConfigs(key, secret, region, null, null, false, null);
+
+    assertError(main, 'Bucket Name is blank.');
+});
+
+/**
+ * バケット名が 2 文字以下
+ */
+test('Bucket Name is invalid - too short', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名が 64 文字以上
+ */
+test('Bucket Name is invalid - too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a'.repeat(64);
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名に不正な文字が含まれる
+ */
+test('Bucket Name is invalid - contains invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc/def';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がハイフン
+ */
+test('Bucket Name is invalid - starts with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '-abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がドット
+ */
+test('Bucket Name is invalid - starts with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '.abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がハイフン
+ */
+test('Bucket Name is invalid - ends with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123-';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がドット
+ */
+test('Bucket Name is invalid - ends with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123.';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名にドットが連続する
+ */
+test('Bucket Name is invalid - adjacent dots', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc..efg';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
 ]]></test>
 </service-task-definition>
