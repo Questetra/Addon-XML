@@ -26,10 +26,10 @@
             <label>C4: Bucket Name</label>
             <label locale="ja">C4: バケット名</label>
         </config>
-        <config name="conf_Folder" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+        <config name="conf_Prefix" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
                 editable="true">
-            <label>C5: Target Folder Path (Root if blank)</label>
-            <label locale="ja">C5: アップロード先フォルダのパス（指定がない場合は、ルートフォルダ）</label>
+            <label>C5: Object Key Prefix</label>
+            <label locale="ja">C5: オブジェクトキーのプレフィックス</label>
         </config>
         <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C6: Data item whose attached files will be uploaded</label>
@@ -41,13 +41,15 @@
 
     <script><![CDATA[
 
+const MAX_OBJECT_KEY_BYTES = 1024;
+
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const awsKey = configs.getObject("conf_AccessKey").getToken();
     const awsSecret = configs.getObject("conf_SecretKey").getToken();
     const region = retrieveRegion();
     const bucket = retrieveBucket();
-    const folder = retrieveFolder();
+    const prefix = retrievePrefix();
     const files = engine.findData(configs.getObject("conf_Files"));
 
     ////// == 演算 / Calculating ==
@@ -59,7 +61,7 @@ function main() {
     }
     for (let i = 0; i < files.size(); i++) {
         const file = files.get(i);
-        uploadFile(awsKey, awsSecret, region, bucket, folder, file);
+        uploadFile(awsKey, awsSecret, region, bucket, prefix, file);
     }
 }
 
@@ -109,23 +111,16 @@ function retrieveBucket() {
 }
 
 /**
- * config からフォルダパスを読み出す
- * 連続するスラッシュを含む場合はエラー
- * 先頭、末尾のスラッシュは削除
+ * config からオブジェクトキーのプレフィックスを読み出す
+ * プレフィックスだけでオブジェクトキーのサイズ上限に達している場合、エラー
  * @return {String}
  */
-function retrieveFolder() {
-    let folder = getConfSelectValue("conf_Folder");
-    if (folder.includes("//")) { // 連続するスラッシュがある場合、エラー
-        throw new Error("Folder Path is invalid.");
+function retrievePrefix() {
+    const prefix = getConfSelectValue("conf_Prefix");
+    if (encodeURIComponent(prefix).replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES - 1) {
+        throw new Error(`The prefix is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes including the prefix.`);
     }
-    if (folder.startsWith("/")) { // 先頭にスラッシュがある場合、削除
-        folder = folder.slice(1);
-    }
-    if (folder.endsWith("/")) { // 末尾にスラッシュがある場合、削除
-        folder = folder.slice(0, -1);
-    }
-    return folder;
+    return prefix;
 }
 
 /**
@@ -134,21 +129,20 @@ function retrieveFolder() {
  * @param secret シークレットアクセスキー
  * @param region リージョン
  * @param bucket バケット
- * @param folder フォルダ
+ * @param prefix プレフィックス
  * @param file ファイル
  */
-function uploadFile(key, secret, region, bucket, folder, file) {
-    let path = folder.split("/")
-        .map(p => encodeURIComponent(p))
-        .join("/");
-    path += (path.length > 0 ? "/" : "") + encodeURIComponent(file.getName());
-    const url = `https://${bucket}.s3.${region}.amazonaws.com/${path}`;
-
+function uploadFile(key, secret, region, bucket, prefix, file) {
+    const objectKey `${prefix}${file.getName()}`;
+    const encodedObjectKey = encodeURIComponent(objectKey);
+    if (encodedObjectKey.replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES) {
+        throw new Error(`The object key "${objectKey}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+    }
+    const url = `https://${bucket}.s3.${region}.amazonaws.com/${encodedObjectKey}`;
     const response = httpClient.begin()
         .awsSignV4(key, secret, region, "s3")
         .body(file)
         .put(url);
-
     const status = response.getStatusCode();
     if (status !== 200) {
         engine.log(response.getResponseAsString());
