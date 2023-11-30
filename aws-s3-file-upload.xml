@@ -42,15 +42,16 @@
     <script><![CDATA[
 
 function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const awsKey = configs.getObject("conf_AccessKey").getToken();
     const awsSecret = configs.getObject("conf_SecretKey").getToken();
     const region = retrieveRegion();
     const bucket = retrieveBucket();
     const folder = retrieveFolder();
+    const files = engine.findData(configs.getObject("conf_Files"));
 
-    const fileDef = configs.getObject("conf_Files");
-    const files = engine.findData(fileDef);
-    if (files === null) {
+    ////// == 演算 / Calculating ==
+    if (files === null) { // ファイル添付なしの場合、何もせず正常終了
         return;
     }
     if (files.size() > httpClient.getRequestingLimit()) {
@@ -373,6 +374,62 @@ test('Bucket Name is invalid - adjacent dots', () => {
 
     assertError(main, 'Bucket Name is invalid.');
 });
+
+/**
+ * ファイルが添付されていない場合、何もせず正常終了
+ */
+test('Success - no files to upload', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * ファイルの添付数が多すぎて、HTTP リクエスト数の上限を超える
+ */
+test('Too many files', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const files = new java.util.ArrayList();
+    while (files.size() < httpClient.getRequestingLimit() + 1) {
+        files.add(engine.createQfile('テキストファイル', 'text/plain', 'aaaaa'));
+    }
+    prepareConfigs(key, secret, region, bucket, null, false, files);
+
+    assertError(main, 'The number of files exceeds the limit.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param {String} region
+ * @param {String} bucket
+ * @param {String} encodedFolderPath
+ * @param {QfileView} file
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType
+                       }, region, bucket, encodedFolderPah, file) => {
+    if (encodedFolderPath === '') {
+        expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(file.getName())}`);
+    } else {
+        expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodedFolderPath}/${encodeURIComponent(file.getName())}`);
+    }
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual(file.getContentType());
+    // Authorization ヘッダとボディ部のテストは省略
+};
 
 ]]></test>
 </service-task-definition>
