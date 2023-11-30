@@ -133,7 +133,7 @@ function retrievePrefix() {
  * @param file ファイル
  */
 function uploadFile(key, secret, region, bucket, prefix, file) {
-    const objectKey `${prefix}${file.getName()}`;
+    const objectKey = `${prefix}${file.getName()}`;
     const encodedObjectKey = encodeURIComponent(objectKey);
     if (encodedObjectKey.replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES) {
         throw new Error(`The object key "${objectKey}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
@@ -184,11 +184,11 @@ function uploadFile(key, secret, region, bucket, prefix, file) {
  * @param secret
  * @param region
  * @param bucket
- * @param folder
- * @param isFixed バケット名とフォルダパスを固定値で指定するか
+ * @param prefix
+ * @param isFixed バケット名とプレフィックスを固定値で指定するか
  * @param files
  */
-const prepareConfigs = (key, secret, region, bucket, folder, isFixed, files) => {
+const prepareConfigs = (key, secret, region, bucket, prefix, isFixed, files) => {
     // 認証設定を作成し、指定
     const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
     configs.putObject('conf_AccessKey', keyAuth);
@@ -198,14 +198,14 @@ const prepareConfigs = (key, secret, region, bucket, folder, isFixed, files) => 
     configs.put('conf_Region', region);
     if (isFixed) {
         configs.put('conf_Bucket', bucket);
-        configs.put('conf_Folder', folder);
+        configs.put('conf_Prefix', prefix);
     } else {
         const bucketDef = engine.createDataDefinition('Bucket Name', 1, 'q_bucket', 'STRING_TEXTFIELD');
         configs.putObject('conf_Bucket', bucketDef);
         engine.setData(bucketDef, bucket);
-        const folderDef = engine.createDataDefinition('Folder Path', 2, 'q_folder', 'STRING_TEXTFIELD');
-        configs.putObject('conf_Folder', folderDef);
-        engine.setData(folderDef, folder);
+        const prefixDef = engine.createDataDefinition('Object Key Prefix', 2, 'q_prefix', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Prefix', prefixDef);
+        engine.setData(prefixDef, prefix);
     }
 
     const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
@@ -370,6 +370,20 @@ test('Bucket Name is invalid - adjacent dots', () => {
 });
 
 /**
+ * プレフィックスが長すぎる
+ */
+test('Prefix is too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'あ'.repeat(Math.ceil(MAX_OBJECT_KEY_BYTES / 3)); //「あ」は 3 バイト
+    prepareConfigs(key, secret, region, bucket, prefix, false, null);
+
+    assertError(main, `The prefix is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes including the prefix.`);
+});
+
+/**
  * ファイルが添付されていない場合、何もせず正常終了
  */
 test('Success - no files to upload', () => {
@@ -400,6 +414,24 @@ test('Too many files', () => {
 });
 
 /**
+ * オブジェクトキー（プレフィックス + ファイル名）が長すぎる
+ */
+test('Object key is too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'testfolder/';
+
+    const files = new java.util.ArrayList();
+    const fileName = 'あ'.repeat(Math.ceil((MAX_OBJECT_KEY_BYTES - prefix.length) / 3)); //「あ」は 3 バイト
+    files.add(engine.createQfile(fileName, 'text/plain', 'aaaaa'));
+    prepareConfigs(key, secret, region, bucket, prefix, false, files);
+
+    assertError(main, `The object key "${prefix}${fileName}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+});
+
+/**
  * API リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -407,19 +439,16 @@ test('Too many files', () => {
  * @param request.contentType
  * @param {String} region
  * @param {String} bucket
- * @param {String} encodedFolderPath
+ * @param {String} objectKey
  * @param {QfileView} file
  */
 const assertRequest = ({
                            url,
                            method,
                            contentType
-                       }, region, bucket, encodedFolderPah, file) => {
-    if (encodedFolderPath === '') {
-        expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(file.getName())}`);
-    } else {
-        expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodedFolderPath}/${encodeURIComponent(file.getName())}`);
-    }
+                       }, region, bucket, prefix, file) => {
+    const objectKey = `${prefix}${file.getName()}`;
+    expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(objectKey)}`);
     expect(method).toEqual('PUT');
     expect(contentType).toEqual(file.getContentType());
     // Authorization ヘッダとボディ部のテストは省略
