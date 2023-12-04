@@ -1,0 +1,541 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon S3: Upload File</label>
+    <label locale="ja">Amazon S3: ファイルアップロード</label>
+    <last-modified>2023-12-04</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item uploads files to the specified folder on Amazon S3.</summary>
+    <summary locale="ja">この工程は、Amazon S3 の指定フォルダにファイルをアップロードします。</summary>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Bucket" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+                editable="true">
+            <label>C4: Bucket Name</label>
+            <label locale="ja">C4: バケット名</label>
+        </config>
+        <config name="conf_Prefix" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+                editable="true">
+            <label>C5: Object Key Prefix</label>
+            <label locale="ja">C5: オブジェクトキーのプレフィックス</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C6: Data item whose attached files will be uploaded</label>
+            <label locale="ja">C6: アップロードするファイルが保存されているデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
+
+    <script><![CDATA[
+
+const MAX_OBJECT_KEY_BYTES = 1024;
+const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB（一度の PUT リクエストでアップロードできる上限）
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject("conf_AccessKey").getToken();
+    const awsSecret = configs.getObject("conf_SecretKey").getToken();
+    const region = retrieveRegion();
+    const bucket = retrieveBucket();
+    const prefix = retrievePrefix();
+    const files = engine.findData(configs.getObject("conf_Files"));
+
+    ////// == 演算 / Calculating ==
+    if (files === null) { // ファイル添付なしの場合、何もせず正常終了
+        return;
+    }
+    if (files.size() > httpClient.getRequestingLimit()) {
+        throw new Error("The number of files exceeds the limit.");
+    }
+    for (let i = 0; i < files.size(); i++) {
+        const file = files.get(i);
+        uploadFile(awsKey, awsSecret, region, bucket, prefix, file);
+    }
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveRegion() {
+    const region = configs.get("conf_Region");
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp("^[a-z]{2}-[a-z]{4,16}-[1-9]$");
+    if (!reg.test(region)) {
+        throw new Error("Region Code is invalid.");
+    }
+    return region;
+}
+
+/**
+ * form-type="SELECT" editable="true"
+ * の設定値を読み出す
+ * @return {String}
+ */
+function getConfSelectValue(configName) {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return configs.get(configName);
+    }
+    return engine.findData(def) ?? "";
+}
+
+/**
+ * config からバケット名を読み出す
+ * バケット名の形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveBucket() {
+    const bucket = getConfSelectValue("conf_Bucket");
+    if (bucket === "") {
+        throw new Error("Bucket Name is blank.");
+    }
+    const reg = new RegExp("^[0-9a-z][0-9a-z-.]{1,61}[0-9a-z]$");
+    if (!reg.test(bucket) || bucket.includes("..")) {
+        throw new Error("Bucket Name is invalid.");
+    }
+    return bucket;
+}
+
+/**
+ * config からオブジェクトキーのプレフィックスを読み出す
+ * プレフィックスだけでオブジェクトキーのサイズ上限に達している場合、エラー
+ * @return {String}
+ */
+function retrievePrefix() {
+    const prefix = getConfSelectValue("conf_Prefix");
+    if (encodeURIComponent(prefix).replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES - 1) {
+        throw new Error(`The prefix is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes including the prefix.`);
+    }
+    return prefix;
+}
+
+/**
+ * ファイルアップロード
+ * @param key アクセスキー
+ * @param secret シークレットアクセスキー
+ * @param region リージョン
+ * @param bucket バケット
+ * @param prefix プレフィックス
+ * @param file ファイル
+ */
+function uploadFile(key, secret, region, bucket, prefix, file) {
+    const objectKey = `${prefix}${file.getName()}`;
+    const encodedObjectKey = encodeURIComponent(objectKey);
+    if (encodedObjectKey.replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES) {
+        throw new Error(`The object key "${objectKey}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+    }
+    if (file.getLength() > MAX_FILE_SIZE) {
+        throw new Error(`The file "${file.getName()}" is too large. Each file must be less than ${MAX_FILE_SIZE} bytes.`);
+    }
+    const url = `https://${bucket}.s3.${region}.amazonaws.com/${encodedObjectKey}`;
+    const response = httpClient.begin()
+        .awsSignV4(key, secret, region, "s3")
+        // オブジェクトロック設定のあるバケットにアップロードする場合、追加のチェックサムを指定する必要がある
+        .header('x-amz-checksum-sha256', base64.encodeToString(digest.sha256(file)))
+        .body(file)
+        .put(url);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw new Error(`Failed to upload "${file.getName()}" to S3. status: ${status}`);
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param bucket
+ * @param prefix
+ * @param isFixed バケット名とプレフィックスを固定値で指定するか
+ * @param files
+ */
+const prepareConfigs = (key, secret, region, bucket, prefix, isFixed, files) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    if (isFixed) {
+        configs.put('conf_Bucket', bucket);
+        configs.put('conf_Prefix', prefix);
+    } else {
+        const bucketDef = engine.createDataDefinition('Bucket Name', 1, 'q_bucket', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Bucket', bucketDef);
+        engine.setData(bucketDef, bucket);
+        const prefixDef = engine.createDataDefinition('Object Key Prefix', 2, 'q_prefix', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Prefix', prefixDef);
+        engine.setData(prefixDef, prefix);
+    }
+
+    const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+    engine.setData(filesDef, files);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'invalidregioncode';
+    const bucket = 'abc-def.ghi';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-toomanycharacters-1';
+    const bucket = 'abc-def.ghi';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Region Code is invalid.');
+});
+
+/**
+ * バケット名をデータ項目で指定し、値が空
+ */
+test('Bucket Name is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    prepareConfigs(key, secret, region, null, null, false, null);
+
+    assertError(main, 'Bucket Name is blank.');
+});
+
+/**
+ * バケット名が 2 文字以下
+ */
+test('Bucket Name is invalid - too short', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名が 64 文字以上
+ */
+test('Bucket Name is invalid - too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a'.repeat(64);
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名に不正な文字が含まれる
+ */
+test('Bucket Name is invalid - contains invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc/def';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がハイフン
+ */
+test('Bucket Name is invalid - starts with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '-abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がドット
+ */
+test('Bucket Name is invalid - starts with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '.abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がハイフン
+ */
+test('Bucket Name is invalid - ends with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123-';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がドット
+ */
+test('Bucket Name is invalid - ends with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123.';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名にドットが連続する
+ */
+test('Bucket Name is invalid - adjacent dots', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc..efg';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * プレフィックスが長すぎる
+ */
+test('Prefix is too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'あ'.repeat(Math.ceil(MAX_OBJECT_KEY_BYTES / 3)); //「あ」は 3 バイト
+    prepareConfigs(key, secret, region, bucket, prefix, false, null);
+
+    assertError(main, `The prefix is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes including the prefix.`);
+});
+
+/**
+ * ファイルが添付されていない場合、何もせず正常終了
+ */
+test('Success - no files to upload', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * ファイルの添付数が多すぎて、HTTP リクエスト数の上限を超える
+ */
+test('Too many files', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const files = new java.util.ArrayList();
+    while (files.size() < httpClient.getRequestingLimit() + 1) {
+        files.add(engine.createQfile('テキストファイル', 'text/plain', 'aaaaa'));
+    }
+    prepareConfigs(key, secret, region, bucket, null, false, files);
+
+    assertError(main, 'The number of files exceeds the limit.');
+});
+
+/**
+ * オブジェクトキー（プレフィックス + ファイル名）が長すぎる
+ */
+test('Object key is too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'testfolder/';
+
+    const files = new java.util.ArrayList();
+    const fileName = 'あ'.repeat(Math.ceil((MAX_OBJECT_KEY_BYTES - prefix.length) / 3)); //「あ」は 3 バイト
+    files.add(engine.createQfile(fileName, 'text/plain', 'aaaaa'));
+    prepareConfigs(key, secret, region, bucket, prefix, false, files);
+
+    assertError(main, `The object key "${prefix}${fileName}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+});
+
+// ファイルサイズが大きすぎる場合のテストケースは省略。上限が 5GB と大きく、実際にはほぼ起こりえないため
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param {String} region
+ * @param {String} bucket
+ * @param {String} objectKey
+ * @param {QfileView} file
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           headers
+                       }, region, bucket, prefix, file) => {
+    const objectKey = `${prefix}${file.getName()}`;
+    expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(objectKey)}`);
+    expect(method).toEqual('PUT');
+    expect(contentType).toEqual(file.getContentType());
+    expect(headers['x-amz-checksum-sha256']).toEqual(base64.encodeToString(digest.sha256(file)));
+    // Authorization ヘッダとボディ部のテストは省略
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'testfolder/';
+
+    const files = new java.util.ArrayList();
+    files.add(engine.createQfile('testfile1.txt', 'text/plain', 'aaaaa'));
+    prepareConfigs(key, secret, region, bucket, prefix, false, files);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, prefix, files.get(0));
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to upload "testfile1.txt" to S3. status: 400');
+});
+
+/**
+ * 成功
+ * バケット名とプレフィックスをデータ項目で指定
+ */
+test('Success - bucket name and prefix set by data item', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const prefix = 'testfolder/';
+
+    const files = new java.util.ArrayList();
+    files.add(engine.createQfile('testfile1.txt', 'text/plain', 'aaaaa'));
+    files.add(engine.createQfile('testfile2.txt', 'text/plain', 'bbbbb'));
+    prepareConfigs(key, secret, region, bucket, prefix, false, files);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, prefix, files.get(reqCount));
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功
+ * バケット名とプレフィックスを固定値で指定
+ */
+test('Success - bucket name and prefix set as fixed value', () => {
+    const key = 'key-99999';
+    const secret = 'secret-00000';
+    const region = 'us-east-2';
+    const bucket = 'bucket-name-999';
+    const prefix = 'testfolder/subfolder/';
+
+    const files = new java.util.ArrayList();
+    files.add(engine.createQfile('testfile1.txt', 'text/plain', 'aaaaa'));
+    files.add(engine.createQfile('testfile2.txt', 'text/plain', 'bbbbb'));
+    files.add(engine.createQfile('testfile3.txt', 'text/plain', 'ccccc'));
+    prepareConfigs(key, secret, region, bucket, prefix, true, files);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, prefix, files.get(reqCount));
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+]]></test>
+</service-task-definition>
