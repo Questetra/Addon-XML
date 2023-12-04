@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon S3: Upload File</label>
     <label locale="ja">Amazon S3: ファイルアップロード</label>
-    <last-modified>2023-12-01</last-modified>
+    <last-modified>2023-12-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item uploads files to the specified folder on Amazon S3.</summary>
     <summary locale="ja">この工程は、Amazon S3 の指定フォルダにファイルをアップロードします。</summary>
@@ -35,16 +35,6 @@
             <label>C6: Data item whose attached files will be uploaded</label>
             <label locale="ja">C6: アップロードするファイルが保存されているデータ項目</label>
         </config>
-        <config name="conf_Checksum" required="false" form-type="SELECT_ITEM">
-            <label>C7: Additional Checksum</label>
-            <label locale="ja">C7: 追加のチェックサム</label>
-            <item value="sha-1">
-                <label>sha-1</label>
-            </item>
-            <item value="sha-256">
-                <label>sha-256</label>
-            </item>
-        </config>
     </configs>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
@@ -62,7 +52,6 @@ function main() {
     const bucket = retrieveBucket();
     const prefix = retrievePrefix();
     const files = engine.findData(configs.getObject("conf_Files"));
-    const checksum = configs.get("conf_Checksum");
 
     ////// == 演算 / Calculating ==
     if (files === null) { // ファイル添付なしの場合、何もせず正常終了
@@ -73,7 +62,7 @@ function main() {
     }
     for (let i = 0; i < files.size(); i++) {
         const file = files.get(i);
-        uploadFile(awsKey, awsSecret, region, bucket, prefix, file, checksum);
+        uploadFile(awsKey, awsSecret, region, bucket, prefix, file);
     }
 }
 
@@ -142,10 +131,9 @@ function retrievePrefix() {
  * @param region リージョン
  * @param bucket バケット
  * @param prefix プレフィックス
- * @param checksum 追加のチェックサムの種類
  * @param file ファイル
  */
-function uploadFile(key, secret, region, bucket, prefix, file, checksum) {
+function uploadFile(key, secret, region, bucket, prefix, file) {
     const objectKey = `${prefix}${file.getName()}`;
     const encodedObjectKey = encodeURIComponent(objectKey);
     if (encodedObjectKey.replace(/%../g,"x").length > MAX_OBJECT_KEY_BYTES) {
@@ -155,19 +143,12 @@ function uploadFile(key, secret, region, bucket, prefix, file, checksum) {
         throw new Error(`The file "${file.getName()}" is too large. Each file must be less than ${MAX_FILE_SIZE} bytes.`);
     }
     const url = `https://${bucket}.s3.${region}.amazonaws.com/${encodedObjectKey}`;
-    let request = httpClient.begin()
-        .awsSignV4(key, secret, region, "s3");
-    switch (checksum) { // オブジェクトロック設定のあるバケットの場合、チェックサムの設定が必要
-        case "sha-1":
-            request = request.header('x-amz-checksum-sha1', base64.encodeToString(digest.sha1(file)));
-            break;
-        case "sha-256":
-            request = request.header('x-amz-checksum-sha256', base64.encodeToString(digest.sha256(file)));
-            break;
-        default:
-            break;
-    }
-    const response = request.body(file).put(url);
+    const response = httpClient.begin()
+        .awsSignV4(key, secret, region, "s3")
+        // オブジェクトロック設定のあるバケットにアップロードする場合、追加のチェックサムを指定する必要がある
+        .header('x-amz-checksum-sha256', base64.encodeToString(digest.sha256(file)))
+        .body(file)
+        .put(url);
     const status = response.getStatusCode();
     if (status !== 200) {
         engine.log(response.getResponseAsString());
@@ -213,7 +194,7 @@ function uploadFile(key, secret, region, bucket, prefix, file, checksum) {
  * @param isFixed バケット名とプレフィックスを固定値で指定するか
  * @param files
  */
-const prepareConfigs = (key, secret, region, bucket, prefix, isFixed, files, checksum = '') => {
+const prepareConfigs = (key, secret, region, bucket, prefix, isFixed, files) => {
     // 認証設定を作成し、指定
     const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
     configs.putObject('conf_AccessKey', keyAuth);
@@ -236,8 +217,6 @@ const prepareConfigs = (key, secret, region, bucket, prefix, isFixed, files, che
     const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
     configs.putObject('conf_Files', filesDef);
     engine.setData(filesDef, files);
-
-    configs.put('conf_Checksum', checksum);
 };
 
 /**
@@ -477,16 +456,12 @@ const assertRequest = ({
                            method,
                            contentType,
                            headers
-                       }, region, bucket, prefix, file, checksum) => {
+                       }, region, bucket, prefix, file) => {
     const objectKey = `${prefix}${file.getName()}`;
     expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(objectKey)}`);
     expect(method).toEqual('PUT');
     expect(contentType).toEqual(file.getContentType());
-    if (checksum === 'sha-1') {
-        expect(headers['x-amz-checksum-sha1']).toEqual(base64.encodeToString(digest.sha1(file)));
-    } else if (checksum === 'sha-256') {
-        expect(headers['x-amz-checksum-sha256']).toEqual(base64.encodeToString(digest.sha256(file)));
-    }
+    expect(headers['x-amz-checksum-sha256']).toEqual(base64.encodeToString(digest.sha256(file)));
     // Authorization ヘッダとボディ部のテストは省略
 };
 
@@ -505,7 +480,7 @@ test('Fail to request', () => {
     prepareConfigs(key, secret, region, bucket, prefix, false, files);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, bucket, prefix, files.get(0), '');
+        assertRequest(request, region, bucket, prefix, files.get(0));
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, 'Failed to upload "testfile1.txt" to S3. status: 400');
@@ -514,9 +489,8 @@ test('Fail to request', () => {
 /**
  * 成功
  * バケット名とプレフィックスをデータ項目で指定
- * 追加のチェックサムなし
  */
-test('Success - bucket name and prefix set by data item, no additional checksum', () => {
+test('Success - bucket name and prefix set by data item', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'ap-northeast-1';
@@ -530,7 +504,7 @@ test('Success - bucket name and prefix set by data item, no additional checksum'
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, bucket, prefix, files.get(reqCount), '');
+        assertRequest(request, region, bucket, prefix, files.get(reqCount));
         reqCount++;
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
@@ -540,9 +514,8 @@ test('Success - bucket name and prefix set by data item, no additional checksum'
 /**
  * 成功
  * バケット名とプレフィックスを固定値で指定
- * 追加のチェックサム sha-1
  */
-test('Success - bucket name and prefix set as fixed value, with sha-1 checksum', () => {
+test('Success - bucket name and prefix set as fixed value', () => {
     const key = 'key-99999';
     const secret = 'secret-00000';
     const region = 'us-east-2';
@@ -553,36 +526,11 @@ test('Success - bucket name and prefix set as fixed value, with sha-1 checksum',
     files.add(engine.createQfile('testfile1.txt', 'text/plain', 'aaaaa'));
     files.add(engine.createQfile('testfile2.txt', 'text/plain', 'bbbbb'));
     files.add(engine.createQfile('testfile3.txt', 'text/plain', 'ccccc'));
-    prepareConfigs(key, secret, region, bucket, prefix, true, files, 'sha-1');
+    prepareConfigs(key, secret, region, bucket, prefix, true, files);
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, bucket, prefix, files.get(reqCount), 'sha-1');
-        reqCount++;
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
-    });
-    expect(main()).toEqual(undefined);
-});
-
-/**
- * 成功
- * 追加のチェックサム sha-256
- */
-test('Success - with sha-256 checksum', () => {
-    const key = 'key-12345';
-    const secret = 'secret-67890';
-    const region = 'ap-northeast-1';
-    const bucket = 'abc123-efg.hij';
-    const prefix = 'testfolder/';
-
-    const files = new java.util.ArrayList();
-    files.add(engine.createQfile('test/file1.txt', 'text/plain', 'aaaaa'));
-    files.add(engine.createQfile('test/file2.txt', 'text/plain', 'bbbbb'));
-    prepareConfigs(key, secret, region, bucket, prefix, false, files, 'sha-256');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, bucket, prefix, files.get(reqCount), 'sha-256');
+        assertRequest(request, region, bucket, prefix, files.get(reqCount));
         reqCount++;
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
