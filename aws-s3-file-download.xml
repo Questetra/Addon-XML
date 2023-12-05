@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon S3: Download File</label>
+    <label locale="ja">Amazon S3: ファイルダウンロード</label>
+    <!-- <last-modified>2023-12-04</last-modified> -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <!--
+    <summary>This item uploads files to the specified folder on Amazon S3.</summary>
+    <summary locale="ja">この工程は、Amazon S3 の指定フォルダにファイルをアップロードします。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-s3-file-upload/</help-page-url>
+    -->
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Bucket" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+                editable="true">
+            <label>C4: Bucket Name</label>
+            <label locale="ja">C4: バケット名</label>
+        </config>
+        <config name="conf_Keys" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA"
+                editable="true">
+            <label>C5: Object Key</label>
+            <label locale="ja">C5: オブジェクトキー</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C6: Data item to store files</label>
+            <label locale="ja">C6: ファイルを保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+const MAX_OBJECT_KEY_BYTES = 1024;
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject("conf_AccessKey").getToken();
+    const awsSecret = configs.getObject("conf_SecretKey").getToken();
+    const region = retrieveRegion();
+    const bucket = retrieveBucket();
+    const objectKeys = retrieveObjectKeys();
+
+    ////// == 演算 / Calculating ==
+    if (objectKeys.length === 0) {
+        return;
+    }
+    if (objectKeys.length > httpClient.getRequestingLimit()) {
+        throw new Error("The number of objectKeys exceeds the limit.");
+    }
+
+    const fileDef = configs.getObject("conf_Files");
+    const files = engine.findData(fileDef) ?? new java.util.ArrayList();
+    objectKeys.forEach(objectKey => {
+        const newFile = downloadFile(awsKey, awsSecret, region, bucket, objectKey);
+        files.add(newFile);
+    });
+    engine.setData(fileDef, files);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveRegion() {
+    const region = configs.get("conf_Region");
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp("^[a-z]{2}-[a-z]{4,16}-[1-9]$");
+    if (!reg.test(region)) {
+        throw new Error("Region Code is invalid.");
+    }
+    return region;
+}
+
+/**
+ * form-type="SELECT" editable="true"
+ * の設定値を読み出す
+ * @return {String}
+ */
+function getConfSelectValue(configName) {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return configs.get(configName);
+    }
+    return engine.findData(def) ?? "";
+}
+
+/**
+ * config からバケット名を読み出す
+ * バケット名の形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveBucket() {
+    const bucket = getConfSelectValue("conf_Bucket");
+    if (bucket === "") {
+        throw new Error("Bucket Name is blank.");
+    }
+    const reg = new RegExp("^[0-9a-z][0-9a-z-.]{1,61}[0-9a-z]$");
+    if (!reg.test(bucket) || bucket.includes("..")) {
+        throw new Error("Bucket Name is invalid.");
+    }
+    return bucket;
+}
+
+/**
+ * config からオブジェクトキーを読み出す
+ * @return {String}
+ */
+function retrieveObjectKeys() {
+    const keyStr = getConfSelectValue("conf_Keys");
+    const keys = keyStr.split("\n");
+    keys.forEach(key => {
+        if (encodeURIComponent(key).replace(/%../g, "x").length > MAX_OBJECT_KEY_BYTES) {
+            throw new Error(`The object key "${key}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+        }
+    });
+    return keys;
+}
+
+/**
+ * ファイルダウンロード
+ * @param key アクセスキー
+ * @param secret シークレットアクセスキー
+ * @param region リージョン
+ * @param bucket バケット
+ * @param objectKey オブジェクトキー
+ */
+function downloadFile(key, secret, region, bucket, objectKey) {
+    const encodedObjectKey = encodeURIComponent(objectKey);
+    const url = `https://${bucket}.s3.${region}.amazonaws.com/${encodedObjectKey}`;
+    const response = httpClient.begin()
+        .awsSignV4(key, secret, region, "s3")
+        .get(url);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw new Error(`Failed to download "${objectKey}" from S3. status: ${status}`);
+    }
+    const fileName = objectKey.split("/").pop();
+    return new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        response.getContentType(),
+        response.getResponse()
+    );
+}
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+]]></test>
+</service-task-definition>
