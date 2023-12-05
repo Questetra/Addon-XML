@@ -33,10 +33,18 @@
             <item value="anthropic.claude-v2">
                 <label>Claude 2</label>
             </item>
+            <item value="anthropic.claude-v2:1">
+                <label>Claude 2.1</label>
+            </item>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C5: Maximum number of tokens to consume (2048 if blank)</label>
             <label locale="ja">C5: 使用するトークン数の上限（空白の場合、2048）</label>
+        </config>
+        <config name="conf_SystemPrompt" required="false" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>C6: System Prompt</label>
+            <label locale="ja">C6: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -64,13 +72,14 @@ function main() {
     const region = retrieveRegion();
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
+    const systemPrompt = configs.get('conf_SystemPrompt');
     const message = configs.get('conf_Message1');
     if (message === '') {
         throw new Error('User Message is empty.');
     }
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, message);
+    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, systemPrompt, message);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -117,12 +126,13 @@ const retrieveMaxTokens = () => {
  * @param region
  * @param model
  * @param maxTokens
+ * @param systemPrompt
  * @param message
  * @returns {String} answer
  */
-const invokeModel = (awsKey, awsSecret, region, model, maxTokens, message) => {
+const invokeModel = (awsKey, awsSecret, region, model, maxTokens, systemPrompt, message) => {
     const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`;
-    const prompt = `${HUMAN} ${message} ${ASSISTANT}`;
+    const prompt = `${systemPrompt}${HUMAN} ${message} ${ASSISTANT}`;
 
     const payload = {
         prompt,
@@ -196,10 +206,11 @@ const saveData = (configName, data) => {
  * @param region
  * @param model
  * @param maxTokens
+ * @param systemPrompt
  * @param message
  * @returns {ProcessDataDefinitionView} answerDef
  */
-const prepareConfigs = (key, secret, region, model, maxTokens, message) => {
+const prepareConfigs = (key, secret, region, model, maxTokens, systemPrompt, message) => {
     // 認証設定を作成し、指定
     const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
     configs.putObject('conf_AccessKey', keyAuth);
@@ -209,6 +220,7 @@ const prepareConfigs = (key, secret, region, model, maxTokens, message) => {
     configs.put('conf_Region', region);
     configs.put('conf_Model', model);
     configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_SystemPrompt', systemPrompt);
     configs.put('conf_Message1', message);
     
     // 回答を保存するデータ項目を作成し、指定
@@ -233,6 +245,7 @@ const assertError = (errorMsg) => {
 
 const MODEL_1 = 'anthropic.claude-instant-v1';
 const MODEL_2 = 'anthropic.claude-v2';
+const MODEL_2_1 = 'anthropic.claude-v2:1';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -241,7 +254,7 @@ test('Region Code is invalid - no hyphens', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'invalidregioncode';
-    prepareConfigs(key, secret, region, MODEL_1, '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_1, '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -253,7 +266,7 @@ test('Region Code is invalid - too many characters', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'eu-toomanycharacters-1';
-    prepareConfigs(key, secret, region, MODEL_1, '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_1, '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -265,7 +278,7 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_1, '1.1', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_1, '1.1', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -277,7 +290,7 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_1, '0', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_1, '0', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -289,7 +302,7 @@ test('Message is empty', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_1, '1280', '');
+    prepareConfigs(key, secret, region, MODEL_1, '1280', '', '');
 
     assertError('User Message is empty.');
 });
@@ -304,6 +317,7 @@ test('Message is empty', () => {
  * @param {String} region
  * @param {String} model
  * @param {String} maxTokens
+ * @param {String} systemPrompt
  * @param {String} message
  */
 const assertRequest = ({
@@ -311,13 +325,13 @@ const assertRequest = ({
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, message) => {
+                       }, region, model, maxTokens, systemPrompt, message) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     // Authorization ヘッダのテストは省略
     const bodyObj = JSON.parse(body);
-    expect(bodyObj.prompt).toEqual(`\n\nHuman: ${message} \n\nAssistant:`);
+    expect(bodyObj.prompt).toEqual(`${systemPrompt}\n\nHuman: ${message} \n\nAssistant:`);
     expect(bodyObj.max_tokens_to_sample).toEqual(maxTokens);
     expect(bodyObj.stop_sequences).toEqual(['\n\nHuman:']);
 };
@@ -330,10 +344,10 @@ test('Fail to request', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_1, '1280', message);
+    prepareConfigs(key, secret, region, MODEL_1, '1280', '', message);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_1, 1280, message);
+        assertRequest(request, region, MODEL_1, 1280, '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -362,11 +376,11 @@ test('Success - with default max tokens', () => {
     const secret = 'secret-67890';
     const region = 'eu-central-2';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_1, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_1, '', '', message);
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_1, MAX_TOKENS_DEFAULT, message);
+        assertRequest(request, region, MODEL_1, MAX_TOKENS_DEFAULT, '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
     });
 
@@ -382,12 +396,33 @@ test('Success - with max tokens', () => {
     const secret = 'secret-00000';
     const region = 'us-east-1';
     const message = 'Are you a robot?\n\nHow old are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_2, '500', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2, '500', '', message);
 
     const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_2, 500, message);
+        assertRequest(request, region, MODEL_2, 500, '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_2, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - システムプロンプトを指定
+ */
+test('Success - with system prompt', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-central-2';
+    const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, '', systemPrompt, message);
+
+    const answer = 'こんにちは。お元気ですか？';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_2_1, MAX_TOKENS_DEFAULT, systemPrompt, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
     });
 
     expect(main()).toEqual(undefined);
