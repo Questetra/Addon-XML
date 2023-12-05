@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-<!--    <last-modified>2023-12-04</last-modified> -->
+    <last-modified>2023-12-05</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -65,6 +65,9 @@ function main() {
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
     const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
 
     ////// == 演算 / Calculating ==
     const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, message);
@@ -217,12 +220,11 @@ const prepareConfigs = (key, secret, region, model, maxTokens, message) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     try {
-        func();
+        main();
         fail();
     } catch (e) {
         expect(e.message).toEqual(errorMsg);
@@ -241,7 +243,7 @@ test('Region Code is invalid - no hyphens', () => {
     const region = 'invalidregioncode';
     prepareConfigs(key, secret, region, MODEL_1, '', 'Hi. How are you?');
 
-    assertError(main, 'Region Code is invalid.');
+    assertError('Region Code is invalid.');
 });
 
 /**
@@ -253,7 +255,143 @@ test('Region Code is invalid - too many characters', () => {
     const region = 'eu-toomanycharacters-1';
     prepareConfigs(key, secret, region, MODEL_1, '', 'Hi. How are you?');
 
-    assertError(main, 'Region Code is invalid.');
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '1.1', 'Hi. How are you?');
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - ゼロ
+ */
+test('Maximum number of tokens must be a positive integer - 0', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '0', 'Hi. How are you?');
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * メッセージが空
+ */
+test('Message is empty', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '1280', '');
+
+    assertError('User Message is empty.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} region
+ * @param {String} model
+ * @param {String} maxTokens
+ * @param {String} message
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           body
+                       }, region, model, maxTokens, message) => {
+    expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    // Authorization ヘッダのテストは省略
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.prompt).toEqual(`\n\nHuman: ${message} \n\nAssistant:`);
+    expect(bodyObj.max_tokens_to_sample).toEqual(maxTokens);
+    expect(bodyObj.stop_sequences).toEqual(['\n\nHuman:']);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_1, '1280', message);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_1, 1280, message);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} model
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponse = (model, answerText) => {
+    const responseObj = {
+        model,
+        stop_reason: 'stop_sequence',
+        completion: ` ${answerText}` // 先頭にスペースを含む
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 最大トークン数を設定しない場合は 2048 が指定される
+ */
+test('Success - with default max tokens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-central-2';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_1, '', message);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_1, MAX_TOKENS_DEFAULT, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 最大トークン数を指定
+ */
+test('Success - with max tokens', () => {
+    const key = 'key-99999';
+    const secret = 'secret-00000';
+    const region = 'us-east-1';
+    const message = 'Are you a robot?\n\nHow old are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2, '500', message);
+
+    const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_2, 500, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_2, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
 });
 
 ]]></test>
