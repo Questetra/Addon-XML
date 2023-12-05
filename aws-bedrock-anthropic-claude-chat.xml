@@ -1,0 +1,433 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon Bedrock: Anthropic Claude: Chat</label>
+    <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
+    <last-modified>2023-12-05</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Anthropic Claude 
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="anthropic.claude-instant-v1">
+                <label>Claude Instant 1.2</label>
+            </item>
+            <item value="anthropic.claude-v2">
+                <label>Claude 2</label>
+            </item>
+            <item value="anthropic.claude-v2:1">
+                <label>Claude 2.1</label>
+            </item>
+        </config>
+        <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
+            <label>C5: Maximum number of tokens to consume (2048 if blank)</label>
+            <label locale="ja">C5: 使用するトークン数の上限（空白の場合、2048）</label>
+        </config>
+        <config name="conf_SystemPrompt" required="false" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>C6: System Prompt</label>
+            <label locale="ja">C6: システムプロンプト</label>
+        </config>
+        <config name="conf_Message1" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>U1: User Message</label>
+            <label locale="ja">U1: ユーザメッセージ</label>
+        </config>
+        <config name="conf_Answer1" required="true" form-type="SELECT"
+                select-data-type="STRING_TEXTAREA">
+            <label>A1: Data item to save response</label>
+            <label locale="ja">A1: 回答を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-anthropic-claude-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-bedrock-anthropic-claude-chat/</help-page-url>
+
+    <script><![CDATA[
+const SERVICE = 'bedrock';
+const HUMAN = '\n\nHuman:';
+const ASSISTANT = '\n\nAssistant:';
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject('conf_AccessKey').getToken();
+    const awsSecret = configs.getObject('conf_SecretKey').getToken();
+    const region = retrieveRegion();
+    const model = configs.get('conf_Model');
+    const maxTokens = retrieveMaxTokens();
+    const systemPrompt = configs.get('conf_SystemPrompt');
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+
+    ////// == 演算 / Calculating ==
+    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, systemPrompt, message);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveRegion() {
+    const region = configs.get('conf_Region');
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp('^[a-z]{2}-[a-z]{4,16}-[1-9]$');
+    if (!reg.test(region)) {
+        throw new Error('Region Code is invalid.');
+    }
+    return region;
+}
+
+const MAX_TOKENS_DEFAULT = 2048;
+
+/**
+ * config から最大トークン数を読み出す
+ * 指定なしの場合は 2048 を返す
+ * @returns {Number}
+ */
+const retrieveMaxTokens = () => {
+    const maxTokens = configs.get('conf_MaxTokens');
+    if (maxTokens === '') {
+        return MAX_TOKENS_DEFAULT;
+    }
+    const regExp = new RegExp(/^[1-9][0-9]*$/);
+    if (!regExp.test(maxTokens)) {
+        throw new Error('Maximum number of tokens must be a positive integer.');
+    }
+    return parseInt(maxTokens, 10);
+};
+
+/**
+ * モデルの実行
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param systemPrompt
+ * @param message
+ * @returns {String} answer
+ */
+const invokeModel = (awsKey, awsSecret, region, model, maxTokens, systemPrompt, message) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`;
+    const prompt = `${systemPrompt}${HUMAN} ${message} ${ASSISTANT}`;
+
+    const payload = {
+        prompt,
+        max_tokens_to_sample: maxTokens,
+        stop_sequences: [HUMAN]
+    };
+
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to invoke model. status: ${status}`);
+    }
+    let {completion} = JSON.parse(respTxt);
+    if (completion.length > 1) {
+        completion = completion.substring(1); // 先頭にスペースがあるから
+    }
+    return completion;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param systemPrompt
+ * @param message
+ * @returns {ProcessDataDefinitionView} answerDef
+ */
+const prepareConfigs = (key, secret, region, model, maxTokens, systemPrompt, message) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    configs.put('conf_Model', model);
+    configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_SystemPrompt', systemPrompt);
+    configs.put('conf_Message1', message);
+    
+    // 回答を保存するデータ項目を作成し、指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_response', 'STRING_TEXTAREA');
+    configs.putObject('conf_Answer1', answerDef);
+    engine.setData(answerDef, '事前文字列');
+    return answerDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+const MODEL_1 = 'anthropic.claude-instant-v1';
+const MODEL_2 = 'anthropic.claude-v2';
+const MODEL_2_1 = 'anthropic.claude-v2:1';
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'invalidregioncode';
+    prepareConfigs(key, secret, region, MODEL_1, '', '', 'Hi. How are you?');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-toomanycharacters-1';
+    prepareConfigs(key, secret, region, MODEL_1, '', '', 'Hi. How are you?');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '1.1', '', 'Hi. How are you?');
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - ゼロ
+ */
+test('Maximum number of tokens must be a positive integer - 0', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '0', '', 'Hi. How are you?');
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * メッセージが空
+ */
+test('Message is empty', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_1, '1280', '', '');
+
+    assertError('User Message is empty.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} region
+ * @param {String} model
+ * @param {String} maxTokens
+ * @param {String} systemPrompt
+ * @param {String} message
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           body
+                       }, region, model, maxTokens, systemPrompt, message) => {
+    expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    // Authorization ヘッダのテストは省略
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.prompt).toEqual(`${systemPrompt}\n\nHuman: ${message} \n\nAssistant:`);
+    expect(bodyObj.max_tokens_to_sample).toEqual(maxTokens);
+    expect(bodyObj.stop_sequences).toEqual(['\n\nHuman:']);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_1, '1280', '', message);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_1, 1280, '', message);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} model
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponse = (model, answerText) => {
+    const responseObj = {
+        model,
+        stop_reason: 'stop_sequence',
+        completion: ` ${answerText}` // 先頭にスペースを含む
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 最大トークン数を設定しない場合は 2048 が指定される
+ */
+test('Success - with default max tokens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-central-2';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_1, '', '', message);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_1, MAX_TOKENS_DEFAULT, '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 最大トークン数を指定
+ */
+test('Success - with max tokens', () => {
+    const key = 'key-99999';
+    const secret = 'secret-00000';
+    const region = 'us-east-1';
+    const message = 'Are you a robot?\n\nHow old are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2, '500', '', message);
+
+    const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_2, 500, '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_2, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - システムプロンプトを指定
+ */
+test('Success - with system prompt', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-central-2';
+    const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, '', systemPrompt, message);
+
+    const answer = 'こんにちは。お元気ですか？';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_2_1, MAX_TOKENS_DEFAULT, systemPrompt, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+]]></test>
+</service-task-definition>
