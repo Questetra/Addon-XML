@@ -134,6 +134,11 @@ function retrieveObjectKeys() {
 }
 
 /**
+ * 保存時のファイル名の最大長
+ */
+const FILE_NAME_MAX_LENGTH = 200;
+
+/**
  * ファイルダウンロード
  * @param key アクセスキー
  * @param secret シークレットアクセスキー
@@ -158,7 +163,10 @@ function downloadFile(key, secret, region, bucket, objectKey) {
     validateChecksum(objectKey, response, "x-amz-checksum-sha256", () => digest.sha256(data));
     validateChecksum(objectKey, response, "x-amz-checksum-sha1", () => digest.sha1(data));
 
-    const fileName = objectKey.split("/").pop();
+    let fileName = objectKey.split("/").pop();
+    if(fileName.length > FILE_NAME_MAX_LENGTH) {
+        fileName = fileName.substring(0, FILE_NAME_MAX_LENGTH-3) + "...";
+    }
     return new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileName,
         response.getContentType(),
@@ -614,6 +622,36 @@ test('Success - object key set as fixed value', () => {
     const results = engine.findData(filesDef);
     expect(results.size()).toEqual(4);
     assertFile(results.get(3), objectKey, contentType, body);
+});
+
+/**
+ * 成功
+ * オブジェクトキーを固定値で指定
+ * S3 上でのファイル名が長く、QBPMS の制限長を超える場合
+ */
+test('Success - object key set as fixed value - long file name', () => {
+    const key = 'key-99999';
+    const secret = 'secret-00000';
+    const region = 'us-east-2';
+    const bucket = 'bucket-name-999';
+    const objectKey = 'a'.repeat(FILE_NAME_MAX_LENGTH) + '.txt';
+    const contentType = 'text/md';
+    const body = 'long long file name';
+
+    const filesDef = prepareConfigs(key, secret, region, bucket, objectKey, true, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, objectKey);
+        reqCount++;
+        return httpClient.createHttpResponse(200, contentType, body);
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(1);
+
+    const results = engine.findData(filesDef);
+    expect(results.size()).toEqual(1);
+    assertFile(results.get(0), 'a'.repeat(FILE_NAME_MAX_LENGTH - 3) + '...', contentType, body);
 });
 ]]></test>
 </service-task-definition>
