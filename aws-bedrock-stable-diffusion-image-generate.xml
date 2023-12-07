@@ -3,7 +3,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Stable Diffusion: Generate Image</label>
     <label locale="ja">Amazon Bedrock: Stable Diffusion: 画像生成</label>
-    <!--    <last-modified>2023-11-30</last-modified> -->
+    <last-modified>2023-12-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item generates an image using Stability AI's Stable Diffusion on Amazon Bedrock.</summary>
     <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Stability AI の Stable Diffusion を用いて、画像を生成します。</summary>
@@ -205,6 +205,9 @@ const buildPayload = () => {
  */
 const retrieveTextPrompts = () => {
     const message = configs.get('conf_Message');
+    if (message === '') {
+        throw new Error('Text Prompt is blank.');
+    }
     const negative = configs.get('conf_Negative');
 
     const prompts = [{
@@ -254,6 +257,10 @@ const retrieveInitImage = () => {
         throw new Error("More than one base image files attached.");
     }
     const image = images.get(0);
+    if (!image.getContentType().startsWith('image/')) {
+        throw new Error("The base image file is not an image.");
+    }
+    // 幅、高さがそれぞれ 64 の倍数である必要があるが、事前に確認するのは難しいので、API に任せる
     return base64.encodeToString(fileRepository.readFile(image));
 };
 
@@ -390,5 +397,248 @@ const saveData = (configName, data) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param message
+ * @param negative
+ * @param size
+ * @param initImages
+ * @param style
+ * @param seed
+ * @param fileName
+ * @returns {ProcessDataDefinitionView} fileDef
+ */
+const prepareConfigs = (key, secret, region, message, negative, size, initImages, style, seed, fileName) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    configs.put('conf_Message', message);
+    configs.put('conf_Negative', negative);
+    configs.put('conf_Size', size);
+    configs.put('conf_Style', style);
+    configs.put('conf_FileName', fileName);
+
+    // ベース画像を添付するデータ項目を作成し、指定
+    const initImageDef = engine.createDataDefinition('ベース画像', 1, 'q_initImage', 'FILE');
+    configs.putObject('conf_InitImage', initImageDef);
+    engine.setData(initImageDef, initImages);
+
+    // シードを保持している / 保存するデータ項目を作成し、指定
+    const seedDef = engine.createDataDefinition('シード', 2, 'q_seed', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Seed', seedDef);
+    engine.setData(seedDef, seed);
+    
+    // 生成された画像を保存するデータ項目を作成し、指定
+    const fileDef = engine.createDataDefinition('生成された画像', 3, 'q_file', 'FILE');
+    configs.putObject('conf_File', fileDef);
+
+    return {seedDef, fileDef};
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'invalidregioncode';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', null, '生成された画像.png');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-toomanycharacters-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', null, '生成された画像.png');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * テキストプロンプトが空
+ */
+test('Text Prompt is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, '', negative, '1024x1024', null, '3d-model', null, '生成された画像.png');
+
+    assertError('Text Prompt is blank.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('File name is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', null, '');
+
+    assertError('File name is blank.');
+});
+
+/**
+ * ベースとする画像ファイルが 2 つ以上添付されている
+ */
+test('More than one base image files attached', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const initImages = new java.util.ArrayList();
+    initImages.add(engine.createQfile('画像1.png', 'image/png', 'aaa'));
+    initImages.add(engine.createQfile('画像2.png', 'image/png', 'bbb'));
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', initImages, '3d-model', null, '生成された画像.png');
+
+    assertError('More than one base image files attached.');
+});
+
+/**
+ * ベースとする画像ファイルの Content-Type が image/ で始まらない
+ */
+test('The base image file is not an image', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const initImages = new java.util.ArrayList();
+    initImages.add(engine.createQfile('画像でないファイル', 'text/plain', 'aaa'));
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', initImages, '3d-model', null, '生成された画像.png');
+
+    assertError('The base image file is not an image.');
+});
+
+/**
+ * シードに数字でない文字を含む
+ */
+test('Seed is invalid - includes invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', '-1', '生成された画像.png');
+
+    assertError(`Seed must be an integer from 0 to ${MAX_SEED}.`);
+});
+
+/**
+ * シードが上限値を超える
+ */
+test('Seed is invalid - exceeds the limit', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', String(MAX_SEED + 1), '生成された画像.png');
+
+    assertError(`Seed must be an integer from 0 to ${MAX_SEED}.`);
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} region
+ * @param {String} message
+ * @param {String} negative
+ * @param {Number} width
+ * @param {Number} height
+ * @param {QfileView} initImage
+ * @param {String} style
+ * @param {Number} seedNum
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           body
+                       }, region, message, negative, width, height, initImage, style, seedNum) => {
+    expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${MODEL}/invoke`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    // Authorization ヘッダのテストは省略
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.text_prompts[0]).toEqual({
+        text: message,
+        weight: 1.0
+    });
+    if (negative !== '') {
+        expect(bodyObj.text_prompts[1]).toEqual({
+            text: negative,
+            weight: -0.5
+        });
+    }
+    if (initImage !== undefined) {
+        expect(bodyObj.init_image).toEqual(base64.encodeToString(fileRepository.readFile(initImage)));
+        expect(bodyObj.width).toEqual(undefined);
+        expect(bodyObj.height).toEqual(undefined);
+    } else {
+        expect(bodyObj.init_image).toEqual(undefined);
+        expect(bodyObj.width).toEqual(width);
+        expect(bodyObj.height).toEqual(height);
+    }
+    expect(bodyObj.style_preset).toEqual(style);
+    expect(bodyObj.seed).toEqual(seedNum);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, message, negative, '1024x1024', null, '3d-model', null, '生成された画像.png');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, message, negative, 1024, 1024, undefined, '3d-model', undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
+});
+
 ]]></test>
 </service-task-definition>
