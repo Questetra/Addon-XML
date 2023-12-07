@@ -56,9 +56,6 @@ function main() {
     if (objectKeys.length === 0) {
         return;
     }
-    if (objectKeys.length > httpClient.getRequestingLimit()) {
-        throw new Error("The number of objectKeys exceeds the limit.");
-    }
 
     const fileDef = configs.getObject("conf_Files");
     const files = engine.findData(fileDef) ?? new java.util.ArrayList();
@@ -126,6 +123,10 @@ function retrieveObjectKeys() {
             throw new Error(`The object key "${key}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
         }
     });
+    if (keys.length > httpClient.getRequestingLimit()) {
+        throw new Error("The number of object keys exceeds the limit.");
+    }
+
     return keys;
 }
 
@@ -208,5 +209,225 @@ function validateChecksum(objectKey, response, headerName, calculate) {
     </icon>
 
     <test><![CDATA[
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param bucket
+ * @param keys
+ * @param isFixed バケット名とオブジェクトキーを固定値で指定するか
+ * @param files
+ */
+const prepareConfigs = (key, secret, region, bucket, keys, isFixed, files) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    if (isFixed) {
+        configs.put('conf_Bucket', bucket);
+        configs.put('conf_Keys', keys);
+    } else {
+        const bucketDef = engine.createDataDefinition('バケット', 1, 'q_bucket', 'STRING_TEXTFIELD');
+        configs.putObject('conf_Bucket', bucketDef);
+        engine.setData(bucketDef, bucket);
+        const prefixDef = engine.createDataDefinition('オブジェクトキー', 2, 'q_keys', 'STRING_TEXTAREA');
+        configs.putObject('conf_Keys', prefixDef);
+        engine.setData(prefixDef, keys);
+    }
+
+    const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
+    configs.putObject('conf_Files', filesDef);
+    engine.setData(filesDef, files);
+};
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'invalidregioncode';
+    const bucket = 'abc-def.ghi';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-toomanycharacters-1';
+    const bucket = 'abc-def.ghi';
+    prepareConfigs(key, secret, region, null, null, false, null);
+
+    assertError(main, 'Region Code is invalid.');
+});
+
+/**
+ * バケット名をデータ項目で指定し、値が空
+ */
+test('Bucket Name is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    prepareConfigs(key, secret, region, null, null, false, null);
+
+    assertError(main, 'Bucket Name is blank.');
+});
+
+/**
+ * バケット名が 2 文字以下
+ */
+test('Bucket Name is invalid - too short', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名が 64 文字以上
+ */
+test('Bucket Name is invalid - too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'a'.repeat(64);
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名に不正な文字が含まれる
+ */
+test('Bucket Name is invalid - contains invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc/def';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がハイフン
+ */
+test('Bucket Name is invalid - starts with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '-abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の先頭がドット
+ */
+test('Bucket Name is invalid - starts with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '.abc';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がハイフン
+ */
+test('Bucket Name is invalid - ends with a slash', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123-';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名の末尾がドット
+ */
+test('Bucket Name is invalid - ends with a dot', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = '123.';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * バケット名にドットが連続する
+ */
+test('Bucket Name is invalid - adjacent dots', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc..efg';
+    prepareConfigs(key, secret, region, bucket, null, false, null);
+
+    assertError(main, 'Bucket Name is invalid.');
+});
+
+/**
+ * オブジェクトキーが長すぎる
+ */
+test('Object key is too long', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const longKey = 'あ'.repeat(Math.ceil(MAX_OBJECT_KEY_BYTES / 3)); //「あ」は 3 バイト
+    const keys = 'abc\n' // 1 つ目のオブジェクトキーは問題ない
+        + longKey; // 2 つ目のオブジェクトキーが長すぎる
+    prepareConfigs(key, secret, region, bucket, keys, false, null);
+
+    assertError(main, `The object key "${longKey}" is too long. Each object key must be less than ${MAX_OBJECT_KEY_BYTES} bytes.`);
+});
+
+/**
+ * オブジェクトキーが多すぎて、HTTP リクエスト数の上限を超える
+ */
+test('Too many object keys', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const keys = 'path\n'.repeat(httpClient.getRequestingLimit() + 1);
+    prepareConfigs(key, secret, region, bucket, keys, false, null);
+
+    assertError(main, 'The number of object keys exceeds the limit.');
+});
 ]]></test>
 </service-task-definition>
