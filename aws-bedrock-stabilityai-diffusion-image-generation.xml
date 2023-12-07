@@ -145,53 +145,15 @@ function main() {
     const awsKey = configs.getObject("conf_AccessKey").getToken();
     const awsSecret = configs.getObject("conf_SecretKey").getToken();
     const region = retrieveRegion();
+    const payload = buildPayload();
+    const fileName = configs.get("conf_FileName");
 
     ////// == 演算 / Calculating ==
-    // cfg_scale / steps は stability.ai のデフォルト値で行く
-    const payload = {
-        text_prompts: retrieveTextPrompts(),
-        seed: retrieveSeed(),
-        style_preset: retrieveStyle()
-    };
+    const { generatedFile, seed } = generateImage(awsKey, awsSecret, region, payload, fileName);
 
-    const initImage = retrieveInitImage();
-    const size = retrieveImageSize();
-    if (initImage !== null) {
-        Object.assign(payload, {
-            init_image: initImage
-        });
-    } else if (size !== null) {
-        Object.assign(payload, {
-            width: size.width,
-            height: size.height
-        });
-    }
-
-    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${MODEL}/invoke`;
-    const response = httpClient.begin()
-        .awsSignV4(awsKey, awsSecret, region, SERVICE)
-        .body(JSON.stringify(payload), "application/json")
-        .post(URL);
-
-    const status = response.getStatusCode();
-    const respTxt = response.getResponseAsString();
-    if (status !== 200) {
-        engine.log(respTxt);
-        throw new Error(`status is not 200: ${status}`);
-    }
-
-    const {artifacts} = JSON.parse(respTxt);
-    engine.log(JSON.stringify(Object.assign({}, artifacts[0], {
-        base64: undefined
-    })));
-    const image = base64.decodeFromStringToByteArray(artifacts[0].base64);
-    const newFile = new com.questetra.bpms.core.event.scripttask.NewQfile(
-        configs.get('conf_FileName'),
-        "image/png",
-        image
-    );
-    saveFileData('conf_File', newFile);
-    saveData('conf_Seed', String(artifacts[0].seed));
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveFileData('conf_File', generatedFile);
+    saveData('conf_Seed', seed);
 }
 
 /**
@@ -209,6 +171,38 @@ const retrieveRegion = () => {
     return region;
 }
 
+/**
+ * config から API リクエストのボティにセットするパラメータを読み出し、
+ * ペイロードを構築する
+ * @return {Object}
+ */
+const buildPayload = () => {
+    // cfg_scale / steps は stability.ai のデフォルト値で行く
+    const payload = {
+        text_prompts: retrieveTextPrompts(),
+        seed: retrieveSeed(),
+        style_preset: retrieveStyle()
+    };
+
+    const initImage = retrieveInitImage();
+    const size = retrieveImageSize();
+    if (initImage !== null) {
+        Object.assign(payload, {
+            init_image: initImage
+        });
+    } else if (size !== null) { // init_image がある場合は size は無視される
+        Object.assign(payload, {
+            width: size.width,
+            height: size.height
+        });
+    }
+    return payload;
+}
+
+/**
+ * config からテキストプロンプトとネガティブプロンプトを読み出す
+ * @return {Array}
+ */
 const retrieveTextPrompts = () => {
     const message = configs.get('conf_Message');
     const negative = configs.get('conf_Negative');
@@ -226,6 +220,10 @@ const retrieveTextPrompts = () => {
     return prompts;
 };
 
+/**
+ * config から画像サイズを読み出す
+ * @return {Object} {width, height}
+ */
 const retrieveImageSize = () => {
     const size = configs.get("conf_Size");
     if (size === "") {
@@ -239,6 +237,10 @@ const retrieveImageSize = () => {
     };
 };
 
+/**
+ * config からベースとする画像を読み出し、base64 エンコードして返す
+ * @return {String} base64 エンコードされた画像
+ */
 const retrieveInitImage = () => {
     const imageDef = configs.getObject("conf_InitImage");
     if (imageDef === null) {
@@ -255,6 +257,10 @@ const retrieveInitImage = () => {
     return base64.encodeToString(fileRepository.readFile(image));
 };
 
+/**
+ * config から画像スタイルを読み出す
+ * @return {String}
+ */
 const retrieveStyle = () => {
     const style = configs.get("conf_Style");
     if (style === "") {
@@ -263,6 +269,10 @@ const retrieveStyle = () => {
     return style;
 };
 
+/**
+ * config からシードを読み出す
+ * @return {Number}
+ */
 const retrieveSeed = () => {
     const seedDef = configs.getObject("conf_Seed");
     if (seedDef === null) {
@@ -282,6 +292,43 @@ const retrieveSeed = () => {
         throw new Error("Invalid seed integer.");
     }
     return seedNum;
+};
+
+/**
+ * 画像を生成する API リクエストを送信
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param payload
+ * @param fileName
+ * @return {Object} {generatedFile: NewQfile, seed: String}
+ */
+const generateImage = (awsKey, awsSecret, region, payload, fileName) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${MODEL}/invoke`;
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), "application/json")
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to invoke model. status: ${status}`);
+    }
+
+    const {artifacts} = JSON.parse(respTxt);
+    engine.log(JSON.stringify(Object.assign({}, artifacts[0], { // base64 以外の値をログ出力
+        base64: undefined
+    })));
+    const image = base64.decodeFromStringToByteArray(artifacts[0].base64);
+    const generatedFile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        "image/png",
+        image
+    );
+    const seed = String(artifacts[0].seed)
+    return { generatedFile, seed };
 };
 
 /**
@@ -316,6 +363,7 @@ const saveData = (configName, data) => {
 };
 
     ]]></script>
+
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
         l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
         xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
@@ -338,6 +386,7 @@ const saveData = (configName, data) => {
         k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
         xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
     </icon>
+
     <test><![CDATA[
 ]]></test>
 </service-task-definition>
