@@ -218,6 +218,7 @@ function validateChecksum(objectKey, response, headerName, calculate) {
  * @param keys
  * @param isFixed バケット名とオブジェクトキーを固定値で指定するか
  * @param files
+ * @return ファイル型データ項目
  */
 const prepareConfigs = (key, secret, region, bucket, keys, isFixed, files) => {
     // 認証設定を作成し、指定
@@ -234,14 +235,16 @@ const prepareConfigs = (key, secret, region, bucket, keys, isFixed, files) => {
         const bucketDef = engine.createDataDefinition('バケット', 1, 'q_bucket', 'STRING_TEXTFIELD');
         configs.putObject('conf_Bucket', bucketDef);
         engine.setData(bucketDef, bucket);
-        const prefixDef = engine.createDataDefinition('オブジェクトキー', 2, 'q_keys', 'STRING_TEXTAREA');
-        configs.putObject('conf_Keys', prefixDef);
-        engine.setData(prefixDef, keys);
+        const objectKeyDef = engine.createDataDefinition('オブジェクトキー', 2, 'q_keys', 'STRING_TEXTAREA');
+        configs.putObject('conf_Keys', objectKeyDef);
+        engine.setData(objectKeyDef, keys);
     }
 
     const filesDef = engine.createDataDefinition('ファイル', 3, 'q_files', 'FILE');
     configs.putObject('conf_Files', filesDef);
     engine.setData(filesDef, files);
+
+    return filesDef;
 };
 
 /**
@@ -428,6 +431,88 @@ test('Too many object keys', () => {
     prepareConfigs(key, secret, region, bucket, keys, false, null);
 
     assertError(main, 'The number of object keys exceeds the limit.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param {String} region
+ * @param {String} bucket
+ * @param {String} objectKey
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           headers
+                       }, region, bucket, objectKey) => {
+    expect(url).toEqual(`https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(objectKey)}`);
+    expect(method).toEqual('GET');
+    expect(headers['x-amz-checksum-mode']).toEqual('ENABLED');
+    // Authorization ヘッダのテストは省略
+};
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param contentType
+ * @param body
+ */
+const assertFile = (file, name, contentType, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+    const text = fileRepository.readFile(file, "UTF-8");
+    expect(text).toEqual(body);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const objectKey = 'testfolder/testfile1.txt';
+
+    prepareConfigs(key, secret, region, bucket, objectKey, false, null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, objectKey);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError(main, `Failed to download "${objectKey}" from S3. status: 400`);
+});
+
+/**
+ * 成功
+ * オブジェクトキーをデータ項目で指定
+ */
+test('Success - objectKey set by data item', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const objectKey = 'testfolder/testfile1.txt';
+
+    const filesDef = prepareConfigs(key, secret, region, bucket, objectKey, false, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, objectKey);
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(1);
+
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), "testfile1.txt", "application/json", "{}");
 });
 ]]></test>
 </service-task-definition>
