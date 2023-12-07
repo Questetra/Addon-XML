@@ -142,18 +142,44 @@ function downloadFile(key, secret, region, bucket, objectKey) {
     const url = `https://${bucket}.s3.${region}.amazonaws.com/${encodedObjectKey}`;
     const response = httpClient.begin()
         .awsSignV4(key, secret, region, "s3")
+        .header("x-amz-checksum-mode", "ENABLED")
         .get(url);
     const status = response.getStatusCode();
     if (status !== 200) {
         engine.log(response.getResponseAsString());
         throw new Error(`Failed to download "${objectKey}" from S3. status: ${status}`);
     }
+
+    const data = response.getResponse();
+    validateChecksum(objectKey, response, "x-amz-checksum-sha256", () => digest.sha256(data));
+    validateChecksum(objectKey, response, "x-amz-checksum-sha1", () => digest.sha1(data));
+
     const fileName = objectKey.split("/").pop();
     return new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileName,
         response.getContentType(),
-        response.getResponse()
+        data
     );
+}
+
+/**
+ * チェックサムの検証
+ * @param objectKey ダウンロードしたファイルのオブジェクトキー
+ * @param response レスポンス
+ * @param headerName チェックサムヘッダー名
+ * @param calculate チェックサムを計算する関数
+ */
+function validateChecksum(objectKey, response, headerName, calculate) {
+    let checksumHeaders = response.getHeaderValues(headerName);
+    if (checksumHeaders.isEmpty()) {
+        return;
+    }
+    const checksum = checksumHeaders.get(0);
+    const calculated = base64.encodeToString(calculate());
+    if (checksum !== calculated) {
+        throw new Error(`The checksum of the downloaded file "${objectKey}" does not match. expected: ${checksum}, actual: ${calculated}`);
+    }
+    engine.log(`Checksum of "${objectKey}" is OK. ${checksum}`);
 }
     ]]></script>
 
