@@ -490,29 +490,80 @@ test('Fail to request', () => {
 /**
  * 成功
  * オブジェクトキーをデータ項目で指定
+ * ファイル型データ項目の値は空
  */
 test('Success - objectKey set by data item', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'ap-northeast-1';
     const bucket = 'abc123-efg.hij';
-    const objectKey = 'testfolder/testfile1.txt';
+    const objectKeys = ['testfolder/testfile1.txt', 'テスト/テスト.html', 'テスト.txt'];
+    const contentTypes = ['application/json', 'text/html', 'text/plain'];
+    const bodies = ['{}', '<html lang="ja"></html>', 'テスト'];
 
-    const filesDef = prepareConfigs(key, secret, region, bucket, objectKey, false, null);
+    const filesDef = prepareConfigs(key, secret, region, bucket, objectKeys.join('\n'), false, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, objectKeys[reqCount]);
+        const response = httpClient.createHttpResponse(200, contentTypes[reqCount], bodies[reqCount]);
+        if (reqCount === 1) {
+            // sha256 チェックサムを指定
+            const data = engine.createByteArray(bodies[reqCount]);
+            const checksum = base64.encodeToString(digest.sha256(data));
+            response.addHeader('x-amz-checksum-sha256', checksum);
+        } else if(reqCount === 2) {
+            // sha1 チェックサムを指定
+            const data = engine.createByteArray(bodies[reqCount]);
+            const checksum = base64.encodeToString(digest.sha1(data));
+            response.addHeader('x-amz-checksum-sha1', checksum);
+        }
+        reqCount++;
+        return response;
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(objectKeys.length);
+
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(objectKeys.length);
+    assertFile(files.get(0), "testfile1.txt", contentTypes[0], bodies[0]);
+    assertFile(files.get(1), "テスト.html", contentTypes[1], bodies[1]);
+    assertFile(files.get(2), "テスト.txt", contentTypes[2], bodies[2]);
+});
+
+/**
+ * 成功
+ * オブジェクトキーを固定値で指定
+ * 既にファイル型データ項目にファイルが添付されている
+ */
+test('Success - object key set as fixed value', () => {
+    const key = 'key-99999';
+    const secret = 'secret-00000';
+    const region = 'us-east-2';
+    const bucket = 'bucket-name-999';
+    const objectKey = 'testfile4';
+    const contentType = 'application/octet-stream';
+    const body = 'ddddd';
+
+    const files = new java.util.ArrayList();
+    files.add(engine.createQfile('testfile1.txt', 'text/plain', 'aaaaa'));
+    files.add(engine.createQfile('testfile2.txt', 'text/plain', 'bbbbb'));
+    files.add(engine.createQfile('testfile3.txt', 'text/plain', 'ccccc'));
+    const filesDef = prepareConfigs(key, secret, region, bucket, objectKey, true, files);
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         assertRequest(request, region, bucket, objectKey);
         reqCount++;
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        return httpClient.createHttpResponse(200, contentType, body);
     });
-
     expect(main()).toEqual(undefined);
     expect(reqCount).toEqual(1);
 
-    const files = engine.findData(filesDef);
-    expect(files.size()).toEqual(1);
-    assertFile(files.get(0), "testfile1.txt", "application/json", "{}");
+    const results = engine.findData(filesDef);
+    expect(results.size()).toEqual(4);
+    assertFile(results.get(3), objectKey, contentType, body);
 });
 ]]></test>
 </service-task-definition>
