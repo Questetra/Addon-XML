@@ -178,7 +178,7 @@ function validateChecksum(objectKey, response, headerName, calculate) {
     const checksum = checksumHeaders.get(0);
     const calculated = base64.encodeToString(calculate());
     if (checksum !== calculated) {
-        throw new Error(`The checksum of the downloaded file "${objectKey}" does not match. expected: ${checksum}, actual: ${calculated}`);
+        throw new Error(`The checksum of the downloaded file "${objectKey}" does not match. s3: ${checksum}, file: ${calculated}`);
     }
     engine.log(`Checksum of "${objectKey}" is OK. ${checksum}`);
 }
@@ -485,6 +485,35 @@ test('Fail to request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError(main, `Failed to download "${objectKey}" from S3. status: 400`);
+});
+
+/**
+ * チェックサムの検証で失敗
+ */
+test('Fail to validate checksum', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'ap-northeast-1';
+    const bucket = 'abc123-efg.hij';
+    const objectKey = 'testfile1.txt';
+    const body = 'aaaaa';
+
+    prepareConfigs(key, secret, region, bucket, objectKey, false, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, bucket, objectKey);
+        const response = httpClient.createHttpResponse(200, 'text/plain', body);
+        // 間違った sha256 チェックサムを指定
+        response.addHeader('x-amz-checksum-sha256', 'hogehoge');
+        reqCount++;
+        return response;
+    });
+    // 正しいチェックサムを計算
+    const data = engine.createByteArray(body);
+    const checksum = base64.encodeToString(digest.sha256(data));
+    assertError(main, `The checksum of the downloaded file "${objectKey}" does not match. s3: hogehoge, file: ${checksum}`);
+    expect(reqCount).toEqual(1);
 });
 
 /**
