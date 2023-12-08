@@ -110,6 +110,9 @@ function main() {
     const style = retriveSelectItem('conf_Style');
     const quality = retriveSelectItem('conf_Quality');
     const fileName = configs.get('conf_FileName');
+    if (fileName === '') {
+        throw new Error('File name is empty.');
+    }
 
     ////// == 演算 / Calculating ==
     const newFile = generateImage(auth, organizationId, model, prompt, size, style, quality, fileName);
@@ -273,16 +276,152 @@ const assertError = (errorMsg) => {
         main();
         fail();
     } catch (e) {
-        expect(e.message).toEqual(errorMsg);
+        expect(e.toString()).containsString(errorMsg);
     }
 };
+
+/**
+ * OraganizationId が不正
+ * マルチバイト文字を含む
+ */
+test('OrganizationId is invalid', () => {
+    prepareConfigs('key', 'そしき', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+    assertError("node.event.intermediate.message.throwing.http.header.invalid");
+});
 
 /**
  * プロンプトが空
  */
 test('Prompt is empty', () => {
-    prepareConfigs('key', '', 'dall-e-2', '', '', '', '', '', null);
+    prepareConfigs('key', '', 'dall-e-2', '', '512x512', '', '', 'test.png', null);
     assertError('Prompt is empty.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('FileName is empty', () => {
+    prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', '', null);
+    assertError('File name is empty.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param {String} authKey
+ * @param {String} organizationId
+ * @param {String} model
+ * @param {String} prompt
+ * @param {String} size
+ * @param {String} style
+ * @param {String} quality
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           headers,
+                           body
+                       }, authKey, organizationId, model, prompt, size, style, quality) => {
+    expect(url).toEqual('https://api.openai.com/v1/images/generations');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    expect(headers['Authorization']).toEqual(`Bearer ${authKey}`);
+    if (organizationId !== '') {
+        expect(headers['OpenAI-Organization']).toEqual(organizationId);
+    }
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.model).toEqual(model);
+    expect(bodyObj.prompt).toEqual(prompt);
+    expect(bodyObj.size).toEqual(size);
+    expect(bodyObj.style).toEqual(style);
+    expect(bodyObj.quality).toEqual(quality);
+    expect(bodyObj.n).toEqual(1);
+    expect(bodyObj.response_format).toEqual('b64_json');
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    prepareConfigs('invalidKey', '', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'invalidKey', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to request. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} image 画像データ。本来はバイナリだが、テキストデータでテスト。
+ * @returns {String} response
+ */
+const createResponse = (image) => {
+    const responseObj = {
+        "created": Math.floor(Date.now() / 1000),
+        "data": [{
+            b64_json: base64.encodeToString(image)
+        }]
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param contentType
+ * @param body
+ */
+const assertFile = (file, name, contentType, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+    const text = fileRepository.readFile(file, "UTF-8");
+    expect(text).toEqual(body);
+};
+
+/**
+ * 成功
+ */
+test('Success to request', () => {
+    const fileDef = prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
+    });
+    main();
+
+    // データ項目の値をチェック
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), 'test.png', 'image/png', 'image');
+});
+
+
+/**
+ * 成功 - 組織 ID / スタイル / 品質を指定
+ */
+test('Success to request - with organization ID, Style, Quality', () => {
+    const fileDef = prepareConfigs('key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', 'vivid', 'hd', 'image.png', null);
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', 'vivid', 'hd');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("png"));
+    });
+    main();
+
+    // データ項目の値をチェック
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), 'image.png', 'image/png', 'png');
 });
     ]]></test>
 </service-task-definition>
