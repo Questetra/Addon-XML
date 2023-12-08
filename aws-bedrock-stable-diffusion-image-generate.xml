@@ -3,7 +3,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Stable Diffusion: Generate Image</label>
     <label locale="ja">Amazon Bedrock: Stable Diffusion: 画像生成</label>
-    <last-modified>2023-12-07</last-modified>
+    <last-modified>2023-12-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item generates an image using Stability AI's Stable Diffusion on Amazon Bedrock.</summary>
     <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Stability AI の Stable Diffusion を用いて、画像を生成します。</summary>
@@ -410,7 +410,7 @@ const saveData = (configName, data) => {
  * @param style
  * @param seed
  * @param fileName
- * @returns {ProcessDataDefinitionView} fileDef
+ * @returns {ProcessDataDefinitionView, ProcessDataDefinitionView} seedDef, fileDef
  */
 const prepareConfigs = (key, secret, region, message, negative, size, initImages, style, seed, fileName) => {
     // 認証設定を作成し、指定
@@ -603,7 +603,7 @@ const assertRequest = ({
         text: message,
         weight: 1.0
     });
-    if (negative !== '') {
+    if (negative !== undefined) {
         expect(bodyObj.text_prompts[1]).toEqual({
             text: negative,
             weight: -0.5
@@ -625,7 +625,7 @@ const assertRequest = ({
 /**
  * API リクエストでエラー
  */
-test('Fail to request', () => {
+test('Fail in API request', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
@@ -638,6 +638,130 @@ test('Fail to request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} seed
+ * @param {String} base64
+ * @returns {String} response
+ */
+const createResponse = (seed, base64) => {
+    const responseObj = {
+        artifacts: [{
+            seed,
+            base64,
+            finishReason: 'SUCCESS'
+        }]
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 必須項目のみ指定。ベースとなる画像、シードはデータ項目の指定はあるが、値が空
+ */
+test('Success - only required params', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, message, '', '', null, '', null, '生成された画像.png');
+
+    const seedNum = 1234567890;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, message, undefined, undefined, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('aaa')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('生成された画像.png');
+    expect(files.get(0).getContentType()).toEqual('image/png');
+});
+
+/**
+ * 成功 - 必須項目のみ指定。ベースとなる画像、シードはデータ項目の指定なし
+ * 生成された画像を保存するデータ項目に、他のファイルがすでに添付されている場合
+ */
+test('Success - only required params, data item for initImage or seed is not selected', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, message, '', '', null, '', null, '生成された画像.png');
+    // データ項目の指定をはずす
+    configs.put('conf_InitImage', '');
+    configs.put('conf_Seed', '');
+    // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
+    engine.setData(fileDef, [engine.createQfile('既存のファイル.txt', 'text/plain', 'aaa')]);
+
+    const seedNum = 1234567890;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, message, undefined, undefined, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('123')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(null); // データ項目の指定が外れているので
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('既存のファイル.txt');
+    expect(files.get(1).getName()).toEqual('生成された画像.png');
+    expect(files.get(1).getContentType()).toEqual('image/png');
+});
+
+
+/**
+ * 成功 - ネガティブプロンプト、サイズ、スタイル、シードを指定
+ */
+test('Success - with negative prompt, size, style and seed', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body,pink hair,blue eyes';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const seedNum = MAX_SEED;
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, message, negative, '1152x896', null, '3d-model', String(seedNum), 'Image.png');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, message, negative, 1152, 896, undefined, '3d-model', seedNum);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('bbb')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('Image.png');
+    expect(files.get(0).getContentType()).toEqual('image/png');
+});
+
+/**
+ * 成功 - ベースとなる画像を指定すると、サイズは無視される
+ */
+test('Success - with base image file, ignoring size', () => {
+    const key = 'key-09876';
+    const secret = 'secret-54321';
+    const region = 'us-east-1';
+    const message = 'masterpiece,high quality,extremely detailed face,1 girl,full body,pink hair,blue eyes';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const initImage = engine.createQfile('ベースとなる画像.png', 'image/png', 'aaa');
+    const seedNum = 0;
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, message, negative, '1152x896', [initImage], 'neon-punk', String(seedNum), 'Image2.png');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, message, negative, undefined, undefined, initImage, 'neon-punk', seedNum);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('ccc')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('Image2.png');
+    expect(files.get(0).getContentType()).toEqual('image/png');
 });
 
 ]]></test>
