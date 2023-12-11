@@ -1,0 +1,428 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <last-modified>2023-12-11</last-modified>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+
+    <label>OpenAI DALL-E: Generate Image</label>
+    <label locale="ja">OpenAI DALL-E: 画像生成</label>
+
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-openai-dalle-image-generate/
+    </help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-openai-dalle-image-generate/
+    </help-page-url>
+
+    <summary>This item generates an image using OpenAI DALL-E.</summary>
+    <summary locale="ja">この工程は、OpenAI DALL-E を用いて、画像を生成します。</summary>
+
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2"
+                auth-type="TOKEN">
+            <label>C1: Authorization Setting in which Authentication Key is set
+            </label>
+            <label locale="ja">C1: 認証キーを設定した認証設定</label>
+        </config>
+        <config name="conf_OrganizationId" required="false" form-type="TEXTFIELD">
+            <label>C2: Organization ID (Default organization if blank)
+            </label>
+            <label locale="ja">C2: 組織 ID（空白の場合、デフォルトの組織）</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM">
+            <label>C3: Model</label>
+            <label locale="ja">C3: モデル</label>
+            <item value="dall-e-2">
+                <label>dall-e-2</label>
+            </item>
+            <item value="dall-e-3">
+                <label>dall-e-3</label>
+            </item>
+        </config>
+        <config name="conf_Prompt" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C4: Prompt</label>
+            <label locale="ja">C4: プロンプト</label>
+        </config>
+        <config name="conf_Size" form-type="SELECT_ITEM">
+            <label>C5: 画像サイズ</label>
+            <label locale="ja">C5: Image Size</label>
+            <item value="1024x1024">
+                <label>1024x1024</label>
+            </item>
+            <item value="1792x1024">
+                <label>1792x1024</label>
+            </item>
+            <item value="1024x1792">
+                <label>1024x1792</label>
+            </item>
+            <item value="512x512">
+                <label>512x512</label>
+            </item>
+            <item value="256x256">
+                <label>256x256</label>
+            </item>
+        </config>
+        <config name="conf_Style" form-type="SELECT_ITEM">
+            <label>C6: 画像スタイル</label>
+            <label locale="ja">C6: Image Style</label>
+            <item value="vivid">
+                <label>vivid</label>
+            </item>
+            <item value="natural">
+                <label>natural</label>
+            </item>
+        </config>
+        <config name="conf_Quality" form-type="SELECT_ITEM">
+            <label>C7: 画像品質</label>
+            <label locale="ja">C7: Image Quality</label>
+            <item value="standard">
+                <label>standard</label>
+            </item>
+            <item value="hd">
+                <label>hd</label>
+            </item>
+        </config>
+        <config name="conf_File" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C8: Data item to add the generated file</label>
+            <label locale="ja">C8: 生成されたファイルを追加保存するデータ項目</label>
+        </config>
+        <config name="conf_FileName" form-type="TEXTFIELD" required="true" el-enabled="true">
+            <label>C9: File name to save as</label>
+            <label locale="ja">C9: 保存する際のファイル名</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');   /// REQUIRED
+    const organizationId = configs.get('conf_OrganizationId');
+    const model = configs.get('conf_Model');
+    const prompt = configs.get('conf_Prompt');
+    if (prompt === '') {
+        throw new Error('Prompt is empty.');
+    }
+
+    const size = retriveSelectItem('conf_Size');
+    const style = retriveSelectItem('conf_Style');
+    const quality = retriveSelectItem('conf_Quality');
+    const fileName = configs.get('conf_FileName');
+    if (fileName === '') {
+        throw new Error('File name is empty.');
+    }
+
+    ////// == 演算 / Calculating ==
+    const newFile = generateImage(auth, organizationId, model, prompt, size, style, quality, fileName);
+
+    saveFileData('conf_File', newFile);
+}
+
+/**
+ * form-type="SELECT_ITEM" の設定値を取得する
+ * 空の場合、undefined を返す
+ * @param configName
+ * @returns {undefined|String}
+ */
+const retriveSelectItem = (configName) => {
+    const value = configs.get(configName);
+    if (value === '') {
+        return undefined;
+    }
+    return value;
+};
+
+/**
+ * 画像生成
+ * @param auth
+ * @param organizationId
+ * @param model
+ * @param prompt
+ * @param size
+ * @param style
+ * @param quality
+ * @returns {String} answer1
+ */
+const generateImage = (auth, organizationId, model, prompt, size, style, quality, fileName) => {
+    // https://platform.openai.com/docs/guides/safety-best-practices
+    // Sending end-user IDs in your requests can be a useful tool to help OpenAI monitor and detect abuse.
+    const user = `m${processInstance.getProcessModelInfoId().toString()}`;
+
+    /// prepare json
+    const requestJson = {
+        model,
+        prompt,
+        size,
+        style,
+        quality,
+        user,
+        n: 1,
+        response_format: 'b64_json'
+    };
+
+    let request = httpClient.begin().authSetting(auth)
+        .body(JSON.stringify(requestJson), 'application/json');
+    if (organizationId !== null && organizationId !== '') {
+        request = request.header('OpenAI-Organization', organizationId);
+    }
+    const response = request.post('https://api.openai.com/v1/images/generations');
+
+    const responseCode = response.getStatusCode();
+    const responseBody = response.getResponseAsString();
+    engine.log(responseBody);
+    if (responseCode !== 200) {
+        throw new Error(`Failed to request. status: ${responseCode}`);
+    }
+    const responseJson = JSON.parse(responseBody);
+    const image = base64.decodeFromStringToByteArray(responseJson.data[0].b64_json);
+    return new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        "image/png",
+        image
+    );
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param newFile
+ */
+const saveFileData = (configName, newFile) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    let files = engine.findData(def);
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+    files.add(newFile);
+    engine.setData(def, files);
+};
+]]></script>
+
+
+    <icon>
+        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
+        AAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+/**
+ * 設定の準備
+ * @param {String} authKey
+ * @param {String} organizationId
+ * @param {String} model
+ * @param {String} prompt
+ * @param {String} size
+ * @param {String} style
+ * @param {String} quality
+ * @param {String} fileName
+ * @param {null|Array<Object>} files
+ * @returns {DataDefinitionView} fileDef
+ */
+const prepareConfigs = (authKey, organizationId, model, prompt, size, style, quality, fileName, files) => {
+    const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
+    configs.putObject('conf_Auth', authSetting);
+
+    configs.put('conf_OrganizationId', organizationId);
+    configs.put('conf_Model', model);
+    configs.put('conf_Prompt', prompt);
+    configs.put('conf_Size', size);
+    configs.put('conf_Style', style);
+    configs.put('conf_Quality', quality);
+    configs.put('conf_FileName', fileName);
+
+    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_file', 'FILE');
+    engine.setData(fileDef, files);
+    configs.putObject('conf_File', fileDef);
+    return fileDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.toString()).containsString(errorMsg);
+    }
+};
+
+/**
+ * OraganizationId が不正
+ * マルチバイト文字を含む
+ */
+test('OrganizationId is invalid', () => {
+    prepareConfigs('key', 'そしき', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+    assertError("node.event.intermediate.message.throwing.http.header.invalid");
+});
+
+/**
+ * プロンプトが空
+ */
+test('Prompt is empty', () => {
+    prepareConfigs('key', '', 'dall-e-2', '', '512x512', '', '', 'test.png', null);
+    assertError('Prompt is empty.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('FileName is empty', () => {
+    prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', '', null);
+    assertError('File name is empty.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param {String} authKey
+ * @param {String} organizationId
+ * @param {String} model
+ * @param {String} prompt
+ * @param {String} size
+ * @param {String} style
+ * @param {String} quality
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           headers,
+                           body
+                       }, authKey, organizationId, model, prompt, size, style, quality) => {
+    expect(url).toEqual('https://api.openai.com/v1/images/generations');
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    expect(headers['Authorization']).toEqual(`Bearer ${authKey}`);
+    if (organizationId !== '') {
+        expect(headers['OpenAI-Organization']).toEqual(organizationId);
+    }
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.model).toEqual(model);
+    expect(bodyObj.prompt).toEqual(prompt);
+    expect(bodyObj.size).toEqual(size);
+    expect(bodyObj.style).toEqual(style);
+    expect(bodyObj.quality).toEqual(quality);
+    expect(bodyObj.n).toEqual(1);
+    expect(bodyObj.response_format).toEqual('b64_json');
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    prepareConfigs('invalidKey', '', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'invalidKey', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to request. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} image 画像データ。本来はバイナリだが、テキストデータでテスト。
+ * @returns {String} response
+ */
+const createResponse = (image) => {
+    const responseObj = {
+        "created": Math.floor(Date.now() / 1000),
+        "data": [{
+            b64_json: base64.encodeToString(image)
+        }]
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param contentType
+ * @param body
+ */
+const assertFile = (file, name, contentType, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+    const text = fileRepository.readFile(file, "UTF-8");
+    expect(text).toEqual(body);
+};
+
+/**
+ * 成功
+ */
+test('Success to request', () => {
+    const fileDef = prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', 'test.png', null);
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
+    });
+    main();
+
+    // データ項目の値をチェック
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), 'test.png', 'image/png', 'image');
+});
+
+
+/**
+ * 成功 - 組織 ID / スタイル / 品質を指定
+ * 生成された画像を保存するデータ項目に、他のファイルがすでに添付されている場合
+ */
+test('Success to request - with organization ID, Style, Quality', () => {
+    const fileDef = prepareConfigs('key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', 'vivid', 'hd', 'image.png', null);
+    // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
+    engine.setData(fileDef, [engine.createQfile('既存のファイル.json', 'application/json', '{}')]);
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', 'vivid', 'hd');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("png"));
+    });
+    main();
+
+    // データ項目の値をチェック
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(2);
+    assertFile(files.get(0), '既存のファイル.json', 'application/json', '{}');
+    assertFile(files.get(1), 'image.png', 'image/png', 'png');
+});
+
+    ]]></test>
+</service-task-definition>
