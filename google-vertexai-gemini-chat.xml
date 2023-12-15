@@ -20,6 +20,15 @@
             <label>C1: Access Key</label>
             <label locale="ja">C1: アクセスキー</label>
         </config>
+        <config name="conf_PrivateKey" required="true" form-type="TEXTAREA">
+            <label>C1-a: Private Key</label>
+        </config>
+        <config name="conf_PrivateKeyId" required="true">
+            <label>C1-b: Private Key ID</label>
+        </config>
+        <config name="conf_Issuer" required="true">
+            <label>C1-c: Issure</label>
+        </config>
         <config name="conf_Region" required="true" form-type="TEXTFIELD">
             <label>C2: Region Code</label>
             <label locale="ja">C2: リージョンコード</label>
@@ -62,7 +71,11 @@
     <script><![CDATA[
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const auth = configs.getObject('conf_Auth');
+    //const auth = configs.getObject('conf_Auth');
+    const privateKey = configs.get('conf_PrivateKey');
+    const privateKeyId = configs.get('conf_PrivateKeyId');
+    const issuer = configs.get('conf_Issuer');
+
     const region = retrieveRegion();
     const projectId = configs.get('conf_ProjectId');
     //const model = configs.get('conf_Model');
@@ -72,8 +85,9 @@ function main() {
         throw new Error('User Message is empty.');
     }
 
+    const token = getJwtToken(privateKeyId, privateKey, issuer);
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(auth, region, projectId, maxTokens, message);
+    const answer = invokeModel(token, region, projectId, maxTokens, message);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -113,17 +127,61 @@ const retrieveMaxTokens = () => {
     return parseInt(maxTokens, 10);
 };
 
+const SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+
+const getJwtToken = (privateKeyId, privateKey, issuer) => {
+    const header = {
+        "alg": "RS256",
+        "typ": "JWT",
+        "kid": privateKeyId
+    };
+    const headerBase64 = base64.encodeToUrlSafeString(JSON.stringify(header));
+
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": issuer,
+        "aud": URL_TOKEN_REQUEST,
+        "iat": now,
+        "exp": now + 120, // 2 min
+        "scope": SCOPE
+    };
+    const payloadBase64 = base64.encodeToUrlSafeString(JSON.stringify(payload));
+
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const content = headerBase64 + "." + payloadBase64;
+    const signature = rsa.signRsa256(keyB, content);
+    const assertion = content + "." + base64.encodeToString(signature)
+        // URL safe。バイナリに対する encodeToUrlSafeString がないので。
+        .replaceAll(/\+/g, '-').replaceAll(/\//g, '_');
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get JWT token. status: ${response.getStatusCode()}`);
+    }
+    const {access_token} = JSON.parse(response.getResponseAsString());
+    if (access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get JWT token. access token not found.`);
+    }
+    return access_token;
+};
+
 /**
  * モデルの実行
- * @param auth
+ * @param token
  * @param region
  * @param projectId
  * @param maxTokens
- * @param systemPrompt
  * @param message
  * @returns {String} answer
  */
-const invokeModel = (auth, region, projectId, maxTokens, message) => {
+const invokeModel = (token, region, projectId, maxTokens, message) => {
     const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-pro:streamGenerateContent`;
 
     const payload = {
@@ -140,15 +198,15 @@ const invokeModel = (auth, region, projectId, maxTokens, message) => {
             "threshold": "BLOCK_LOW_AND_ABOVE"
         },
         "generation_config": {
-            "temperature": 0.4,
-            "topP": 1.0,
-            "topK": 32,
+//            "temperature": 0.4,
+//            "topP": 1.0,
+//            "topK": 32,
             "maxOutputTokens": maxTokens
         }
     };
 
     const response = httpClient.begin()
-        .authSetting(auth)
+        .bearer(token)
         .body(JSON.stringify(payload), 'application/json')
         .post(URL);
 
