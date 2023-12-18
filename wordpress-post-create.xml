@@ -2,9 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <!--
-    <last-modified>2023-11-14</last-modified>
-    -->
+    <last-modified>2023-12-18</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Create Draft Post</label>
     <label locale="ja">WordPress.com: 下書き記事作成</label>
@@ -51,6 +49,10 @@
             <label>C9: Data item to save Post ID</label>
             <label locale="ja">C9: 投稿 ID を保存するデータ項目</label>
         </config>
+        <config name="conf_PostUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C10: Data item to save URL of the post</label>
+            <label locale="ja">C10: 投稿の URL を保存するデータ項目</label>
+        </config>
     </configs>
 
     <script><![CDATA[
@@ -78,10 +80,11 @@ const main = () => {
     const tags = retrieveValuesAsList('conf_Tags');
 
     ////// == 演算 / Calculating ==
-    const postId = createPost(auth, domain, title, content, excerpt, slug, categories, tags);
+    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, categories, tags);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_PostId', postId);
+    saveData('conf_PostUrl', postUrl);
 };
 
 /**
@@ -132,7 +135,7 @@ const createPost = (auth, domain, title, content, excerpt, slug, categories, tag
     const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`;
     const payload = { title, content, excerpt, slug, categories, tags, status: 'draft' };
     const response = httpClient.begin().authSetting(auth)
-        .queryParam('fields', 'ID')
+        .queryParam('fields', 'ID,URL')
         .body(JSON.stringify(payload), 'application/json')
         .post(url);
     const status = response.getStatusCode();
@@ -141,7 +144,11 @@ const createPost = (auth, domain, title, content, excerpt, slug, categories, tag
         engine.log(responseStr);
         throw new Error(`Failed to create post. status: ${status}`);
     }
-    return String(JSON.parse(responseStr).ID);
+    const postObj = JSON.parse(responseStr);
+    return {
+        postId: String(postObj.ID),
+        postUrl: postObj.URL
+    };
 };
 
 /**
@@ -195,7 +202,237 @@ const saveData = (configName, data) => {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * カテゴリ、タグを文字型データ項目で指定
+ * @param domain
+ * @param title
+ * @param content
+ * @param excerpt
+ * @param slug
+ * @param categories
+ * @param tags
+ * @return returnObj
+ * @return returnObj.postIdDef
+ * @return returnObj.postUrlDef
+ */
+const prepareConfigs = (domain, title, content, excerpt, slug, categories, tags) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+    configs.put('conf_Title', title);
+    configs.put('conf_Content', content);
+    configs.put('conf_Excerpt', excerpt);
+    configs.put('conf_Slug', slug);
+    setDataItem('Categories', 1, 'STRING_TEXTAREA', categories);
+    setDataItem('Tags', 2, 'STRING_TEXTAREA', tags);
 
+    const postIdDef = engine.createDataDefinition('投稿 ID', 3, 'q_PostId', 'STRING_TEXTFIELD');
+    engine.setData(postIdDef, '事前文字列');
+    configs.putObject('conf_PostId', postIdDef);
+
+    const postUrlDef = engine.createDataDefinition('投稿 URL', 4, 'q_PostUrl', 'STRING_TEXTFIELD');
+    engine.setData(postUrlDef, '事前文字列');
+    configs.putObject('conf_PostUrl', postUrlDef);
+
+    return { postIdDef, postUrlDef };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 本文が空でエラー
+ */
+test('Content is blank', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', 'カテゴリ1\nカテゴリ2', 'タグ1\nタグ2');
+    assertError('Content is blank.');
+});
+
+/**
+ * 記事作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param domain
+ * @param title
+ * @param content
+ * @param excerpt
+ * @param slug
+ * @param categoryList
+ * @param tagList
+ */
+const assertRequest = ({ url, method, headers, contentType, body }, domain, title, content, excerpt, slug, categoryList, tagList) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`
+        + `?fields=${encodeURIComponent('ID,URL')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.title).toEqual(title);
+    expect(bodyObj.content).toEqual(content);
+    expect(bodyObj.excerpt).toEqual(excerpt);
+    expect(bodyObj.slug).toEqual(slug);
+    expect(bodyObj.categories).toEqual(categoryList);
+    expect(bodyObj.tags).toEqual(tagList);
+    expect(bodyObj.status).toEqual('draft');
+};
+
+/**
+ * 記事作成の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'カテゴリ1\nカテゴリ2', 'タグ1\nタグ2');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['カテゴリ1', 'カテゴリ2'], ['タグ1', 'タグ2']);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to create post. status: 400');
+});
+
+/**
+ * 記事作成の API レスポンスを作成
+ * @param postId
+ * @param postUrl
+ */
+const createResponse = (postId, postUrl) => {
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+        ID: postId,
+        URL: postUrl
+    }));
+};
+
+/**
+ * 成功 - すべての項目を指定
+ */
+test('Succeed - with all configurations', () => {
+    const categories = 'カテゴリ1\n\n\nカテゴリ2'; // 空行は無視される
+    const tags = '\nタグ1\nタグ2\nタグ3\n'; // 空行は無視される
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', categories, tags);
+
+    const postId = '12345';
+    const postUrl = 'https://test1.example.com/?p=12345';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['カテゴリ1', 'カテゴリ2'], ['タグ1', 'タグ2', 'タグ3']);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+/**
+ * 成功 - 必須項目のみ指定
+ */
+test('Succeed - with only required configurations', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', '', '本文\nここは本文です', '', '', '', '');
+    configs.put('conf_PostId', '');
+    configs.put('conf_PostUrl', '');
+
+    const postId = '12345';
+    const postUrl = 'https://test1.example.com/?p=12345';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', '', '本文\nここは本文です', '', '', [], []);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual('事前文字列');
+    expect(engine.findData(postUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * 選択型データ設定用のオブジェクトを作成
+ * @param prefix
+ * @param num
+ * @return selects
+ */
+const prepareSelects = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const item = engine.createItem(`${prefix}${i+1}`, `${prefix}${i+1} を選択`);
+        selects.add(item);
+    }
+    return selects;
+};
+
+/**
+ * 成功 - カテゴリ、タグを選択型データ項目で指定
+ */
+test('Succeed - categories and tags set by SELECT', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', 'dummy', 'dummy');
+    setDataItem('Categories', 11, 'SELECT_CHECKBOX', prepareSelects('ca-', 3));
+    setDataItem('Tags', 12, 'SELECT_CHECKBOX', prepareSelects('ta-', 2));
+
+    const postId = '67890';
+    const postUrl = 'https://test2.example.com/?p=67890';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', ['ca-1', 'ca-2', 'ca-3'], ['ta-1', 'ta-2']);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+/**
+ * 成功 - カテゴリ、タグを選択型データ項目で指定し、1 つも選択されていない
+ */
+test('Succeed - categories and tags set by SELECT, no item selected', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'dummy', 'dummy');
+    setDataItem('Categories', 11, 'SELECT_CHECKBOX', null);
+    setDataItem('Tags', 12, 'SELECT_CHECKBOX', null);
+
+    const postId = '67890';
+    const postUrl = 'https://test2.example.com/?p=67890';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', [], []);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
 
     ]]></test>
 
