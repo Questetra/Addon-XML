@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2023-03-20</last-modified>
+    <last-modified>2023-12-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
-    <label>Microsoft 365 Excel: Insert New Row</label>
-    <label locale="ja">Microsoft 365 Excel: 行挿入</label>
+    <addon-version>2</addon-version>
+    <label>Microsoft 365 Excel for Business: Insert New Row</label>
+    <label locale="ja">Microsoft 365 Excel for Business: 行挿入</label>
     <summary>This item inserts a new row with data at the specified position in a sheet.</summary>
     <summary locale="ja">この工程は、シート内の指定された場所に新しい行を挿入し、データを入力します。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/excel-row-insert/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/excel-row-insert/</help-page-url>
 
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://graph.microsoft.com/Files.ReadWrite.All">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
@@ -80,7 +81,6 @@
 
 const GRAPH_URI = "https://graph.microsoft.com/v1.0/";
 
-main();
 function main() {
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const oauth2 = configs.get("conf_OAuth2");
@@ -175,7 +175,7 @@ function retrieveRowNumber() {
   * フォルダの URL からファイル情報（ドライブ ID とファイル ID）を取得し、
   * オブジェクトで返す（URL が空の場合はエラーとする）
   * @param {String} fileUrl  フォルダの URL
-  * @param {String} oauth2  OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @return {Object} fileInfo  ファイル情報 {driveId, fileId}
   */
 function getFileInfoByUrl(fileUrl, oauth2) {
@@ -197,7 +197,7 @@ function getFileInfoByUrl(fileUrl, oauth2) {
   * OneDrive のドライブアイテム（ファイル、フォルダ）のメタデータを取得し、JSON オブジェクトを返す
   * API の仕様：https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
   * @param {String} sharingUrl  ファイルの共有 URL
-  * @param {String} oauth2  OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @return {Object} responseObj  ドライブアイテムのメタデータの JSON オブジェクト
   */
 function getObjBySharingUrl(sharingUrl, oauth2) {
@@ -237,7 +237,7 @@ function encodeSharingUrl(sharingUrl) {
   * @param {String} bookInfo.driveId  ワークブックのドライブ ID
   * @param {String} bookInfo.fileId  ワークブックのファイル ID
   * @param {String} sheetName  シートの名前
-  * @param {String} oauth2  OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   */
 function getWorksheetId({driveId, fileId}, sheetName, oauth2) {
     const getWorksheetsUrl = `${GRAPH_URI}${driveId}/items/${fileId}/workbook/worksheets`;
@@ -261,7 +261,7 @@ function getWorksheetId({driveId, fileId}, sheetName, oauth2) {
   * @param {String} bookInfo.fileId  挿入先ワークブックのファイル ID
   * @param {String} worksheetId  挿入先シートの ID
   * @param {Number} rowNumber  挿入箇所の行番号
-  * @param {String} oauth2  OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   */
 function insertRow({driveId, fileId}, worksheetId, rowNumber, oauth2) {
     const insertUrl = `${GRAPH_URI}${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(worksheetId)}/range(address='${rowNumber}:${rowNumber}')/insert`;
@@ -285,7 +285,7 @@ function insertRow({driveId, fileId}, worksheetId, rowNumber, oauth2) {
   * @param {String} worksheetId  挿入先シートの ID
   * @param {Number} rowNumber  挿入箇所の行番号
   * @param {Object} requestBody  入力するデータの入ったリクエストオブジェクト
-  * @param {String} oauth2  OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   */
 function patchData({driveId, fileId}, worksheetId, rowNumber, requestBody, oauth2) {
     const patchUri = `${GRAPH_URI}${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(worksheetId)}/range(address='A${rowNumber}:J${rowNumber}')/`;
@@ -374,7 +374,16 @@ function logAndJudgeError(response, requestType) {
  * @param rowData
  */
 const prepareConfigs = (bookUrl, sheetTitle, rowNum, rowData) => {
-    configs.put('conf_OAuth2', 'Microsoft');
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
 
     // ブックの URL を設定した文字型データ項目（単一行）を準備
     const bookUrlDef = engine.createDataDefinition('ブックの URL', 1, 'q_BookUrl', 'STRING_TEXTFIELD');
@@ -427,13 +436,27 @@ const SAMPLE_ROW = ['A列の値', 'B列の値', 'C列の値', 'D列の値', 'E�
 const SAMPLE_ROW_BLANK = new Array(10).fill(''); // 全ての要素が空文字列
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
  * ブックの URL をデータ項目で指定し、値が空でエラーになる場合
  */
 test('Book URL is empty', () => {
     prepareConfigs(null, SAMPLE_SHEET_1, '3', SAMPLE_ROW);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Book URL is empty.');
+    assertError(main, 'Book URL is empty.');
 });
 
 /**
@@ -443,7 +466,7 @@ test('Sheet Title is empty', () => {
     prepareConfigs(SAMPLE_URL_1, '', '3', SAMPLE_ROW);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Sheet Title is empty.');
+    assertError(main, 'Sheet Title is empty.');
 });
 
 /**
@@ -453,7 +476,7 @@ test('RowNumber is not an integer', () => {
     prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '1.5', SAMPLE_ROW);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -463,7 +486,7 @@ test('RowNumber is 0', () => {
     prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '0', SAMPLE_ROW);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -473,7 +496,7 @@ test('RowNumber exceeds the limit', () => {
     prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '1048577', SAMPLE_ROW);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -484,7 +507,7 @@ test('RowNumber is 0 (fixed value)', () => {
     configs.put('conf_RowNumber', '0');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -495,7 +518,7 @@ test('RowNumber is not an integer (fixed value)', () => {
     configs.put('conf_RowNumber', '123!');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -506,7 +529,7 @@ test('RowNumber exceeds the limit (fixed value)', () => {
     configs.put('conf_RowNumber', '9999999'); // 正規表現ではエラーにならない桁数
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Row number must be a positive integer no greater than 1048576.');
+    assertError(main, 'Row number must be a positive integer no greater than 1048576.');
 });
 
 /**
@@ -520,7 +543,7 @@ test('Value string is too long', () => {
     prepareConfigs(SAMPLE_URL_1, SAMPLE_SHEET_1, '1', rowData);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Can\'t set text over 32,767 character.');
+    assertError(main, 'Can\'t set text over 32,767 character.');
 });
 
 const SAMPLE_GET_1 = {
@@ -645,7 +668,7 @@ test('Success - All columns are set', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -679,7 +702,7 @@ test('Success - All columns are blank', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -724,7 +747,7 @@ test('Success - Some columns are blank', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -760,7 +783,7 @@ test('Success - URL and RowNumber are fixed values', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -793,7 +816,7 @@ test('Success - RowNumber is not set (data item)', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -827,7 +850,7 @@ test('Success - RowNumber is not set (fixed value)', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -842,7 +865,7 @@ test('Fail in 1st GET request', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed in 1st GET request. status: 404');
+    assertError(main, 'Failed in 1st GET request. status: 404');
 });
 
 /**
@@ -864,7 +887,7 @@ test('Fail in 2nd GET request', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed in 2nd GET request. status: 400');
+    assertError(main, 'Failed in 2nd GET request. status: 400');
 });
 
 /**
@@ -886,7 +909,7 @@ test('Worksheet not found', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Worksheet not found.');
+    assertError(main, 'Worksheet not found.');
 });
 
 /**
@@ -910,11 +933,11 @@ test('Fail in POST request', () => {
         }
         // 行挿入のリクエスト
         assertPostRequest(request, 'testDrive-id-123', 'testBook-id-123', '{worksheet-id-001}', rowNum);
-        return httpClient.createHttpResponse(401, 'application/json', '{}');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed in POST request. status: 401');
+    assertError(main, 'Failed in POST request. status: 400');
 });
 
 /**
@@ -947,7 +970,7 @@ test('Fail in PATCH request', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed in PATCH request. status: 403');
+    assertError(main, 'Failed in PATCH request. status: 403');
 });
 
     ]]></test>
