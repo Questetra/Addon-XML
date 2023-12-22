@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-11-17</last-modified>
+<last-modified>2023-12-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Box: Delete Collaboration</label>
 <label locale="ja">Box: コラボレーション削除</label>
 <summary>This item deletes a collaboration with the specified user from the specified file or folder on Box. The user is specified by the email address. If all the information does not match, it cannot be deleted.</summary>
@@ -10,7 +11,7 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-collaboration-delete/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-collaboration-delete/</help-page-url>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -49,7 +50,6 @@
 </configs>
 
 <script><![CDATA[
-main();
 function main(){
 
   const oauth2 = configs.get("conf_OAuth2");
@@ -266,7 +266,17 @@ const VIEWER = 'viewer';
  * }}
  */
 const prepareConfigs = (configs, itemType, emailAddress, id, role) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
     configs.put('conf_ItemType', itemType);
 
     // 文字型データ項目を準備して、config に指定
@@ -315,13 +325,27 @@ const assertDeleteRequest = ({url, method}, collaborationId) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
  * conf_EmailAddress にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('Email address is null', () => {
     prepareConfigs(configs, FOLDERS, null, '12345', EDITOR);
     
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Email address is blank');
+    assertError(main, 'Email address is blank');
 });
 
 /**
@@ -332,7 +356,7 @@ test('Email address is blank', () => {
     configs.put('conf_EmailAddress', '');
     
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Email address is blank');
+    assertError(main, 'Email address is blank');
 });
 
 /**
@@ -342,7 +366,7 @@ test('File ID or Folder ID is null', () => {
     prepareConfigs(configs, FILES, 'testuser@questetra.com', null, VIEWER);
     
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('File ID or Folder ID is blank');
+    assertError(main, 'File ID or Folder ID is blank');
 });
 
 /**
@@ -353,7 +377,7 @@ test('File ID or Folder ID is blank', () => {
     configs.put('conf_ItemId', '');
     
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('File ID or Folder ID is blank');
+    assertError(main, 'File ID or Folder ID is blank');
 });
 
 /**
@@ -363,7 +387,7 @@ test('Collaborations not available on root folder', () => {
     prepareConfigs(configs, FOLDERS, 'testuser@questetra.com', '0', EDITOR);
     
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Collaborations not available on root folder');
+    assertError(main, 'Collaborations not available on root folder');
 });
 
 /**
@@ -386,7 +410,7 @@ test('Success 204 - Folder/Editor', () => {
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     
-    execute();
+    main();
     
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('12345');
@@ -413,7 +437,7 @@ test('Success 204 - File/Viewer', () => {
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     
-    execute();
+    main();
     
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('12345');
@@ -437,7 +461,7 @@ test('Success 204 - Newly Invited User', () => {
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     
-    execute();
+    main();
 });
 
 /**
@@ -451,7 +475,7 @@ test('GET Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     
-    expect(execute).toThrow('Failed to get information. status: 400');
+    assertError(main, 'Failed to get information. status: 400');
 });
 
 /**
@@ -471,7 +495,7 @@ test('No collaborations in the file', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_FILE_NO_COLLABORATION));
     });
     
-    expect(execute).toThrow('No collaborations in ID: 54321');
+    assertError(main, 'No collaborations in ID: 54321');
 });
 
 /**
@@ -490,7 +514,7 @@ test('No collaborations in the folder', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_FOLDER_NO_COLLABORATION));
     });
     
-    expect(execute).toThrow('No collaborations in ID: 67890');
+    assertError(main, 'No collaborations in ID: 67890');
 });
 
 /**
@@ -503,7 +527,8 @@ test('No Collaboration - wrong role', () => {
         assertGetRequest(request, FOLDERS, '12345');
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
     });
-    expect(execute).toThrow('Could not find the collaboration');
+
+    assertError(main, 'Could not find the collaboration');
 });
 
 /**
@@ -516,7 +541,8 @@ test('No Collaboration - wrong emailAddress', () => {
         assertGetRequest(request, FOLDERS, '12345');
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET));
     });
-    expect(execute).toThrow('Could not find the collaboration');
+
+    assertError(main, 'Could not find the collaboration');
 });
 
 /**
@@ -536,9 +562,8 @@ test('DELETE Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     
-    expect(execute).toThrow('Failed to delete the collaboration. status: 400');
+    assertError(main, 'Failed to delete the collaboration. status: 400');
 });
 
 ]]></test>
 </service-task-definition>
-
