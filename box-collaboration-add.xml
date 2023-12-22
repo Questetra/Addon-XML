@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-11-15</last-modified>
+<last-modified>2023-12-22</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Box: Add Collaboration</label>
 <label locale="ja">Box: コラボレーション追加</label>
 <summary>This item adds a collaboration for the specified user to the specified file or folder on Box. The user is specified by the email address.</summary>
@@ -10,7 +11,7 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-collaboration-add/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-collaboration-add/</help-page-url>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
    oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
@@ -50,10 +51,9 @@
 </configs>
 
 <script><![CDATA[
-main();
 function main(){
 
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.getObject("conf_OAuth2");
   const itemType = configs.get("conf_ItemType");
   const fileOrFolderId = decideFileOrFolderId(itemType);
   const emailAddress = decideEmailAddress();
@@ -111,7 +111,7 @@ function decideFileOrFolderId(itemType){
 
 /**
   * コラボレーションを追加する
-  * @param {String} oauth2 Oauth2設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} emailAddress コラボレーションするユーザのメールアドレス
   * @param {String} role ロール
   * @param {String} itemType アクセス権限が付与される項目の種類 ファイル/フォルダ
@@ -196,7 +196,17 @@ YII=</icon>
  * }}
  */
 const prepareConfigs = (configs, itemType, emailAddress, id, role) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
     configs.put('conf_ItemType', itemType);
 
     // 文字型データ項目を準備して、config に指定
@@ -244,13 +254,28 @@ const assertRequest = ({url, method, contentType,body}, emailAddress, id, itemTy
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+
+/**
  * conf_EmailAddress にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('Email address is null', () => {
     prepareConfigs(configs, 'folder', null, '12345', 'editor');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Email address is blank');
+    assertError(main, 'Email address is blank');
 });
 
 /**
@@ -264,7 +289,7 @@ test('Email address is blank', () => {
     configs.put('conf_Role', 'viewer');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Email address is blank');
+    assertError(main, 'Email address is blank');
 });
 
 /**
@@ -274,7 +299,7 @@ test('File ID or Folder ID is null', () => {
     prepareConfigs(configs, 'file', 'testuser@questetra.com', null, 'viewer');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('File ID or Folder ID is blank');
+    assertError(main, 'File ID or Folder ID is blank');
 });
 
 /**
@@ -288,7 +313,7 @@ test('File ID or Folder ID is blank', () => {
     configs.put('conf_Role', 'editor');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('File ID or Folder ID is blank');
+    assertError(main, 'File ID or Folder ID is blank');
 });
 
 /**
@@ -298,7 +323,7 @@ test('Root folder cannot be collaborated', () => {
     prepareConfigs(configs, 'folder', 'testuser@questetra.com', '0', 'viewer');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Root folder cannot be collaborated');
+    assertError(main, 'Root folder cannot be collaborated');
 });
 
 /**
@@ -330,7 +355,7 @@ test('201 Success', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('12345');
@@ -361,7 +386,7 @@ test('Failed - user already collaborator', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('This request is not needed, testuser2@questetra.com already collaborator. status: 400');
+    assertError(main, 'This request is not needed, testuser2@questetra.com already collaborator. status: 400');
 });
 
 /**
@@ -388,7 +413,7 @@ test('Failed - Failures other than "user already collaborator"', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed to add collaboration. status: 400');
+    assertError(main, 'Failed to add collaboration. status: 400');
 });
 
 ]]></test>
