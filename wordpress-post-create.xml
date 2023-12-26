@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-12-18</last-modified>
+    <last-modified>2023-12-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Create Draft Post</label>
     <label locale="ja">WordPress.com: 下書き記事作成</label>
@@ -38,12 +38,12 @@
             <label locale="ja">C6: スラッグ</label>
         </config>
         <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C7: Categories (write one per line)</label>
-            <label locale="ja">C7: カテゴリ（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C7: Category IDs (write one per line)</label>
+            <label locale="ja">C7: カテゴリ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_Tags" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C8: Tags (write one per line)</label>
-            <label locale="ja">C8: タグ（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C8: Tag IDs (write one per line)</label>
+            <label locale="ja">C8: タグ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_PostId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
             <label>C9: Data item to save Post ID</label>
@@ -76,11 +76,11 @@ const main = () => {
     }
     const excerpt = configs.get('conf_Excerpt');
     const slug = configs.get('conf_Slug');
-    const categories = retrieveValuesAsList('conf_Categories');
-    const tags = retrieveValuesAsList('conf_Tags');
+    const categoryIds = retrieveIdsAsList('conf_Categories', 'Category ID');
+    const tagIds = retrieveIdsAsList('conf_Tags', 'Tag ID');
 
     ////// == 演算 / Calculating ==
-    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, categories, tags);
+    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, categoryIds, tagIds);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_PostId', postId);
@@ -88,11 +88,12 @@ const main = () => {
 };
 
 /**
-  * config に設定された値の一覧を読み出す
+  * config に設定された ID の一覧を読み出す
   * @param {String} confName 設定名
-  * @return {Array<String>} values
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {Array<String>} ids
   */
-const retrieveValuesAsList = (confName) => {
+const retrieveIdsAsList = (confName, label) => {
     const dataDef = configs.getObject(confName);
     if (dataDef === null) {
         return [];
@@ -103,9 +104,10 @@ const retrieveValuesAsList = (confName) => {
         if (dataObj === null) {
             return [];
         }
-        const values = dataObj.split('\n')
+        const ids = dataObj.split('\n')
             .filter(id => id !== '');
-        return values;
+        validateIds(ids, label);
+        return ids;
     }
     // 選択型データ項目の場合
     const selects = engine.findData(dataDef);
@@ -116,7 +118,21 @@ const retrieveValuesAsList = (confName) => {
     selects.forEach(item => {
         ids.push(item.getValue()); // 選択肢 ID を格納
     });
+    validateIds(ids, label);
     return ids;
+};
+
+/**
+ * ID の一覧をチェックする
+ * 非負整数でない場合はエラー
+ * @param {Array<String>} ids
+ * @param {String} label エラーメッセージ用ラベル
+ */
+const validateIds = (ids, label) => {
+    const idReg = new RegExp('^(0|[1-9][0-9]*)$');
+    if(ids.some(id => !idReg.test(id))) {
+        throw new Error(`${label} must be a non-negative integer.`);
+    }
 };
 
 /**
@@ -278,8 +294,24 @@ const assertError = (errorMsg) => {
  * 本文が空でエラー
  */
 test('Content is blank', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', 'カテゴリ1\nカテゴリ2', 'タグ1\nタグ2');
+    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', '0\n9\n10', '100\n102');
     assertError('Content is blank.');
+});
+
+/**
+ * カテゴリ ID に非負整数以外が含まれている
+ */
+test('Category ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\nカテゴリ1', '100\n102');
+    assertError('Category ID must be a non-negative integer.');
+});
+
+/**
+ * タグ ID に非負整数以外が含まれている
+ */
+test('Tag ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n9\n10', '100-tag\n102');
+    assertError('Tag ID must be a non-negative integer.');
 });
 
 /**
@@ -319,9 +351,9 @@ const assertRequest = ({ url, method, headers, contentType, body }, domain, titl
  * 記事作成の POST リクエストでエラー
  */
 test('Fail in POST request', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'カテゴリ1\nカテゴリ2', 'タグ1\nタグ2');
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n1\n9\n10', '100\n199\n99999');
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['カテゴリ1', 'カテゴリ2'], ['タグ1', 'タグ2']);
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '1', '9', '10'], ['100', '199', '99999']);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to create post. status: 400');
@@ -343,14 +375,14 @@ const createResponse = (postId, postUrl) => {
  * 成功 - すべての項目を指定
  */
 test('Succeed - with all configurations', () => {
-    const categories = 'カテゴリ1\n\n\nカテゴリ2'; // 空行は無視される
-    const tags = '\nタグ1\nタグ2\nタグ3\n'; // 空行は無視される
+    const categories = '0\n\n\n9'; // 空行は無視される
+    const tags = '\n100\n99\n123456789\n'; // 空行は無視される
     const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', categories, tags);
 
     const postId = '12345';
     const postUrl = 'https://test1.example.com/?p=12345';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['カテゴリ1', 'カテゴリ2'], ['タグ1', 'タグ2', 'タグ3']);
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '9'], ['100', '99', '123456789']);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
@@ -381,14 +413,14 @@ test('Succeed - with only required configurations', () => {
 
 /**
  * 選択型データ設定用のオブジェクトを作成
- * @param prefix
  * @param num
  * @return selects
  */
-const prepareSelects = (prefix, num) => {
+const prepareSelects = (offset, num) => {
     const selects = new java.util.ArrayList();
     for (let i = 0; i < num; i++) {
-        const item = engine.createItem(`${prefix}${i+1}`, `${prefix}${i+1} を選択`);
+        const id = `${offset + i + 1}`;
+        const item = engine.createItem(id, `${id} を選択`);
         selects.add(item);
     }
     return selects;
@@ -399,13 +431,13 @@ const prepareSelects = (prefix, num) => {
  */
 test('Succeed - categories and tags set by SELECT', () => {
     const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', 'dummy', 'dummy');
-    setDataItem('Categories', 11, 'SELECT_CHECKBOX', prepareSelects('ca-', 3));
-    setDataItem('Tags', 12, 'SELECT_CHECKBOX', prepareSelects('ta-', 2));
+    setDataItem('Categories', 11, 'SELECT_CHECKBOX', prepareSelects(0, 3));
+    setDataItem('Tags', 12, 'SELECT_CHECKBOX', prepareSelects(900, 2));
 
     const postId = '67890';
     const postUrl = 'https://test2.example.com/?p=67890';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', ['ca-1', 'ca-2', 'ca-3'], ['ta-1', 'ta-2']);
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', ['1', '2', '3'], ['901', '902']);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
