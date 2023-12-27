@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-11-28</last-modified>
+    <last-modified>2023-12-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Create Shared Link to File</label>
     <label locale="ja">Box: ファイル共有リンク作成</label>
     <summary>This item creates a URL to access the specified file on Box. Created with no expiration and/or no password
@@ -13,7 +14,7 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-link-create/
     </help-page-url>
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -38,10 +39,9 @@
     </configs>
 
     <script><![CDATA[
-main();
 function main() {
     // get OAuth2 Setting
-    const oauth2 = configs.get("conf_OAuth2");
+    const oauth2 = configs.getObject("conf_OAuth2");
     const fileId = decideFileId();
     const unsharedDateDef = configs.getObject("conf_UnsharedAt");
     const passwordDef = configs.getObject("conf_Password");
@@ -87,7 +87,7 @@ function decideFileId() {
 
 /**
   * ファイルが既に共有リンク作成されているか調べ、既に共有リンクがある場合はエラーにする
-  * @param {String} oauth OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} fileId ファイルの ID
   */
 function checkExistingSharedLink(oauth2, fileId) {
@@ -113,7 +113,7 @@ function checkExistingSharedLink(oauth2, fileId) {
 
 /**
   * Create Shared Link to File on Box  共有リンク作成
-  * @param {String} oauth OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} fileId ファイルの ID
   * @param {AddableTimestamp} unsharedDate 有効期限
   * @param {String} password パスワード
@@ -194,7 +194,17 @@ function createSharedLink(oauth2, fileId, unsharedDate, password) {
  * }}
  */
 const prepareConfigs = (fileId, unsharedDate, password) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     // 文字型データ項目を準備して、config に指定
     const fileIdDef = engine.createDataDefinition('共有するファイルID', 1, 'q_fileId', 'STRING_TEXTFIELD');
@@ -279,13 +289,27 @@ const assertPutRequest = ({url, method, contentType, body}, fileId, unsharedDate
     }
 };
 
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
 
 /**
  * conf_FileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('File ID is blank - FileId specified by String Data', () => {
     prepareConfigs(null, '2020-03-14 23:45:00', 'word1');
-    expect(execute).toThrow('File ID is blank');
+    assertError(main, 'File ID is blank');
 });
 
 
@@ -301,7 +325,7 @@ test('GET Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to get file information. status:400');
+    assertError(main, 'Failed to get file information. status:400');
 });
 
 
@@ -343,7 +367,7 @@ test('Shared link was already created.', () => {
         }
     });
 
-    expect(execute).toThrow('Shared link(https://www.box.com/s/vspke7y05sb214wjokpk) was already created.');
+    assertError(main, 'Shared link(https://www.box.com/s/vspke7y05sb214wjokpk) was already created.');
 });
 
 
@@ -377,7 +401,7 @@ test('PUT Failed', () => {
 	
     engine.setTimeZoneOffsetInMinutes(0); // テストスクリプトではタイムゾーンの値をコントロール可能　timezone = 'GMT' に設定する
 
-    expect(execute).toThrow('Failed to create Shared Link. status:400');
+    assertError(main, 'Failed to create Shared Link. status:400');
 });
 
 
@@ -438,7 +462,7 @@ test('200 Success', () => {
     engine.setTimeZoneOffsetInMinutes(540); // テストスクリプトではタイムゾーンの値をコントロール可能 timezone = 'GMT+09:00' に設定する
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(fileIdDef)).toEqual('87654321');
@@ -503,7 +527,7 @@ test('200 Success - no unsharedDate and no password', () => {
     })
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(fileIdDef)).toEqual('12345678');
@@ -570,7 +594,7 @@ test('200 Success - Not specified both unsharedDate and password', () => {
     })
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(fileIdDef)).toEqual('22222222');
