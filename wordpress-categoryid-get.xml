@@ -1,0 +1,421 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <!--
+    <last-modified>2023-12-26</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>WordPress.com: Get Category ID</label>
+    <label locale="ja">WordPress.com: カテゴリ ID 取得</label>
+    <summary>
+        This item gets category IDs on WordPress.com. When category names are specified (write one per line),
+        the IDs of the categories will be retrieved and saved. 
+        When no name is specified, all categories will be retrieved and their names and IDs will be saved.
+    </summary>
+    <summary locale="ja">
+        この工程は、WordPress.com のカテゴリ ID を取得します。カテゴリの名前を指定すると、そのカテゴリの ID 
+        が取得されます。複数指定する場合、1行につき1つずつ書くようにしてください。カテゴリの名前を指定しない場合、カテゴリ全件が取得され、名前と ID
+        が保存されます。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-wordpress-categoryid-get/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-wordpress-categoryid-get/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://public-api.wordpress.com/posts"
+        >
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_Domain" required="true" form-type="TEXTFIELD">
+            <label>C2: Domain of the WordPress.com site</label>
+            <label locale="ja">C2: WordPress.com サイトのドメイン</label>
+        </config>
+        <config name="conf_Names" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C3: Data item that stores / to save category names</label>
+            <label locale="ja">C3: カテゴリの名前を保持している／保存するデータ項目</label>
+        </config>
+        <config name="conf_Ids" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C4: Data item to save category IDs</label>
+            <label locale="ja">C4: カテゴリ ID を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://public-api.wordpress.com/oauth2/authorize
+// - Token Endpoint URL: https://public-api.wordpress.com/oauth2/token
+// - Scope: taxonomy
+// - Client ID: (Get by https://developer.wordpress.com/apps/)
+// - Client Secret: (Get by https://developer.wordpress.com/apps/)
+
+const API_VERSION = 'v1.1';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const domain = configs.get('conf_Domain');
+    const names = retrieveNamesAsList();
+
+    ////// == 演算 / Calculating ==
+    let categories = getCategories(auth, domain);
+    if (names.length > 0) {
+        categories = names.map(name => {
+            const category = categories.find(item => item.name === name);
+            if (category === undefined) {
+                throw new Error(`Category not found: ${name}`);
+            }
+            return category;
+        });
+    }
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    if (names.length === 0) {
+        saveData('conf_Names', categories.map(item => item.name).join('\n'));
+    }
+    saveData('conf_Ids', categories.map(item => item.ID).join('\n'));
+};
+
+/**
+  * config に設定された名前の一覧を読み出す
+  * @return {Array<String>} ids
+  */
+const retrieveNamesAsList = () => {
+    const dataDef = configs.getObject('conf_Names');
+    let dataStr = engine.findData(dataDef);
+    if (dataStr === null) {
+        return [];
+    }
+    // 末尾に改行がある場合、削除
+    if (dataStr.endsWith('\n')) {
+        dataStr = dataStr.slice(0, -1);
+    }
+    const dataArray = dataStr.split('\n');
+    // 残りの配列に空文字が含まれる場合、エラー
+    if (dataArray.some(item => item === '')) {
+        throw new Error('Empty lines are not allowed for category names.');
+    }
+    return dataArray;
+};
+
+/**
+ * カテゴリ一覧を取得する
+ * @param {AuthSettingWrapper} auth
+ * @param {String} domain
+ * @return {Array<Object>} categories
+ */
+const getCategories = (auth, domain) => {
+    const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/categories`;
+    const MAX_NUMBER = 1000; // 一度のリクエストで取得できるカテゴリの最大数
+    const response = httpClient.begin().authSetting(auth)
+        .queryParam('fields', 'ID,name')
+        .queryParam('number', MAX_NUMBER.toString())
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get categories. status: ${status}`);
+    }
+    return JSON.parse(responseStr).categories;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+    <icon>
+        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
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * カテゴリ、タグを文字型データ項目で指定
+ * @param domain
+ * @param title
+ * @param content
+ * @param excerpt
+ * @param slug
+ * @param categories
+ * @param tags
+ * @return returnObj
+ * @return returnObj.postIdDef
+ * @return returnObj.postUrlDef
+ */
+const prepareConfigs = (domain, title, content, excerpt, slug, categories, tags) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+    configs.put('conf_Title', title);
+    configs.put('conf_Content', content);
+    configs.put('conf_Excerpt', excerpt);
+    configs.put('conf_Slug', slug);
+    setDataItem('Categories', 1, 'STRING_TEXTAREA', categories);
+    setDataItem('Tags', 2, 'STRING_TEXTAREA', tags);
+
+    const postIdDef = engine.createDataDefinition('投稿 ID', 3, 'q_PostId', 'STRING_TEXTFIELD');
+    engine.setData(postIdDef, '事前文字列');
+    configs.putObject('conf_PostId', postIdDef);
+
+    const postUrlDef = engine.createDataDefinition('投稿 URL', 4, 'q_PostUrl', 'STRING_TEXTFIELD');
+    engine.setData(postUrlDef, '事前文字列');
+    configs.putObject('conf_PostUrl', postUrlDef);
+
+    return { postIdDef, postUrlDef };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 本文が空でエラー
+ */
+test('Content is blank', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', '0\n9\n10', '100\n102');
+    assertError('Content is blank.');
+});
+
+/**
+ * カテゴリ ID に非負整数以外が含まれている
+ */
+test('Category ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\nカテゴリ1', '100\n102');
+    assertError('Category ID must be a non-negative integer.');
+});
+
+/**
+ * タグ ID に非負整数以外が含まれている
+ */
+test('Tag ID must be a non-negative integer', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n9\n10', '100-tag\n102');
+    assertError('Tag ID must be a non-negative integer.');
+});
+
+/**
+ * 記事作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param domain
+ * @param title
+ * @param content
+ * @param excerpt
+ * @param slug
+ * @param categoryList
+ * @param tagList
+ */
+const assertRequest = ({ url, method, headers, contentType, body }, domain, title, content, excerpt, slug, categoryList, tagList) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`
+        + `?fields=${encodeURIComponent('ID,URL')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.title).toEqual(title);
+    expect(bodyObj.content).toEqual(content);
+    expect(bodyObj.excerpt).toEqual(excerpt);
+    expect(bodyObj.slug).toEqual(slug);
+    expect(bodyObj.categories).toEqual(categoryList);
+    expect(bodyObj.tags).toEqual(tagList);
+    expect(bodyObj.status).toEqual('draft');
+};
+
+/**
+ * 記事作成の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n1\n9\n10', '100\n199\n99999');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '1', '9', '10'], ['100', '199', '99999']);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to create post. status: 400');
+});
+
+/**
+ * 記事作成の API レスポンスを作成
+ * @param postId
+ * @param postUrl
+ */
+const createResponse = (postId, postUrl) => {
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+        ID: postId,
+        URL: postUrl
+    }));
+};
+
+/**
+ * 成功 - すべての項目を指定
+ */
+test('Succeed - with all configurations', () => {
+    const categories = '0\n\n\n9'; // 空行は無視される
+    const tags = '\n100\n99\n123456789\n'; // 空行は無視される
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', categories, tags);
+
+    const postId = '12345';
+    const postUrl = 'https://test1.example.com/?p=12345';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '9'], ['100', '99', '123456789']);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+/**
+ * 成功 - 必須項目のみ指定
+ */
+test('Succeed - with only required configurations', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', '', '本文\nここは本文です', '', '', '', '');
+    configs.put('conf_PostId', '');
+    configs.put('conf_PostUrl', '');
+
+    const postId = '12345';
+    const postUrl = 'https://test1.example.com/?p=12345';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com', '', '本文\nここは本文です', '', '', [], []);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual('事前文字列');
+    expect(engine.findData(postUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * 選択型データ設定用のオブジェクトを作成
+ * @param num
+ * @return selects
+ */
+const prepareSelects = (offset, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const id = `${offset + i + 1}`;
+        const item = engine.createItem(id, `${id} を選択`);
+        selects.add(item);
+    }
+    return selects;
+};
+
+/**
+ * 成功 - カテゴリ、タグを選択型データ項目で指定
+ */
+test('Succeed - categories and tags set by SELECT', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', 'dummy', 'dummy');
+    setDataItem('Categories', 11, 'SELECT_CHECKBOX', prepareSelects(0, 3));
+    setDataItem('Tags', 12, 'SELECT_CHECKBOX', prepareSelects(900, 2));
+
+    const postId = '67890';
+    const postUrl = 'https://test2.example.com/?p=67890';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', ['1', '2', '3'], ['901', '902']);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+/**
+ * 成功 - カテゴリ、タグを選択型データ項目で指定し、1 つも選択されていない
+ */
+test('Succeed - categories and tags set by SELECT, no item selected', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'dummy', 'dummy');
+    setDataItem('Categories', 11, 'SELECT_CHECKBOX', null);
+    setDataItem('Tags', 12, 'SELECT_CHECKBOX', null);
+
+    const postId = '67890';
+    const postUrl = 'https://test2.example.com/?p=67890';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', [], []);
+        return createResponse(postId, postUrl);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(postIdDef)).toEqual(postId);
+    expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+    ]]></test>
+
+</service-task-definition>
