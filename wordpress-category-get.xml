@@ -2,9 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <!--
-    <last-modified>2023-12-26</last-modified>
-    -->
+    <last-modified>2024-01-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Get Categories</label>
     <label locale="ja">WordPress.com: カテゴリ取得</label>
@@ -50,7 +48,7 @@
 // - Client Secret: (Get by https://developer.wordpress.com/apps/)
 
 const API_VERSION = 'v1.1';
-const MAX_NUMBER = 1000; // 一度のリクエストで取得できるカテゴリの最大数
+const MAX_NUMBER = 1000; // 一度のリクエストで取得できる最大件数
 
 const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
@@ -172,6 +170,151 @@ const saveData = (configName, data) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ * @param names
+ * @return returnObj
+ * @return returnObj.namesDef
+ * @return returnObj.idsDef
+ */
+const prepareConfigs = (domain, names) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+
+    const namesDef = engine.createDataDefinition('名前', 1, 'q_names', 'STRING_TEXTAREA');
+    engine.setData(namesDef, names);
+    configs.putObject('conf_Names', namesDef);
+
+    const idsDef = engine.createDataDefinition('ID', 2, 'q_ids', 'STRING_TEXTAREA');
+    engine.setData(idsDef, '事前文字列');
+    configs.putObject('conf_Ids', idsDef);
+
+    return { namesDef, idsDef };
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 名前に空行が含まれる場合、エラー
+ */
+test('Names include an empty line', () => {
+    prepareConfigs('test1.example.com', 'カテゴリ 1\n\nカテゴリ 2');
+    assertError('Empty lines are not allowed for category names.');
+});
+
+/**
+ * カテゴリ取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param domain
+ */
+const assertRequest = ({ url, method, headers }, domain) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/categories`
+        + `?fields=${encodeURIComponent('ID,name')}&number=${MAX_NUMBER}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * カテゴリ取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    prepareConfigs('test1.example.com', 'カテゴリ 1\nカテゴリ 2\n');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get categories. status: 400');
+});
+
+/**
+ * カテゴリ取得の API レスポンスを作成
+ * @param found カテゴリの総数
+ * @param prefix カテゴリ名の接頭辞
+ * @param number カテゴリの数
+ */
+const createResponse = (found, prefix, number) => {
+    const categories = new Array(number).fill('').map((_, i) => ({
+        ID: i + 1,
+        name: `${prefix}${i + 1}`
+    }));
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+        found,
+        categories
+    }));
+};
+
+/**
+ * カテゴリの総数が多すぎる場合、エラー
+ */
+test('Too many categories', () => {
+    prepareConfigs('test1.example.com', 'カテゴリ 1\nカテゴリ 2\n');
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return createResponse(MAX_NUMBER + 1, 'カテゴリ ', 1);
+    });
+    assertError('Too many categories.');
+});
+
+/**
+ * 成功 - カテゴリ名を指定
+ */
+test('Succeed - specified categories', () => {
+    const names = 'カテゴリ 3\nカテゴリ 5\n'; // 末尾の改行は無視される
+    const { namesDef, idsDef } = prepareConfigs('test1.example.com', names);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return createResponse(10, 'カテゴリ ', 10);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(namesDef)).toEqual(names); // 変更なし
+    expect(engine.findData(idsDef)).toEqual('3\n5');
+});
+
+/**
+ * 成功 - 全件取得
+ */
+test('Succeed - all categories', () => {
+    const { namesDef, idsDef } = prepareConfigs('test1.example.com', null);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return createResponse(7, 'category_', 7);
+    });
+    expect(main()).toEqual(undefined);
+
+    const expectedNames = new Array(7).fill('').map((_, i) => `category_${i + 1}`).join('\n');
+    const expectedIds = new Array(7).fill('').map((_, i) => `${i + 1}`).join('\n');
+    expect(engine.findData(namesDef)).toEqual(expectedNames);
+    expect(engine.findData(idsDef)).toEqual(expectedIds);
+});
 
     ]]></test>
 
