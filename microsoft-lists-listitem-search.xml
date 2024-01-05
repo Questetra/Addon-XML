@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Microsoft Lists: Search List Items</label>
+    <label locale="ja">Microsoft Lists: リストアイテム検索</label>
+    <!--
+    <last-modified>2024-01-04</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item searches items in the specified list on Microsoft Lists.</summary>
+    <summary locale="ja">この工程は、Microsoft Lists の指定リスト内のアイテムを検索します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Sites.ReadWrite.All">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_SiteUrl" required="true" form-type="TEXTFIELD">
+            <label>C2: SharePoint Site URL</label>
+            <label locale="ja">C2: SharePoint サイトの URL</label>
+        </config>
+        <config name="conf_ListTitle" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: List Title</label>
+            <label locale="ja">C3: リストの名前</label>
+        </config>
+        <config name="conf_Filter" form-type="TEXTFIELD" el-enabled="true">
+            <label>C4: Filter</label>
+            <label locale="ja">C4: フィルタ</label>
+        </config>
+        <config name="conf_Ids" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C5: Data item to save list item IDs</label>
+            <label locale="ja">C5: リストアイテムの ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_Names" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C6: Data item to save list item titles</label>
+            <label locale="ja">C6: リストアイテムの名前を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-lists-listitem-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-microsoft-lists-listitem-search/</help-page-url>
+
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Files.ReadWrite.All offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
+
+const main = () => {
+    //// == 工程コンフィグの参照 / Config Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const siteUrl = configs.get('conf_SiteUrl');
+    const listTitle = configs.get('conf_ListTitle');
+    const filter = configs.get('conf_Filter');
+
+    //// == 演算 / Calculating ==
+    const siteId = getSiteIdByUrl(oauth2, siteUrl);
+    const listItems = getListItems(oauth2, siteId, listTitle, filter);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    setData('conf_Ids', listItems.map((item) => item.id).join('\n'));
+    setData('conf_Names', listItems.map((item) => item.fields.Title).join('\n'));
+};
+
+/**
+ * サイトのメタデータを取得し、siteId を返す
+ * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} siteUrl  SharePoint サイトの URL
+ * @returns {String} siteId
+ */
+const getSiteIdByUrl = (oauth2, siteUrl) => {
+    // encoding sharing URL
+    const encodedSharingUrl = encodeSharingUrl(siteUrl);
+
+    // preparing for API Request
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('select', 'id')
+        .get(`${GRAPH_URI}shares/${encodedSharingUrl}/site`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get site info. status: ${status}`);
+    }
+    return JSON.parse(responseStr).id;
+};
+
+/**
+ * 共有URLを unpadded base64url 形式にエンコードする
+ * @param {String} sharingUrl  共有URL
+ * @returns {String} encodedSharingUrl  エンコードされた共有URL
+ */
+const encodeSharingUrl = (sharingUrl) => {
+    let encodedSharingUrl = base64.encodeToUrlSafeString(sharingUrl);
+    while (encodedSharingUrl.slice(-1) === '=') {
+        encodedSharingUrl = encodedSharingUrl.slice(0, -1);
+    }
+    return `u!${encodedSharingUrl}`;
+};
+
+/**
+ * リストアイテムを検索し、JSONオブジェクトを返す
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} siteId  SharePoint サイトの ID
+ * @param {String} listTitle  リストの名前
+ * @param {String} filter  フィルタ
+ * @returns {Array<Object>} 検索結果
+ */
+const getListItems = (oauth2, siteId, listTitle, filter) => {
+    const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        // インデックスを作成していないフィールドでもフィルタできるように、Prefer ヘッダを指定
+        // ただし、リストアイテムの総数が多すぎる（5000件以上）とエラーになる
+        .header('Prefer', 'HonorNonIndexedQueriesWarningMayFailRandomly')
+        .queryParam('$expand', 'fields')
+        .queryParam('$select', 'id')
+        .queryParam('$top', '5000') // 仮に 5000 件まで取得
+        .queryParam('$filter', filter)
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get list items. status: ${status}`);
+    }
+    engine.setDataByVarName('q_response', responseStr); // テスト用
+    return JSON.parse(responseStr).value;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const setData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def !== null) {
+        engine.setData(def, data);
+    }
+};
+
+    ]]></script>
+
+<!--
+    <icon>
+    </icon>
+-->
+
+    <test><![CDATA[
+
+]]></test>
+
+</service-task-definition>
