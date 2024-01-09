@@ -24,17 +24,29 @@
             <label>C3: List Title</label>
             <label locale="ja">C3: リストの名前</label>
         </config>
-        <config name="conf_Filter" form-type="TEXTFIELD" el-enabled="true">
+        <config name="conf_Filter" required="false" form-type="TEXTFIELD" el-enabled="true">
             <label>C4: Filter</label>
             <label locale="ja">C4: フィルタ</label>
         </config>
-        <config name="conf_Ids" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-            <label>C5: Data item to save list item IDs</label>
-            <label locale="ja">C5: リストアイテムの ID を保存するデータ項目</label>
+        <config name="conf_Ids" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C5: Data item to save List Item IDs</label>
+            <label locale="ja">C5: リストアイテム ID を保存するデータ項目</label>
         </config>
-        <config name="conf_Names" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA">
-            <label>C6: Data item to save list item titles</label>
-            <label locale="ja">C6: リストアイテムの名前を保存するデータ項目</label>
+        <config name="conf_ColumnName1" required="false" form-type="TEXTFIELD">
+            <label>C-K1: Display Name of Column 1</label>
+            <label locale="ja">C-K1: 列 1 の表示名</label>
+        </config>
+        <config name="conf_ColumnValues1" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C-V1: Data item to save values of Column 1</label>
+            <label locale="ja">C-V1: 列 1 の値を保存するデータ項目</label>
+        </config>
+        <config name="conf_ColumnName2" required="false" form-type="TEXTFIELD">
+            <label>C-K2: Display Name of Column 2</label>
+            <label locale="ja">C-K2: 列 2 の表示名</label>
+        </config>
+        <config name="conf_ColumnValues2" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+            <label>C-V2: Data item to save values of Column 2</label>
+            <label locale="ja">C-V1: 列 2 の値を保存するデータ項目</label>
         </config>
     </configs>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-lists-listitem-search/</help-page-url>
@@ -57,14 +69,18 @@ const main = () => {
     const siteUrl = configs.get('conf_SiteUrl');
     const listTitle = configs.get('conf_ListTitle');
     const filter = configs.get('conf_Filter');
+    const columnName1 = configs.get('conf_ColumnName1');
+    const columnName2 = configs.get('conf_ColumnName2');
 
     //// == 演算 / Calculating ==
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
+    const {fieldName1, fieldName2} = getFieldNames(oauth2, siteId, listTitle, columnName1, columnName2);
     const listItems = getListItems(oauth2, siteId, listTitle, filter);
 
     //// == ワークフローデータへの代入 / Data Updating ==
     setData('conf_Ids', listItems.map((item) => item.id).join('\n'));
-    setData('conf_Names', listItems.map((item) => item.fields.Title).join('\n'));
+    setData('conf_ColumnValues1', listItems.map((item) => item.fields[fieldName1]).join('\n'));
+    setData('conf_ColumnValues2', listItems.map((item) => item.fields[fieldName2]).join('\n'));
 };
 
 /**
@@ -106,6 +122,45 @@ const encodeSharingUrl = (sharingUrl) => {
 };
 
 /**
+ * リストの列のメタデータを取得し、指定した表示名の列のフィールド名を返す
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} siteId  SharePoint サイトの ID
+ * @param {String} listTitle  リストの名前
+ * @param {String} columnName1  列 1 の表示名
+ * @param {String} columnName2  列 2 の表示名
+ * @returns {Object} 検索結果
+ */
+const getFieldNames = (oauth2, siteId, listTitle, columnName1, columnName2) => {
+    const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/columns`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('$select', 'name,displayName')
+        // $filter, $search, $top パラメータは効かない
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get columns. status: ${status}`);
+    }
+    const columns = JSON.parse(responseStr).value;
+    // TODO: あとで関数化する
+    // TODO: 表示名が指定なしの場合
+    const column1 = columns.find((column) => column.displayName === columnName1);
+    if (column1 === undefined) {
+        throw new Error(`Column '${columnName1}' not found.`);
+    }
+    const column2 = columns.find((column) => column.displayName === columnName2);
+    if (column2 === undefined) {
+        throw new Error(`Column '${columnName2}' not found.`);
+    }
+    return {
+        fieldName1: column1.name,
+        fieldName2: column2.name
+    };
+};
+
+/**
  * リストアイテムを検索し、JSONオブジェクトを返す
  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
  * @param {String} siteId  SharePoint サイトの ID
@@ -131,7 +186,6 @@ const getListItems = (oauth2, siteId, listTitle, filter) => {
         engine.log(responseStr);
         throw new Error(`Failed to get list items. status: ${status}`);
     }
-    engine.setDataByVarName('q_response', responseStr); // テスト用
     return JSON.parse(responseStr).value;
 };
 
