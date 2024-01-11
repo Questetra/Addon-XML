@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Copy File</label>
     <label locale="ja">Box: ファイルコピー</label>
-    <last-modified>2022-11-29</last-modified>
+    <last-modified>2024-01-11</last-modified>
     <summary>This item copies the File and saves it in the specified Folder.</summary>
     <summary locale="ja">この工程は、既存ファイルを複製し、指定フォルダに新規保存します。</summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/box-file-copy/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/box-file-copy/</help-page-url>
 
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -40,10 +41,9 @@
 
 
     <script><![CDATA[
-main();
 function main(){
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get( "conf_OAuth2" ) ;
+  const oauth2 = configs.getObject("conf_OAuth2");
   const fileId = decideFileId();
 
   if(fileId === "" || fileId === null){
@@ -225,7 +225,17 @@ function copyFile(oauth2, folderId, fileId, newFileName) {
  * }}
  */
 const prepareConfigs = (sourceFileId, folderId, newFileName) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     // 文字型データ項目を準備して、config に指定
     const sourceFileIdDef = engine.createDataDefinition('コピー元ファイルID', 1, 'q_sourceFileId', 'STRING_TEXTFIELD');
@@ -301,11 +311,26 @@ const assertPostRequest = ({url, method, contentType, body}, fileId, folderId, n
 
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+
+/**
  * conf_SourceFileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('No Source File ID - FileId specified by String Data', () => {
     prepareConfigs(null, '12345', 'test.txt');
-    expect(execute).toThrow('No Source File ID');
+    assertError(main, 'No Source File ID');
 });
 
 /**
@@ -315,7 +340,7 @@ test('No Source File ID - FileId specified with fixed value ' , () => {
     prepareConfigs(null, '54321', 'test.pdf');
     //conf_SourceFileId の設定値を固定値で上書き
     configs.put('conf_SourceFileId', '');
-    expect(execute).toThrow('No Source File ID');
+    assertError(main, 'No Source File ID');
 });
 
 /**
@@ -327,7 +352,7 @@ test('File Name Length > 255', () => {
         name += 'a';
     }
     prepareConfigs('87654321', '54321', name);
-    expect(execute).toThrow('File Name should be less than 256 characters');
+    assertError(main, 'File Name should be less than 256 characters');
 });
 
 /**
@@ -335,7 +360,7 @@ test('File Name Length > 255', () => {
  */
 test('File Name uses /', () => {
     prepareConfigs('23456789', '23456', 'sample/test');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 /**
@@ -343,7 +368,7 @@ test('File Name uses /', () => {
  */
 test('File Name uses \\', () => {
     prepareConfigs('98765432', '65432', 'sample\\test');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 /**
@@ -351,7 +376,7 @@ test('File Name uses \\', () => {
  */
 test('File Name starts with space', () => {
     prepareConfigs('12345678', '12345', ' test');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 /**
@@ -359,7 +384,7 @@ test('File Name starts with space', () => {
  */
 test('File Name ends with space', () => {
     prepareConfigs('12345678', '12345', 'test ');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 /**
@@ -367,7 +392,7 @@ test('File Name ends with space', () => {
  */
 test('File Name is .', () => {
     prepareConfigs('12345678', '45678', '.');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 /**
@@ -375,7 +400,7 @@ test('File Name is .', () => {
  */
 test('File Name is ..', () => {
     prepareConfigs('87654321', '87654', '..');
-    expect(execute).toThrow('Invalid File Name');
+    assertError(main, 'Invalid File Name');
 });
 
 
@@ -391,7 +416,7 @@ test('GET Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to get parent folder. status: 400');
+    assertError(main, 'Failed to get parent folder. status: 400');
 });
 
 
@@ -427,7 +452,7 @@ test('PUT Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to copy. status: 400');
+    assertError(main, 'Failed to copy. status: 400');
 });
 
 
@@ -455,7 +480,7 @@ test('201 Success - file folder', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(sourceFileIdDef)).toEqual('12345678');
@@ -509,7 +534,7 @@ test('201 Success', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(sourceFileIdDef)).toEqual('23456789');
