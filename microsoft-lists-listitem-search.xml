@@ -63,6 +63,8 @@
 
 const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
 
+const MAX_PAGE_SIZE = 5000; // 一度のリクエストで取得できるリストアイテムの最大数
+
 const main = () => {
     //// == 工程コンフィグの参照 / Config Retrieving ==
     const oauth2 = configs.getObject('conf_OAuth2');
@@ -226,10 +228,11 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLine
     let request = httpClient.begin()
         .authSetting(oauth2)
         // インデックスを作成していないフィールドでもフィルタできるように、Prefer ヘッダを指定
-        // ただし、リストアイテムの総数が多すぎる（5000件以上）とエラーになる
+        // ただし、リストアイテムの総数が多すぎる（5000 件以上）とエラーになる
         .header('Prefer', 'HonorNonIndexedQueriesWarningMayFailRandomly')
         .queryParam('$select', 'id')
-        .queryParam('$top', '5000') // 仮に 5000 件まで取得
+        .queryParam('$top', `${MAX_PAGE_SIZE}`)
+        // $count パラメータは非対応
         .queryParam('$filter', filter);
     if (columnNames.length > 0) {
         request = request.queryParam('$expand', `fields($select=${columnNames.join(',')})`);
@@ -242,6 +245,11 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLine
         throw new Error(`Failed to get list items. status: ${status}`);
     }
     const listItems = JSON.parse(responseStr).value;
+    // 本来は一度のリクエストで検索結果を取得しきれなかった場合にエラーにしたいが、$count パラメータが使用不可なので、
+    // 取得された件数が上限値と同じ場合にエラーにする
+    if (listItems.length === MAX_PAGE_SIZE) {
+        throw new Error(`The number of results reached ${MAX_PAGE_SIZE}.`);
+    }
     if (singleLineFlag && listItems.length > 0) {
         throw new Error('Multiple listitems were found while the data item to save the result is single-line.');
     }
