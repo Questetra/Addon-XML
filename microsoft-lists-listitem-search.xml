@@ -28,7 +28,7 @@
             <label>C4: Filter</label>
             <label locale="ja">C4: フィルタ</label>
         </config>
-        <config name="conf_Ids" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+        <config name="conf_Ids" required="false" form-type="SELECT" select-data-type="STRING">
             <label>C5: Data item to save List Item IDs</label>
             <label locale="ja">C5: リストアイテム ID を保存するデータ項目</label>
         </config>
@@ -36,7 +36,7 @@
             <label>C-K1: Static Name of Column 1</label>
             <label locale="ja">C-K1: 列 1 の名前（StaticName）</label>
         </config>
-        <config name="conf_ColumnValues1" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+        <config name="conf_ColumnValues1" required="false" form-type="SELECT" select-data-type="STRING">
             <label>C-V1: Data item to save values of Column 1</label>
             <label locale="ja">C-V1: 列 1 の値を保存するデータ項目</label>
         </config>
@@ -44,7 +44,7 @@
             <label>C-K2: Static Name of Column 2</label>
             <label locale="ja">C-K2: 列 2 の名前（StaticName）</label>
         </config>
-        <config name="conf_ColumnValues2" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
+        <config name="conf_ColumnValues2" required="false" form-type="SELECT" select-data-type="STRING">
             <label>C-V2: Data item to save values of Column 2</label>
             <label locale="ja">C-V1: 列 2 の値を保存するデータ項目</label>
         </config>
@@ -69,14 +69,14 @@ const main = () => {
     const siteUrl = retrieveSiteUrl();
     const listTitle = configs.get('conf_ListTitle');
     const filter = configs.get('conf_Filter');
-    const {idDef, columnNames, columnDefs} = retrieveColumnNamesAndDataDefs();
+    const {idDef, columnNames, columnDefs, singleLineFlag} = retrieveColumnNamesAndDataDefs();
 
     //// == 演算 / Calculating ==
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
     if (columnNames.length > 0) {
         checkColumns(oauth2, siteId, listTitle, columnNames);
     }
-    const listItems = getListItems(oauth2, siteId, listTitle, filter, columnNames);
+    const listItems = getListItems(oauth2, siteId, listTitle, filter, columnNames, singleLineFlag);
 
     //// == ワークフローデータへの代入 / Data Updating ==
     saveData(listItems, idDef, columnNames, columnDefs);
@@ -104,10 +104,12 @@ const retrieveSiteUrl = () => {
  * @returns {DataDefinitionView} result.idDef  ID 保存先データ項目
  * @returns {Array<String>} result.columnNames  列の名前
  * @returns {Array<DataDefinitionView>} result.columnDefs  列の値の保存先データ項目
+ * @returns {boolean} result.singleLineFlag  保存先データ項目のうちひとつでも単一行のものがあれば true
  */
 const retrieveColumnNamesAndDataDefs = () => {
     const columnNames = [];
     const columnDefs = [];
+    let singleLineFlag = false;
     for (let i = 0; i < 2; i++) {
         const columnName = configs.get(`conf_ColumnName${i + 1}`);
         const columnDef = configs.getObject(`conf_ColumnValues${i + 1}`);
@@ -116,15 +118,17 @@ const retrieveColumnNamesAndDataDefs = () => {
         } else if (columnName !== '' && columnDef !== null) {
             columnNames.push(columnName);
             columnDefs.push(columnDef);
+            singleLineFlag = columnDef.matchDataType('STRING_TEXTFIELD');
         } else {
             throw new Error(`Name and data item for Column ${i + 1} must be specified at the same time.`);
         }
     }
     const idDef = configs.getObject('conf_Ids');
     if (idDef === null && columnDefs.length === 0) {
-        throw new Error('No data item to save the values.');
+        throw new Error('No data item to save the result.');
     }
-    return {idDef, columnNames, columnDefs};
+    singleLineFlag = idDef.matchDataType('STRING_TEXTFIELD');
+    return {idDef, columnNames, columnDefs, singleLineFlag};
 };
 
 /**
@@ -185,7 +189,6 @@ const checkColumns = (oauth2, siteId, listTitle, columnNames) => {
         engine.log(responseStr);
         throw new Error(`Failed to get columns. status: ${status}`);
     }
-    engine.setDataByVarName('q_response1', responseStr); // テスト用
     const columns = JSON.parse(responseStr).value;
     columnNames.forEach(columnName => {
         findAndCheckColumn(columns, columnName);
@@ -215,9 +218,10 @@ const findAndCheckColumn = (columns, name) => {
  * @param {String} listTitle  リストの名前
  * @param {String} filter  フィルタ
  * @param {Array<String>} columnNames  列の名前
+ * @param {boolean} singleLineFlag  保存先データ項目のうちひとつでも単一行のものがあれば true
  * @returns {Array<Object>} 検索結果
  */
-const getListItems = (oauth2, siteId, listTitle, filter, columnNames) => {
+const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLineFlag) => {
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`;
     let request = httpClient.begin()
         .authSetting(oauth2)
@@ -237,8 +241,11 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames) => {
         engine.log(responseStr);
         throw new Error(`Failed to get list items. status: ${status}`);
     }
-    engine.setDataByVarName('q_response2', responseStr); // テスト用
-    return JSON.parse(responseStr).value;
+    const listItems = JSON.parse(responseStr).value;
+    if (singleLineFlag && listItems.length > 0) {
+        throw new Error('Multiple listitems were found while the data item to save the result is single-line.');
+    }
+    return listItems;
 };
 
 /**
