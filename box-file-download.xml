@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2022-11-25</last-modified>
+<last-modified>2024-01-11</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Box: Download File</label>
 <label locale="ja">Box: ファイルダウンロード</label>
 <summary>This item downloads the specified file on Box. If you do not specify a file name, it will be saved with the file name on Box.</summary>
@@ -10,7 +11,7 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-download/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-download/</help-page-url>
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
     oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
@@ -30,10 +31,9 @@
 </configs>
 
 <script><![CDATA[
-main();
 function main(){
 
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.getObject("conf_OAuth2");
 
   const fileIdDef = configs.getObject("conf_FileId");
   let fileId = decideFileId(fileIdDef);
@@ -71,7 +71,7 @@ function decideFileId(fileIdDef){
 
 /**
   * Boxのファイル名を取得する
-  * @param {String} oauth2 認証設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} fileId  ダウンロードするファイルのID
   * @return {String} jsonRes.name  Boxでのファイル名 
   */
@@ -98,7 +98,7 @@ return jsonRes.name;
 
 /**
   * box API にファイルダウンロードの GET リクエストを送信し、レスポンスを返す
-  * @param {String} oauth2 認証設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} folderId  ダウンロードするファイルのID
   * @return {Object} response
   * @return {String} response.contentType
@@ -181,7 +181,17 @@ YII=</icon>
  * @return fileDef: {Object}
  */
 const prepareConfigs = (configs, fileId, fileIdIsFixed, fileName, files) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     //fileIdIsFixed が true なら固定値、false ならデータ項目
     if (fileIdIsFixed) {
@@ -218,12 +228,26 @@ const assertFile = (file, name, contentType, encoding, body) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
  * ファイル ID が空の場合
  * ファイル ID はデータ項目で指定
  */
 test('File ID is empty', () => {
     const fileDef = prepareConfigs(configs, '', false,  '', null);
-    expect(execute).toThrow('fileId is blank');
+    assertError(main, 'fileId is blank');
 });
 
 /**
@@ -245,7 +269,7 @@ test('Failed to find file', () => {
         }
     });
 
-    expect(execute).toThrow('Failed to get file name. status: 404');
+    assertError(main, 'Failed to get file name. status: 404');
 });
 
 /**
@@ -266,7 +290,7 @@ test('Failed to download file', () => {
         }
     });
 
-    expect(execute).toThrow('Failed to download file. status: 403');
+    assertError(main, 'Failed to download file. status: 403');
 });
 
 /**
@@ -293,7 +317,7 @@ test('Succeeded to download file / File is null', () => {
         }
     });
 
-    execute();
+    main();
 
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(1);
@@ -327,7 +351,7 @@ test('Succeeded to download file / File is not null', () => {
         }
     });
 
-    execute();
+    main();
 
     const files_data = engine.findData(fileDef);
     expect(files_data.size()).toEqual(3);
@@ -358,7 +382,7 @@ test('File Name is empty', () => {
         }
     });
 
-    execute();
+    main();
 
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(1);
