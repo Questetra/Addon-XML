@@ -33,16 +33,16 @@
             <label locale="ja">C5: リストアイテム ID を保存するデータ項目</label>
         </config>
         <config name="conf_ColumnName1" required="false" form-type="TEXTFIELD">
-            <label>C-K1: Display Name of Column 1</label>
-            <label locale="ja">C-K1: 列 1 の表示名</label>
+            <label>C-K1: Static Name of Column 1</label>
+            <label locale="ja">C-K1: 列 1 の名前（StaticName）</label>
         </config>
         <config name="conf_ColumnValues1" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
             <label>C-V1: Data item to save values of Column 1</label>
             <label locale="ja">C-V1: 列 1 の値を保存するデータ項目</label>
         </config>
         <config name="conf_ColumnName2" required="false" form-type="TEXTFIELD">
-            <label>C-K2: Display Name of Column 2</label>
-            <label locale="ja">C-K2: 列 2 の表示名</label>
+            <label>C-K2: Static Name of Column 2</label>
+            <label locale="ja">C-K2: 列 2 の名前（StaticName）</label>
         </config>
         <config name="conf_ColumnValues2" required="false" form-type="SELECT" select-data-type="STRING_TEXTAREA">
             <label>C-V2: Data item to save values of Column 2</label>
@@ -69,18 +69,32 @@ const main = () => {
     const siteUrl = configs.get('conf_SiteUrl');
     const listTitle = configs.get('conf_ListTitle');
     const filter = configs.get('conf_Filter');
-    const columnName1 = configs.get('conf_ColumnName1');
-    const columnName2 = configs.get('conf_ColumnName2');
+    const columnNames = retrieveColumnNames();
 
     //// == 演算 / Calculating ==
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
-    const {fieldName1, fieldName2} = getFieldNames(oauth2, siteId, listTitle, columnName1, columnName2);
-    const listItems = getListItems(oauth2, siteId, listTitle, filter);
+    if (columnNames.length > 0) {
+        checkColumns(oauth2, siteId, listTitle, columnNames);
+    }
+    const listItems = getListItems(oauth2, siteId, listTitle, filter, columnNames);
 
     //// == ワークフローデータへの代入 / Data Updating ==
-    setData('conf_Ids', listItems.map((item) => item.id).join('\n'));
-    setData('conf_ColumnValues1', listItems.map((item) => item.fields[fieldName1]).join('\n'));
-    setData('conf_ColumnValues2', listItems.map((item) => item.fields[fieldName2]).join('\n'));
+    saveData(listItems, columnNames);
+};
+
+/**
+ * 工程コンフィグから列の名前を取得する
+ * @returns {Array<String>} 列の名前の配列
+ */
+const retrieveColumnNames = () => {
+    const columnNames = [];
+    for (let i = 0; i < 2; i++) {
+        const columnName = configs.get(`conf_ColumnName${i + 1}`);
+        if (columnName !== '') {
+            columnNames.push(columnName);
+        }
+    }
+    return columnNames;
 };
 
 /**
@@ -122,19 +136,17 @@ const encodeSharingUrl = (sharingUrl) => {
 };
 
 /**
- * リストの列のメタデータを取得し、指定した表示名の列のフィールド名を返す
+ * リストの列のメタデータを取得し、指定した名前の列の存在と型を確認する
  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
  * @param {String} siteId  SharePoint サイトの ID
  * @param {String} listTitle  リストの名前
- * @param {String} columnName1  列 1 の表示名
- * @param {String} columnName2  列 2 の表示名
- * @returns {Object} 検索結果
+ * @param {Array<String>} columnNames  列の名前
  */
-const getFieldNames = (oauth2, siteId, listTitle, columnName1, columnName2) => {
+const checkColumns = (oauth2, siteId, listTitle, columnNames) => {
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/columns`;
     const response = httpClient.begin()
         .authSetting(oauth2)
-        .queryParam('$select', 'name,displayName')
+        .queryParam('$select', 'name,text') // 複数行のテキスト型をエラーにするため、text プロパティを取得
         // $filter, $search, $top パラメータは効かない
         .get(url);
     const status = response.getStatusCode();
@@ -143,21 +155,27 @@ const getFieldNames = (oauth2, siteId, listTitle, columnName1, columnName2) => {
         engine.log(responseStr);
         throw new Error(`Failed to get columns. status: ${status}`);
     }
+    engine.setDataByVarName('q_response1', responseStr); // テスト用
     const columns = JSON.parse(responseStr).value;
-    // TODO: あとで関数化する
-    // TODO: 表示名が指定なしの場合
-    const column1 = columns.find((column) => column.displayName === columnName1);
-    if (column1 === undefined) {
-        throw new Error(`Column '${columnName1}' not found.`);
+    columnNames.forEach(columnName => {
+        findAndCheckColumn(columns, columnName);
+    });
+};
+
+/**
+ * 列の存在と型を確認する
+ * 列が存在しない場合、テキスト型で複数行を許可している場合はエラーにする
+ * @param {Array<Object>} columns  列のメタデータ一覧
+ * @param {String} name  列の名前
+ */
+const findAndCheckColumn = (columns, name) => {
+    const column = columns.find((column) => column.name === name);
+    if (column === undefined) {
+        throw new Error(`Column '${name}' not found.`);
     }
-    const column2 = columns.find((column) => column.displayName === columnName2);
-    if (column2 === undefined) {
-        throw new Error(`Column '${columnName2}' not found.`);
+    if (column.text !== undefined && column.text.allowMultipleLines) {
+        throw new Error(`'${name}' is a text column which can contain a multi-line text.`);
     }
-    return {
-        fieldName1: column1.name,
-        fieldName2: column2.name
-    };
 };
 
 /**
@@ -166,27 +184,60 @@ const getFieldNames = (oauth2, siteId, listTitle, columnName1, columnName2) => {
  * @param {String} siteId  SharePoint サイトの ID
  * @param {String} listTitle  リストの名前
  * @param {String} filter  フィルタ
+ * @param {Array<String>} columnNames  列の名前
  * @returns {Array<Object>} 検索結果
  */
-const getListItems = (oauth2, siteId, listTitle, filter) => {
+const getListItems = (oauth2, siteId, listTitle, filter, columnNames) => {
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`;
-    const response = httpClient.begin()
+    let request = httpClient.begin()
         .authSetting(oauth2)
         // インデックスを作成していないフィールドでもフィルタできるように、Prefer ヘッダを指定
         // ただし、リストアイテムの総数が多すぎる（5000件以上）とエラーになる
         .header('Prefer', 'HonorNonIndexedQueriesWarningMayFailRandomly')
-        .queryParam('$expand', 'fields')
         .queryParam('$select', 'id')
         .queryParam('$top', '5000') // 仮に 5000 件まで取得
-        .queryParam('$filter', filter)
-        .get(url);
+        .queryParam('$filter', filter);
+    if (columnNames.length > 0) {
+        request = request.queryParam('$expand', `fields($select=${columnNames.join(',')})`);
+    }
+    const response = request.get(url);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
         throw new Error(`Failed to get list items. status: ${status}`);
     }
+    engine.setDataByVarName('q_response2', responseStr); // テスト用
     return JSON.parse(responseStr).value;
+};
+
+/**
+ * データ項目への保存
+ * @param listItems
+ * @param columnNames
+ */
+const saveData = (listItems, columnNames) => {
+    setData('conf_Ids', listItems.map((item) => item.id).join('\n'));
+    columnNames.forEach((columnName, index) => {
+        setData(`conf_ColumnValues${index + 1}`, stringifyColumnValues(listItems, columnName));
+    });
+};
+
+/**
+ * 列の値を文字列化する
+ * @param listItems
+ * @param columnName
+ */
+const stringifyColumnValues = (listItems, columnName) => {
+    const columnValues = listItems.map((item) => item.fields[columnName])
+        .map(columnValue => {
+            if (columnValue === undefined || columnValue === null) {
+                return '';
+            }
+            // 文字列以外に、数値、真偽値、オブジェクトの場合がある
+            return JSON.stringify(columnValue);
+        });
+    return columnValues.join('\n');
 };
 
 /**
