@@ -66,10 +66,10 @@ const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
 const main = () => {
     //// == 工程コンフィグの参照 / Config Retrieving ==
     const oauth2 = configs.getObject('conf_OAuth2');
-    const siteUrl = configs.get('conf_SiteUrl');
+    const siteUrl = retrieveSiteUrl();
     const listTitle = configs.get('conf_ListTitle');
     const filter = configs.get('conf_Filter');
-    const columnNames = retrieveColumnNames();
+    const {idDef, columnNames, columnDefs} = retrieveColumnNamesAndDataDefs();
 
     //// == 演算 / Calculating ==
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
@@ -79,22 +79,52 @@ const main = () => {
     const listItems = getListItems(oauth2, siteId, listTitle, filter, columnNames);
 
     //// == ワークフローデータへの代入 / Data Updating ==
-    saveData(listItems, columnNames);
+    saveData(listItems, idDef, columnNames, columnDefs);
 };
 
 /**
- * 工程コンフィグから列の名前を取得する
- * @returns {Array<String>} 列の名前の配列
+ * 工程コンフィグからサイトの URL を取得する
+ * @returns {String} サイトの URL
  */
-const retrieveColumnNames = () => {
+const retrieveSiteUrl = () => {
+    let siteUrl = configs.get('conf_SiteUrl');
+    // 末尾にスラッシュがある場合、削除
+    if (siteUrl.endsWith('/')) {
+        siteUrl = siteUrl.slice(0, -1);
+    }
+    return siteUrl;
+};
+
+/**
+ * 工程コンフィグから列の名前、保存先データ項目を取得する
+ * 以下の場合はエラー
+ * - 名前、保存先データ項目の片方だけが指定されている列がある
+ * - 保存先データ項目がひとつも指定されていない
+ * @returns {Object} result
+ * @returns {DataDefinitionView} result.idDef  ID 保存先データ項目
+ * @returns {Array<String>} result.columnNames  列の名前
+ * @returns {Array<DataDefinitionView>} result.columnDefs  列の値の保存先データ項目
+ */
+const retrieveColumnNamesAndDataDefs = () => {
     const columnNames = [];
+    const columnDefs = [];
     for (let i = 0; i < 2; i++) {
         const columnName = configs.get(`conf_ColumnName${i + 1}`);
-        if (columnName !== '') {
+        const columnDef = configs.getObject(`conf_ColumnValues${i + 1}`);
+        if (columnName === '' && columnDef === null) {
+            continue;
+        } else if (columnName !== '' && columnDef !== null) {
             columnNames.push(columnName);
+            columnDefs.push(columnDef);
+        } else {
+            throw new Error(`Name and data item for Column ${i + 1} must be specified at the same time.`);
         }
     }
-    return columnNames;
+    const idDef = configs.getObject('conf_Ids');
+    if (idDef === null && columnDefs.length === 0) {
+        throw new Error('No data item to save the values.');
+    }
+    return {idDef, columnNames, columnDefs};
 };
 
 /**
@@ -213,13 +243,15 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames) => {
 
 /**
  * データ項目への保存
- * @param listItems
- * @param columnNames
+ * @param {Array<Object>} listItems リストアイテム
+ * @param {DataDefinitionView} idDef ID 保存先データ項目
+ * @param {Array<String>} columnNames 列の名前
+ * @param {Array<DataDefinitionView>} columnDefs 列の値の保存先データ項目
  */
-const saveData = (listItems, columnNames) => {
-    setData('conf_Ids', listItems.map((item) => item.id).join('\n'));
+const saveData = (listItems, idDef, columnNames, columnDefs) => {
+    setData(idDef, listItems.map((item) => item.id).join('\n'));
     columnNames.forEach((columnName, index) => {
-        setData(`conf_ColumnValues${index + 1}`, stringifyColumnValues(listItems, columnName));
+        setData(columnDefs[index], stringifyColumnValues(listItems, columnName));
     });
 };
 
@@ -245,11 +277,10 @@ const stringifyColumnValues = (listItems, columnName) => {
 
 /**
  * データ項目への保存
- * @param configName
- * @param data
+ * @param {DataDefinitionView} def 保存先データ項目
+ * @param {Object} data 保存するデータ
  */
-const setData = (configName, data) => {
-    const def = configs.getObject(configName);
+const setData = (def, data) => {
     if (def !== null) {
         engine.setData(def, data);
     }
