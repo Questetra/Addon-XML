@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-12-06</last-modified>
+    <last-modified>2024-01-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Delete Shared Link of Folder</label>
     <label locale="ja">Box: フォルダ共有リンク削除</label>
     <summary>This item deletes a Shared Link URL of the specified folder on Box. An error will occur if no shared link.</summary>
@@ -11,7 +12,7 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-folder-link-delete/
     </help-page-url>
     <configs>
-        <config name="OAuth2" required="true" form-type="OAUTH2"
+        <config name="OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -24,11 +25,9 @@
     </configs>
 
     <script><![CDATA[
-main();
-
 function main() {
 
-    const oauth2 = configs.get("OAuth2");
+    const oauth2 = configs.getObject("OAuth2");
 
     let folderId = decideFolderId();
 
@@ -68,7 +67,7 @@ function decideFolderId() {
 
 /**
  * Get Folder Information on Box  フォルダに共有リンクがあるか調べる
- * @param {String} oauth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} folderId  調べたいフォルダのID
  * @return {Object}  jsonRes.shared_link フォルダの共有リンクオブジェクト
  */
@@ -94,7 +93,7 @@ function getFolderInformation(oauth2, folderId) {
 
 /**
  * Delete Shared Link to Folder on Box  共有リンク削除
- * @param {String} OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} folderId  共有リンクを削除したいフォルダのID
  */
 function deleteSharedLink(oauth2, folderId) {
@@ -185,7 +184,17 @@ const SAMPLE_PUT = {
  * @return {Object}
  */
 const prepareConfigs = (configs, folderId) => {
-    configs.put('OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('OAuth2', auth);
     const folderIdDef = engine.createDataDefinition('フォルダ ID', 3, 'q_folderId', 'STRING_TEXTFIELD');
     configs.putObject('conf_FolderId', folderIdDef);
     engine.setData(folderIdDef, folderId);
@@ -220,6 +229,20 @@ const assertPutRequest = ({url, method, contentType, body}, folderId) => {
     expect(bodyObj.shared_link).toEqual(null);
 };
 
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
 test('Success / FolderId specified by String Data', () => {
     const folderIdDef = prepareConfigs(configs, '12345');
 
@@ -234,13 +257,25 @@ test('Success / FolderId specified by String Data', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PUT));
     });
 
-    execute();
+    //execute();
+    main();
 
     expect(engine.findData(folderIdDef)).toEqual('12345');
 });
 
 test('Success / FolderID specified with fixed value', () => {
-    configs.put('OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('OAuth2', auth);
+	
     configs.put('conf_FolderId', '98765');
 
     let reqCount = 0;
@@ -254,26 +289,30 @@ test('Success / FolderID specified with fixed value', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PUT));
     });
 
-    execute();
+    //execute();
+    main();
 });
 
 test('FolderID is null', () => {
     prepareConfigs(configs, null);
 
-    expect(execute).toThrow('Folder ID is blank');
+    //expect(execute).toThrow('Folder ID is blank');
+    assertError(main, 'Folder ID is blank');
 });
 
 test('FolderID is blank', () => {
     configs.put('OAuth2', 'Box');
     configs.put('conf_FolderId', '');
 
-    expect(execute).toThrow('Folder ID is blank');
+    //expect(execute).toThrow('Folder ID is blank');
+    assertError(main, 'Folder ID is blank');
 });
 
 test('FolderID is root', () => {
     prepareConfigs(configs, '0');
 
-    expect(execute).toThrow('Root folder is not eligible.');
+    //expect(execute).toThrow('Root folder is not eligible.');
+    assertError(main, 'Root folder is not eligible.');
 });
 
 test('GET Failed', () => {
@@ -284,7 +323,8 @@ test('GET Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to get folder information. status: 400');
+    //expect(execute).toThrow('Failed to get folder information. status: 400');
+    assertError(main, 'Failed to get folder information. status: 400');
 });
 
 test('No shared link', () => {
@@ -295,7 +335,8 @@ test('No shared link', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_PUT));
     });
 
-    expect(execute).toThrow('Failed to Delete Shared Link. The folder(ID:12345) doesn\'t have a Shared link.');
+    //expect(execute).toThrow('Failed to Delete Shared Link. The folder(ID:12345) doesn\'t have a Shared link.');
+    assertError(main, 'Failed to Delete Shared Link. The folder(ID:12345) doesn\'t have a Shared link.');
 });
 
 test('PUT Failed', () => {
@@ -312,7 +353,8 @@ test('PUT Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to delete. status: 400');
+    //expect(execute).toThrow('Failed to delete. status: 400');
+    assertError(main, 'Failed to delete. status: 400');
 });
 ]]></test>
 </service-task-definition>
