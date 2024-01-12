@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-05-27</last-modified>
+    <last-modified>2024-01-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Box: Add Metadata to File</label>
     <label locale="ja">Box: ファイルにメタデータ追加</label>
     <summary>This item adds metadata to the specified file on Box, using a metadata template defined within your
@@ -15,7 +16,7 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-metadata-add/
     </help-page-url>
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -98,9 +99,8 @@
 
 const FIELD_NUM = 8; // 扱えるフィールドの数
 
-main();
 function main(){
-    const oauth2 = configs.get('conf_OAuth2');
+    const oauth2 = configs.getObject("conf_OAuth2");
     const fileId = decideFileId();
     const templateName = configs.get('conf_TemplateName');
     const metadataMap = retrieveMetadataMap();
@@ -151,7 +151,7 @@ function retrieveMetadataMap() {
 /**
   * テンプレートを表示名で検索し、一致した非表示でないテンプレートを返す
   * 同名のテンプレートが複数ある場合はエラー
-  * @param {String} oauth OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} templateName テンプレートの表示名
   * @return {Object} template テンプレートオブジェクト
   */
@@ -287,7 +287,7 @@ function checkOptions(fieldName, value, options) {
 
 /**
   * メタデータを追加
-  * @param {String} oauth OAuth2 設定
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} fileId ファイル ID
   * @param {String} templateKey テンプレートキー
   * @param {Object} metadataObj 追加するメタデータ
@@ -342,7 +342,17 @@ const FIELD_SIZE = 8;
  * @param fieldValues
  */
 const prepareConfigs = (fileId, templateName, fieldNames, fieldValues) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     // ファイル ID を保存した文字型データ項目（単一行）を準備し、設定
     const fileIdDef = engine.createDataDefinition('ファイル ID', 1, 'q_FileId', 'STRING_TEXTFIELD');
@@ -460,11 +470,25 @@ const SAMPLE_METADATA_OBJ = {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    try {
+        func();
+        fail();
+    } catch (e) {
+        expect(e.toString()).toEqual(errorMsg);
+    }
+};
+
+/**
  * ファイル ID の値が空でエラー
  */
 test('File ID is blank', () => {
     prepareConfigs(null, 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
-    expect(execute).toThrow('File ID is blank.');
+    assertError(main, 'File ID is blank.');
 });
 
 /**
@@ -473,7 +497,7 @@ test('File ID is blank', () => {
 test('Field name is blank while its value is set', () => {
     prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
     configs.put('conf_FieldName6', '');
-    expect(execute).toThrow('Value for Field 6 is set but its display name is blank.');
+    assertError(main, 'Value for Field 6 is set but its display name is blank.');
 });
 
 /**
@@ -482,7 +506,7 @@ test('Field name is blank while its value is set', () => {
 test('Same field name set multiple times - 1st and 3rd', () => {
     prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
     configs.put('conf_FieldName3', '文字列1');
-    expect(execute).toThrow('The Field Name "文字列1" is set multiple times.');
+    assertError(main, 'The Field Name "文字列1" is set multiple times.');
 });
 
 /**
@@ -491,7 +515,7 @@ test('Same field name set multiple times - 1st and 3rd', () => {
 test('Same field name set multiple times - 5th and 8th', () => {
     prepareConfigs('fileId-1', 'テンプレート1', SAMPLE_FIELD_NAMES, SAMPLE_FIELD_VALUES);
     configs.put('conf_FieldName5', '複数選択');
-    expect(execute).toThrow('The Field Name "複数選択" is set multiple times.');
+    assertError(main, 'The Field Name "複数選択" is set multiple times.');
 });
 
 /**
@@ -529,7 +553,7 @@ test('Fail in API Request to get metadata templates', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to search template. status:400');
+    assertError(main, 'Failed to search template. status:400');
 });
 
 /**
@@ -544,7 +568,7 @@ test('No templates found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Template with display name "テンプレート1" not found.');
+    assertError(main, 'Template with display name "テンプレート1" not found.');
 });
 
 /**
@@ -559,7 +583,7 @@ test('Template not found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Template with display name "テンプレート2" not found.');
+    assertError(main, 'Template with display name "テンプレート2" not found.');
 });
 
 /**
@@ -577,7 +601,7 @@ test('Template is hidden', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Template with display name "テンプレート1" not found.');
+    assertError(main, 'Template with display name "テンプレート1" not found.');
 });
 
 /**
@@ -592,7 +616,7 @@ test('Multiple templates found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Multiple templates with display name "テンプレート1" found.');
+    assertError(main, 'Multiple templates with display name "テンプレート1" found.');
 });
 
 /**
@@ -632,7 +656,7 @@ test('Fail in API Request to add metadata', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to add metadata. status:400');
+    assertError(main, 'Failed to add metadata. status:400');
 });
 
 /**
@@ -654,7 +678,7 @@ test('Succeed to add metadata', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -679,7 +703,7 @@ test('Succeed to add metadata - multiple templates found but only one visible', 
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /** フィールド名、値に設定するための、すべて空文字列の配列 */
@@ -705,7 +729,7 @@ test('Succeed to add metadata - no fields set', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -728,7 +752,7 @@ test('Succeed to add metadata - no field values set', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /** テンプレートのサンプル */
@@ -843,7 +867,7 @@ test('Succeed to add metadata - Some fields are blank', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -873,7 +897,7 @@ test('Succeed to add metadata - Set 0 in float field', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -903,7 +927,7 @@ test('Succeed to add metadata - Set negative number in float field', () => {
         return httpClient.createHttpResponse(201, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -923,7 +947,7 @@ test('The float value is invalid - includes invalid characters', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "数値" is float, but the value "abc123" is invalid as float.');
+    assertError(main, 'The type of "数値" is float, but the value "abc123" is invalid as float.');
 });
 
 /**
@@ -943,7 +967,7 @@ test('The float value is invalid - includes comma', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "数値" is float, but the value "1,000" is invalid as float.');
+    assertError(main, 'The type of "数値" is float, but the value "1,000" is invalid as float.');
 });
 
 /**
@@ -963,7 +987,7 @@ test('The float value is invalid - missing ones place', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "数値" is float, but the value ".1" is invalid as float.');
+    assertError(main, 'The type of "数値" is float, but the value ".1" is invalid as float.');
 });
 
 /**
@@ -983,7 +1007,7 @@ test('The float value is invalid - starts with 0', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "数値" is float, but the value "01" is invalid as float.');
+    assertError(main, 'The type of "数値" is float, but the value "01" is invalid as float.');
 });
 
 /**
@@ -1003,7 +1027,7 @@ test('The float value is invalid - multiple periods', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "数値" is float, but the value "1.00.1" is invalid as float.');
+    assertError(main, 'The type of "数値" is float, but the value "1.00.1" is invalid as float.');
 });
 
 /**
@@ -1023,7 +1047,7 @@ test('The date value is invalid - not in yyyy-MM-dd format', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "日付" is date, but the value "2015/05/01" is not in the format of "yyyy-MM-dd".');
+    assertError(main, 'The type of "日付" is date, but the value "2015/05/01" is not in the format of "yyyy-MM-dd".');
 });
 
 /**
@@ -1043,7 +1067,7 @@ test('The date value is invalid - invalid date', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "日付" is date, but the value "2020-06-31" is invalid as date.');
+    assertError(main, 'The type of "日付" is date, but the value "2020-06-31" is invalid as date.');
 });
 
 /**
@@ -1063,7 +1087,7 @@ test('The enum value is invalid - option not found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The value "選択肢A" is not in the options of the field "単一選択".');
+    assertError(main, 'The value "選択肢A" is not in the options of the field "単一選択".');
 });
 
 /**
@@ -1083,7 +1107,7 @@ test('The multiSelect value is invalid - option not found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The value "選択肢1" is not in the options of the field "複数選択".');
+    assertError(main, 'The value "選択肢1" is not in the options of the field "複数選択".');
 });
 
 /**
@@ -1103,7 +1127,7 @@ test('Field not found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Field with display name "存在しないフィールド" not found.');
+    assertError(main, 'Field with display name "存在しないフィールド" not found.');
 });
 
 /**
@@ -1123,7 +1147,7 @@ test('Field is hidden', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Field with display name "非表示のフィールド" not found.');
+    assertError(main, 'Field with display name "非表示のフィールド" not found.');
 });
 
 /**
@@ -1143,7 +1167,7 @@ test('Multiple fields found', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('Multiple fields with display name "表示名が重複したフィールド" found.');
+    assertError(main, 'Multiple fields with display name "表示名が重複したフィールド" found.');
 });
 
 /**
@@ -1163,7 +1187,7 @@ test('Field type not supported', () => {
         return httpClient.createHttpResponse(200, 'application/json', responseStr);
     });
 
-    expect(execute).toThrow('The type of "新しい型のフィールド" is not supported: newType');
+    assertError(main, 'The type of "新しい型のフィールド" is not supported: newType');
 });
 
     ]]></test>
