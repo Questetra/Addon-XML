@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Box: Move File</label>
 <label locale="ja">Box: ファイル移動</label>
-<last-modified>2022-11-25</last-modified>
+<last-modified>2024-01-15</last-modified>
 <summary>This item moves the File to the specified Folder. File ID and URL won't change.</summary>
 <summary locale="ja">この工程は、既存ファイルを指定フォルダに移動します。ファイルの ID・URL は変化しません。</summary>
 <help-page-url>https://support.questetra.com/bpmn-icons/service-task-box-file-move/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-move/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://app.box.com/api/oauth2/root_readwrite">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -26,10 +27,9 @@
 
 
 <script><![CDATA[
-main();
 function main(){
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get( "conf_OAuth2" ) ;
+  const oauth2 = configs.getObject("conf_OAuth2");
   const fileId = decideFileId();
 
   if(fileId === "" || fileId === null){
@@ -131,7 +131,17 @@ YII=</icon>
  * }
  */
 const prepareConfigs = (configs, fileId, folderId) => {
-    configs.put('conf_OAuth2', 'Box');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readwrite',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     // 文字型データ項目を準備して、config に指定
     const fileIdDef = engine.createDataDefinition('移動させるファイルID', 1, 'q_sourceFileId', 'STRING_TEXTFIELD');
@@ -171,13 +181,26 @@ const assertRequest = ({url, method, contentType, body}, fileId, folderId) => {
     expect(bodyObj.parent.id).toEqual(folderId);
 };
 
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+  try {
+    func();
+    fail();
+  } catch (e) {
+    expect(e.toString()).toEqual(errorMsg);
+  }
+};
 
 /**
  * conf_FileId にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
  */
 test('No File ID - FileId specified by String Data', () => {
     prepareConfigs(configs, null, '12345');
-    expect(execute).toThrow('No File ID');
+    assertError(main, 'No File ID');
 });
 
 
@@ -186,7 +209,7 @@ test('No File ID - FileId specified by String Data', () => {
  */
 test('No Folder ID - FolderId specified by String Data', () => {
     prepareConfigs(configs, '12345678', null);
-    expect(execute).toThrow('No Folder ID');
+    assertError(main, 'No Folder ID');
 });
 
 
@@ -197,7 +220,7 @@ test('No Folder ID - FolderId specified with fixed value ' , () => {
     prepareConfigs(configs, '87654321', '54321');
     //conf_FolderId の設定値を固定値（空）で上書き
     configs.put('conf_FolderId', '');
-    expect(execute).toThrow('No Folder ID');
+    assertError(main, 'No Folder ID');
 });
 
 
@@ -214,7 +237,7 @@ test('Failed to move. - PUT Failed ', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to move. status: 400');
+    assertError(main, 'Failed to move. status: 400');
 });
 
 
@@ -239,7 +262,7 @@ test('200 Success', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(fileIdDef)).toEqual('12345678');
