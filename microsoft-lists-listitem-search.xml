@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Search List Items</label>
     <label locale="ja">Microsoft Lists: リストアイテム検索</label>
-    <!--
-    <last-modified>2024-01-04</last-modified>
-    -->
+    <last-modified>2024-01-15</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -120,7 +118,9 @@ const retrieveColumnNamesAndDataDefs = () => {
         } else if (columnName !== '' && columnDef !== null) {
             columnNames.push(columnName);
             columnDefs.push(columnDef);
-            singleLineFlag = columnDef.matchDataType('STRING_TEXTFIELD');
+            if (columnDef.matchDataType('STRING_TEXTFIELD')) {
+                singleLineFlag = true;
+            }
         } else {
             throw new Error(`Name and data item for Column ${i + 1} must be specified at the same time.`);
         }
@@ -129,7 +129,9 @@ const retrieveColumnNamesAndDataDefs = () => {
     if (idDef === null && columnDefs.length === 0) {
         throw new Error('No data item to save the result.');
     }
-    singleLineFlag = idDef.matchDataType('STRING_TEXTFIELD');
+    if (idDef !== null && idDef.matchDataType('STRING_TEXTFIELD')) {
+        singleLineFlag = true;
+    }
     return {idDef, columnNames, columnDefs, singleLineFlag};
 };
 
@@ -233,6 +235,7 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLine
         .queryParam('$select', 'id')
         .queryParam('$top', `${MAX_PAGE_SIZE}`)
         // $count パラメータは非対応
+        // $orderby パラメータはあえて指定しない。デフォルトの ID 順のまま取得する
         .queryParam('$filter', filter);
     if (columnNames.length > 0) {
         request = request.queryParam('$expand', `fields($select=${columnNames.join(',')})`);
@@ -245,13 +248,16 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLine
         throw new Error(`Failed to get list items. status: ${status}`);
     }
     const listItems = JSON.parse(responseStr).value;
+    if (listItems.length === 0) {
+        throw new Error('No list items found.');
+    }
     // 本来は一度のリクエストで検索結果を取得しきれなかった場合にエラーにしたいが、$count パラメータが使用不可なので、
     // 取得された件数が上限値と同じ場合にエラーにする
     if (listItems.length === MAX_PAGE_SIZE) {
         throw new Error(`The number of results reached ${MAX_PAGE_SIZE}.`);
     }
     if (singleLineFlag && listItems.length > 0) {
-        throw new Error('Multiple listitems were found while the data item to save the result is single-line.');
+        throw new Error('Multiple list items were found while the data item to save the result is single-line.');
     }
     return listItems;
 };
@@ -328,6 +334,603 @@ const setData = (def, data) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param filter
+ * @param columnName1
+ * @param columnName2
+ * @return result
+ * @return {DataDefinitionView} result.idDef
+ * @return {DataDefinitionView} result.column1Def
+ * @return {DataDefinitionView} result.column2Def
+ */
+const prepareConfigs = (siteUrl, listTitle, filter, columnName1, columnName2) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+    configs.put('conf_Filter', filter);
+    configs.put('conf_ColumnName1', columnName1);
+    configs.put('conf_ColumnName2', columnName2);
+
+    // 文字型データ項目（複数行）を準備
+    const idDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listitemIds', 'STRING_TEXTAREA');
+    const column1Def = engine.createDataDefinition('値_1', 2, 'q_columnValues1', 'STRING_TEXTAREA');
+    const column2Def = engine.createDataDefinition('値_2', 3, 'q_columnValues2', 'STRING_TEXTAREA');
+    engine.setData(idDef, '事前\n文字列');
+    engine.setData(column1Def, '事前\n文字列');
+    engine.setData(column2Def, '事前\n文字列');
+    configs.putObject('conf_Ids', idDef);
+    configs.putObject('conf_ColumnValues1', column1Def);
+    configs.putObject('conf_ColumnValues2', column2Def);
+
+    return {idDef, column1Def, column2Def};
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 保存先データ項目が一つも設定されておらずエラーになる場合
+ */
+test('No data item to save the result', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '', '');
+    configs.put('conf_Ids', '');
+    configs.put('conf_ColumnValues1', '');
+    configs.put('conf_ColumnValues2', '');
+
+    assertError('No data item to save the result.');
+});
+
+/**
+ * 列 1 の名前が空なのに保存先データ項目が設定されていてエラーになる場合
+ */
+test('ColumnName1 is empty but the data item to save the values is set', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '', '列 2');
+
+    assertError('Name and data item for Column 1 must be specified at the same time.');
+});
+
+/**
+ * 列 2 の名前が空なのに保存先データ項目が設定されていてエラーになる場合
+ */
+test('ColumnName2 is empty but the data item to save the values is set', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '');
+
+    assertError('Name and data item for Column 2 must be specified at the same time.');
+});
+
+/**
+ * 列 1 の名前が設定されているのに保存先データ項目が設定されておらずエラーになる場合
+ */
+test('Data item to save the values of Column 1 is not set', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+    configs.put('conf_ColumnValues1', '');
+
+    assertError('Name and data item for Column 1 must be specified at the same time.');
+});
+
+/**
+ * 列 2 の名前が設定されているのに保存先データ項目が設定されておらずエラーになる場合
+ */
+test('Data item to save the values of Column 2 is not set', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+    configs.put('conf_ColumnValues2', '');
+
+    assertError('Name and data item for Column 2 must be specified at the same time.');
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in 1st GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#formParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * 列情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ */
+const assertGetColumnsRequest = ({ url, method, headers }, siteId, listTitle) => {
+    const expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/columns`
+        + `?${generateQueryString('$select', 'name,text')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * 列情報取得のの GET リクエストでエラー
+ */
+test('Fail in 2nd GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get columns. status: 400');
+});
+
+/**
+ * 列 1 に指定した名前の列が存在せずエラーになる場合
+ */
+test('Column 1 not found', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [ // 列 1 は存在しない
+        { name: '列 2', text: { allowMultipleLines: false } },
+        { name: '列 3', text: { allowMultipleLines: false } },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+    });
+    assertError("Column '列 1' not found.");
+});
+
+/**
+ * 列 2 に指定した名前の列が存在せずエラーになる場合
+ */
+test('Column 2 not found', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [ // 列 2 は存在しない
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 3', text: { allowMultipleLines: false } },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+    });
+    assertError("Column '列 2' not found.");
+});
+
+/**
+ * 列 1 に指定した名前の列が複数行のテキスト型でエラーになる場合
+ */
+test('Column 1 is multi-line text', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: true } },
+        { name: '列 2', text: { allowMultipleLines: false } },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+    });
+    assertError("'列 1' is a text column which can contain a multi-line text.");
+});
+
+/**
+ * 列 2 に指定した名前の列が複数行のテキスト型でエラーになる場合
+ */
+test('Column 2 is multi-line text', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2', text: { allowMultipleLines: true } },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+    });
+    assertError("'列 2' is a text column which can contain a multi-line text.");
+});
+
+/**
+ * リストアイテム取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ * @param filter
+ * @param columnNames
+ */
+const assertGetListItemsRequest = ({ url, method, headers }, siteId, listTitle, filter, columnNames) => {
+    let expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`
+        + `?${generateQueryString('$select', 'id')}`
+        + `&${generateQueryString('$top', MAX_PAGE_SIZE)}`
+        + `&${generateQueryString('$filter', filter)}`;
+    if (columnNames.length > 0) {
+        const expand = `fields($select=${columnNames.join(',')})`;
+        expectedUrl += `&${generateQueryString('$expand', expand)}`;
+    }
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Prefer).toEqual('HonorNonIndexedQueriesWarningMayFailRandomly');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+};
+
+/**
+ * リストアイテム取得のの GET リクエストでエラー
+ */
+test('Fail in 3rd GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2', text: { allowMultipleLines: false } },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get list items. status: 400');
+});
+
+/**
+ * 検索結果が 0 件でエラーになる場合
+ */
+test('No list items found', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', `{"value":[]}`);
+    });
+    assertError('No list items found.');
+});
+
+/**
+ * リストアイテム検索結果のレスポンスを準備
+ * @param num 検索結果の個数
+ * @param columnNames 検索結果に含まれる列の名前
+ */
+const prepareListItemsResponse = (num, columnNames) => {
+    const listItems = [];
+    for (let i = 0; i < num; i++) {
+        const fields = {};
+        columnNames.forEach(columnName => {
+            fields[columnName] = `${columnName} の値_${i + 1}`;
+        });
+        listItems.push({
+            id: `id_${i + 1}`,
+            fields
+        });
+    }
+    return JSON.stringify({ value: listItems });
+}
+
+/**
+ * 検索結果が上限件数でエラーになる場合
+ */
+test('The number of results reached the max page size', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(MAX_PAGE_SIZE, ['列 1', '列 2']));
+    });
+    assertError(`The number of results reached ${MAX_PAGE_SIZE}.`);
+});
+
+/**
+ * 検索結果が複数件あるのに、ID を保存するデータ項目が単一行のテキスト型でエラーになる場合
+ */
+test('Multiple list items were found while the data item to save ID is single-line', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+    const singleLineDef = engine.createDataDefinition('単一行のデータ項目', 4, 'q_textfield', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Ids', singleLineDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+    });
+    assertError('Multiple list items were found while the data item to save the result is single-line.');
+});
+
+/**
+ * 検索結果が複数件あるのに、列 1 の値を保存するデータ項目が単一行のテキスト型でエラーになる場合
+ */
+test('Multiple list items were found while the data item to save Column 1 is single-line', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+    const singleLineDef = engine.createDataDefinition('単一行のデータ項目', 4, 'q_textfield', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ColumnValues1', singleLineDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+    });
+    assertError('Multiple list items were found while the data item to save the result is single-line.');
+});
+
+/**
+ * 検索結果が複数件あるのに、列 2 の値を保存するデータ項目が単一行のテキスト型でエラーになる場合
+ */
+test('Multiple list items were found while the data item to save Column 2 is single-line', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+    const singleLineDef = engine.createDataDefinition('単一行のデータ項目', 4, 'q_textfield', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ColumnValues2', singleLineDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+    });
+    assertError('Multiple list items were found while the data item to save the result is single-line.');
+});
+
+/**
+ * 成功
+ */
+test('Succeed', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(3, ['列 1', '列 2']));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual(`id_1\nid_2\nid_3`);
+    expect(engine.findData(column1Def)).toEqual(`列 1 の値_1\n列 1 の値_2\n列 1 の値_3`);
+    expect(engine.findData(column2Def)).toEqual(`列 2 の値_1\n列 2 の値_2\n列 2 の値_3`);
+});
 
 ]]></test>
 
