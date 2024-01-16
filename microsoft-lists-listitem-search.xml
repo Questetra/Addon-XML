@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Search List Items</label>
     <label locale="ja">Microsoft Lists: リストアイテム検索</label>
-    <last-modified>2024-01-15</last-modified>
+    <last-modified>2024-01-16</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -256,7 +256,7 @@ const getListItems = (oauth2, siteId, listTitle, filter, columnNames, singleLine
     if (listItems.length === MAX_PAGE_SIZE) {
         throw new Error(`The number of results reached ${MAX_PAGE_SIZE}.`);
     }
-    if (singleLineFlag && listItems.length > 0) {
+    if (singleLineFlag && listItems.length > 1) {
         throw new Error('Multiple list items were found while the data item to save the result is single-line.');
     }
     return listItems;
@@ -566,7 +566,7 @@ test('Column 1 not found', () => {
             return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
         }
         assertGetColumnsRequest(request, siteId, listTitle);
-        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
     });
     assertError("Column '列 1' not found.");
 });
@@ -593,7 +593,7 @@ test('Column 2 not found', () => {
             return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
         }
         assertGetColumnsRequest(request, siteId, listTitle);
-        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
     });
     assertError("Column '列 2' not found.");
 });
@@ -620,7 +620,7 @@ test('Column 1 is multi-line text', () => {
             return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
         }
         assertGetColumnsRequest(request, siteId, listTitle);
-        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
     });
     assertError("'列 1' is a text column which can contain a multi-line text.");
 });
@@ -647,7 +647,7 @@ test('Column 2 is multi-line text', () => {
             return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
         }
         assertGetColumnsRequest(request, siteId, listTitle);
-        return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
     });
     assertError("'列 2' is a text column which can contain a multi-line text.");
 });
@@ -702,7 +702,7 @@ test('Fail in 3rd GET request', () => {
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
         assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
@@ -734,7 +734,7 @@ test('No list items found', () => {
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
         assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
         return httpClient.createHttpResponse(200, 'application/json', `{"value":[]}`);
@@ -746,21 +746,48 @@ test('No list items found', () => {
  * リストアイテム検索結果のレスポンスを準備
  * @param num 検索結果の個数
  * @param columnNames 検索結果に含まれる列の名前
+ * @param types 検索結果の列の型（String, Number, Boolean, Object のいずれか）
+ * @returns {String}
  */
-const prepareListItemsResponse = (num, columnNames) => {
+const prepareListItemsResponse = (num, columnNames, types) => {
+    const listItems = prepareListItemse(num, columnNames, types);
+    return JSON.stringify({ value: listItems });
+};
+
+/**
+ * リストアイテム検索結果を準備
+ * @param num 検索結果の個数
+ * @param columnNames 検索結果に含まれる列の名前
+ * @param types 検索結果の列の型（String, Number, Boolean, Object のいずれか）
+ * @returns {String}
+ */
+const prepareListItemse = (num, columnNames, types) => {
     const listItems = [];
     for (let i = 0; i < num; i++) {
         const fields = {};
-        columnNames.forEach(columnName => {
-            fields[columnName] = `${columnName} の値_${i + 1}`;
+        columnNames.forEach((columnName, j) => {
+            switch (types[j]) {
+                case 'String':
+                    fields[columnName] = `${columnName} の値_${i + 1}`;
+                    break;
+                case 'Number':
+                    fields[columnName] = i + 1;
+                    break;
+                case 'Boolean':
+                    fields[columnName] = i % 2 === 0;
+                    break;
+                case 'Object':
+                    fields[columnName] = { displayName: `${columnName} の値_${i + 1}` };
+                    break;
+            }
         });
         listItems.push({
             id: `id_${i + 1}`,
             fields
         });
     }
-    return JSON.stringify({ value: listItems });
-}
+    return listItems;
+};
 
 /**
  * 検索結果が上限件数でエラーになる場合
@@ -777,6 +804,8 @@ test('The number of results reached the max page size', () => {
         { name: '列 1', text: { allowMultipleLines: false } },
         { name: '列 2' },
     ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -786,10 +815,11 @@ test('The number of results reached the max page size', () => {
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
-        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(MAX_PAGE_SIZE, ['列 1', '列 2']));
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(MAX_PAGE_SIZE, columnNames, types));
     });
     assertError(`The number of results reached ${MAX_PAGE_SIZE}.`);
 });
@@ -811,6 +841,8 @@ test('Multiple list items were found while the data item to save ID is single-li
         { name: '列 1', text: { allowMultipleLines: false } },
         { name: '列 2' },
     ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -820,10 +852,11 @@ test('Multiple list items were found while the data item to save ID is single-li
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
-        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(2, columnNames, types));
     });
     assertError('Multiple list items were found while the data item to save the result is single-line.');
 });
@@ -845,6 +878,8 @@ test('Multiple list items were found while the data item to save Column 1 is sin
         { name: '列 1', text: { allowMultipleLines: false } },
         { name: '列 2' },
     ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -854,10 +889,11 @@ test('Multiple list items were found while the data item to save Column 1 is sin
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
-        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(2, columnNames, types));
     });
     assertError('Multiple list items were found while the data item to save the result is single-line.');
 });
@@ -879,6 +915,8 @@ test('Multiple list items were found while the data item to save Column 2 is sin
         { name: '列 1', text: { allowMultipleLines: false } },
         { name: '列 2' },
     ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -888,21 +926,22 @@ test('Multiple list items were found while the data item to save Column 2 is sin
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
-        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(2, ['列 1', '列 2']));
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(2, columnNames, types));
     });
     assertError('Multiple list items were found while the data item to save the result is single-line.');
 });
 
 /**
- * 成功
+ * 成功 - すべてのデータ項目に保存（複数行）
  */
-test('Succeed', () => {
+test('Succeed - save to all data items', () => {
     const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
     const listTitle = 'リスト 1';
-    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    const filter = "fields/Status eq '承認済み'";
     const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
 
     let reqCount = 0;
@@ -911,6 +950,8 @@ test('Succeed', () => {
         { name: '列 1', text: { allowMultipleLines: false } },
         { name: '列 2' },
     ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -920,16 +961,244 @@ test('Succeed', () => {
         if (reqCount === 1) {
             assertGetColumnsRequest(request, siteId, listTitle);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', `{"value":${JSON.stringify(columns)}}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemsRequest(request, siteId, listTitle, filter, ['列 1', '列 2']);
-        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(3, ['列 1', '列 2']));
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(3, columnNames, types));
     });
     expect(main()).toEqual(undefined);
 
-    expect(engine.findData(idDef)).toEqual(`id_1\nid_2\nid_3`);
-    expect(engine.findData(column1Def)).toEqual(`列 1 の値_1\n列 1 の値_2\n列 1 の値_3`);
-    expect(engine.findData(column2Def)).toEqual(`列 2 の値_1\n列 2 の値_2\n列 2 の値_3`);
+    expect(engine.findData(idDef)).toEqual('id_1\nid_2\nid_3');
+    expect(engine.findData(column1Def)).toEqual('列 1 の値_1\n列 1 の値_2\n列 1 の値_3');
+    expect(engine.findData(column2Def)).toEqual('列 2 の値_1\n列 2 の値_2\n列 2 の値_3');
+});
+
+/**
+ * 成功 - すべてのデータ項目に保存（単一行）, 数値型の列と真偽値型の列を指定
+ */
+test('Succeed - save to all data items, textfield, Number and Boolean', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user2_test_onmicrosoft_com';
+    const listTitle = 'リスト 2';
+    const filter = "fields/Title eq 'リストアイテムのタイトル'";
+    prepareConfigs(siteUrl, listTitle, filter, 'Numeric', 'Boolean');
+    const newIdDef = engine.createDataDefinition('ID（単一行）', 4, 'q_newId', 'STRING_TEXTFIELD');
+    const newColumn1Def = engine.createDataDefinition('列 1（単一行）', 5, 'q_newColumn1', 'STRING_TEXTFIELD');
+    const newColumn2Def = engine.createDataDefinition('列 2（単一行）', 6, 'q_newColumn2', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Ids', newIdDef);
+    configs.putObject('conf_ColumnValues1', newColumn1Def);
+    configs.putObject('conf_ColumnValues2', newColumn2Def);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: 'Numeric' },
+        { name: 'Boolean' },
+    ];
+    const columnNames = ['Numeric', 'Boolean'];
+    const types = ['Number', 'Boolean'];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(1, columnNames, types));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(newIdDef)).toEqual('id_1');
+    expect(engine.findData(newColumn1Def)).toEqual('1');
+    expect(engine.findData(newColumn2Def)).toEqual('true');
+});
+
+/**
+ * 成功 - フィルタ指定なし, ID のみ保存（複数行）
+ */
+test('Succeed - no filter, save IDs only', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト';
+    const filter = '';
+    const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, '', '');
+    configs.put('conf_ColumnValues1', '');
+    configs.put('conf_ColumnValues2', '');
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, []);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(5, [], []));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('id_1\nid_2\nid_3\nid_4\nid_5');
+    expect(engine.findData(column1Def)).toEqual('事前\n文字列');
+    expect(engine.findData(column2Def)).toEqual('事前\n文字列');
+});
+
+/**
+ * 成功 - フィルタ指定なし, ID のみ保存（単一行）
+ */
+test('Succeed - no filter, save one ID', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト';
+    const filter = '';
+    prepareConfigs(siteUrl, listTitle, filter, '', '');
+    configs.put('conf_ColumnValues1', '');
+    configs.put('conf_ColumnValues2', '');
+    const newIdDef = engine.createDataDefinition('ID（単一行）', 4, 'q_newId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Ids', newIdDef);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, []);
+        return httpClient.createHttpResponse(200, 'application/json', prepareListItemsResponse(1, [], []));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(newIdDef)).toEqual('id_1');
+});
+
+/**
+ * 成功 - 列 1 のみ保存（複数行）, オブジェクト型の列を指定
+ */
+test('Succeed - save Column 1 only, Object', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 2';
+    const filter = "fields/Status eq '未承認'";
+    const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, 'Destination', '');
+    configs.put('conf_Ids', '');
+    configs.put('conf_ColumnValues2', '');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: 'Destination' }
+    ];
+    const columnNames = ['Destination'];
+    const types = ['Object'];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(2, columnNames, types));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('事前\n文字列');
+    expect(engine.findData(column1Def)).toEqual('{"displayName":"Destination の値_1"}\n{"displayName":"Destination の値_2"}');
+    expect(engine.findData(column2Def)).toEqual('事前\n文字列');
+});
+
+/**
+ * 成功 - 列 2 のみ保存（単一行）, オブジェクト型の列を指定
+ */
+test('Succeed - save Column 2 only, textfield, Object', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 2';
+    const filter = "fields/Status eq '未承認'";
+    const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, '', 'Image');
+    configs.put('conf_Ids', '');
+    configs.put('conf_ColumnValues1', '');
+    const newColumn2Def = engine.createDataDefinition('列 2（単一行）', 4, 'q_newColumn2', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ColumnValues2', newColumn2Def);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: 'Image' }
+    ];
+    const columnNames = ['Image'];
+    const types = ['Object'];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemsResponse(1, columnNames, types));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('事前\n文字列');
+    expect(engine.findData(column1Def)).toEqual('事前\n文字列');
+    expect(engine.findData(column2Def)).toEqual('事前\n文字列');
+    expect(engine.findData(newColumn2Def)).toEqual('{"displayName":"Image の値_1"}');
+});
+
+/**
+ * 成功 - すべてのデータ項目に保存（複数行）, 値が空のアイテムがある
+ */
+test('Succeed - save to all data items, includes empty values', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const filter = "fields/Status eq '承認済み'";
+    const {idDef, column1Def, column2Def} = prepareConfigs(siteUrl, listTitle, filter, '列 1', '列 2');
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = [
+        { name: '列 1', text: { allowMultipleLines: false } },
+        { name: '列 2' },
+    ];
+    const columnNames = ['列 1', '列 2'];
+    const types = ['String', 'String'];
+    const listItems = prepareListItemse(3, columnNames, types);
+    Object.assign(listItems[1], { fields: {} }); // 2 行目は、列 1 も列 2 も undefined
+    Object.assign(listItems[2], { fields: { "列 1": null, "列 2": "列 2 の値_3" } }); // 3 行目の列 1 は null
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemsRequest(request, siteId, listTitle, filter, columnNames);
+        return httpClient
+            .createHttpResponse(200, 'application/json', JSON.stringify({ value: listItems }));
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('id_1\nid_2\nid_3');
+    expect(engine.findData(column1Def)).toEqual('列 1 の値_1\n\n'); // 2 行目、3 行目は空
+    expect(engine.findData(column2Def)).toEqual('列 2 の値_1\n\n列 2 の値_3'); // 2 行目は空
 });
 
 ]]></test>
