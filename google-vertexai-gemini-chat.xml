@@ -9,7 +9,7 @@
     <!--
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
-    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Anthropic Claude 
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Anthropic Claude
         のモデルにメッセージを送信し、回答をデータ項目に保存します。
     </summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-anthropic-claude-chat/</help-page-url>
@@ -406,13 +406,14 @@ test('Message is empty', () => {
  * @param request.method
  * @param request.contentType
  * @param request.body
+ * @param {String} serviceAccount
  */
 const assertTokenRequest = ({
                                 url,
                                 method,
                                 contentType,
                                 body
-                            }) => {
+                            }, serviceAccount) => {
     expect(url).toEqual(URL_TOKEN_REQUEST);
     expect(method).toEqual('POST');
     expect(contentType).startsWith('application/x-www-form-urlencoded');
@@ -422,6 +423,12 @@ const assertTokenRequest = ({
 
     const publicKey = rsa.readKeyFromX509(CERTIFICATE);
     expect(jwt.verify(assertion, publicKey)).toEqual(true);
+
+    const payloadJson = base64.decodeFromUrlSafeString(assertion.split('.')[1]);
+    const payload = JSON.parse(payloadJson);
+    expect(payload.iss).toEqual(serviceAccount);
+    expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
+    expect(payload.scope).toEqual(SCOPE);
 };
 
 /**
@@ -455,26 +462,83 @@ const assertRequest = ({
 };
 
 /**
+ * API のレスポンスボディを作成
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponse = (answerText) => {
+    const responseObj = [{
+        "candidates": [{
+            "content": {
+                "parts": [
+                    {
+                        "text": answerText
+                    }
+                ]
+            },
+            "finishReason": 'FINISH_REASON_STOP ',
+            "safetyRatings": [],
+            "citationMetadata": {
+                "citations": []
+            }
+        }]
+    }];
+    return JSON.stringify(responseObj);
+};
+
+/**
  * API リクエストでエラー
  */
 test('Fail to request', () => {
     const privateKeyId = 'key-12345';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', 'Hi. How are you?');
+    const serviceAccount = 'service@questetra.com';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, '', message);
 
+    const token = 'token';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request);
+            assertTokenRequest(request, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
-                'access_token': 'token'
+                'access_token': token
             }));
         }
-        assertRequest(request, 'token', region, projectId, MAX_TOKENS_DEFAULT, 'Hi. How are you?');
+        assertRequest(request, token, region, projectId, MAX_TOKENS_DEFAULT, message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * 成功 - 最大トークン数を設定しない場合は 2048 が指定される
+ */
+test('Success - with default max tokens', () => {
+    const privateKeyId = 'key-67890';
+    const region = 'asia-northeast1';
+    const projectId = 'project-12345';
+    const serviceAccount = 'service@example.com';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, '', message);
+
+    const token = 'token-12345';
+    const answer = 'Fine, thanks.';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, MAX_TOKENS_DEFAULT, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
 });
 ]]></test>
 </service-task-definition>
