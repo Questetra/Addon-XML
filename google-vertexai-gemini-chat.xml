@@ -276,6 +276,28 @@ ESFz5+HMVWL2lMD5KqLxIdHZNe4fbPyW779yMNdyd0rlgOS1kM3WrYdV9tgjc1VI
 lweR14IODzhshANib/N8F47e
 -----END PRIVATE KEY-----`;
 
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIDbzCCAlegAwIBAgIUPV0u0uVd+8UHrS6NRz/xVad9oRUwDQYJKoZIhvcNAQEL
+BQAwRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYDVQQKDAlRdWVz
+dGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MB4XDTI0MDExODA4MDYxMVoXDTI0
+MDIxNzA4MDYxMVowRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYD
+VQQKDAlRdWVzdGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA92YNClZ9o33/LTR5O6fLlhL7GsQOfQpBotb/
+NZMlbJ3fssZtt51iCoRqZYctISu3ZwT9zjAdGAn76Ml6q8kDCW/esTMj5Fvp/Wtb
+od8Dom6T84cP0G1c3eb4DHCvajdjOaAdYmCxFL5RqqIEPK9YGFJbfzn9KCGCiMHv
+R4kF1EzcZzclvsK1ETZA4qOECjLwBKnRuIhM0oQMxGzSzhuGAHZisWfoC9OuOrOV
+0UyDu6v94WohfQbM8RbpfRoroEPK3TysSRL0PWDDLXM9/cFTOGbyfIJlKw+cMLnA
+0F33oj+21PZngQEBqV3JmARaQRyNIUxB2KjNDGe6ViVQfXhHhQIDAQABo1MwUTAd
+BgNVHQ4EFgQU+XQRQgTm3ffYqLngkqr03TFcbvcwHwYDVR0jBBgwFoAU+XQRQgTm
+3ffYqLngkqr03TFcbvcwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAOnZodDZ4tqjkofJbIcuXczFGPta6geFl/my3H2Ubf2PJNEkDxklgml7uMych
+vs/lWi0p7YQII52lbMytADKeG/YLOBVQMp5e3WDI3D+630b3T20AwZcXW3KuAYn1
+sQuSh7RijcOKDoTMQNUCMjgBbzr5Z4eq0HYl/Uivmkdh5YH0nU2+LbU/G1RDDodh
+Q+J3TyL+Ms9ba5V8/7gs7Vaz9uuRBdYpq/MP+Iyb78/yIGOxk9Qj0fXdc+W69XGP
+rqpI6o1cfaFHC3zkRdyZA9Tvh3yE3XID9J5xRZRmUuCzUR4YkJQx436E7EzVohq7
+lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
+-----END CERTIFICATE-----`;
+
 /**
  * 設定の準備
  * @param privateKeyId 秘密鍵 ID
@@ -375,6 +397,84 @@ test('Message is empty', () => {
     prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', '');
 
     assertError('User Message is empty.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ */
+const assertTokenRequest = ({
+                                url,
+                                method,
+                                contentType,
+                                body
+                            }) => {
+    expect(url).toEqual(URL_TOKEN_REQUEST);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const query = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=`;
+    expect(body).startsWith(query);
+    const assertion = decodeURIComponent(body.substring(query.length));
+
+    const publicKey = rsa.readKeyFromX509(CERTIFICATE);
+    expect(jwt.verify(assertion, publicKey)).toEqual(true);
+};
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param {String} token
+ * @param {String} region
+ * @param {String} projectId
+ * @param {String} maxTokens
+ * @param {String} message
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           headers,
+                           body
+                       }, token, region, projectId, maxTokens, message) => {
+    expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-pro:streamGenerateContent`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.contents.parts[0].text).toEqual(message);
+    expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', 'Hi. How are you?');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': 'token'
+            }));
+        }
+        assertRequest(request, 'token', region, projectId, MAX_TOKENS_DEFAULT, 'Hi. How are you?');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
 });
 ]]></test>
 </service-task-definition>
