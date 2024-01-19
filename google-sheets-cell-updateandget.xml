@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Google Sheets: Update &amp; Get Cells</label>
     <label locale="ja">Google スプレッドシート: セル更新＆取得</label>
-    <!--
-    <last-modified>2024-01-16</last-modified>
-    -->
+    <last-modified>2024-01-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -115,6 +113,9 @@ const main = () => {
     const {cellsToGet, valueDefs} = retrieveCellsToGetAndValueDefs();
 
     //// == 演算・ワークフローデータへの代入 / Calculating & Data Updating ==
+    if (cellsToUpdate.length === 0 && cellsToGet.length === 0) {
+        throw new Error('No cells to update or get.');
+    }
     if (cellsToUpdate.length > 0) {
         updateCells(oauth2, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate);
     }
@@ -293,6 +294,109 @@ const getCells = (oauth2, sheetId, sheetTitle, cellsToGet) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param {String} sheetId
+ * @param {String} sheetTitle
+ * @param {Array<String>} cellsToUpdate
+ * @param {Array<String>} valuesToUpdate
+ * @param {Array<String>} cellsToGet
+ * @param {Array<String>} valueDefTypes
+ * @return {Array<DataDefinitionView>} valueDefs
+ */
+const prepareConfigs = (sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cellsToGet, valueDefTypes) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Google Sheets',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'https://www.googleapis.com/auth/spreadsheets',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SheetId', sheetId);
+    configs.put('conf_SheetTitle', sheetTitle);
+    const valueDefs = [];
+    for (let i = 0; i < CELL_NUM; i++) {
+        configs.put(`conf_CellToUpdate${i + 1}`, cellsToUpdate[i]);
+        configs.put(`conf_ValueToUpdate${i + 1}`, valuesToUpdate[i]);
+        configs.put(`conf_CellToGet${i + 1}`, cellsToGet[i]);
+        const valueDefType = valueDefTypes[i];
+        if (valueDefType === '') {
+            valueDefs.push(null);
+            continue;
+        } else {
+            const valueDef = engine.createDataDefinition(`Value of Cell ${i + 1}`, i + 1, `q_value${i + 1}`, `STRING_${valueDefType}`);
+            engine.setData(valueDef, '事前文字列');
+            configs.putObject(`conf_ValueDef${i + 1}`, valueDef);
+            valueDefs.push(valueDef);
+        }
+    }
+    return valueDefs;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * 更新するセルも取得するセルも設定されていない
+ */
+test('No cells to update or get', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    assertError('No cells to update or get.');
+});
+
+/**
+ * 更新後の値だけ設定されていて、更新するセルが設定されていない
+ */
+test('Cell to update is empty while its new value is specified', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['新しい値', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    assertError('Cell 1 to update is empty while its new value is specified.');
+});
+
+/**
+ * 更新するセルの書式が不正
+ */
+test('Cell to update is invalid', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '1A', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    assertError('Cell 2 to update is invalid.');
+});
+
+/**
+ * 値を保存するデータ項目だけ設定されていて、取得するセルが設定されていない
+ */
+test('Cell to get is empty while data item to save its value is specified', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', 'TEXTFIELD', '']);
+    assertError('Cell 3 to get and data item to save its value must be specified at the same time.');
+});
+
+/**
+ * 取得するセルだけ設定されていて、値を保存するデータ項目が設定されていない
+ */
+test('Cell to get is specified while data item to save the value is blank', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', 'A1'], ['', '', '', '']);
+    assertError('Cell 4 to get and data item to save its value must be specified at the same time.');
+});
+
+/**
+ * 取得するセルの書式が不正
+ */
+test('Cell to get is invalid', () => {
+    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['A:A', '', '', ''], ['TEXTFIELD', '', '', '']);
+    assertError('Cell 1 to get is invalid.');
+});
 
 ]]></test>
 
