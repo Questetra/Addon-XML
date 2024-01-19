@@ -102,6 +102,7 @@
 const GOOGLE_API_URI = 'https://sheets.googleapis.com/v4/';
 
 const CELL_NUM = 4; // 扱えるセルの数
+const VALUE_MAX_LENGTH = 50000; // セルの値の最大文字数
 
 const main = () => {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
@@ -160,6 +161,9 @@ const retrieveCellsAndValuesToUpdate = () => {
             continue;
         }
         validateCell(cellToUpdate, `Cell ${i + 1} to update`);
+        if (valueToUpdate.length > VALUE_MAX_LENGTH) {
+            throw new Error(`New value for Cell ${i + 1} exceeds ${VALUE_MAX_LENGTH} characters.`);
+        }
         cellsToUpdate.push(cellToUpdate);
         valuesToUpdate.push(valueToUpdate);
     }
@@ -350,11 +354,13 @@ const assertError = (errorMsg) => {
     }
 };
 
+const BLANKS = ['', '', '', ''];
+
 /**
  * 更新するセルも取得するセルも設定されていない
  */
 test('No cells to update or get', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    prepareConfigs('12345abcde', 'シート 1', BLANKS, BLANKS, BLANKS, BLANKS);
     assertError('No cells to update or get.');
 });
 
@@ -362,7 +368,7 @@ test('No cells to update or get', () => {
  * 更新後の値だけ設定されていて、更新するセルが設定されていない
  */
 test('Cell to update is empty while its new value is specified', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['新しい値', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    prepareConfigs('12345abcde', 'シート 1', BLANKS, ['新しい値', '', '', ''], BLANKS, BLANKS);
     assertError('Cell 1 to update is empty while its new value is specified.');
 });
 
@@ -370,15 +376,36 @@ test('Cell to update is empty while its new value is specified', () => {
  * 更新するセルの書式が不正
  */
 test('Cell to update is invalid', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '1A', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', '']);
+    prepareConfigs('12345abcde', 'シート 1', ['', '1A', '', ''], BLANKS, BLANKS, BLANKS);
     assertError('Cell 2 to update is invalid.');
+});
+
+/**
+ * 指定の長さの文字列を作成
+ * @param length
+ * @return string
+ */
+const createString = (length) => {
+    const sourceStr = 'あいうえおかきくけこ';
+    const string = sourceStr.repeat(Math.floor(length / sourceStr.length))
+        + sourceStr.slice(0, length % sourceStr.length);
+    return string;
+}
+
+/**
+ * 更新後の値が最大文字数を超えている
+ */
+test('New value exceeds maximum length', () => {
+    const newValue = createString(VALUE_MAX_LENGTH + 1);
+    prepareConfigs('12345abcde', 'シート 1', ['', 'A1', '', ''], ['', newValue, '', ''], BLANKS, BLANKS);
+    assertError(`New value for Cell 2 exceeds ${VALUE_MAX_LENGTH} characters.`);
 });
 
 /**
  * 値を保存するデータ項目だけ設定されていて、取得するセルが設定されていない
  */
 test('Cell to get is empty while data item to save its value is specified', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', 'TEXTFIELD', '']);
+    prepareConfigs('12345abcde', 'シート 1', BLANKS, BLANKS, BLANKS, ['', '', 'TEXTFIELD', '']);
     assertError('Cell 3 to get and data item to save its value must be specified at the same time.');
 });
 
@@ -386,7 +413,7 @@ test('Cell to get is empty while data item to save its value is specified', () =
  * 取得するセルだけ設定されていて、値を保存するデータ項目が設定されていない
  */
 test('Cell to get is specified while data item to save the value is blank', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['', '', '', 'A1'], ['', '', '', '']);
+    prepareConfigs('12345abcde', 'シート 1', BLANKS, BLANKS, ['', '', '', 'A1'], BLANKS);
     assertError('Cell 4 to get and data item to save its value must be specified at the same time.');
 });
 
@@ -394,8 +421,223 @@ test('Cell to get is specified while data item to save the value is blank', () =
  * 取得するセルの書式が不正
  */
 test('Cell to get is invalid', () => {
-    prepareConfigs('12345abcde', 'シート 1', ['', '', '', ''], ['', '', '', ''], ['A:A', '', '', ''], ['TEXTFIELD', '', '', '']);
+    prepareConfigs('12345abcde', 'シート 1', BLANKS, BLANKS, ['A:A', '', '', ''], ['TEXTFIELD', '', '', '']);
     assertError('Cell 1 to get is invalid.');
+});
+
+/**
+ * セル更新の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param sheetId
+ * @param sheetTitle
+ * @param cellsToUpdate
+ * @param valuesToUpdate
+ */
+const assertPostRequest = ({url, method, headers, contentType, body}, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate) => {
+    expect(url).toEqual(`${GOOGLE_API_URI}spreadsheets/${encodeURIComponent(
+        sheetId
+    )}/values:batchUpdate`);
+    expect(method).toEqual('POST');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.valueInputOption).toEqual('RAW');
+    expect(bodyObj.data.length).toEqual(cellsToUpdate.length);
+    cellsToUpdate.forEach((cell, i) => {
+        expect(bodyObj.data[i].range).toEqual(`${sheetTitle}!${cell}`);
+        expect(bodyObj.data[i].values[0][0]).toEqual(valuesToUpdate[i]);
+    });
+};
+
+/**
+ * セル更新の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート 1';
+    const cellsToUpdate = ['A1', 'B2', 'C3', 'D4'];
+    const valuesToUpdate = ['新しい値1', '新しい値2', '新しい値3', '新しい値4'];
+    prepareConfigs(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, BLANKS, BLANKS);
+
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to update cells. status: 400');
+});
+
+/**
+ * セル取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.body
+ * @param sheetId
+ * @param sheetTitle
+ * @param cellsToGet
+ */
+const assertGetRequest = ({url, method, headers}, sheetId, sheetTitle, cellsToGet) => {
+    let expectedUrl = `${GOOGLE_API_URI}spreadsheets/${encodeURIComponent(sheetId)}/values:batchGet`
+        + '?valueRenderOption=UNFORMATTED_VALUE'
+        + '&dateTimeRenderOption=FORMATTED_STRING';
+    cellsToGet.forEach((cell) => {
+        expectedUrl += `&ranges=${encodeURIComponent(sheetTitle)}!${cell}`;
+    });
+    expectedUrl = expectedUrl
+        .replace(/%20/g, '+') // HttpRequestWrapper#queryParam() はスペースを + に置き換える
+        .replace(/\!/g, '%21') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/'/g, '%27')
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * セル取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート 1';
+    const cellsToGet = ['A1', 'B2', 'C3', 'D4'];
+    const valueDefTypes = ['TEXTFIELD', 'TEXTFIELD', 'TEXTFIELD', 'TEXTFIELD'];
+    prepareConfigs(sheetId, sheetTitle, BLANKS, BLANKS, cellsToGet, valueDefTypes);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, sheetId, sheetTitle, cellsToGet);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get cells. status: 400');
+});
+
+/**
+ * セル取得のレスポンスを準備
+ * @param sheetTitle
+ * @param cells
+ * @param cellValues
+ * @returns {String}
+ */
+const prepareGetResponse = (sheetTitle, cells, cellValues) => {
+    const valueRanges = [];
+    cells.forEach((cell, i) => {
+        const valueRange = {
+            range: `${sheetTitle}!${cell}`,
+            majorDimension: 'ROWS'
+        };
+        const cellValue = cellValues[i];
+        if (cellValue !== null) {
+            valueRange.values = [[cellValue]];
+        }
+        valueRanges.push(valueRange);
+    });
+    return JSON.stringify({valueRanges});
+};
+
+/**
+ * 単一行データ項目に複数行の文字列を保存しようとしてエラーになる場合
+ */
+test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート 1';
+    const cellsToGet = ['', '', '', 'A1'];
+    const valueDefTypes = ['', '', '', 'TEXTFIELD'];
+    prepareConfigs(sheetId, sheetTitle, BLANKS, BLANKS, cellsToGet, valueDefTypes);
+
+    const trimmedCellsToGet = ['A1'];
+    const cellValues = ['複数行の\n文字列'];
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, sheetId, sheetTitle, trimmedCellsToGet);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareGetResponse(sheetTitle, trimmedCellsToGet, cellValues));
+    });
+
+    try {
+        main();
+        fail();
+    } catch (e) {
+        // エラーになるのが正しい
+    }
+});
+
+/**
+ * 成功 - すべてのセルを指定
+ */
+test('Succeed - all cells specified', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート 1';
+    const cellsToUpdate = ['A1', 'B1', 'C1', 'D1'];
+    const valuesToUpdate = ['新しい値1', '新しい値2', '新しい値3', '新しい値4'];
+    const cellsToGet = ['AA100', 'BB200', 'CC300', 'XD400'];
+    const valueDefTypes = ['TEXTFIELD', 'TEXTAREA', 'TEXTFIELD', 'TEXTAREA'];
+    const valueDefs = prepareConfigs(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cellsToGet, valueDefTypes);
+
+    let reqCount = 0;
+    const cellValues = ['文字列', '改行を含む\n文字列', 123.56, 'TRUE'];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostRequest(request, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertGetRequest(request, sheetId, sheetTitle, cellsToGet);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareGetResponse(sheetTitle, cellsToGet, cellValues));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(valueDefs[0])).toEqual('文字列');
+    expect(engine.findData(valueDefs[1])).toEqual('改行を含む\n文字列');
+    expect(engine.findData(valueDefs[2])).toEqual('123.56');
+    expect(engine.findData(valueDefs[3])).toEqual('TRUE');
+});
+
+/**
+ * 成功 - 更新のみ
+ */
+test('Succeed - update some cells', () => {
+    const sheetId = '6789hijfk';
+    const sheetTitle = 'シート (2)';
+    const cellsToUpdate = ['XA999', '', 'ZB1000', ''];
+    const valuesToUpdate = ['', '', '新しい値', ''];
+    prepareConfigs(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, BLANKS, BLANKS);
+
+    const trimmedCellsToUpdate = ['XA999', 'ZB1000'];
+    const trimmedValuesToUpdate = ['', '新しい値'];
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, sheetId, sheetTitle, trimmedCellsToUpdate, trimmedValuesToUpdate);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - 取得のみ
+ */
+test('Succeed - get some cells', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート_1';
+    const cellsToGet = ['', 'XXA1', 'ZZB2', ''];
+    const valueDefTypes = ['', 'TEXTFIELD', 'TEXTFIELD', ''];
+    const valueDefs = prepareConfigs(sheetId, sheetTitle, BLANKS, BLANKS, cellsToGet, valueDefTypes);
+
+    const trimmedCellsToGet = ['XXA1', 'ZZB2'];
+    const cellValues = [null, '文字列'];
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, sheetId, sheetTitle, trimmedCellsToGet);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareGetResponse(sheetTitle, trimmedCellsToGet, cellValues));
+    });
+    expect(main()).toEqual(undefined);
+    expect(valueDefs[0]).toEqual(null);
+    expect(engine.findData(valueDefs[1])).toEqual('');
+    expect(engine.findData(valueDefs[2])).toEqual('文字列');
+    expect(valueDefs[3]).toEqual(null);
 });
 
 ]]></test>
