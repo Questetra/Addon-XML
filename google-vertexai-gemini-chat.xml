@@ -28,24 +28,19 @@
             <label>C3: Project ID</label>
             <label locale="ja">C3: プロジェクト ID</label>
         </config>
-        <!--
         <config name="conf_Model" required="true" form-type="SELECT_ITEM">
             <label>C4: Model</label>
             <label locale="ja">C4: モデル</label>
-            <item value="anthropic.claude-instant-v1">
-                <label>Claude Instant 1.2</label>
+            <item value="gemini-pro">
+                <label>Gemini Pro</label>
             </item>
-            <item value="anthropic.claude-v2">
-                <label>Claude 2</label>
-            </item>
-            <item value="anthropic.claude-v2:1">
-                <label>Claude 2.1</label>
+            <item value="gemini-pro-vision">
+                <label>Gemini Pro Vision</label>
             </item>
         </config>
-        -->
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
-            <label>C5: Maximum number of tokens to consume (2048 if blank)</label>
-            <label locale="ja">C5: 使用するトークン数の上限（空白の場合、2048）</label>
+            <label>C5: Maximum number of tokens to consume (model default value if blank)</label>
+            <label locale="ja">C5: 使用するトークン数の上限（空白の場合、モデルのデフォルト値）</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -66,7 +61,7 @@ function main() {
 
     const region = retrieveRegion();
     const projectId = configs.get('conf_ProjectId');
-    //const model = configs.get('conf_Model');
+    const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
     const message = configs.get('conf_Message1');
     if (message === '') {
@@ -74,7 +69,7 @@ function main() {
     }
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(auth, region, projectId, maxTokens, message);
+    const answer = invokeModel(auth, region, projectId, model, maxTokens, message);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -95,17 +90,15 @@ function retrieveRegion() {
     return region;
 }
 
-const MAX_TOKENS_DEFAULT = 8192;
-
 /**
  * config から最大トークン数を読み出す
- * 指定なしの場合は 2048 を返す
+ * 未定義の場合、-1 を返す
  * @returns {Number}
  */
 const retrieveMaxTokens = () => {
     const maxTokens = configs.get('conf_MaxTokens');
     if (maxTokens === '') {
-        return MAX_TOKENS_DEFAULT;
+        return -1;
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
@@ -117,7 +110,7 @@ const retrieveMaxTokens = () => {
 const SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
 
-const getJwtToken = (privateKeyId, privateKey, issuer) => {
+const getAccessToken = (privateKeyId, privateKey, issuer) => {
     const header = {
         "alg": "RS256",
         "typ": "at+jwt",
@@ -156,13 +149,18 @@ const getJwtToken = (privateKeyId, privateKey, issuer) => {
  * モデルの実行
  * @param region
  * @param projectId
+ * @param model
  * @param maxTokens
  * @param message
  * @returns {String} answer
  */
-const invokeModel = (auth, region, projectId, maxTokens, message) => {
-    const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-pro:streamGenerateContent`;
+const invokeModel = (auth, region, projectId, model, maxTokens, message) => {
+    const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
 
+    const generation_config = {};
+    if (maxTokens > 0) {
+        generation_config.maxOutputTokens = maxTokens;
+    }
     const payload = {
         "contents": {
             "role": "user",
@@ -176,22 +174,15 @@ const invokeModel = (auth, region, projectId, maxTokens, message) => {
             "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
             "threshold": "BLOCK_LOW_AND_ABOVE"
         },
-        "generation_config": {
-//            "temperature": 0.4,
-//            "topP": 1.0,
-//            "topK": 32,
-            "maxOutputTokens": maxTokens
-        }
+        generation_config
     };
 
-    const tokenGetter = () => getJwtToken(
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(
             auth.getPrivateKeyId(),
             auth.getPrivateKey(),
             auth.getCustomSecret1()
-        );
-
-    const response = httpClient.begin()
-        .oauth2JwtBearer(auth, tokenGetter)
+        ))
         .body(JSON.stringify(payload), 'application/json')
         .post(URL);
 
@@ -218,7 +209,7 @@ const saveData = (configName, data) => {
     }
     engine.setData(def, data);
 };
-    ]]></script>
+]]></script>
 
     <!--
     <icon>
@@ -305,17 +296,19 @@ lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
  * @param serviceAccount サービスアカウント
  * @param region リージョンコード
  * @param projectId プロジェクト ID
+ * @param model モデル
  * @param maxTokens トークン数の最大値
  * @param message ユーザーのメッセージ
  * @returns {ProcessDataDefinitionView} answerDef
  */
-const prepareConfigs = (privateKeyId, privateKey, serviceAccount, region, projectId, maxTokens, message) => {
+const prepareConfigs = (privateKeyId, privateKey, serviceAccount, region, projectId, model, maxTokens, message) => {
     // 認証設定を作成し、指定
     const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', '', '', privateKeyId, privateKey, serviceAccount, '');
     configs.putObject('conf_Auth', jwtAuth);
 
     configs.put('conf_Region', region);
     configs.put('conf_ProjectId', projectId);
+    configs.put('conf_Model', model);
     configs.put('conf_MaxTokens', maxTokens);
     configs.put('conf_Message1', message);
 
@@ -346,7 +339,10 @@ test('Region Code is invalid - no hyphens', () => {
     const privateKeyId = 'key-12345';
     const region = 'invalidregioncode';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', 'Hi. How are you?');
+    const model = 'gemini-pro';
+    const serviceAccount = 'service@questetra.com';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, message);
 
     assertError('Region Code is invalid.');
 });
@@ -356,9 +352,13 @@ test('Region Code is invalid - no hyphens', () => {
  */
 test('Region Code is invalid - too many characters', () => {
     const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
     const region = 'northamerica-northamericatoooomany1';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', 'Hi. How are you?');
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     assertError('Region Code is invalid.');
 });
@@ -368,9 +368,13 @@ test('Region Code is invalid - too many characters', () => {
  */
 test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
     const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '1.1', 'Hi. How are you?');
+    const model = 'gemini-pro';
+    const maxTokens = '1.1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -380,9 +384,13 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
  */
 test('Maximum number of tokens must be a positive integer - 0', () => {
     const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '0', 'Hi. How are you?');
+    const model = 'gemini-pro';
+    const maxTokens = '0';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -392,9 +400,13 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
  */
 test('Message is empty', () => {
     const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, 'service@questetra.com', region, projectId, '', '');
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = '';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     assertError('User Message is empty.');
 });
@@ -442,7 +454,8 @@ const assertTokenRequest = ({
  * @param {String} token
  * @param {String} region
  * @param {String} projectId
- * @param {String} maxTokens
+ * @param {String} model
+ * @param {Number} maxTokens
  * @param {String} message
  */
 const assertRequest = ({
@@ -451,14 +464,18 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, token, region, projectId, maxTokens, message) => {
-    expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-pro:streamGenerateContent`);
+                       }, token, region, projectId, model, maxTokens, message) => {
+    expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     expect(headers.Authorization).toEqual(`Bearer ${token}`);
     const bodyObj = JSON.parse(body);
     expect(bodyObj.contents.parts[0].text).toEqual(message);
-    expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
+    if(maxTokens > 0) {
+        expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
+    }else{
+        expect(bodyObj.generation_config.maxOutputTokens).toEqual(undefined);
+    }
 };
 
 /**
@@ -491,11 +508,13 @@ const createResponse = (answerText) => {
  */
 test('Fail to request', () => {
     const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-pro';
+    const maxTokens = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, '', message);
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     const token = 'token';
     let reqCount = 0;
@@ -506,22 +525,26 @@ test('Fail to request', () => {
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, MAX_TOKENS_DEFAULT, message);
+        assertRequest(request, token, region, projectId, model, -1, message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
 });
 
 /**
- * 成功 - 最大トークン数を設定しない場合は 2048 が指定される
+ * 成功
+ * gemini-pro
+ * 最大トークン数を指定する
  */
 test('Success - with default max tokens', () => {
     const privateKeyId = 'key-67890';
     const region = 'asia-northeast1';
     const projectId = 'project-12345';
     const serviceAccount = 'service@example.com';
+    const model = 'gemini-pro';
+    const maxTokens = '2048';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, '', message);
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     const token = 'token-12345';
     const answer = 'Fine, thanks.';
@@ -533,7 +556,7 @@ test('Success - with default max tokens', () => {
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, MAX_TOKENS_DEFAULT, message);
+        assertRequest(request, token, region, projectId, model, 2048, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
     });
 
@@ -542,15 +565,19 @@ test('Success - with default max tokens', () => {
 });
 
 /**
- * 成功 - 最大トークン数を指定
+ * 成功
+ * gemini-pro-vision
+ * 最大トークン数を指定しない
  */
 test('Success - with max tokens', () => {
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
     const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
     const message = 'こんにちは。';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, '2014', message);
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
 
     const token = 'token-67890';
     const answer = 'こんにちは。元気ですか？';
@@ -562,7 +589,7 @@ test('Success - with max tokens', () => {
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, 2014, message);
+        assertRequest(request, token, region, projectId, model, -1, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
     });
 
