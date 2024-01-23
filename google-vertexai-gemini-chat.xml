@@ -1,0 +1,649 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Vertex AI: Gemini: Chat</label>
+    <label locale="ja">Google Vertex AI: Gemini: チャット</label>
+    <last-modified>2024-01-23</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item sends a message to a Gemini model on Google Vertex AI
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Google Vertex AI 上で動作する Gemini
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-vertexai-gemini-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-vertexai-gemini-chat/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+            <label>C1: 認証設定</label>
+            <label locale="ja">C1: Authentication Setting</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C2: Region Code</label>
+            <label locale="ja">C2: リージョンコード</label>
+        </config>
+        <config name="conf_ProjectId" required="true" form-type="TEXTFIELD">
+            <label>C3: Project ID</label>
+            <label locale="ja">C3: プロジェクト ID</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="gemini-pro">
+                <label>Gemini Pro</label>
+            </item>
+            <item value="gemini-pro-vision">
+                <label>Gemini Pro Vision</label>
+            </item>
+        </config>
+        <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
+            <label>C5: Maximum number of tokens to consume (model default if blank)</label>
+            <label locale="ja">C5: 使用するトークン数の上限（空白の場合、モデルのデフォルト値）</label>
+        </config>
+        <config name="conf_Message1" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>U1: User Message</label>
+            <label locale="ja">U1: ユーザメッセージ</label>
+        </config>
+        <config name="conf_Answer1" required="true" form-type="SELECT"
+                select-data-type="STRING_TEXTAREA">
+            <label>A1: Data item to save response</label>
+            <label locale="ja">A1: 回答を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+
+    const region = retrieveRegion();
+    const projectId = configs.get('conf_ProjectId');
+    const model = configs.get('conf_Model');
+    const maxTokens = retrieveMaxTokens();
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+
+    ////// == 演算 / Calculating ==
+    const answer = invokeModel(auth, region, projectId, model, maxTokens, message);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveRegion() {
+    const region = configs.get('conf_Region');
+    // 今後リージョンが増えることも考えて、文字数には余裕をみている
+    const reg = new RegExp('^[a-z]{2,20}-[a-z]{2,20}[1-9]{1,2}$');
+    if (!reg.test(region)) {
+        throw new Error('Region Code is invalid.');
+    }
+    return region;
+}
+
+/**
+ * config から最大トークン数を読み出す
+ * 未定義の場合、-1 を返す
+ * @returns {Number}
+ */
+const retrieveMaxTokens = () => {
+    const maxTokens = configs.get('conf_MaxTokens');
+    if (maxTokens === '') {
+        return -1;
+    }
+    const regExp = new RegExp(/^[1-9][0-9]*$/);
+    if (!regExp.test(maxTokens)) {
+        throw new Error('Maximum number of tokens must be a positive integer.');
+    }
+    return parseInt(maxTokens, 10);
+};
+
+const SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        "scope": SCOPE
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
+/**
+ * モデルの実行
+ * @param region
+ * @param projectId
+ * @param model
+ * @param maxTokens
+ * @param message
+ * @returns {String} answer
+ */
+const invokeModel = (auth, region, projectId, model, maxTokens, message) => {
+    const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
+
+    const generation_config = {};
+    if (maxTokens > 0) {
+        generation_config.maxOutputTokens = maxTokens;
+    }
+    const payload = {
+        "contents": {
+            "role": "user",
+            "parts": [
+                {
+                    "text": message
+                }
+            ]
+        },
+        "safety_settings": {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_LOW_AND_ABOVE"
+        },
+        generation_config
+    };
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to invoke model. status: ${status}`);
+    }
+    engine.log(respTxt);
+    const json = JSON.parse(respTxt);
+    return json.map(({candidates}) => candidates[0].content.parts[0].text).join('\n');
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+]]></script>
+
+    <!--
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+    -->
+
+    <test><![CDATA[
+const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD3Zg0KVn2jff8t
+NHk7p8uWEvsaxA59CkGi1v81kyVsnd+yxm23nWIKhGplhy0hK7dnBP3OMB0YCfvo
+yXqryQMJb96xMyPkW+n9a1uh3wOibpPzhw/QbVzd5vgMcK9qN2M5oB1iYLEUvlGq
+ogQ8r1gYUlt/Of0oIYKIwe9HiQXUTNxnNyW+wrURNkDio4QKMvAEqdG4iEzShAzE
+bNLOG4YAdmKxZ+gL0646s5XRTIO7q/3haiF9BszxFul9GiugQ8rdPKxJEvQ9YMMt
+cz39wVM4ZvJ8gmUrD5wwucDQXfeiP7bU9meBAQGpXcmYBFpBHI0hTEHYqM0MZ7pW
+JVB9eEeFAgMBAAECggEBAK5LBCbjVjJHgu37COoBRcmd57AsrbRj9Gffpf69guEp
+vD570zJHu5mDPl32xNGYteXrO0/2z5hu+D1BLJ43yF7upGociE3Kf2fdKbo5nprh
+4nPwFDEXyxQ+M0S4YqynBs3DQtBbJIZjqq9W4ztJoPvJkdJpLTQHn6nvTz8LhsLQ
+XN9nTWqTNQ3KSiUXPrXkV0dZ2sm2OCjQE99X9rm7araP6Y1FO2irGySPftwGnR+C
+/jw1vLzeTCsI9+pZQ2A3JZMwYB5UPQPo/roWJ7tfrT/aT6h+eLpavDUd5W0Wowh/
+HqzFQE2bJGE09F8w9mHaQAI+hG/Lr7BbO4sl3n5E3GUCgYEA/TZZc96Jqsom2f5g
+iXtl6hX/5DrKVfHp6RzRpQ8aKNokJdTvtd25YiWHUY8h25O28Wdo9QDsKMkuCnlz
+EOV3/624iiTGzuVCpB2/LInO4uL5mqYtBVHVDwR41WCOM2RbX5HyB8NqpycIHSO5
+gZtb48OSJnGZbHEn1BkoaoywzwcCgYEA+h9Q/Bz/09GHfMNUfsjp4cQ67IX1iHqA
+noPqnD8KY1UA2+KR3SBa04zk4KQkilNN5wb1r4XLvFnIWjEEicCQqsw2aEnJwGBI
+6Tvd6KWw4xON2SqPlgPH75AOUQwbrsF0Gbee3OktMdOPsG86cTES7XwCOj1syN9d
+kxyEMbIbRhMCgYAA8Vbb65QvopkKbrwFRwRWHsbZHq7qKwBn8ceGCcxbIpTH30cV
+MkIib2lVkGbb3mzr8Sqe3uYCMN2PBGy9P113AjqRqRlkY84ftkyj6c9vYND1FnFM
+d8WHTMj2YmmlH1aHwI9aIAwhmy+YjC2AogdxjaTZp8qecL1pOL7BxsxRuQKBgQCJ
+qkjhqnhoNk/zLHNKIP0RhPbFjemZR4uZM5QikVP/Xh7N54NPCOrUuxySQ+XUuIsN
+GDiLdgGv1l6+vXH4+6LkTue3OL2xg409yfSWgvO719xf5dwHvmcCBPDMTPTDl7h2
+Gyl1/2UfoojYnC+3c0Iuse1r7rj8SmxvduePjq8SPwKBgACswSW/FWGFyqfhXvIv
+QWSZF/yiIsywjJgiTsRp92Cr98QDQNC0c8SCQWew3T1r/CHX3EDqjf3djx5qISpi
+ESFz5+HMVWL2lMD5KqLxIdHZNe4fbPyW779yMNdyd0rlgOS1kM3WrYdV9tgjc1VI
+lweR14IODzhshANib/N8F47e
+-----END PRIVATE KEY-----`;
+
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIDbzCCAlegAwIBAgIUPV0u0uVd+8UHrS6NRz/xVad9oRUwDQYJKoZIhvcNAQEL
+BQAwRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYDVQQKDAlRdWVz
+dGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MB4XDTI0MDExODA4MDYxMVoXDTI0
+MDIxNzA4MDYxMVowRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYD
+VQQKDAlRdWVzdGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA92YNClZ9o33/LTR5O6fLlhL7GsQOfQpBotb/
+NZMlbJ3fssZtt51iCoRqZYctISu3ZwT9zjAdGAn76Ml6q8kDCW/esTMj5Fvp/Wtb
+od8Dom6T84cP0G1c3eb4DHCvajdjOaAdYmCxFL5RqqIEPK9YGFJbfzn9KCGCiMHv
+R4kF1EzcZzclvsK1ETZA4qOECjLwBKnRuIhM0oQMxGzSzhuGAHZisWfoC9OuOrOV
+0UyDu6v94WohfQbM8RbpfRoroEPK3TysSRL0PWDDLXM9/cFTOGbyfIJlKw+cMLnA
+0F33oj+21PZngQEBqV3JmARaQRyNIUxB2KjNDGe6ViVQfXhHhQIDAQABo1MwUTAd
+BgNVHQ4EFgQU+XQRQgTm3ffYqLngkqr03TFcbvcwHwYDVR0jBBgwFoAU+XQRQgTm
+3ffYqLngkqr03TFcbvcwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAOnZodDZ4tqjkofJbIcuXczFGPta6geFl/my3H2Ubf2PJNEkDxklgml7uMych
+vs/lWi0p7YQII52lbMytADKeG/YLOBVQMp5e3WDI3D+630b3T20AwZcXW3KuAYn1
+sQuSh7RijcOKDoTMQNUCMjgBbzr5Z4eq0HYl/Uivmkdh5YH0nU2+LbU/G1RDDodh
+Q+J3TyL+Ms9ba5V8/7gs7Vaz9uuRBdYpq/MP+Iyb78/yIGOxk9Qj0fXdc+W69XGP
+rqpI6o1cfaFHC3zkRdyZA9Tvh3yE3XID9J5xRZRmUuCzUR4YkJQx436E7EzVohq7
+lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
+-----END CERTIFICATE-----`;
+
+/**
+ * 設定の準備
+ * @param privateKeyId 秘密鍵 ID
+ * @param privateKey 秘密鍵
+ * @param serviceAccount サービスアカウント
+ * @param region リージョンコード
+ * @param projectId プロジェクト ID
+ * @param model モデル
+ * @param maxTokens トークン数の最大値
+ * @param message ユーザーのメッセージ
+ * @returns {ProcessDataDefinitionView} answerDef
+ */
+const prepareConfigs = (privateKeyId, privateKey, serviceAccount, region, projectId, model, maxTokens, message) => {
+    // 認証設定を作成し、指定
+    const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', '', '', privateKeyId, privateKey, serviceAccount, '');
+    configs.putObject('conf_Auth', jwtAuth);
+
+    configs.put('conf_Region', region);
+    configs.put('conf_ProjectId', projectId);
+    configs.put('conf_Model', model);
+    configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_Message1', message);
+
+    // 回答を保存するデータ項目を作成し、指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_response', 'STRING_TEXTAREA');
+    configs.putObject('conf_Answer1', answerDef);
+    engine.setData(answerDef, '事前文字列');
+    return answerDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    try {
+        main();
+        fail();
+    } catch (e) {
+        expect(e.message).toEqual(errorMsg);
+    }
+};
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'invalidregioncode';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const serviceAccount = 'service@questetra.com';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, message);
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'northamerica-northamericatoooomany1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '1.1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - ゼロ
+ */
+test('Maximum number of tokens must be a positive integer - 0', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '0';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * メッセージが空
+ */
+test('Message is empty', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = '';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('User Message is empty.');
+});
+
+/**
+ * 秘密鍵 ID が空
+ */
+test('Private Key ID is empty', () => {
+    const privateKeyId = '';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('Private Key ID is required.');
+});
+
+/**
+ * カスタム秘密情報1 に設定されている
+ * サービスアカウントが空。
+ */
+test('Service Account is empty', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = '';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    assertError('Service Account must be set to Custom Secret 1.');
+});
+
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} serviceAccount
+ */
+const assertTokenRequest = ({
+                                url,
+                                method,
+                                contentType,
+                                body
+                            }, serviceAccount) => {
+    expect(url).toEqual(URL_TOKEN_REQUEST);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const query = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=`;
+    expect(body).startsWith(query);
+    const assertion = decodeURIComponent(body.substring(query.length));
+
+    const publicKey = rsa.readKeyFromX509(CERTIFICATE);
+    expect(jwt.verify(assertion, publicKey)).toEqual(true);
+
+    const payloadJson = base64.decodeFromUrlSafeString(assertion.split('.')[1]);
+    const payload = JSON.parse(payloadJson);
+    expect(payload.iss).toEqual(serviceAccount);
+    expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
+    expect(payload.scope).toEqual(SCOPE);
+};
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param {String} token
+ * @param {String} region
+ * @param {String} projectId
+ * @param {String} model
+ * @param {Number} maxTokens
+ * @param {String} message
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           headers,
+                           body
+                       }, token, region, projectId, model, maxTokens, message) => {
+    expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.contents.parts[0].text).toEqual(message);
+    if(maxTokens > 0) {
+        expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
+    }else{
+        expect(bodyObj.generation_config.maxOutputTokens).toEqual(undefined);
+    }
+};
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponse = (answerText) => {
+    const responseObj = [{
+        "candidates": [{
+            "content": {
+                "parts": [
+                    {
+                        "text": answerText
+                    }
+                ]
+            },
+            "finishReason": 'FINISH_REASON_STOP ',
+            "safetyRatings": [],
+            "citationMetadata": {
+                "citations": []
+            }
+        }]
+    }];
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro';
+    const maxTokens = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, -1, message);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * 成功
+ * gemini-pro
+ * 最大トークン数を指定する
+ */
+test('Success - with default max tokens', () => {
+    const privateKeyId = 'key-67890';
+    const region = 'asia-northeast1';
+    const projectId = 'project-12345';
+    const serviceAccount = 'service@example.com';
+    const model = 'gemini-pro';
+    const maxTokens = '2048';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    const token = 'token-12345';
+    const answer = 'Fine, thanks.';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, 2048, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功
+ * gemini-pro-vision
+ * 最大トークン数を指定しない
+ */
+test('Success - with max tokens', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'こんにちは。';
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    const token = 'token-67890';
+    const answer = 'こんにちは。元気ですか？';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, -1, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+]]></test>
+</service-task-definition>
