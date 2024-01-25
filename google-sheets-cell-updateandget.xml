@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Google Sheets: Update &amp; Get Cells</label>
     <label locale="ja">Google スプレッドシート: セル更新＆取得</label>
-    <!--
     <last-modified>2024-01-25</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -342,6 +340,7 @@ const prepareConfigs = (sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cell
     configs.putObject('conf_OAuth2', oauth2);
     configs.put('conf_SheetId', sheetId);
     configs.put('conf_SheetTitle', sheetTitle);
+    configs.put('conf_ValueInputOption', ''); // テスト時に値が null にならないように空文字を設定
     const valueDefs = [];
     for (let i = 0; i < CELL_NUM; i++) {
         configs.put(`conf_CellToUpdate${i + 1}`, cellsToUpdate[i]);
@@ -458,7 +457,7 @@ test('Cell to get is invalid', () => {
  * @param cellsToUpdate
  * @param valuesToUpdate
  */
-const assertPostRequest = ({url, method, headers, contentType, body}, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate) => {
+const assertPostRequest = ({url, method, headers, contentType, body}, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, valueInputOption = 'RAW') => {
     expect(url).toEqual(`${GOOGLE_API_URI}spreadsheets/${encodeURIComponent(
         sheetId
     )}/values:batchUpdate`);
@@ -466,7 +465,7 @@ const assertPostRequest = ({url, method, headers, contentType, body}, sheetId, s
     expect(headers.Authorization).toEqual('Bearer access_token');
     expect(contentType).toEqual('application/json');
     const bodyObj = JSON.parse(body);
-    expect(bodyObj.valueInputOption).toEqual('RAW');
+    expect(bodyObj.valueInputOption).toEqual(valueInputOption);
     expect(bodyObj.data.length).toEqual(cellsToUpdate.length);
     cellsToUpdate.forEach((cell, i) => {
         expect(bodyObj.data[i].range).toEqual(`${sheetTitle}!${cell}`);
@@ -587,9 +586,9 @@ test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', 
 });
 
 /**
- * 成功 - すべてのセルを指定
+ * 成功 - すべてのセルを指定。valueInputOption 指定なし
  */
-test('Succeed - all cells specified', () => {
+test('Succeed - all cells specified, valueInputOption not specified', () => {
     const sheetId = '12345abcde';
     const sheetTitle = 'シート 1';
     const cellsToUpdate = ['A1', 'B1', 'C1', 'D1'];
@@ -618,19 +617,40 @@ test('Succeed - all cells specified', () => {
 });
 
 /**
- * 成功 - 更新のみ
+ * 成功 - 更新のみ。valueInputOption に RAW を指定
  */
-test('Succeed - update some cells', () => {
+test('Succeed - update some cells, select RAW', () => {
     const sheetId = '6789hijfk';
     const sheetTitle = 'シート (2)';
     const cellsToUpdate = ['XA999', '', 'ZB1000', ''];
     const valuesToUpdate = ['', '', '新しい値', ''];
     prepareConfigs(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, BLANKS, BLANKS);
+    configs.put('conf_ValueInputOption', 'RAW');
 
     const trimmedCellsToUpdate = ['XA999', 'ZB1000'];
     const trimmedValuesToUpdate = ['', '新しい値'];
     httpClient.setRequestHandler((request) => {
-        assertPostRequest(request, sheetId, sheetTitle, trimmedCellsToUpdate, trimmedValuesToUpdate);
+        assertPostRequest(request, sheetId, sheetTitle, trimmedCellsToUpdate, trimmedValuesToUpdate, 'RAW');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - 更新のみ。valueInputOption に USER_ENTERED を指定
+ */
+test('Succeed - update some cells, select USER_ENTERED', () => {
+    const sheetId = '6789hijfk';
+    const sheetTitle = 'シート (2)';
+    const cellsToUpdate = ['A1', '', '', ''];
+    const valuesToUpdate = ['123.45', '', '', ''];
+    prepareConfigs(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, BLANKS, BLANKS);
+    configs.put('conf_ValueInputOption', 'USER_ENTERED');
+
+    const trimmedCellsToUpdate = ['A1'];
+    const trimmedValuesToUpdate = ['123.45'];
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, sheetId, sheetTitle, trimmedCellsToUpdate, trimmedValuesToUpdate, 'USER_ENTERED');
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
     expect(main()).toEqual(undefined);
