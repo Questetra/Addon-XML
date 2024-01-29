@@ -3,7 +3,7 @@
     <label>Microsoft Lists: Get List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム取得</label>
     <!--
-    <last-modified>2024-01-16</last-modified>
+    <last-modified>2024-01-29</last-modified>
     -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
@@ -290,8 +290,14 @@ const findAndCheckColumn = (columns, name, dataDef) => {
     }
     if (dataDef.matchDataType('DECIMAL')) {
         const type = checkAndGetColumnType(column, 'DECIMAL', 'Numeric');
+        // TODO 以下のバリデーションはなくしてもいいかも。lookup のときはバリデーションできないので、calculated だけバリデーションしてもあまり意味がないかも
+        // 既存のテンプレートに、数値が text で返る culculated 型のフィールドがあるため、text も許容する
+        const supportedOutputTypes = ['number', 'currency', 'text'];
         if (type === 'calculated') {
-            // TODO: calculated の場合、outputType も確認したほうがいいかも
+            const outputType = column.calculated.outputType;
+            if (!supportedOutputTypes.includes(outputType)) {
+                throw new Error(`Output type '${outputType}' cannot be saved to Numeric type data item.`);
+            }
         }
         return;
     }
@@ -377,12 +383,18 @@ function convertAndSetData(dataDef, columnValue) {
         return;
     }
     if (dataDef.matchDataType('DECIMAL')) {
-        // TODO calculated の返り値など、string の場合もあるかも？
-        if (typeof columnValue !== 'number') { // calculate や lookup は、値が数値でない場合がある
-            throw new Error(`Column value is not a number and cannot be saved to Numeric type data item.`);
+        // calculate や lookup は、値が数値でない場合がある
+        // 値が数値型または文字列型の場合、BigDecimal に変換して保存を試みる
+        // それ以外の型の場合や、変換に失敗した場合はエラーにする
+        if (typeof columnValue !== 'number' && typeof columnValue !== 'string') {
+            throw new Error(`Column value "${JSON.stringify(columnValue)}" cannot be saved to Numeric type data item.`);
         }
-        engine.setData(dataDef, new java.math.BigDecimal(columnValue));
-        return;
+        try {
+            engine.setData(dataDef, new java.math.BigDecimal(columnValue));
+            return;
+        } catch (e) {
+            throw new Error(`Column value "${JSON.stringify(columnValue)}" cannot be saved to Numeric type data item.`);
+        }
     }
     if (dataDef.matchDataType('SELECT')) {
         // TODO
