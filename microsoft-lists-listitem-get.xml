@@ -230,7 +230,7 @@ const encodeSharingUrl = (sharingUrl) => {
 /** 保存先データ項目のタイプごとのサポートしている列タイプ */
 const SUPPORTED_COLUMN_TYPES = {
     'DECIMAL': ['number', 'currency', 'calculated', 'lookup'],
-    'SELECT': ['choice', 'personOrGroup', 'term', 'lookup'],
+    'SELECT': ['choice', 'personOrGroup', 'term', 'lookup'], // TODO boolean, contentApprovalStatus も追加するか、検討
     'DATE': ['dateTime', 'calculated', 'lookup'],
     'DATETIME': ['dateTime', 'calculated', 'lookup']
 };
@@ -284,46 +284,56 @@ const findAndCheckColumn = (columns, name, dataDef) => {
     }
     if (dataDef.matchDataType('STRING_TEXTFIELD')) {
         if (column.text !== undefined && column.text.allowMultipleLines) {
-            throw new Error(`'${name}' is a text column which can contain a multi-line text.`);
+            throw new Error(`Column '${name}' cannot be saved to Single-line text data item as its value can be multi-line.`);
         }
         return;
     }
     if (dataDef.matchDataType('DECIMAL')) {
-        const type = checkAndGetColumnType(column, 'DECIMAL', 'Numeric');
+        const type = checkAndGetColumnType(column, name, 'DECIMAL', 'Numeric');
         // TODO 以下のバリデーションはなくしてもいいかも。lookup のときはバリデーションできないので、calculated だけバリデーションしてもあまり意味がないかも
-        // 既存のテンプレートに、数値が text で返る culculated 型のフィールドがあるため、text も許容する
-        const supportedOutputTypes = ['number', 'currency', 'text'];
         if (type === 'calculated') {
             const outputType = column.calculated.outputType;
+            // 既存のテンプレートに、数値が text で返る culculated 型のフィールドがあるため、text も許容する
+            const supportedOutputTypes = ['number', 'currency', 'text'];
             if (!supportedOutputTypes.includes(outputType)) {
-                throw new Error(`Output type '${outputType}' cannot be saved to Numeric type data item.`);
+                throw new Error(`Column '${name}' cannot be saved to Numeric type data item.`);
             }
         }
         return;
     }
     if (dataDef.matchDataType('SELECT')) {
-        const type = checkAndGetColumnType(column, 'SELECT', 'Select');
+        const type = checkAndGetColumnType(column, name, 'SELECT', 'Select');
         // TODO: SELECT_SINGLE で、複数選択が許可されている場合はエラーにしたほうがいいかも
         return;
     }
     if (dataDef.matchDataType('DATE')) {
-        checkAndGetColumnType(column, 'DATE', 'Date');
-        // TODO: calculated の場合、outputType と format も確認したほうがいいかも
+        const type = checkAndGetColumnType(column, name, 'DATE', 'Date');
+        if (type === 'dateTime' || type === 'calculated') {
+            const format = column[type].format;
+            if (format !== 'dateOnly') {
+                throw new Error(`Column '${name}' cannot be saved to Date type data item.`);
+            }
+        }
         return;
     }
     if (dataDef.matchDataType('DATETIME')) {
-        checkAndGetColumnType(column, 'DATETIME', 'Datetime');
-        // TODO: calculated の場合、outputType と format も確認したほうがいいかも
+        const type = checkAndGetColumnType(column, name, 'DATETIME', 'Datetime');
+        if (type === 'dateTime' || type === 'calculated') {
+            const format = column[type].format;
+            if (format !== 'dateTime') {
+                throw new Error(`Column '${name}' cannot be saved to Datetime type data item.`);
+            }
+        }
         return;
     }
     
 };
 
-const checkAndGetColumnType = (column, dataType, dataTypeLabel) => {
+const checkAndGetColumnType = (column, name, dataType, dataTypeLabel) => {
     const supportedTypes = SUPPORTED_COLUMN_TYPES[dataType];
     const found = supportedTypes.find(type => column[type] !== undefined);
     if (found === undefined) {
-        throw new Error(`Column type '${type}' cannot be saved to ${dataTypeLabel} type data item.`);
+        throw new Error(`Column '${name}' cannot be saved to ${dataTypeLabel} type data item.`);
     }
     return found;
 };
@@ -410,11 +420,22 @@ function convertAndSetData(dataDef, columnValue) {
         return;
     }
     if (dataDef.matchDataType('DATE')) {
-        // TODO
+        // lookup は値が日付形式の文字列でない可能性がある
+        // TODO サイトのタイムゾーンでの 0 時 0 分 0 秒の日時が取得されるため、以下の処理は必ず失敗してしまう
+        try {
+            engine.setData(dataDef, java.sql.Date.valueOf(columnValue));
+        } catch (e) {
+            throw new Error(`Column value "${JSON.stringify(columnValue)}" cannot be saved to Date type data item.`);
+        }
         return;
     }
     if (dataDef.matchDataType('DATETIME')) {
-        // TODO
+        // lookup は値が日時形式の文字列でない可能性がある
+        try {
+            engine.setData(dataDef, dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", columnValue));
+        } catch (e) {
+            throw new Error(`Column value "${JSON.stringify(columnValue)}" cannot be saved to Datetime type data item.`);
+        }
         return;
     }
 }
