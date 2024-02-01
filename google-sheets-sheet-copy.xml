@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2023-02-16</last-modified>
+<last-modified>2024-02-01</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Google Sheets: Copy Sheet</label>
 <label locale="ja">Google スプレッドシート: シートコピー</label>
 <summary>This item copies a single Google Sheet to the same or another spreadsheet.</summary>
@@ -11,7 +12,7 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-sheets-sheet-copy/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -41,10 +42,9 @@
 // Consumer Key: (Get by Google Developers Console)
 // Consumer Secret: (Get by Google Developers Console)
 
-main();
 function main() {
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.getObject("conf_OAuth2");
   const spreadSheetId = configs.get("conf_SpreadSheetId");
   const sheetTitle = configs.get("conf_SheetTitle");
 
@@ -87,7 +87,7 @@ function main() {
 
 /**
  * Google スプレッドシートのシート ID を取得
- * @param {String} oauth2 OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetTitle シートタイトル
  * @return {Number} sheetId シート ID
@@ -116,7 +116,7 @@ function getSheetId(oauth2, spreadSheetId, sheetTitle) {
 
 /**
  * Google スプレッドシートに新しいシートをコピー
- * @param {String} oauth2 OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetId シートの ID
  * @param {String} destinationSpreadsheetId コピー先スプレッドシート ID
@@ -147,7 +147,7 @@ function copySheet(oauth2, spreadSheetId, sheetId, destinationSpreadsheetId) {
 
 /**
  * Google スプレッドシートのシート名を変更する
- * @param {String} oauth2 OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} spreadSheetId スプレッドシートの ID
  * @param {String} sheetId シートの ID
  * @param {String} newSheetTitle シートの新しいタイトル
@@ -224,7 +224,17 @@ const prepareConfigs = (
   destinationSpreadsheetId,
   newSheetTitle
 ) => {
-  configs.put("conf_OAuth2", "Google");
+  const auth = httpClient.createAuthSettingOAuth2(
+    'Google',
+    'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+    'https://accounts.google.com/o/oauth2/token',
+    'spreadsheets',
+    'consumer_key',
+    'consumer_secret',
+    'access_token'
+  );
+
+  configs.putObject('conf_OAuth2', auth);
   configs.put("conf_SpreadSheetId", spreadSheetId);
   configs.put("conf_SheetTitle", sheetTitle);
   // コピー先スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
@@ -240,13 +250,27 @@ const prepareConfigs = (
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+  try {
+    func();
+    fail();
+  } catch (e) {
+    expect(e.toString()).toEqual(errorMsg);
+  }
+};
+
+/**
  * シート名が長すぎる
  */
 test("Sheet Title Length > 100", () => {
   const newSheetName = "a".repeat(101); // 101 文字
   prepareConfigs("spreadsheet-1", "シート 1", "spreadsheet-2", newSheetName);
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('Sheet Title is too long. It cannot be longer than 100 characters.');
+  assertError(main, 'Sheet Title is too long. It cannot be longer than 100 characters.');
 });
 
 const SAMPLE_GET_1 = {
@@ -417,7 +441,7 @@ test('Fail in 1st Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to get sheet information. status: 400');
+  assertError(main, 'Failed to get sheet information. status: 400');
 });
 
 /**
@@ -431,7 +455,7 @@ test('Sheet does not exist', () => {
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_1));
   });
 
-  expect(execute).toThrow('Sheet 存在しないシート does not exist');
+  assertError(main, 'Sheet 存在しないシート does not exist');
 });
 
 /**
@@ -451,7 +475,7 @@ test('Fail in 2nd Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to copy sheet.');
+  assertError(main, 'Failed to copy sheet.');
 });
 
 /**
@@ -476,7 +500,7 @@ test('Fail in 3rd Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to set sheet title.');
+  assertError(main, 'Failed to set sheet title.');
 });
 
 /**
@@ -504,7 +528,7 @@ test("Success - Set Destination and New Sheet Title", () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -532,7 +556,7 @@ test("Success - without Destination", () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -554,7 +578,7 @@ test("Success - without New Sheet Title", () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -581,7 +605,7 @@ test("Success - Destination set as fixed value", () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -608,7 +632,7 @@ test("Success - without Destination, fixed value", () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 ]]></test>
