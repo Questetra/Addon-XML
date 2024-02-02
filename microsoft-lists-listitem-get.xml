@@ -227,16 +227,9 @@ const encodeSharingUrl = (sharingUrl) => {
     return `u!${encodedSharingUrl}`;
 };
 
-/** 保存先データ項目のタイプごとのサポートしている列タイプ */
-const SUPPORTED_COLUMN_TYPES = {
-    'DECIMAL': ['number', 'currency', 'calculated', 'lookup'],
-    'SELECT_SINGLE': ['choice', 'boolean'], // TODO contentApprovalStatus も追加するか、検討
-    'SELECT_CHECKBOX': ['choice'],
-    'DATETIME': ['dateTime', 'calculated', 'lookup']
-};
-
 /**
- * リストの列のメタデータを取得し、指定した名前の列の存在と型を確認する
+ * リストの列のメタデータを取得し、指定した名前の列の存在を確認する
+ * リストアイテム取得の API では値が空の列はプロパティ自体が返らないため、事前に列の存在を確認しておく
  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
  * @param {String} siteId  SharePoint サイトの ID
  * @param {String} listTitle  リストの名前
@@ -244,14 +237,10 @@ const SUPPORTED_COLUMN_TYPES = {
  * @param {Array<ProcessDataDefinitionView>} columnDefs  列の値の保存先データ項目
  */
 const checkColumns = (oauth2, siteId, listTitle, columnNames, columnDefs) => {
-    // $select パラメータに指定するため、SUPPORTED_COLUMN_TYPES の値をカンマで繋いだ文字列を作成
-    const columnTypeSet = new Set(Object.values(SUPPORTED_COLUMN_TYPES).flat()); // 重複を除くため Set を使用
-    columnTypeSet.add('text'); // 文字型が単一行か複数行か確認するために追加
-    const columnTypeStr = [...columnTypeSet].join(',');
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/columns`;
     const response = httpClient.begin()
         .authSetting(oauth2)
-        .queryParam('$select', `name,${columnTypeStr}`)
+        .queryParam('$select', 'name')
         // $filter, $search, $top パラメータは効かない
         .get(url);
     const status = response.getStatusCode();
@@ -260,85 +249,13 @@ const checkColumns = (oauth2, siteId, listTitle, columnNames, columnDefs) => {
         engine.log(responseStr);
         throw new Error(`Failed to get columns. status: ${status}`);
     }
-    engine.log(responseStr); // テスト用
     const columns = JSON.parse(responseStr).value;
-    columnNames.forEach((columnName, i) => {
-        findAndCheckColumn(columns, columnName, columnDefs[i]);
+    columnNames.forEach((columnName) => {
+        const column = columns.find((column) => column.name === name);
+        if (column === undefined) {
+            throw new Error(`Column '${name}' not found.`);
+        }
     });
-};
-
-/**
- * 列の存在と型を確認する
- * 列が存在しない場合、テキスト型で複数行を許可している場合はエラーにする
- * @param {Array<Object>} columns  列のメタデータ一覧
- * @param {String} name  列の名前
- * @param {ProcessDataDefinitionView} dataDef  保存先データ項目
- */
-const findAndCheckColumn = (columns, name, dataDef) => {
-    const column = columns.find((column) => column.name === name);
-    if (column === undefined) {
-        throw new Error(`Column '${name}' not found.`);
-    }
-    // データ項目の型ごとに、列の型を確認する
-    if (dataDef.matchDataType('STRING_TEXTAREA')) {
-        return;
-    } else if (dataDef.matchDataType('STRING_TEXTFIELD')) {
-        if (column.text !== undefined && column.text.allowMultipleLines) {
-            throw new Error(`Column '${name}' cannot be saved to Single-line text data item as its value can be multi-line.`);
-        }
-    } else if (dataDef.matchDataType('DECIMAL')) {
-        const type = checkAndGetColumnType(column, name, 'DECIMAL', 'Numeric');
-        if (type === 'calculated') {
-            const outputType = column.calculated.outputType;
-            // 既存のテンプレートに、数値が text で返る culculated 型のフィールドがあるため、text も許容する
-            const supportedOutputTypes = ['number', 'currency', 'text'];
-            if (!supportedOutputTypes.includes(outputType)) {
-                throw new Error(`Column '${name}' cannot be saved to Numeric type data item.`);
-            }
-        } else if (type === 'lookup' && column.lookup.allowMultipleValues) {
-            throw new Error(`Column '${name}' cannot be saved to Numeric type data item as it is a multi-value lookup.`);
-        }
-    } else if (dataDef.matchDataType('SELECT_SINGLE')) {
-        const type = checkAndGetColumnType(column, name, 'SELECT_SINGLE', 'Select-single');
-        if (type === 'choice' && column.choice.displayAs === 'checkBoxes') {
-            throw new Error(`Column '${name}' cannot be saved to Single-select type data item.`);
-        }
-    } else if (dataDef.matchDataType('SELECT_CHECKBOX')) {
-        checkAndGetColumnType(column, name, 'SELECT_CHECKBOX', 'Checkbox');
-        // 現状、サポートしているのは choice のみ
-        if (column.choice.displayAs !== 'checkBoxes') {
-            throw new Error(`Column '${name}' cannot be saved to Checkbox type data item.`);
-        }
-    } else if (dataDef.matchDataType('DATETIME')) {
-        const type = checkAndGetColumnType(column, name, 'DATETIME', 'Datetime');
-        if (type === 'calculated') {
-            // 数値型データ項目への保存と揃えて、text も許容する
-            const supportedOutputTypes = ['dateTime', 'text'];
-            if (!supportedOutputTypes.includes(outputType)) {
-                throw new Error(`Column '${name}' cannot be saved to Datetime type data item.`);
-            }
-        } else if (type === 'lookup' && column.lookup.allowMultipleValues) {
-            throw new Error(`Column '${name}' cannot be saved to Datetime type data item as it is a multi-value lookup.`);
-        }
-        return;
-    }
-};
-
-/**
- * 列の型を確認し、保存先データ項目の型に合致する列の型を返す
- * @param {Object} column  列のメタデータ
- * @param {String} name  列の名前
- * @param {String} dataType  保存先データ項目の型
- * @param {String} dataTypeLabel  保存先データ項目の型のエラー出力用ラベル
- * @returns {String} 列の型
- */
-const checkAndGetColumnType = (column, name, dataType, dataTypeLabel) => {
-    const supportedTypes = SUPPORTED_COLUMN_TYPES[dataType];
-    const found = supportedTypes.find(type => column[type] !== undefined);
-    if (found === undefined) {
-        throw new Error(`Column '${name}' cannot be saved to ${dataTypeLabel} type data item.`);
-    }
-    return found;
 };
 
 /**
@@ -363,7 +280,6 @@ const getListItem = (oauth2, siteId, listTitle, listItemId, columnNames) => {
         engine.log(responseStr);
         throw new Error(`Failed to get list item. status: ${status}`);
     }
-    engine.log(responseStr); // テスト用
     const listItem = JSON.parse(responseStr);
     return listItem;
 };
@@ -394,30 +310,40 @@ function convertAndSetData(dataDef, columnValue, columnName) {
     }
     // データ項目の型ごとに、列の値を変換して保存する
     if (dataDef.matchDataType('STRING')) {
+        // TEXTFIELD に改行を含む文字列を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
         engine.setData(dataDef, stringifyColumnValue(columnValue));
     } else if (dataDef.matchDataType('DECIMAL')) {
-        // lookup や calculated の場合、数値として解釈できない string が返ることがあるため、try-catch でエラーを捕捉する
+        const supportedValueTypes = ['string', 'number'];
+        if (!supportedValueTypes.includes(typeof columnValue)) {
+            throw new Error(`Column '${columnName}' cannot be saved to Numeric type data item. The returned value is neither a string nor a number.`);
+        }
         try {
             engine.setData(dataDef, new java.math.BigDecimal(columnValue));
         } catch (e) {
-            throw new Error(`Column '${columnName}' cannot be saved to Numeric type data item.`);
+            throw new Error(`Column '${columnName}' cannot be saved to Numeric type data item. Failed to convert to BigDecimal.`);
         }
-    } else if (dataDef.matchDataType('SELECT_SINGLE')) {
-        // 値は string または boolean
+    } else if (dataDef.matchDataType('SELECT')) {
+        const supportedValueTypes = ['string', 'number', 'boolean'];
         const items = new java.util.ArrayList();
-        items.add(columnValue.toString());
-        // 一致する選択肢 ID がない場合のエラーは、QBPMS のバリデーションに任せる
-        engine.setData(dataDef, items);
-    } else if (dataDef.matchDataType('SELECT_CHECKBOX')) {
-        // 値は string の配列
-        const items = new java.util.ArrayList();
-        columnValue.forEach((value) => {
-            items.add(value);
-        });
-        // 一致する選択肢 ID がない場合のエラーは、QBPMS のバリデーションに任せる
+        if (Array.isArray(columnValue)) { // 複数選択の場合
+            columnValue.forEach((value) => {
+                if (!supportedValueTypes.includes(typeof value)) {
+                    throw new Error(`Column '${columnName}' cannot be saved to Select type data item.`);
+                }
+                items.add(value.toString());
+            });
+        } else { // 単一選択の場合
+            if (!supportedValueTypes.includes(typeof columnValue)) {
+                throw new Error(`Column '${columnName}' cannot be saved to Select type data item.`);
+            }
+            items.add(columnValue.toString());
+        }
+        // 一致する選択肢 ID がない場合、SELECT_SINGLE に複数選択を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
         engine.setData(dataDef, items);
     } else if (dataDef.matchDataType('DATETIME')) {
-        // lookup や calculated の場合、number や日時形式でない string が返ることがあるため、try-catch でエラーを捕捉する
+        if (typeof columnValue !== 'string') {
+            throw new Error(`Column '${columnName}' cannot be saved to Datetime type data item. The returned value is not a string.`);
+        }
         try {
             engine.setData(dataDef, dateFormatter.parse("yyyy-MM-dd'T'HH:mm:ssX", columnValue));
         } catch (e) {
@@ -434,7 +360,8 @@ const stringifyColumnValue = (columnValue) => {
     if (typeof columnValue === 'string') {
         return columnValue;
     }
-    if (typeof columnValue === 'object') {
+    if (typeof columnValue === 'object') { // TODO 解釈できない値を保存しないのであれば、この場合はエラーにする？
+        // JSON オブジェクトや配列の場合
         return JSON.stringify(columnValue);
     }
     // 数値、真偽値の場合
