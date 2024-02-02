@@ -250,10 +250,10 @@ const checkColumns = (oauth2, siteId, listTitle, columnNames, columnDefs) => {
         throw new Error(`Failed to get columns. status: ${status}`);
     }
     const columns = JSON.parse(responseStr).value;
-    columnNames.forEach((columnName) => {
-        const column = columns.find((column) => column.name === name);
+    columnNames.forEach(columnName => {
+        const column = columns.find((column) => column.name === columnName);
         if (column === undefined) {
-            throw new Error(`Column '${name}' not found.`);
+            throw new Error(`Column '${columnName}' not found.`);
         }
     });
 };
@@ -310,8 +310,12 @@ function convertAndSetData(dataDef, columnValue, columnName) {
     }
     // データ項目の型ごとに、列の値を変換して保存する
     if (dataDef.matchDataType('STRING')) {
-        // TEXTFIELD に改行を含む文字列を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
-        engine.setData(dataDef, stringifyColumnValue(columnValue));
+        try {
+            // TEXTFIELD に改行を含む文字列を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
+            engine.setData(dataDef, stringifyColumnValue(columnValue));
+        } catch (e) { // 列の値が解釈できないオブジェクトの場合など
+            throw new Error(`Column '${columnName}' cannot be saved to Text type data item. ${e.message}`);
+        }
     } else if (dataDef.matchDataType('DECIMAL')) {
         const supportedValueTypes = ['string', 'number'];
         if (!supportedValueTypes.includes(typeof columnValue)) {
@@ -323,23 +327,20 @@ function convertAndSetData(dataDef, columnValue, columnName) {
             throw new Error(`Column '${columnName}' cannot be saved to Numeric type data item. Failed to convert to BigDecimal.`);
         }
     } else if (dataDef.matchDataType('SELECT')) {
-        const supportedValueTypes = ['string', 'number', 'boolean'];
         const items = new java.util.ArrayList();
-        if (Array.isArray(columnValue)) { // 複数選択の場合
-            columnValue.forEach((value) => {
-                if (!supportedValueTypes.includes(typeof value)) {
-                    throw new Error(`Column '${columnName}' cannot be saved to Select type data item.`);
-                }
-                items.add(value.toString());
-            });
-        } else { // 単一選択の場合
-            if (!supportedValueTypes.includes(typeof columnValue)) {
-                throw new Error(`Column '${columnName}' cannot be saved to Select type data item.`);
+        try {
+            if (Array.isArray(columnValue)) { // 複数選択の場合
+                convertMultipleValues(columnValue).forEach((value) => {
+                    items.add(value);
+                });
+            } else { // 単一選択の場合
+                items.add(convertSingleValueToString(columnValue));
             }
-            items.add(columnValue.toString());
+            // 一致する選択肢 ID がない場合、SELECT_SINGLE に複数選択を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
+            engine.setData(dataDef, items);
+        } catch (e) {
+            throw new Error(`Column '${columnName}' cannot be saved to Select type data item. ${e.message}`);
         }
-        // 一致する選択肢 ID がない場合、SELECT_SINGLE に複数選択を保存しようとした場合のエラーは、QBPMS のバリデーションに任せる
-        engine.setData(dataDef, items);
     } else if (dataDef.matchDataType('DATETIME')) {
         if (typeof columnValue !== 'string') {
             throw new Error(`Column '${columnName}' cannot be saved to Datetime type data item. The returned value is not a string.`);
@@ -353,19 +354,57 @@ function convertAndSetData(dataDef, columnValue, columnName) {
 }
 
 /**
- * 列の値を文字列化する
+ * 列の値を文字列に変換する
+ * 列の値が配列の場合、カンマ区切りの文字列に変換する
+ * 文字列化に失敗した場合はエラー
  * @param {Object} columnValue 列の値
+ * @returns {String} 文字列化した列の値
  */
 const stringifyColumnValue = (columnValue) => {
-    if (typeof columnValue === 'string') {
-        return columnValue;
+    if (Array.isArray(columnValue)) {
+        return convertMultipleValuesToStringArray(columnValue).join(', ');
     }
-    if (typeof columnValue === 'object') { // TODO 解釈できない値を保存しないのであれば、この場合はエラーにする？
-        // JSON オブジェクトや配列の場合
-        return JSON.stringify(columnValue);
+    return convertSingleValueToString(columnValue);
+};
+
+/**
+ * 列の値を、文字列の配列に変換する（値が配列の場合）
+ * 文字列化に失敗した場合はエラー
+ * @param {Array} array 列の値
+ * @returns {Array<String>} 文字列化した列の値
+ */
+const convertMultipleValuesToStringArray = (array) => {
+    array.map(value => {
+        return convertSingleValueToString(value);
+    });
+};
+
+/**
+ * 列の値を、文字列に変換する（値が配列でない場合）
+ * 列の値がオブジェクトの場合、lookupValue, displayName プロパティがあればその値を返す
+ * 文字列化に失敗した場合はエラー
+ * @param {Object} value 列の値
+ * @returns {String} 文字列化した列の値
+ */
+const convertSingleValueToString = (value) => {
+    const supportedPrimitiveTypes = ['string', 'number', 'boolean'];
+    if (supportedPrimitiveTypes.includes(typeof value)) {
+        return value.toString();
     }
-    // 数値、真偽値の場合
-    return columnValue.toString();
+    if (typeof value === 'object') {
+        // lookupValue : 複数選択の Lookup, Person or Group 型の場合などに存在するプロパティ
+        // displayName : Location 型の場合などに存在するプロパティ
+        const {lookupValue, displayName} = obj;
+        if (lookupValue !== undefined || lookupValue !== null) {
+            return lookupValue.toString();
+        }
+        if (displayName !== undefined || displayName !== null) {
+            return displayName;
+        }
+        throw new Error('Failed to convert an object to a string.');
+    }
+    // それ以外の型の場合（実際にはありえない）
+    throw new Error('Failed to convert a value to a string.');
 };
 
     ]]></script>
