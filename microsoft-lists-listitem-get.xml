@@ -545,7 +545,7 @@ const SAMPLE_COLUMN_VALUES = [
     'Choice 1',
     ['Choice 1', 'Choice 2'],
     '2022-02-22T12:34:56Z',
-    '2022-02-22T08:00:00Z' // サイトのタイムゾーン設定における 0 時 0 分の日時が返る
+    '2022-02-22T12:00:00Z' // サイトのタイムゾーン設定における 0 時 0 分の日時が返る
 ];
 
 const SAMPLE_DEF_TYPES = [
@@ -638,6 +638,261 @@ test('The same data item is set multiple times', () => {
     configs.putObject('conf_ColumnValue4', valueDefs[0]);
 
     assertError('The same data item is set multiple times.');
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in 1st GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#formParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * 列情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ */
+const assertGetColumnsRequest = ({ url, method, headers }, siteId, listTitle) => {
+    const expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/columns`
+        + `?${generateQueryString('$select', 'name')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * 列情報取得のの GET リクエストでエラー
+ */
+test('Fail in 2nd GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get columns. status: 400');
+});
+
+/**
+ * 指定した名前の列が存在せずエラーになる場合
+ */
+test('Column not found', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = SAMPLE_COLUMN_NAMES.map(name => ({ name }));
+    columns.splice(4, 1); // ChoiceMultiple を削除
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertGetColumnsRequest(request, siteId, listTitle);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+    });
+    assertError("Column 'ChoiceMultiple' not found.");
+});
+
+/**
+ * リストアイテム取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ * @param filter
+ * @param columnNames
+ */
+const assertGetListItemRequest = ({ url, method, headers }, siteId, listTitle, listItemId, columnNames) => {
+    const expand = `fields($select=${columnNames.join(',')})`;
+    let expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}`
+        + `?${generateQueryString('$select', 'id')}`
+        + `&${generateQueryString('$expand', expand)}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * リストアイテム取得の GET リクエストでエラー
+ */
+test('Fail in 3rd GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = SAMPLE_COLUMN_NAMES.map(name => ({ name }));
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemRequest(request, siteId, listTitle, listItemId, SAMPLE_COLUMN_NAMES);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get list item. status: 400');
+});
+
+/**
+ * リストアイテム取得のレスポンスを準備
+ * @param listItemId
+ * @param columnNames 列の名前
+ * @param columnValues 列の値
+ * @returns {String}
+ */
+const prepareListItemResponse = (listItemId, columnNames, columnValues) => {
+    const fields = {};
+    columnNames.forEach((name, i) => {
+        fields[name] = columnValues[i];
+    });
+    const listItem = { id: listItemId, fields };
+    return JSON.stringify(listItem);
+};
+
+/**
+ * 数値型データの値を確認する
+ * @param dataDef
+ * @param format
+ * @param expectedString
+ */
+const assertDecimal = (dataDef, format, expectedString) => {
+    const string = new java.text.DecimalFormat(format).format(engine.findData(dataDef));
+    expect(string).toEqual(expectedString);
+};
+
+/**
+ * 日時型データの値を確認する
+ * @param dataDef
+ * @param timezone
+ * @param expectedString
+ */
+const assertDatetime = (dataDef, timezone, expectedString) => {
+    const string = dateFormatter.format(timezone, 'yyyy-MM-dd HH:mmZ', engine.findData(dataDef));
+    expect(string).toEqual(expectedString);
+};
+
+/**
+ * 日付型データの値を確認する
+ * @param dataDef
+ * @param expectedString
+ */
+const assertDate = (dataDef, expectedString) => {
+    const string = dateFormatter.format('yyyy-MM-dd', engine.findData(dataDef));
+    expect(string).toEqual(expectedString);
+};
+
+/**
+ * 成功 - すべてのデータ項目に保存、リストアイテム ID は文字型データ項目で指定
+ */
+test('Succeed - save to all data items', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const columns = SAMPLE_COLUMN_NAMES.map(name => ({ name }));
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        if (reqCount === 1) {
+            assertGetColumnsRequest(request, siteId, listTitle);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
+        }
+        assertGetListItemRequest(request, siteId, listTitle, listItemId, SAMPLE_COLUMN_NAMES);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareListItemResponse(listItemId, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES));
+    });
+
+    engine.setTimeZoneOffsetInMinutes(540); // テストスクリプトではタイムゾーンの値をコントロール可能 timezone = 'GMT+09:00' に設定する
+    expect(main()).toEqual(undefined);
+
+    expect(engine.getData(valueDefs[0])).toEqual(SAMPLE_COLUMN_VALUES[0]);
+    expect(engine.getData(valueDefs[1])).toEqual(SAMPLE_COLUMN_VALUES[1]);
+    assertDecimal(valueDefs[2], '#,###.0', `${SAMPLE_COLUMN_VALUES[2]}.0`);
+    // TODO 選択型
+    assertDatetime(valueDefs[5], 'GMT+0900', '2022-02-22 21:34+0900');
+    assertDate(valueDefs[6], '2022-02-23'); // タイムゾーンの関係で、日付が翌日になる
 });
 
 ]]></test>
