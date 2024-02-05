@@ -330,7 +330,7 @@ function convertAndSetData(dataDef, columnValue, columnName) {
         const items = new java.util.ArrayList();
         try {
             if (Array.isArray(columnValue)) { // 複数選択の場合
-                convertMultipleValues(columnValue).forEach((value) => {
+                convertMultipleValuesToStringArray(columnValue).forEach((value) => {
                     items.add(value);
                 });
             } else { // 単一選択の場合
@@ -441,7 +441,204 @@ const convertSingleValueToString = (value) => {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param listItemIdDef
+ * @param columnNames
+ * @param valueDefTypes
+ * @return {Array<DataDefinitionView>} dataDefs
+ */
+const prepareConfigs = (siteUrl, listTitle, listItemIdDef, columnNames, valueDefTypes) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+    configs.putObject('conf_ListItemId', listItemIdDef);
 
+    // 列の名前と、値を保存するデータ項目を準備し、設定
+    const valueDefs = [];
+    for (let i = 0; i < COLUMN_NUM; i++) {
+        configs.put(`conf_ColumnName${i + 1}`, columnNames[i]);
+        const valueDefType = valueDefTypes[i];
+        if (valueDefType === '') {
+            valueDefs.push(null);
+            continue;
+        } else {
+            const valueDef = engine.createDataDefinition(`Value of Cell ${i + 1}`, i + 1, `q_value${i + 1}`, valueDefType);
+            configs.putObject(`conf_ColumnValue${i + 1}`, valueDef);
+            valueDefs.push(valueDef);
+        }
+    }
+    return valueDefs;
+};
+
+/**
+ * リストアイテム ID の準備（文字型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdStringDef = (listItemId) => {
+    // 文字型データ項目（単一行）を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'STRING_TEXTFIELD');
+    engine.setData(listItemIdDef, listItemId);
+    return listItemIdDef;
+};
+
+/**
+ * リストアイテム ID の準備（選択型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdSelectDef = (listItemId) => {
+    // 選択型データ項目を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(listItemId, `${listItemId} を選択`);
+    select.add(item);
+    engine.setData(listItemIdDef, select);
+    return listItemIdDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+const BLANKS = ['', '', '', '', '', '', ''];
+
+const SAMPLE_COLUMN_NAMES = [
+    'SingleLineOfText',
+    'MultiLineOfText',
+    'Number',
+    'ChoiceSingle',
+    'ChoiceMultiple',
+    'Datetime',
+    'Date'
+];
+
+const SAMPLE_COLUMN_VALUES = [
+    'text',
+    'text\nwith\nline\nbreaks',
+    123,
+    'Choice 1',
+    ['Choice 1', 'Choice 2'],
+    '2022-02-22T12:34:56Z',
+    '2022-02-22T08:00:00Z' // サイトのタイムゾーン設定における 0 時 0 分の日時が返る
+];
+
+const SAMPLE_DEF_TYPES = [
+    'STRING_TEXTFIELD',
+    'STRING_TEXTAREA',
+    'DECIMAL',
+    'SELECT_SINGLE',
+    'SELECT_CHECKBOX',
+    'DATETIME',
+    'DATE'
+];
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空
+ */
+test('List Item ID is blank', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdDef = preparelistItemIdStringDef(null);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+    
+    assertError('List Item ID is blank.');
+});
+
+/**
+ * リストアイテム ID を選択型データ項目で設定し、値が空
+ */
+test('List Item ID is not selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdDef = preparelistItemIdSelectDef('dummy');
+    engine.setData(listItemIdDef, null); // 選択を解除
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+    
+    assertError('List Item ID is not selected.');
+});
+
+/**
+ * 列がひとつも指定されていない
+ */
+test('No data item to save the result', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, BLANKS, BLANKS);
+
+    assertError('No data item to save the result.');
+});
+
+/**
+ * 値を保存するデータ項目だけ指定されている組がある
+ */
+test('Data item to save value is specified while its column name is blank', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const valueDefTypes = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    valueDefTypes[1] = 'STRING_TEXTFIELD';
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, BLANKS, valueDefTypes);
+
+    assertError('Field name and data item for Column 2 must be specified at the same time.');
+});
+
+/**
+ * 列の名前だけ指定されている組がある
+ */
+test('Column name is specified while data item to save the value is not selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const columnNames = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnNames[2] = 'Title';
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, BLANKS);
+
+    assertError('Field name and data item for Column 3 must be specified at the same time.');
+});
+
+/**
+ * データ項目の指定が重複
+ */
+test('The same data item is set multiple times', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+    configs.putObject('conf_ColumnValue4', valueDefs[0]);
+
+    assertError('The same data item is set multiple times.');
+});
 
 ]]></test>
 
