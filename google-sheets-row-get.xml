@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2023-02-06</last-modified>
+<last-modified>2024-02-06</last-modified>
 <license>(C) Questetra, In. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Google Sheets: Get Row </label>
 <label locale="ja">Google スプレッドシート: 行取得</label>
 <summary>This item gets data in a specified row from a Google Sheet.</summary>
@@ -11,7 +12,7 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-sheets-row-get/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets.readonly">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets.readonly">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -84,10 +85,9 @@
 
 const COLUMN_NUM = 10;
 
-main();
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
-  const oauth = configs.get( "conf_OAuth2" );
+  const oauth = configs.getObject("conf_OAuth2");
   const sheetId = configs.get( "conf_SheetId" );
   const sheetTitle = configs.get( "conf_SheetTitle" );
   const rowNo = retrieveRowNo();
@@ -190,7 +190,7 @@ function retrieveValueConfigs( columnDefList ) {
 
 /**
  * Google スプレッドシートの行データを取得
- * @param {String} oauth OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} sheetId スプレッドシートの ID
  * @param {String} sheetTitle シート名
  * @param {String} rowNo 取得する行
@@ -339,7 +339,17 @@ AEwJzTC2ALrNAAAAAElFTkSuQmCC
  * @return {Object}
  */
 const prepareConfigs = (configs, sheetId, sheetTitle, rowNo, range, ...types) => {
-    configs.put('conf_OAuth2', 'Google');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
     configs.put('conf_SheetId', sheetId);
     configs.put('conf_SheetTitle', sheetTitle);
     configs.put('conf_Range', range);
@@ -363,25 +373,42 @@ const prepareConfigs = (configs, sheetId, sheetTitle, rowNo, range, ...types) =>
     return columnDefList;
 };
 
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
 test('Row Number is invalid', () => {
     //行番号が不適切な場合
     prepareConfigs(configs, 'id', 'title', 'invalidrow', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
-    expect(execute).toThrow('Invalid Row number.');
+    assertError(main, 'Invalid Row number.');
 });
 
 test('Row Number is empty', () => {
     //行番号が入力されていない場合
     prepareConfigs(configs, 'id', 'title', null, 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
-    expect(execute).toThrow('Row number is empty.');
+    assertError(main, 'Row number is empty.');
 });
 
 test('Column Range is invalid', () => {
     //列範囲が不適切である場合
     prepareConfigs(configs, 'id', 'title', '1', 'invalidrange', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
 
-    expect(execute).toThrow('Invalid Range.');
+    assertError(main, 'Invalid Range.');
 });
 
 test('Same Data Item is set twice', () => {
@@ -389,14 +416,14 @@ test('Same Data Item is set twice', () => {
     const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B', 'STRING_TEXTFIELD', 'STRING_TEXTFIELD');
     configs.putObject("conf_Column2", columnDefList[0]);
     
-    expect(execute).toThrow('The same data item is set multiple times.');
+    assertError(main, 'The same data item is set multiple times.');
 });
 
 test('No Data Item is set', () => {
     //保存先データ項目がひとつも設定されていない場合
     const columnDefList = prepareConfigs(configs, 'id', 'title', '1', 'A:B');
     
-    expect(execute).toThrow('No Data Item is set.');
+    assertError(main, 'No Data Item is set.');
 });
 
 /**
@@ -426,7 +453,7 @@ test('Succeed to get - TEXTFIELD and TEXTAREA', () => {
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     expect(engine.findData(columnDefList[0])).toEqual('A列');
     expect(engine.findData(columnDefList[1])).toEqual('B列\n複数行');
 });
@@ -443,7 +470,7 @@ test('Succeed to get - 10 columns', () => {
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     columnDefList.forEach((def, i) => {
         expect(engine.findData(def)).toEqual(`値${i+1}`);
     });
@@ -463,7 +490,7 @@ test('Succeed to get - Some data items are not set', () => {
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     columnDefList.forEach((def, i) => {
         if (i === 4 || i === 7) { // 5, 8列目は保存先が未設定
             expect(engine.findData(def)).toEqual('事前文字列');
@@ -485,7 +512,7 @@ test('Succeed to get - Number of Returned values is bigger than 10', () => {
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     columnDefList.forEach((def, i) => {
         expect(engine.findData(def)).toEqual(`値${i+1}`);
     });
@@ -503,7 +530,7 @@ test('Succeed to get - Number of Returned values is smaller than that of data it
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     columnDefList.forEach((def, i) => {
         if (i > 7) { // 9列目、10列目の保存される値は null
             expect(engine.findData(def)).toEqual(null);
@@ -523,7 +550,7 @@ test('Succeed to get Numeric data', () => {
         return httpClient.createHttpResponse(200, 'application/json', ret);
     });
 
-    execute();
+    main();
     expect(engine.findData(columnDefList[0])).toEqual('100');
 });
 
@@ -536,7 +563,7 @@ test('404 Error', () => {
         return httpClient.createHttpResponse(404, 'application/json', JSON.stringify({}));
     });
 
-    expect(execute).toThrow('Failed to get. status:404');
+    assertError(main, 'Failed to get. status:404');
 });
 
 test('All cells are empty', () => {
@@ -548,7 +575,7 @@ test('All cells are empty', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({}));
     });
 
-    expect(execute).toThrow('No Data in range.');
+    assertError(main, 'No Data in range.');
 });
 
 test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', () => {
@@ -560,8 +587,9 @@ test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', 
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({"values":[['複数行の\n文字列']]}));
     });
 
-    expect(execute).toThrow('function is expected to be throw error');
+    expect(main()).toEqual(undefined); // QBPMS のバリデーションに任せているので、スクリプトは処理成功
 });
+
 
 ]]></test>
 </service-task-definition>
