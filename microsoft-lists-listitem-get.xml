@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Get List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム取得</label>
-    <!--
-    <last-modified>2024-02-05</last-modified>
-    -->
+    <last-modified>2024-02-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -477,6 +475,21 @@ const prepareConfigs = (siteUrl, listTitle, listItemIdDef, columnNames, valueDef
             const valueDef = engine.createDataDefinition(`Value of Cell ${i + 1}`, i + 1, `q_value${i + 1}`, valueDefType);
             configs.putObject(`conf_ColumnValue${i + 1}`, valueDef);
             valueDefs.push(valueDef);
+            // 初期値を設定しておく
+            if (valueDefType.startsWith('STRING')) {
+                engine.setData(valueDef, '事前文字列');
+            } else if (valueDefType === 'DECIMAL') {
+                engine.setData(valueDef, new java.math.BigDecimal(9999999));
+            } else if (valueDefType.startsWith('SELECT')) {
+                const select = new java.util.ArrayList();
+                const item = engine.createItem('事前選択肢の値', '事前選択肢のラベル');
+                select.add(item);
+                engine.setData(valueDef, select);
+            } else if (valueDefType === 'DATETIME') {
+                engine.setData(valueDef, java.sql.Timestamp.valueOf('2000-01-01 12:12:12'));
+            } else if (valueDefType === 'DATE') {
+                engine.setData(valueDef, java.sql.Date.valueOf('2000-01-01'));
+            }
         }
     }
     return valueDefs;
@@ -545,7 +558,7 @@ const SAMPLE_COLUMN_VALUES = [
     'Choice 1',
     ['Choice 1', 'Choice 2'],
     '2022-02-22T12:34:56Z',
-    '2022-02-22T12:00:00Z' // サイトのタイムゾーン設定における 0 時 0 分の日時が返る
+    '2022-02-22T15:00:00Z' // Lists の日付は、サイトのタイムゾーン設定における 0 時 0 分の日時
 ];
 
 const SAMPLE_DEF_TYPES = [
@@ -817,6 +830,9 @@ test('Fail in 3rd GET request', () => {
 const prepareListItemResponse = (listItemId, columnNames, columnValues) => {
     const fields = {};
     columnNames.forEach((name, i) => {
+        if (name === '' || columnValues[i] === undefined) {
+            return;
+        }
         fields[name] = columnValues[i];
     });
     const listItem = { id: listItemId, fields };
@@ -832,6 +848,23 @@ const prepareListItemResponse = (listItemId, columnNames, columnValues) => {
 const assertDecimal = (dataDef, format, expectedString) => {
     const string = new java.text.DecimalFormat(format).format(engine.findData(dataDef));
     expect(string).toEqual(expectedString);
+};
+
+/**
+ * 選択型データの値を確認する
+ * @param dataDef
+ * @param expectedIds
+ */
+const assertSelect = (dataDef, expectedIds) => {
+    const selectedItems = engine.findData(dataDef);
+    if (expectedIds === null) {
+        expect(selectedItems).toEqual(null);
+        return;
+    }
+    expect(selectedItems.size()).toEqual(expectedIds.length);
+    expectedIds.forEach((expectedId, i) => {
+        expect(selectedItems.get(i)).toEqual(expectedId);
+    });
 };
 
 /**
@@ -856,18 +889,18 @@ const assertDate = (dataDef, expectedString) => {
 };
 
 /**
- * 成功 - すべてのデータ項目に保存、リストアイテム ID は文字型データ項目で指定
+ * すべての API リクエストに成功する場合のリクエストハンドラを準備
+ * @param siteUrl
+ * @param siteId
+ * @param listTitle
+ * @param listItemId
+ * @param columnNames
+ * @param columnValues
  */
-test('Succeed - save to all data items', () => {
-    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
-    const listTitle = 'リスト 1';
-    const listItemId = '1';
-    const listItemIdDef = preparelistItemIdStringDef(listItemId);
-    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
-
+const prepareRequestHandler = (siteUrl, siteId, listTitle, listItemId, columnNames, columnValues) => {
+    const trimmedColumnNames = columnNames.filter(name => name !== '');
+    const columns = trimmedColumnNames.map(name => ({ name }));
     let reqCount = 0;
-    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
-    const columns = SAMPLE_COLUMN_NAMES.map(name => ({ name }));
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
             assertGetSiteInfoRequest(request, siteUrl);
@@ -879,21 +912,577 @@ test('Succeed - save to all data items', () => {
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ value: columns }));
         }
-        assertGetListItemRequest(request, siteId, listTitle, listItemId, SAMPLE_COLUMN_NAMES);
+        assertGetListItemRequest(request, siteId, listTitle, listItemId, trimmedColumnNames);
         return httpClient
-            .createHttpResponse(200, 'application/json', prepareListItemResponse(listItemId, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES));
+            .createHttpResponse(200, 'application/json', prepareListItemResponse(listItemId, columnNames, columnValues));
     });
+};
 
-    engine.setTimeZoneOffsetInMinutes(540); // テストスクリプトではタイムゾーンの値をコントロール可能 timezone = 'GMT+09:00' に設定する
+/**
+ * 成功 - すべてのデータ項目に保存、リストアイテム ID は文字型データ項目で指定
+ * 1. Single-line String to STRING_TEXTFIELD
+ * 2. Multi-line String to STRING_TEXTAREA
+ * 3. Number to DECIMAL
+ * 4. String to SELECT_SINGLE
+ * 5. Array of String to SELECT_CHECKBOX
+ * 6. Datetime to DATETIME
+ * 7. Datetime to DATE
+ */
+test('Succeed - save to all data items', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_DEF_TYPES);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+
+    // テストスクリプトではタイムゾーンの値をコントロール可能 timezone = 'GMT+09:00' に設定する
+    engine.setTimeZoneOffsetInMinutes(540);
     expect(main()).toEqual(undefined);
 
-    expect(engine.getData(valueDefs[0])).toEqual(SAMPLE_COLUMN_VALUES[0]);
-    expect(engine.getData(valueDefs[1])).toEqual(SAMPLE_COLUMN_VALUES[1]);
+    expect(engine.findData(valueDefs[0])).toEqual(SAMPLE_COLUMN_VALUES[0]);
+    expect(engine.findData(valueDefs[1])).toEqual(SAMPLE_COLUMN_VALUES[1]);
     assertDecimal(valueDefs[2], '#,###.0', `${SAMPLE_COLUMN_VALUES[2]}.0`);
-    // TODO 選択型
+    assertSelect(valueDefs[3], ['Choice 1']);
+    assertSelect(valueDefs[4], ['Choice 1', 'Choice 2']);
     assertDatetime(valueDefs[5], 'GMT+0900', '2022-02-22 21:34+0900');
     assertDate(valueDefs[6], '2022-02-23'); // タイムゾーンの関係で、日付が翌日になる
 });
+
+/**
+ * 成功 - 一部のデータ項目に保存、リストアイテム ID は選択型データ項目で指定
+ * 1. 設定なし
+ * 2. Boolean to STRING_TEXTFIELD
+ * 3. Boolean to SELECT_SINGLE
+ * 4. 設定なし
+ * 5. Number to SELECT_SINGLE
+ * 6. String to DECIMAL
+ * 7. 設定なし
+ */
+test('Succeed - save to some data items, boolean and number', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト';
+    const listItemId = '555';
+    const listItemIdDef = preparelistItemIdSelectDef(listItemId);
+    const columnNames = [
+        '',
+        'TrueOrFalse',
+        'TrueOrFalse', // 列名は重複していてもよい
+        '',
+        'ApprovalStatus',
+        'Calculated',
+        ''
+    ];
+    const columnDefTypes = [
+        '',
+        'STRING_TEXTFIELD',
+        'SELECT_SINGLE',
+        '',
+        'SELECT_SINGLE',
+        'DECIMAL',
+        ''
+    ];
+    const columnValues = [
+        '',
+        true,
+        true,
+        '',
+        3,
+        '3.14',
+        ''
+    ];
+    // サイト URL の末尾にスラッシュが含まれていても、除いて処理される
+    const valueDefs = prepareConfigs(`${siteUrl}/`, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(valueDefs[1])).toEqual('true');
+    assertSelect(valueDefs[2], ['true']);
+    assertSelect(valueDefs[4], ['3']);
+    assertDecimal(valueDefs[5], '#,###.0', '3.1');
+});
+
+/**
+ * 成功 - 一部のデータ項目に保存、JSON オブジェクトの配列で値が返る場合
+ * 1. Array of Object with LookupValue to STRING_TEXTAREA
+ * 2. 設定なし
+ * 3. 設定なし
+ * 4. Array of Object with LookupValue to SELECT_CHECKBOX
+ * 5. 設定なし
+ * 6. 設定なし
+ * 7. 設定なし
+ */
+test('Succeed - save to some data items, array of object', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト';
+    const listItemId = '105';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const columnNames = [
+        'PersonOrQgroup',
+        '',
+        '',
+        'Lookup',
+        '',
+        '',
+        ''
+    ];
+    const columnDefTypes = [
+        'STRING_TEXTAREA',
+        '',
+        '',
+        'SELECT_CHECKBOX',
+        '',
+        '',
+        ''
+    ];
+    const columnValues = [
+        [
+            {
+                LookupId: 1,
+                LookupValue: 'User 1',
+                Email: 'user1@test.onmicrosoft.com'
+            },
+            {
+                LookupId: 2,
+                LookupValue: 'User 2',
+                Email: 'user2@test.onmicrosoft.com'
+            }
+        ],
+        '',
+        '',
+        [
+            {
+                LookupId: 100,
+                LookupValue: '商品 100'
+            }
+        ],
+        '',
+        '',
+        ''
+    ];
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    expect(main()).toEqual(undefined);
+
+    // LookupValue が保存される
+    expect(engine.findData(valueDefs[0])).toEqual('User 1\nUser 2');
+    assertSelect(valueDefs[3], ['商品 100']);
+});
+
+/**
+ * 成功 - 実データではありえないはずの値でも、解釈できればエラーにはならない
+ * 1. Array of Number to STRING_TEXTAREA
+ * 2. Array of Boolean to STRING_TEXTAREA
+ * 3. 設定なし
+ * 4. Object with LookupValue to STRING_TEXTFIELD
+ * 5. 設定なし
+ * 6. Array of Number to SELECT_CHECKBOX
+ * 7. Array of Boolean to SELECT_CHECKBOX
+ */
+test('Succeed - save to some data items, other value formats', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト';
+    const listItemId = '9';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const columnNames = [
+        'ArrayOfNumber1',
+        'ArrayOfBoolean1',
+        '',
+        'ObjectWithLookupValue',
+        '',
+        'ArrayOfNumber2',
+        'ArrayOfBoolean2'
+    ];
+    const columnDefTypes = [
+        'STRING_TEXTAREA',
+        'STRING_TEXTAREA',
+        '',
+        'STRING_TEXTFIELD',
+        '',
+        'SELECT_CHECKBOX',
+        'SELECT_CHECKBOX'
+    ];
+    const columnValues = [
+        [1, 2, 3],
+        [true],
+        '',
+        {
+            LookupId: 101,
+            LookupValue: '商品 101'
+        },
+        '',
+        [4, 5],
+        [false, true]
+    ];
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(valueDefs[0])).toEqual('1\n2\n3');
+    expect(engine.findData(valueDefs[1])).toEqual('true');
+    expect(engine.findData(valueDefs[3])).toEqual('商品 101');
+    assertSelect(valueDefs[5], ['4', '5']);
+    assertSelect(valueDefs[6], ['false', 'true']);
+});
+
+/**
+ * 成功 - 列の値が空 (undefined のはずだが、null や空配列でもテスト)、保存先が選択型以外の場合
+ * 1. undefined to STRING_TEXTFIELD
+ * 2. null to STRING_TEXTFIELD
+ * 3. [] to STRING_TEXTFIELD
+ * 4. undefined to DECIMAL
+ * 5. null to DECIMAL
+ * 6. undefined to DATETIME
+ * 7. null to DATE
+ */
+test('Succeed - column value is blank, save to STRING, DECIMAL, DATETIME, or DATE', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment';
+    const listTitle = '共有リスト 2';
+    const listItemId = '10';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const columnNames = [
+        'Column1',
+        'Column2',
+        'Column3',
+        'Column4',
+        'Column5',
+        'Column6',
+        'Column7'
+    ];
+    const columnDefTypes = [
+        'STRING_TEXTFIELD',
+        'STRING_TEXTFIELD',
+        'STRING_TEXTFIELD',
+        'DECIMAL',
+        'DECIMAL',
+        'DATETIME',
+        'DATE'
+    ];
+    const columnValues = [
+        undefined,
+        null,
+        [],
+        undefined,
+        null,
+        undefined,
+        null
+    ];
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(valueDefs[0])).toEqual(null);
+    expect(engine.findData(valueDefs[1])).toEqual(null);
+    expect(engine.findData(valueDefs[2])).toEqual('');
+    expect(engine.findData(valueDefs[3])).toEqual(null);
+    expect(engine.findData(valueDefs[4])).toEqual(null);
+    expect(engine.findData(valueDefs[5])).toEqual(null);
+    expect(engine.findData(valueDefs[6])).toEqual(null);
+});
+
+/**
+ * 成功 - 列の値が空 (undefined のはずだが、null や空配列でもテスト)、保存先が選択型の場合
+ * 1. undefined to SELECT_SINGLE
+ * 2. null to SELECT_SINGLE
+ * 3. [] to SELECT_SINGLE
+ * 4. 設定なし
+ * 5. 設定なし
+ * 6. 設定なし
+ * 7. 設定なし
+ */
+test('Succeed - column value is blank, save to SELECT', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment';
+    const listTitle = '共有リスト 2';
+    const listItemId = '10';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const columnNames = [
+        'Column1',
+        'Column2',
+        'Column3',
+        '',
+        '',
+        '',
+        ''
+    ];
+    const columnDefTypes = [
+        'SELECT_SINGLE',
+        'SELECT_SINGLE',
+        'SELECT_SINGLE',
+        '',
+        '',
+        '',
+        ''
+    ];
+    const columnValues = [
+        undefined,
+        null,
+        [],
+        '',
+        '',
+        '',
+        ''
+    ];
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    expect(main()).toEqual(undefined);
+
+    assertSelect(valueDefs[0], null);
+    assertSelect(valueDefs[1], null);
+    assertSelect(valueDefs[2], []);
+});
+
+/**
+ * 列を一つだけ指定する場合の設定値を準備
+ * @param i  列のインデックス
+ * @param columnName
+ * @param columnDefType
+ * @param columnValue
+ */
+const prepareOneColumn = (i, columnName, columnDefType, columnValue) => {
+    const columnNames = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnNames[i] = columnName;
+    const columnDefTypes = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnDefTypes[i] = columnDefType;
+    const columnValues = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnValues[i] = columnValue;
+    return { columnNames, columnDefTypes, columnValues };
+}
+
+const SAMPLE_HYPERLINK_VALUE = {
+    Url: 'https://www.questetra.com',
+    Description: 'Questetra BPM Suite'
+};
+
+const SAMPLE_OBJECT_ARRAY = [ // 実データではありえないはずだが、念の為テスト
+    {
+        displayName: 'Test 1'
+    },
+    {
+        displayName: 'Test 2'
+    }
+];
+
+/**
+ * LookupValue プロパティを持たないオブジェクトを STRING に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Object to STRING', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(1, 'Hyperlink', 'STRING_TEXTFIELD', SAMPLE_HYPERLINK_VALUE);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Hyperlink' cannot be saved to Text type data item. Failed to convert an object to a string.");
+});
+
+/**
+ * LookupValue プロパティを持たないオブジェクトの配列を STRING に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Array of Object to STRING', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(2, 'Unexpected', 'STRING_TEXTAREA', SAMPLE_OBJECT_ARRAY);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Unexpected' cannot be saved to Text type data item. Failed to convert an object to a string.");
+});
+
+/**
+ * LookupValue プロパティを持たないオブジェクトを SELECT に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Object to SELECT', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(1, 'Hyperlink', 'SELECT_SINGLE', SAMPLE_HYPERLINK_VALUE);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Hyperlink' cannot be saved to Select type data item. Failed to convert an object to a string.");
+});
+
+/**
+ * LookupValue プロパティを持たないオブジェクトの配列を SELECT に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Array of Object to SELECT', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(2, 'Unexpected', 'SELECT_SINGLE', SAMPLE_OBJECT_ARRAY);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Unexpected' cannot be saved to Select type data item. Failed to convert an object to a string.");
+});
+
+/**
+ * boolean を DECIMAL に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Boolean to DECIMAL', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(3, 'YesOrNo', 'DECIMAL', true);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'YesOrNo' cannot be saved to Numeric type data item. The returned value is neither a string nor a number.");
+});
+
+/**
+ * 配列を DECIMAL に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Array to DECIMAL', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(4, 'Choice', 'DECIMAL', [1, 2, 3]);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Choice' cannot be saved to Numeric type data item. The returned value is neither a string nor a number.");
+});
+
+/**
+ * その他のオブジェクトを DECIMAL に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Object to DECIMAL', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(5, 'Hyperlink', 'DECIMAL', SAMPLE_HYPERLINK_VALUE);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Hyperlink' cannot be saved to Numeric type data item. The returned value is neither a string nor a number.");
+});
+
+/**
+ * BigDecimal にパースできない文字列を DECIMAL に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - unexpected String to DECIMAL', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(6, 'Text', 'DECIMAL', '数値でない文字列');
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Text' cannot be saved to Numeric type data item. Failed to convert to BigDecimal.");
+});
+
+/**
+ * boolean（string 以外）を DATETIME に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Boolean to DATETIME', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(3, 'YesOrNo', 'DATETIME', true);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'YesOrNo' cannot be saved to Datetime type data item. The returned value is not a string.");
+});
+
+/**
+ * AdabbleTimestamp にパースできない文字列を DATETIME に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - unexpected String to DATETIME', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(1, 'Text2', 'DATETIME', '日時でない文字列');
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Text2' cannot be saved to Datetime type data item. The returned value is not a datetime-format string.");
+});
+
+/**
+ * number（string 以外）を DATE に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - Number to DATE', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(4, 'Number', 'DATE', 3);
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Number' cannot be saved to Date type data item. The returned value is not a string.");
+});
+
+/**
+ * AdabbleTimestamp にパースできない文字列を DATE に保存しようとした場合、エラー
+ */
+test('Column cannot be saved to data item - unexpected String to DATE', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    const { columnNames, columnDefTypes, columnValues } = prepareOneColumn(2, 'Text3', 'DATE', '日時でない文字列');
+    const valueDefs = prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnDefTypes);
+
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    prepareRequestHandler(siteUrl, siteId, listTitle, listItemId, columnNames, columnValues);
+
+    assertError("Column 'Text3' cannot be saved to Date type data item. The returned value is not a datetime-format string.");
+});
+
 
 ]]></test>
 
