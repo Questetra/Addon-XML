@@ -5,7 +5,7 @@
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
     <!--
-    <last-modified>2024-02-02</last-modified>
+    <last-modified>2024-02-09</last-modified>
     -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
@@ -49,8 +49,8 @@
         </config>
         <config name="conf_Images1" required="false" form-type="SELECT"
                 select-data-type="FILE">
-            <label>I1: Images to attach to user message</label>
-            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
+            <label>I1: Images / videos to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像／動画</label>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTAREA">
@@ -60,6 +60,9 @@
     </configs>
 
     <script><![CDATA[
+
+const MAX_IMAGE_SIZE = 20971520; // Gemini の制限。1 ファイルにつき 20 MB まで
+
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
@@ -113,6 +116,13 @@ const retrieveMaxTokens = () => {
     return parseInt(maxTokens, 10);
 };
 
+/**
+ * config から画像・動画を読み出す
+ * 以下の場合はエラー
+ * - ファイルサイズが大きすぎる場合
+ * - 画像でも動画でもないファイルが添付されている場合
+ * @returns {Array<Object>} インライン画像・動画オブジェクトの配列
+ */
 const retrieveImages = () => {
     const imagesDef = configs.getObject('conf_Images1');
     if (imagesDef === null) {
@@ -124,7 +134,13 @@ const retrieveImages = () => {
     }
     const inlineImages = [];
     images.forEach(image => {
-        // TODO ファイルサイズ、ファイルタイプのチェック
+        if (image.getLength() > MAX_IMAGE_SIZE) {
+            throw new Error(`Attached file "${image.getName()}" is too large. Each file must be less than ${MAX_IMAGE_SIZE} bytes.`);
+        }
+        const contentType = image.getContentType();
+        if (!contentType.startsWith('image/') && !contentType.startsWith('video/')){
+            throw new Error(`Attached file "${image.getName()}" is neither an image nor a video.`);
+        }
         const inlineImage = {
             mimeType: image.getContentType(),
             data: base64.encodeToString(fileRepository.readFile(image))
@@ -200,6 +216,7 @@ const getAccessToken = (auth) => {
  * @param model
  * @param maxTokens
  * @param message
+ * @param inlineImages
  * @returns {String} answer
  */
 const invokeModel = (auth, region, projectId, model, maxTokens, message, inlineImages) => {
