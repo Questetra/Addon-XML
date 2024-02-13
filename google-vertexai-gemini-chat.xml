@@ -4,9 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <!--
-    <last-modified>2024-02-09</last-modified>
-    -->
+    <last-modified>2024-02-13</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -121,6 +119,7 @@ const retrieveMaxTokens = () => {
 /**
  * config から画像・動画を読み出す
  * 以下の場合はエラー
+ * - 添付ファイルの総数が多すぎる場合
  * - ファイルサイズが大きすぎる場合
  * - 画像でも動画でもないファイルが添付されている場合
  * @returns {Array<Object>} インライン画像・動画オブジェクトの配列
@@ -135,7 +134,7 @@ const retrieveImages = () => {
         return [];
     }
     if (images.size() > MAX_IMAGE_NUM) {
-        throw new Error(`The number of attached files exceeds the limit. The maximum number of files that can be attached to a single prompt is ${MAX_IMAGE_NUM}.`);
+        throw new Error(`Too many attached files. The maximum number is ${MAX_IMAGE_NUM}.`);
     }
     const inlineImages = [];
     images.forEach(image => {
@@ -399,11 +398,15 @@ const prepareConfigs = (privateKeyId, privateKey, serviceAccount, region, projec
  * @param errorMsg
  */
 const assertError = (errorMsg) => {
+    let failed = false;
     try {
         main();
-        fail();
     } catch (e) {
+        failed = true;
         expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -519,6 +522,104 @@ test('Service Account is empty', () => {
     assertError('Service Account must be set to Custom Secret 1.');
 });
 
+/**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 画像・動画を添付
+ * @param {Array<Qfile>} images
+ */
+const attachImages = (images) => {
+    const imagesDef = engine.createDataDefinition('添付画像／動画', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, images);
+    configs.putObject('conf_Images1', imagesDef);
+};
+
+/**
+ * 添付ファイルの数が多すぎる
+ */
+test('Too many attached files', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@example.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'Please describe each image attached.';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    // 添付ファイルを指定
+    const images = [];
+    for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
+        images.push(createQfile(`画像${i}.png`, 'image/png', 100));
+    }
+    attachImages(images);
+
+    assertError(`Too many attached files. The maximum number is ${MAX_IMAGE_NUM}.`);
+});
+
+/**
+ * 添付ファイルのサイズが大きすぎる
+ */
+test('Attached file is too large', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@example.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'Please describe each image attached.';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    // 添付ファイルを指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE + 1);
+    attachImages([image1, image2]);
+
+    assertError(`Attached file "画像2.jpg" is too large. Each file must be less than ${MAX_IMAGE_SIZE} bytes.`);
+});
+
+/**
+ * 添付ファイルに画像でも動画でもないファイルを含む
+ */
+test('Attached file is neither an image nor a video', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@example.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'Please describe each image attached.';
+    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+
+    // 添付ファイルを指定
+    const video = createQfile('動画', 'video/mp4', 200);
+    const text = createQfile('テキストファイル', 'text/plain', 100);
+    attachImages([video, text]);
+
+    assertError('Attached file "テキストファイル" is neither an image nor a video.');
+});
 
 /**
  * API リクエストのテスト
@@ -566,6 +667,7 @@ const assertTokenRequest = ({
  * @param {String} model
  * @param {Number} maxTokens
  * @param {String} message
+ * @param {Array<Qfile>} images
  */
 const assertRequest = ({
                            url,
@@ -573,7 +675,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, token, region, projectId, model, maxTokens, message) => {
+                       }, token, region, projectId, model, maxTokens, message, images = []) => {
     expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -585,6 +687,10 @@ const assertRequest = ({
     }else{
         expect(bodyObj.generation_config.maxOutputTokens).toEqual(undefined);
     }
+    images.forEach((image, i) => {
+        expect(bodyObj.contents.parts[i + 1].inlineData.mimeType).toEqual(image.getContentType());
+        expect(bodyObj.contents.parts[i + 1].inlineData.data).toEqual(base64.encodeToString(fileRepository.readFile(image)));
+    });
 };
 
 /**
@@ -644,8 +750,9 @@ test('Fail to request', () => {
  * 成功
  * gemini-pro
  * 最大トークン数を指定する
+ * 添付ファイルなし（データ項目の指定なし）
  */
-test('Success - with default max tokens', () => {
+test('Success - with max tokens, no attached files', () => {
     const privateKeyId = 'key-67890';
     const region = 'asia-northeast1';
     const projectId = 'project-12345';
@@ -675,17 +782,19 @@ test('Success - with default max tokens', () => {
 /**
  * 成功
  * gemini-pro-vision
- * 最大トークン数を指定しない
+ * 最大トークン数を指定
+ * 添付ファイルなし（データ項目は指定しているが、添付ファイルなし）
  */
-test('Success - with max tokens', () => {
+test('Success - withmax tokens, empty attached files', () => {
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
     const serviceAccount = 'service@questetra.com';
     const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const maxTokens = '1024';
     const message = 'こんにちは。';
     const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    attachImages([]);
 
     const token = 'token-67890';
     let reqCount = 0;
@@ -696,12 +805,90 @@ test('Success - with max tokens', () => {
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, -1, message);
+        assertRequest(request, token, region, projectId, model, 1024, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse('こんにちは。元気ですか？'));
     });
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('こんにちは。元気ですか？');
 });
+
+/**
+ * 成功
+ * gemini-pro-vision
+ * 最大トークン数を指定しない
+ * 画像ファイルを最大個数添付
+ */
+test('Success - with default tokens, with max number of attached images', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'Please describe each image attached.';
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    
+    // 添付ファイルを指定
+    const images = [];
+    for (let i = 0; i < MAX_IMAGE_NUM; i++) {
+        images.push(createQfile(`画像${i}.png`, 'image/png', 100));
+    }
+    attachImages(images);
+
+    const token = 'token-98765';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, -1, message, images);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('The 1st image shows a cat. The 2nd image shows a dog.'));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('The 1st image shows a cat. The 2nd image shows a dog.');
+});
+
+/**
+ * 成功
+ * gemini-pro-vision
+ * 最大トークン数を指定しない
+ * 動画ファイルを 1 つ添付
+ */
+test('Success - with default tokens, with an attached video', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-pro-vision';
+    const maxTokens = '';
+    const message = 'Please describe the video attached.';
+    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    
+    // 添付ファイルを指定
+    const video = createQfile('動画.mp4', 'video/mp4', MAX_IMAGE_SIZE);
+    attachImages([video]);
+
+    const token = 'token-98765';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, -1, message, [video]);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('The video shows a sleeping cat.'));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('The video shows a sleeping cat.');
+});
+
 ]]></test>
 </service-task-definition>
