@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2023-02-16</last-modified>
+<last-modified>2024-02-13</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Google Sheets: Append New Row</label>
 <label locale="ja">Google スプレッドシート: 行追加</label>
 <summary>This item adds a row at the last of the sheet, and fills each cell of that row with data.</summary>
@@ -11,7 +12,7 @@
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googlesheets-appendcells/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -78,10 +79,9 @@
 // - Consumer Key: (Get by Google Developers Console)
 // - Consumer Secret: (Get by Google Developers Console)
 
-main();
 function main(){
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get( "conf_OAuth2" );
+  const oauth2 = configs.getObject("conf_OAuth2");
   const spreadsheetId = retrieveStringData( "conf_DataIdW", "Target Spreadsheet ID" );
   const sheetName = retrieveStringData( "conf_DataIdX", "Target Sheet Title" );
   const rowNumDef = configs.getObject( "conf_RowNum" );
@@ -174,7 +174,7 @@ function buildRowObj( dataArray ){
 
 /**
  * GET リクエストを送信し、シート ID (GID) を取得する。
- * @param {String} oauth2 OAuth2 設定名
+ * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {String} spreadsheetId スプレッドシート ID
  * @param {String} sheetName シート名
  * @return {Number} sheetId シート ID (GID)
@@ -222,7 +222,7 @@ function buildRequestObj(sheetId, row){
 
 /**
  * 行追加の POST リクエストを送信する。
- * @param {String} oauth2 OAuth2 設定名
+ * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {String} spreadsheetId スプレッドシート ID
  * @param {Number} sheetId シート ID (GID)
  * @param {Object} row 行オブジェクト
@@ -243,13 +243,14 @@ function appendRow(oauth2, spreadsheetId, sheetId, row){
 
 /**
  * GET リクエストを送信し、データが入力されている最終行の行番号を返す。
- * @param {String} oauth2 OAuth2 設定名
+ * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {String} spreadsheetId スプレッドシート ID
  * @param {String} sheetName シート名
  * @return {String} データが入力されている最終行の行番号
  */
 function getLastRowNum(oauth2, spreadsheetId, sheetName){
-  const apiUri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(sheetName)}`;
+  const range = `'${sheetName}'`; // シート名がセル指定や名前付き範囲として誤って解釈されないよう、シングルクォートで囲む
+  const apiUri = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
   const response = httpClient.begin()
     .authSetting( oauth2 )
     .queryParam( "majorDimension", "ROWS" )
@@ -298,7 +299,17 @@ AEwJzTC2ALrNAAAAAElFTkSuQmCC
  * @return appendedRowNumDef
  */
 const prepareConfigs = (spreadSheetId, sheetTitle, rowData) => {
-  configs.put('conf_OAuth2', 'Google');
+  const auth = httpClient.createAuthSettingOAuth2(
+    'Google',
+    'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+    'https://accounts.google.com/o/oauth2/token',
+    'spreadsheets',
+    'consumer_key',
+    'consumer_secret',
+    'access_token'
+  );
+
+  configs.putObject('conf_OAuth2', auth);
 
   // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
   const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
@@ -326,13 +337,30 @@ const prepareConfigs = (spreadSheetId, sheetTitle, rowData) => {
 const SAMPLE_ROW = ['A列の値', 'B列の値', 'C列の値', 'D列の値', 'E列の値', 'F列の値', 'G列の値', 'H列の値', 'I列の値', 'J列の値'];
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+  let failed = false;
+  try {
+    main();
+  } catch (e) {
+    failed = true;
+  }
+  if (!failed) {
+    fail();
+  }
+};
+
+/**
  * スプレッドシートの ID をデータ項目で指定し、値が空でエラーになる場合
  */
 test('Target Spreadsheet ID is empty', () => {
-  prepareConfigs(null, 'シート1', SAMPLE_ROW);
+  prepareConfigs(null, 'DB2', SAMPLE_ROW);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('Target Spreadsheet ID is empty.');
+  assertError(main, 'Target Spreadsheet ID is empty.');
 });
 
 /**
@@ -341,7 +369,7 @@ test('Target Spreadsheet ID is empty', () => {
 test('Target Sheet Title is empty', () => {
   prepareConfigs('abc123', null, SAMPLE_ROW);
 
-  expect(execute).toThrow('Target Sheet Title is empty.');
+  assertError(main, 'Target Sheet Title is empty.');
 });
 
 /**
@@ -349,10 +377,10 @@ test('Target Sheet Title is empty', () => {
  */
 test('No Data to add', () => {
   const rowData = ['', '', '', '', '', '', '', '', '', ''];
-  prepareConfigs('abc123', 'シート1', rowData);
+  prepareConfigs('abc123', 'DB2', rowData);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('No Data to add is set.');
+  assertError(main, 'No Data to add is set.');
 });
 
 /**
@@ -363,10 +391,10 @@ test('Over 50,000 characters', () => {
   // B 列の値を 50,001 文字に
   rowData[1] = 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUV'
     .repeat(500) + 'A';
-  prepareConfigs('abc123', 'シート1', rowData);
+  prepareConfigs('abc123', 'DB2', rowData);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow("Can't set text over 50,000 characters.");
+  assertError(main, "Can't set text over 50,000 characters.");
 });
 
 const SAMPLE_GET_SHEET_ID = {
@@ -378,7 +406,7 @@ const SAMPLE_GET_SHEET_ID = {
     {
       "properties": {
         "sheetId": 0,
-        "title": "シート1",
+        "title": "DB2",
         "index": 0,
         "sheetType": "GRID",
         "gridProperties": {
@@ -461,7 +489,7 @@ const prepareGetLastRowNumResponse = (sheetTitle, rowData) => {
     "majorDimension": "ROWS",
     "values": []
   };
-  if (sheetTitle === 'シート1') { // シート1 には既存のデータを3行準備
+  if (sheetTitle === 'DB2') { // DB2 には既存のデータを3行準備
     for (let i = 0; i < 3; i++) {
       const existingRowData = [`A${i+1}の値`, `B${i+1}の値`, `C${i+1}の値`];
       responseObj.values.push(existingRowData);
@@ -480,21 +508,22 @@ const prepareGetLastRowNumResponse = (sheetTitle, rowData) => {
  * @param sheetTitle
  */
 const assertGetLastRowNumRequest = ({url, method}, spreadSheetId, sheetTitle) => {
+  const range = `'${sheetTitle}'`; // シート名がセル指定や名前付き範囲として誤って解釈されないよう、シングルクォートで囲む
   expect(url).toEqual(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
     spreadSheetId
     )}/values/${encodeURIComponent(
-    sheetTitle
+    range
     )}?majorDimension=ROWS`);
   expect(method).toEqual('GET');
 };
 
 /**
- * 行追加成功の場合 - 先頭にあるシート
+ * 行追加成功の場合 - 先頭にあるシート - セル指定や名前付き範囲として扱われるようなシート名
  */
 test('Success - 1st sheet', () => {
   const rowData = ['', 'B列の値', '', '', 'E列の値', '', '', '', '', ''];
   const trimmedRowData = ['', 'B列の値', '', '', 'E列の値'];
-  const appendedRowNumDef = prepareConfigs('abc123', 'シート1', rowData);
+  const appendedRowNumDef = prepareConfigs('abc123', 'DB2', rowData);
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -509,13 +538,13 @@ test('Success - 1st sheet', () => {
       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
     }
     // 最終行の行番号取得のリクエスト
-    assertGetLastRowNumRequest(request, 'abc123', 'シート1');
-    const responseObj = prepareGetLastRowNumResponse('シート1', trimmedRowData);
+    assertGetLastRowNumRequest(request, 'abc123', 'DB2');
+    const responseObj = prepareGetLastRowNumResponse('DB2', trimmedRowData);
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 文字型データ項目の値をチェック
   expect(engine.findData(appendedRowNumDef)).toEqual('4');
@@ -547,7 +576,7 @@ test('Success - 2nd sheet', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 文字型データ項目の値をチェック
   expect(engine.findData(appendedRowNumDef)).toEqual('1');
@@ -558,9 +587,19 @@ test('Success - 2nd sheet', () => {
  * スプレッドシートの ID とシートのタイトルは固定値で指定
  */
 test('Success - Appended Row Number not saved', () => {
-  configs.put('conf_OAuth2', 'Google');
+  const auth = httpClient.createAuthSettingOAuth2(
+    'Google',
+    'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+    'https://accounts.google.com/o/oauth2/token',
+    'spreadsheets',
+    'consumer_key',
+    'consumer_secret',
+    'access_token'
+  );
+
+  configs.putObject('conf_OAuth2', auth);
   configs.put('conf_DataIdW', 'abc123');
-  configs.put('conf_DataIdX', 'シート1');
+  configs.put('conf_DataIdX', 'DB2');
   configs.put('conf_DataIdA', 'A列の\n値');
   const trimmedRowData = ['A列の\n値'];
 
@@ -579,7 +618,7 @@ test('Success - Appended Row Number not saved', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -587,14 +626,14 @@ test('Success - Appended Row Number not saved', () => {
  */
 test('Fail in 1st GET Request', () => {
   const rowData = ['A列の値', '', '', '', '', '', '', '', '', ''];
-  prepareConfigs('abc123', 'シート1', rowData);
+  prepareConfigs('abc123', 'DB2', rowData);
 
   httpClient.setRequestHandler((request) => {
     assertGetSheetIdRequest(request, 'abc123');
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to get sheet information. status: 400');
+  assertError(main, 'Failed to get sheet information. status: 400');
 });
 
 /**
@@ -609,7 +648,7 @@ test('Sheet does not exist', () => {
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET_SHEET_ID))
   });
 
-  expect(execute).toThrow('Sheet 存在しないシート does not exist');
+  assertError(main, 'Sheet 存在しないシート does not exist');
 });
 
 /**
@@ -617,7 +656,7 @@ test('Sheet does not exist', () => {
  */
 test('Fail in POST Request', () => {
   const rowData = ['A列の値', '', '', '', '', '', '', '', '', ''];
-  prepareConfigs('abc123', 'シート1', rowData);
+  prepareConfigs('abc123', 'DB2', rowData);
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -631,7 +670,7 @@ test('Fail in POST Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to append data. status: 400');
+  assertError(main, 'Failed to append data. status: 400');
 });
 
 /**
@@ -639,7 +678,7 @@ test('Fail in POST Request', () => {
  */
 test('Fail in 2nd GET Request', () => {
   const rowData = ['A列の値', '', '', '', '', '', '', '', '', ''];
-  prepareConfigs('abc123', 'シート1', rowData);
+  prepareConfigs('abc123', 'DB2', rowData);
 
   let reqCount = 0;
   httpClient.setRequestHandler((request) => {
@@ -654,11 +693,11 @@ test('Fail in 2nd GET Request', () => {
       return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_POST));
     }
     // 最終行の行番号取得のリクエスト
-    assertGetLastRowNumRequest(request, 'abc123', 'シート1');
+    assertGetLastRowNumRequest(request, 'abc123', 'DB2');
     return httpClient.createHttpResponse(400, 'application/json', '{}');
   });
 
-  expect(execute).toThrow('Failed to get rows in the sheet. status: 400');
+  assertError(main, 'Failed to get rows in the sheet. status: 400');
 });
 
 ]]></test>
