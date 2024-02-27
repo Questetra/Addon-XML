@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <last-modified>2024-02-27</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>WordPress.com: Upload Media</label>
+    <label locale="ja">WordPress.com: メディアアップロード</label>
+    <summary>This item uploads media files to WordPress.com.</summary>
+    <summary locale="ja">この工程は、WordPress.com 上にメディアファイルをアップロードします。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-wordpress-media-upload/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-wordpress-media-upload/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://public-api.wordpress.com/posts"
+        >
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_Domain" required="true" form-type="TEXTFIELD">
+            <label>C2: Domain of the WordPress.com site</label>
+            <label locale="ja">C2: WordPress.com サイトのドメイン</label>
+        </config>
+        <config name="conf_Files" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: Data item whose attached files will be uploaded</label>
+            <label locale="ja">C3: アップロードするファイルが保存されているデータ項目</label>
+        </config>
+        <config name="conf_Ids" form-type="SELECT" select-data-type="STRING">
+            <label>C4: Data item to save Media IDs</label>
+            <label locale="ja">C4: メディア ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_Urls" form-type="SELECT" select-data-type="STRING">
+            <label>C5: Data item to save Media URLs</label>
+            <label locale="ja">C5: メディア URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://public-api.wordpress.com/oauth2/authorize
+// - Token Endpoint URL: https://public-api.wordpress.com/oauth2/token
+// - Scope: media
+// - Client ID: (Get by https://developer.wordpress.com/apps/)
+// - Client Secret: (Get by https://developer.wordpress.com/apps/)
+
+const API_VERSION = 'v1.1';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const domain = configs.get('conf_Domain');
+    const files = engine.findData(configs.getObject('conf_Files'));
+    const idDef = configs.getObject('conf_Ids');
+    const urlDef = configs.getObject('conf_Urls');
+
+    ////// == 演算 / Calculating ==
+    if (files === null) {
+        saveData(idDef, []);
+        saveData(urlDef, []);
+        return;
+    }
+    checkFiles(files, idDef, urlDef);
+    const {ids, urls} = uploadMedia(auth, domain, files);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData(idDef, ids);
+    saveData(urlDef, urls);
+};
+
+/**
+ * アップロードしようとするファイルの数が適切かどうかチェックする
+ * @param {Array<QfileView>} files  アップロードしようとするファイルの配列
+ * @param {ProcessDataDefinitionView} idDataDef  ID を保存するデータ項目の ProcessDataDefinitionView
+ * @param {ProcessDataDefinitionView} urlDataDef  URL を保存するデータ項目の ProcessDataDefinitionView
+ */
+function checkFiles(files, idDataDef, urlDataDef) {
+    const fileNum = files.size();
+    checkFileNum(idDataDef, 'Media IDs', fileNum);
+    checkFileNum(urlDataDef, 'Media URLs', fileNum);
+}
+
+/**
+ * アップロードするファイルが複数で パス・URL 出力先のデータ項目が単一行ならエラーにする
+ * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
+ * @param {String} label  エラー出力用ラベル
+ * @param {Number} fileNum  アップロードしようとするファイルの個数
+ */
+function checkFileNum(dataDef, label, fileNum) {
+    if (dataDef !== null && dataDef.matchDataType('STRING_TEXTFIELD') && fileNum > 1) {
+        throw new Error(`Multiple files are set while the data item to save ${label} is Single-line.`);
+    }
+}
+
+/**
+ * メディアをアップロードする
+ * @param {AuthSettingWrapper} auth
+ * @param {String} domain
+ * @param {Array<QfileView>} files
+ * @return {Object} result
+ * @return {Array<String>} result.ids  アップロードしたメディアの ID の配列
+ * @return {Array<String>} result.urls  アップロードしたメディアの URL の配列
+ */
+const uploadMedia = (auth, domain, files) => {
+    const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/media/new`;
+    let request = httpClient.begin().authSetting(auth)
+        .queryParam('fields', 'ID,URL');
+    files.forEach(file => {
+        request = request.multipart('media[]', file);
+    });
+    const response = request.post(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to upload media. status: ${status}`);
+    }
+    const {errors, media} = JSON.parse(responseStr);
+    if (errors !== undefined) {
+        engine.log(JSON.stringify(errors));
+        throw new Error('Some files failed to be uploaded.');
+    }
+    return {
+        ids: media.map(media => media.ID),
+        urls: media.map(media => media.URL)
+    };
+};
+
+/**
+ * データ項目への保存
+ * @param {ProcessDataDefinitionView} dataDef
+ * @param {Array<String>} dataList
+ */
+const saveData = (dataDef, dataList) => {
+    if (dataDef === null) {
+        return;
+    }
+    engine.setData(dataDef, dataList.join('\n'));
+};
+
+    ]]></script>
+
+    <icon>
+        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
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ * @param files
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (domain, files) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+
+    setDataItem('Files', 1, 'FILE', files);
+    const idDef = setDataItem('Ids', 2, 'STRING_TEXTAREA', '事前文字列');
+    const urlDef = setDataItem('Urls', 3, 'STRING_TEXTAREA', '事前文字列');
+
+    return { idDef, urlDef };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * ファイルが一つも添付されていない場合、データ項目に空文字を保存して正常終了
+ */
+test('Succeed - no files to upload', () => {
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', null);
+
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('');
+    expect(engine.findData(urlDef)).toEqual('');
+});
+
+/**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 複数のファイルが指定されているが、メディア ID を保存するデータ項目が単一行の場合
+ */
+test('Multiple files are set while the data item to save Media IDs is Single-line', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    setDataItem('Ids', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    assertError('Multiple files are set while the data item to save Media IDs is Single-line.');
+});
+
+/**
+ * 複数のファイルが指定されているが、メディア URL を保存するデータ項目が単一行の場合
+ */
+test('Multiple files are set while the data item to save Media URLs is Single-line', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    setDataItem('Urls', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    assertError('Multiple files are set while the data item to save Media URLs is Single-line.');
+});
+
+/**
+ * メディアアップロードの POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param domain
+ */
+const assertRequest = ({ url, method, headers, contentType}, domain) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/media/new`
+        + `?fields=${encodeURIComponent('ID,URL')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).startsWith('multipart/form-data');
+    // body 部のテストは省略
+};
+
+/**
+ * メディアアップロードの POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to upload media. status: 400');
+});
+
+/**
+ * POST リクエストの 200 レスポンスを準備
+ * @param ids アップロードに成功したメディアの ID の配列
+ * @param urls アップロードに成功したメディアの URL の配列
+ * @param errors エラーオブジェクトの配列
+ * @return HttpResponse
+ */
+const prepare200Response = (ids, urls, errors = undefined) => {
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+        errors: errors,
+        media: ids.map((id, i) => ({ ID: id, URL: urls[i] }))
+    }));
+};
+
+/**
+ * メディアアップロードの POST リクエストには成功するが、
+ * レスポンスにエラーを含む場合
+ */
+test('Some files failed to be uploaded', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.txt', 'text/plain', 200), // サポート外のファイル形式
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+
+    const ids = [1, 2];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    const errors = [
+        {
+            file: 'file2.txt',
+            error: 'upload_error',
+            message: 'Sorry, you are not allowed to upload this file type.',
+        }
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls, errors);
+    });
+    assertError('Some files failed to be uploaded.');
+});
+
+/**
+ * 成功 - すべての項目を指定
+ */
+test('Succeed - with all configurations', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.gif', 'image/gif', 200),
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', files);
+
+    const ids = [1, 2, 3];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file2.gif',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual(ids.join('\n'));
+    expect(engine.findData(urlDef)).toEqual(urls.join('\n'));
+});
+
+/**
+ * 成功 - アップロードファイルが 1 つで、保存先データ項目が単一行
+ */
+test('Succeed - only one file, save to STRING_TEXTFIELD', () => {
+    const files = [
+        createQfile('test.png', 'image/png', 100)
+    ];
+    prepareConfigs('test2.example.com', files);
+    const idDef = setDataItem('Ids', 4, 'STRING_TEXTFIELD', '事前文字列');
+    const urlDef = setDataItem('Urls', 5, 'STRING_TEXTFIELD', '事前文字列');
+
+    const ids = [100];
+    const urls = [
+        'https://test2.example.com/2024/03/test.png'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('100');
+    expect(engine.findData(urlDef)).toEqual('https://test2.example.com/2024/03/test.png');
+});
+
+/**
+ * 成功 - 保存先データ項目の指定なし
+ */
+test('Succeed - no data items to save the result', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.gif', 'image/gif', 200),
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', files);
+    configs.put('conf_Ids', '');
+    configs.put('conf_Urls', '');
+
+    const ids = [1, 2, 3];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file2.gif',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+    ]]></test>
+
+</service-task-definition>
