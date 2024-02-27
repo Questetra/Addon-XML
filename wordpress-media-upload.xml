@@ -2,9 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <!--
-    <last-modified>2024-02-26</last-modified>
-    -->
+    <last-modified>2024-02-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Upload Media</label>
     <label locale="ja">WordPress.com: メディアアップロード</label>
@@ -32,8 +30,8 @@
             <label locale="ja">C4: メディア ID を保存するデータ項目</label>
         </config>
         <config name="conf_Urls" form-type="SELECT" select-data-type="STRING">
-            <label>C5: Data item to save URLs of the media</label>
-            <label locale="ja">C5: メディアの URL を保存するデータ項目</label>
+            <label>C5: Data item to save Media URLs</label>
+            <label locale="ja">C5: メディア URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -77,19 +75,19 @@ const main = () => {
  */
 function checkFiles(files, idDataDef, urlDataDef) {
     const fileNum = files.size();
-    checkFileNum(idDataDef, fileNum);
-    checkFileNum(urlDataDef, fileNum);
-    // TODO ファイル名の重複などもチェックすべきかどうか
+    checkFileNum(idDataDef, 'Media IDs', fileNum);
+    checkFileNum(urlDataDef, 'Media URLs', fileNum);
 }
 
 /**
  * アップロードするファイルが複数で パス・URL 出力先のデータ項目が単一行ならエラーにする
  * @param {ProcessDataDefinitionView} dataDef  データ項目の ProcessDataDefinitionView
+ * @param {String} label  エラー出力用ラベル
  * @param {Number} fileNum  アップロードしようとするファイルの個数
  */
-function checkFileNum(dataDef, fileNum) {
+function checkFileNum(dataDef, label, fileNum) {
     if (dataDef !== null && dataDef.matchDataType('STRING_TEXTFIELD') && fileNum > 1) {
-        throw new Error('Multiple files are set while the data item to save the result is Single-line.');
+        throw new Error(`Multiple files are set while the data item to save ${label} is Single-line.`);
     }
 }
 
@@ -116,15 +114,14 @@ const uploadMedia = (auth, domain, files) => {
         engine.log(responseStr);
         throw new Error(`Failed to upload media. status: ${status}`);
     }
-    const jsonRes = JSON.parse(responseStr);
-    const errors = jsonRes.errors;
+    const {errors, media} = JSON.parse(responseStr);
     if (errors !== undefined) {
         engine.log(JSON.stringify(errors));
-        throw new Error('Failed to upload media.');
+        throw new Error('Some files failed to be uploaded.');
     }
     return {
-        ids: jsonRes.media.map(media => media.ID),
-        urls: jsonRes.media.map(media => media.URL)
+        ids: media.map(media => media.ID),
+        urls: media.map(media => media.URL)
     };
 };
 
@@ -177,6 +174,294 @@ const saveData = (dataDef, dataList) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param domain
+ * @param files
+ * @return returnObj
+ * @return returnObj.idDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (domain, files) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'WordPress.com',
+        'https://public-api.wordpress.com/oauth2/authorize',
+        'https://public-api.wordpress.com/oauth2/token',
+        'posts',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_Auth', oauth2);
+    configs.put('conf_Domain', domain);
+
+    setDataItem('Files', 1, 'FILE', files);
+    const idDef = setDataItem('Ids', 2, 'STRING_TEXTAREA', '事前文字列');
+    const urlDef = setDataItem('Urls', 3, 'STRING_TEXTAREA', '事前文字列');
+
+    return { idDef, urlDef };
+};
+
+/**
+  * データ項目を作成し、config にセットする
+  * @param name config 名の conf_ 以降
+  * @param index
+  * @param type
+  * @param value
+  * @param dataDef
+  */
+const setDataItem = (name, index, type, value) => {
+    const dataDef = engine.createDataDefinition(name, index, `q_${name}`, type);
+    engine.setData(dataDef, value);
+    configs.putObject(`conf_${name}`, dataDef);
+    return dataDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * ファイルが一つも添付されていない場合、データ項目に空文字を保存して正常終了
+ */
+test('Succeed - no files to upload', () => {
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', null);
+
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('');
+    expect(engine.findData(urlDef)).toEqual('');
+});
+
+/**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 複数のファイルが指定されているが、メディア ID を保存するデータ項目が単一行の場合
+ */
+test('Multiple files are set while the data item to save Media IDs is Single-line', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    setDataItem('Ids', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    assertError('Multiple files are set while the data item to save Media IDs is Single-line.');
+});
+
+/**
+ * 複数のファイルが指定されているが、メディア URL を保存するデータ項目が単一行の場合
+ */
+test('Multiple files are set while the data item to save Media URLs is Single-line', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    setDataItem('Urls', 4, 'STRING_TEXTFIELD', '事前文字列');
+
+    assertError('Multiple files are set while the data item to save Media URLs is Single-line.');
+});
+
+/**
+ * メディアアップロードの POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param domain
+ */
+const assertRequest = ({ url, method, headers, contentType}, domain) => {
+    const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/media/new`
+        + `?fields=${encodeURIComponent('ID,URL')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer access_token');
+    expect(contentType).startsWith('multipart/form-data');
+    // body 部のテストは省略
+};
+
+/**
+ * メディアアップロードの POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const files = [
+        createQfile('file1.txt', 'text/plain', 100),
+        createQfile('file2.txt', 'text/plain', 200),
+        createQfile('file3.txt', 'text/plain', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to upload media. status: 400');
+});
+
+/**
+ * POST リクエストの 200 レスポンスを準備
+ * @param ids アップロードに成功したメディアの ID の配列
+ * @param urls アップロードに成功したメディアの URL の配列
+ * @param errors エラーオブジェクトの配列
+ * @return HttpResponse
+ */
+const prepare200Response = (ids, urls, errors = undefined) => {
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+        errors: errors,
+        media: ids.map((id, i) => ({ ID: id, URL: urls[i] }))
+    }));
+};
+
+/**
+ * メディアアップロードの POST リクエストには成功するが、
+ * レスポンスにエラーを含む場合
+ */
+test('Some files failed to be uploaded', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.txt', 'text/plain', 200), // サポート外のファイル形式
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    prepareConfigs('test1.example.com', files);
+
+    const ids = [1, 2];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    const errors = [
+        {
+            file: 'file2.txt',
+            error: 'upload_error',
+            message: 'Sorry, you are not allowed to upload this file type.',
+        }
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls, errors);
+    });
+    assertError('Some files failed to be uploaded.');
+});
+
+/**
+ * 成功 - すべての項目を指定
+ */
+test('Succeed - with all configurations', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.gif', 'image/gif', 200),
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', files);
+
+    const ids = [1, 2, 3];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file2.gif',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual(ids.join('\n'));
+    expect(engine.findData(urlDef)).toEqual(urls.join('\n'));
+});
+
+/**
+ * 成功 - アップロードファイルが 1 つで、保存先データ項目が単一行
+ */
+test('Succeed - only one file, save to STRING_TEXTFIELD', () => {
+    const files = [
+        createQfile('test.png', 'image/png', 100)
+    ];
+    prepareConfigs('test2.example.com', files);
+    const idDef = setDataItem('Ids', 4, 'STRING_TEXTFIELD', '事前文字列');
+    const urlDef = setDataItem('Urls', 5, 'STRING_TEXTFIELD', '事前文字列');
+
+    const ids = [100];
+    const urls = [
+        'https://test2.example.com/2024/03/test.png'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test2.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('100');
+    expect(engine.findData(urlDef)).toEqual('https://test2.example.com/2024/03/test.png');
+});
+
+/**
+ * 成功 - 保存先データ項目の指定なし
+ */
+test('Succeed - no data items to save the result', () => {
+    const files = [
+        createQfile('file1.png', 'image/png', 100),
+        createQfile('file2.gif', 'image/gif', 200),
+        createQfile('file3.jpg', 'image/jpg', 300)
+    ];
+    const {idDef, urlDef} = prepareConfigs('test1.example.com', files);
+    configs.put('conf_Ids', '');
+    configs.put('conf_Urls', '');
+
+    const ids = [1, 2, 3];
+    const urls = [
+        'https://test1.example.com/2024/02/file1.png',
+        'https://test1.example.com/2024/02/file2.gif',
+        'https://test1.example.com/2024/02/file3.jpg'
+    ];
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'test1.example.com');
+        return prepare200Response(ids, urls);
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(idDef)).toEqual('事前文字列');
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
 
     ]]></test>
 
