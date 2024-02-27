@@ -2,7 +2,9 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-12-26</last-modified>
+    <!--
+    <last-modified>2024-02-27</last-modified>
+    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Create Draft Post</label>
     <label locale="ja">WordPress.com: 下書き記事作成</label>
@@ -37,21 +39,25 @@
             <label>C6: Slug</label>
             <label locale="ja">C6: スラッグ</label>
         </config>
+        <config name="conf_FeaturedImage" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE">
+            <label>C7: Media ID for Featured Image</label>
+            <label locale="ja">C7: アイキャッチ画像のメディア ID</label>
+        </config>
         <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C7: Category IDs (write one per line)</label>
-            <label locale="ja">C7: カテゴリ ID（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C8: Category IDs (write one per line)</label>
+            <label locale="ja">C8: カテゴリ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_Tags" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C8: Tag IDs (write one per line)</label>
-            <label locale="ja">C8: タグ ID（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C9: Tag IDs (write one per line)</label>
+            <label locale="ja">C9: タグ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_PostId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C9: Data item to save Post ID</label>
-            <label locale="ja">C9: 投稿 ID を保存するデータ項目</label>
+            <label>C10: Data item to save Post ID</label>
+            <label locale="ja">C10: 投稿 ID を保存するデータ項目</label>
         </config>
         <config name="conf_PostUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C10: Data item to save URL of the post</label>
-            <label locale="ja">C10: 投稿の URL を保存するデータ項目</label>
+            <label>C11: Data item to save URL of the post</label>
+            <label locale="ja">C11: 投稿の URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -76,15 +82,59 @@ const main = () => {
     }
     const excerpt = configs.get('conf_Excerpt');
     const slug = configs.get('conf_Slug');
+    const featuredImage = retrieveId('conf_FeaturedImage', 'Media ID for featured image');
     const categoryIds = retrieveIdsAsList('conf_Categories', 'Category ID');
     const tagIds = retrieveIdsAsList('conf_Tags', 'Tag ID');
 
     ////// == 演算 / Calculating ==
-    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, categoryIds, tagIds);
+    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, featuredImage, categoryIds, tagIds);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_PostId', postId);
     saveData('conf_PostUrl', postUrl);
+};
+
+/**
+  * config に設定された ID を読み出す
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {String} id
+  */
+const retrieveId = (confName, label) => {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return null;
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING_TEXTFIELD')) {
+        const id =  engine.findData(dataDef);
+        if (id === null) {
+            return null;
+        }
+        validateId(id, label);
+        return id;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return null;
+    }
+    const id = selects.get(0).getValue(); // 選択肢 ID
+    validateId(id, label);
+    return id;
+};
+
+/**
+ * ID の値をチェックする
+ * 非負整数でない場合はエラー
+ * @param {String} id
+ * @param {String} label エラーメッセージ用ラベル
+ */
+const validateId = (id, label) => {
+    const idReg = new RegExp('^(0|[1-9][0-9]*)$');
+    if (!idReg.test(id)) {
+        throw new Error(`${label} must be a non-negative integer.`);
+    }
 };
 
 /**
@@ -129,10 +179,7 @@ const retrieveIdsAsList = (confName, label) => {
  * @param {String} label エラーメッセージ用ラベル
  */
 const validateIds = (ids, label) => {
-    const idReg = new RegExp('^(0|[1-9][0-9]*)$');
-    if(ids.some(id => !idReg.test(id))) {
-        throw new Error(`${label} must be a non-negative integer.`);
-    }
+    ids.forEach(id => validateId(id, label));
 };
 
 /**
@@ -143,13 +190,14 @@ const validateIds = (ids, label) => {
  * @param {String} content
  * @param {String} excerpt
  * @param {String} slug
+ * @param {String} featuredImage
  * @param {Array<String>} categories
  * @param {Array<String>} tags
  * @return {String} postId
  */
-const createPost = (auth, domain, title, content, excerpt, slug, categories, tags) => {
+const createPost = (auth, domain, title, content, excerpt, slug, featuredImage, categories, tags) => {
     const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`;
-    const payload = { title, content, excerpt, slug, categories, tags, status: 'draft' };
+    const payload = { title, content, excerpt, slug, featured_image: featuredImage, categories, tags, status: 'draft' };
     const response = httpClient.begin().authSetting(auth)
         .queryParam('fields', 'ID,URL')
         .body(JSON.stringify(payload), 'application/json')
