@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-12-26</last-modified>
+    <last-modified>2024-02-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>WordPress.com: Create Draft Post</label>
     <label locale="ja">WordPress.com: 下書き記事作成</label>
@@ -37,21 +37,25 @@
             <label>C6: Slug</label>
             <label locale="ja">C6: スラッグ</label>
         </config>
+        <config name="conf_FeaturedImage" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE">
+            <label>C7: Media ID for Featured Image</label>
+            <label locale="ja">C7: アイキャッチ画像のメディア ID</label>
+        </config>
         <config name="conf_Categories" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C7: Category IDs (write one per line)</label>
-            <label locale="ja">C7: カテゴリ ID（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C8: Category IDs (write one per line)</label>
+            <label locale="ja">C8: カテゴリ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_Tags" form-type="SELECT" select-data-type="STRING|SELECT">
-            <label>C8: Tag IDs (write one per line)</label>
-            <label locale="ja">C8: タグ ID（文字型データ項目の場合、1 行に 1 つ）</label>
+            <label>C9: Tag IDs (write one per line)</label>
+            <label locale="ja">C9: タグ ID（文字型データ項目の場合、1 行に 1 つ）</label>
         </config>
         <config name="conf_PostId" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C9: Data item to save Post ID</label>
-            <label locale="ja">C9: 投稿 ID を保存するデータ項目</label>
+            <label>C10: Data item to save Post ID</label>
+            <label locale="ja">C10: 投稿 ID を保存するデータ項目</label>
         </config>
         <config name="conf_PostUrl" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C10: Data item to save URL of the post</label>
-            <label locale="ja">C10: 投稿の URL を保存するデータ項目</label>
+            <label>C11: Data item to save URL of the post</label>
+            <label locale="ja">C11: 投稿の URL を保存するデータ項目</label>
         </config>
     </configs>
 
@@ -76,15 +80,59 @@ const main = () => {
     }
     const excerpt = configs.get('conf_Excerpt');
     const slug = configs.get('conf_Slug');
+    const featuredImage = retrieveId('conf_FeaturedImage', 'Media ID for Featured Image');
     const categoryIds = retrieveIdsAsList('conf_Categories', 'Category ID');
     const tagIds = retrieveIdsAsList('conf_Tags', 'Tag ID');
 
     ////// == 演算 / Calculating ==
-    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, categoryIds, tagIds);
+    const {postId, postUrl} = createPost(auth, domain, title, content, excerpt, slug, featuredImage, categoryIds, tagIds);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_PostId', postId);
     saveData('conf_PostUrl', postUrl);
+};
+
+/**
+  * config に設定された ID を読み出す
+  * @param {String} confName 設定名
+  * @param {String} label エラーメッセージ用ラベル
+  * @return {String} id
+  */
+const retrieveId = (confName, label) => {
+    const dataDef = configs.getObject(confName);
+    if (dataDef === null) {
+        return null;
+    }
+    // 文字型データ項目の場合
+    if (dataDef.matchDataType('STRING_TEXTFIELD')) {
+        const id =  engine.findData(dataDef);
+        if (id === null) {
+            return null;
+        }
+        validateId(id, label);
+        return id;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(dataDef);
+    if (selects === null || selects.size() === 0) {
+        return null;
+    }
+    const id = selects.get(0).getValue(); // 選択肢 ID
+    validateId(id, label);
+    return id;
+};
+
+/**
+ * ID の値をチェックする
+ * 非負整数でない場合はエラー
+ * @param {String} id
+ * @param {String} label エラーメッセージ用ラベル
+ */
+const validateId = (id, label) => {
+    const idReg = new RegExp('^(0|[1-9][0-9]*)$');
+    if (!idReg.test(id)) {
+        throw new Error(`${label} must be a non-negative integer.`);
+    }
 };
 
 /**
@@ -129,10 +177,7 @@ const retrieveIdsAsList = (confName, label) => {
  * @param {String} label エラーメッセージ用ラベル
  */
 const validateIds = (ids, label) => {
-    const idReg = new RegExp('^(0|[1-9][0-9]*)$');
-    if(ids.some(id => !idReg.test(id))) {
-        throw new Error(`${label} must be a non-negative integer.`);
-    }
+    ids.forEach(id => validateId(id, label));
 };
 
 /**
@@ -143,13 +188,14 @@ const validateIds = (ids, label) => {
  * @param {String} content
  * @param {String} excerpt
  * @param {String} slug
+ * @param {String} featuredImage
  * @param {Array<String>} categories
  * @param {Array<String>} tags
  * @return {String} postId
  */
-const createPost = (auth, domain, title, content, excerpt, slug, categories, tags) => {
+const createPost = (auth, domain, title, content, excerpt, slug, featuredImage, categories, tags) => {
     const url = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`;
-    const payload = { title, content, excerpt, slug, categories, tags, status: 'draft' };
+    const payload = { title, content, excerpt, slug, featured_image: featuredImage, categories, tags, status: 'draft' };
     const response = httpClient.begin().authSetting(auth)
         .queryParam('fields', 'ID,URL')
         .body(JSON.stringify(payload), 'application/json')
@@ -220,19 +266,20 @@ const saveData = (configName, data) => {
 
 /**
  * 設定の準備
- * カテゴリ、タグを文字型データ項目で指定
+ * アイキャッチ画像、カテゴリ、タグを文字型データ項目で指定
  * @param domain
  * @param title
  * @param content
  * @param excerpt
  * @param slug
+ * @param featuredImage
  * @param categories
  * @param tags
  * @return returnObj
  * @return returnObj.postIdDef
  * @return returnObj.postUrlDef
  */
-const prepareConfigs = (domain, title, content, excerpt, slug, categories, tags) => {
+const prepareConfigs = (domain, title, content, excerpt, slug, featuredImage, categories, tags) => {
     const oauth2 = httpClient.createAuthSettingOAuth2(
         'WordPress.com',
         'https://public-api.wordpress.com/oauth2/authorize',
@@ -248,6 +295,8 @@ const prepareConfigs = (domain, title, content, excerpt, slug, categories, tags)
     configs.put('conf_Content', content);
     configs.put('conf_Excerpt', excerpt);
     configs.put('conf_Slug', slug);
+
+    setDataItem('FeaturedImage', 5, 'STRING_TEXTFIELD', featuredImage);
     setDataItem('Categories', 1, 'STRING_TEXTAREA', categories);
     setDataItem('Tags', 2, 'STRING_TEXTAREA', tags);
 
@@ -282,11 +331,15 @@ const setDataItem = (name, index, type, value) => {
  * @param errorMsg
  */
 const assertError = (errorMsg) => {
+    let failed = false;
     try {
         main();
-        fail();
     } catch (e) {
+        failed = true;
         expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -294,23 +347,31 @@ const assertError = (errorMsg) => {
  * 本文が空でエラー
  */
 test('Content is blank', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', '0\n9\n10', '100\n102');
+    prepareConfigs('test1.example.com', 'タイトル', '', '抜粋', 'slug-12345', '55', '0\n9\n10', '100\n102');
     assertError('Content is blank.');
 });
 
 /**
- * カテゴリ ID に非負整数以外が含まれている
+ * アイキャッチ画像のメディア ID が非負整数でない（文字型）
  */
-test('Category ID must be a non-negative integer', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\nカテゴリ1', '100\n102');
+test('Media ID for Featured Image must be a non-negative integer - STRING', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'invalid', '0\n9\10', '100\n102');
+    assertError('Media ID for Featured Image must be a non-negative integer.');
+});
+
+/**
+ * カテゴリ ID に非負整数以外が含まれている（文字型）
+ */
+test('Category ID must be a non-negative integer - STRING', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', '0\nカテゴリ1', '100\n102');
     assertError('Category ID must be a non-negative integer.');
 });
 
 /**
- * タグ ID に非負整数以外が含まれている
+ * タグ ID に非負整数以外が含まれている（文字型）
  */
-test('Tag ID must be a non-negative integer', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n9\n10', '100-tag\n102');
+test('Tag ID must be a non-negative integer - STRING', () => {
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', '0\n9\n10', '100-tag\n102');
     assertError('Tag ID must be a non-negative integer.');
 });
 
@@ -327,10 +388,11 @@ test('Tag ID must be a non-negative integer', () => {
  * @param content
  * @param excerpt
  * @param slug
+ * @param featuredImage
  * @param categoryList
  * @param tagList
  */
-const assertRequest = ({ url, method, headers, contentType, body }, domain, title, content, excerpt, slug, categoryList, tagList) => {
+const assertRequest = ({ url, method, headers, contentType, body }, domain, title, content, excerpt, slug, featuredImage, categoryList, tagList) => {
     const expectedUrl = `https://public-api.wordpress.com/rest/${API_VERSION}/sites/${encodeURIComponent(domain)}/posts/new`
         + `?fields=${encodeURIComponent('ID,URL')}`;
     expect(url).toEqual(expectedUrl);
@@ -342,6 +404,7 @@ const assertRequest = ({ url, method, headers, contentType, body }, domain, titl
     expect(bodyObj.content).toEqual(content);
     expect(bodyObj.excerpt).toEqual(excerpt);
     expect(bodyObj.slug).toEqual(slug);
+    expect(bodyObj.featured_image).toEqual(featuredImage);
     expect(bodyObj.categories).toEqual(categoryList);
     expect(bodyObj.tags).toEqual(tagList);
     expect(bodyObj.status).toEqual('draft');
@@ -351,9 +414,9 @@ const assertRequest = ({ url, method, headers, contentType, body }, domain, titl
  * 記事作成の POST リクエストでエラー
  */
 test('Fail in POST request', () => {
-    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '0\n1\n9\n10', '100\n199\n99999');
+    prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', '0\n1\n9\n10', '100\n199\n99999');
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '1', '9', '10'], ['100', '199', '99999']);
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', ['0', '1', '9', '10'], ['100', '199', '99999']);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to create post. status: 400');
@@ -377,12 +440,12 @@ const createResponse = (postId, postUrl) => {
 test('Succeed - with all configurations', () => {
     const categories = '0\n\n\n9'; // 空行は無視される
     const tags = '\n100\n99\n123456789\n'; // 空行は無視される
-    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', categories, tags);
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', categories, tags);
 
     const postId = '12345';
     const postUrl = 'https://test1.example.com/?p=12345';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', ['0', '9'], ['100', '99', '123456789']);
+        assertRequest(request, 'test1.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', '55', ['0', '9'], ['100', '99', '123456789']);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
@@ -395,14 +458,14 @@ test('Succeed - with all configurations', () => {
  * 成功 - 必須項目のみ指定
  */
 test('Succeed - with only required configurations', () => {
-    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', '', '本文\nここは本文です', '', '', '', '');
+    const { postIdDef, postUrlDef } = prepareConfigs('test1.example.com', '', '本文\nここは本文です', '', '', null, '', '');
     configs.put('conf_PostId', '');
     configs.put('conf_PostUrl', '');
 
     const postId = '12345';
     const postUrl = 'https://test1.example.com/?p=12345';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test1.example.com', '', '本文\nここは本文です', '', '', [], []);
+        assertRequest(request, 'test1.example.com', '', '本文\nここは本文です', '', '', null, [], []);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
@@ -427,17 +490,18 @@ const prepareSelects = (offset, num) => {
 };
 
 /**
- * 成功 - カテゴリ、タグを選択型データ項目で指定
+ * 成功 - アイキャッチ画像、カテゴリ、タグを選択型データ項目で指定
  */
-test('Succeed - categories and tags set by SELECT', () => {
-    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', 'dummy', 'dummy');
+test('Succeed - featured image, categories and tags set by SELECT', () => {
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', 'dummy', 'dummy', 'dummy');
+    setDataItem('FeaturedImage', 10, 'SELECT_SINGLE', prepareSelects(10, 1));
     setDataItem('Categories', 11, 'SELECT_CHECKBOX', prepareSelects(0, 3));
     setDataItem('Tags', 12, 'SELECT_CHECKBOX', prepareSelects(900, 2));
 
     const postId = '67890';
     const postUrl = 'https://test2.example.com/?p=67890';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', ['1', '2', '3'], ['901', '902']);
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', '11', ['1', '2', '3'], ['901', '902']);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
@@ -447,23 +511,56 @@ test('Succeed - categories and tags set by SELECT', () => {
 });
 
 /**
- * 成功 - カテゴリ、タグを選択型データ項目で指定し、1 つも選択されていない
+ * 成功 - アイキャッチ画像、カテゴリ、タグを選択型データ項目で指定し、1 つも選択されていない
  */
 test('Succeed - categories and tags set by SELECT, no item selected', () => {
-    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'dummy', 'dummy');
+    const { postIdDef, postUrlDef } = prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', 'dummy', 'dummy', 'dummy');
+    setDataItem('FeaturedImage', 10, 'SELECT_SINGLE', null);
     setDataItem('Categories', 11, 'SELECT_CHECKBOX', null);
     setDataItem('Tags', 12, 'SELECT_CHECKBOX', null);
 
     const postId = '67890';
     const postUrl = 'https://test2.example.com/?p=67890';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', [], []);
+        assertRequest(request, 'test2.example.com', 'タイトル', '本文', '抜粋', 'slug-12345', null, [], []);
         return createResponse(postId, postUrl);
     });
     expect(main()).toEqual(undefined);
 
     expect(engine.findData(postIdDef)).toEqual(postId);
     expect(engine.findData(postUrlDef)).toEqual(postUrl);
+});
+
+/**
+ * アイキャッチ画像のメディア ID が非負整数でない（選択型）
+ */
+test('Media ID for Featured Image must be a non-negative integer - SELECT', () => {
+    prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', '1', '2', '3');
+    const selects = [engine.createItem('invalid', '非負整数でない値を選択')];
+    setDataItem('FeaturedImage', 10, 'SELECT_SINGLE', selects);
+    assertError('Media ID for Featured Image must be a non-negative integer.');
+});
+
+/**
+ * カテゴリ ID が非負整数でない（選択型）
+ */
+test('Category ID must be a non-negative integer - SELECT', () => {
+    prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', '1', '2', '3');
+    const selects = prepareSelects(0, 3);
+    selects.add(engine.createItem('-1', '非負整数でない値を選択'));
+    setDataItem('Categories', 10, 'SELECT_CHECKBOX', selects);
+    assertError('Category ID must be a non-negative integer.');
+});
+
+/**
+ * タグ ID が非負整数でない（選択型）
+ */
+test('Tag ID must be a non-negative integer - SELECT', () => {
+    prepareConfigs('test2.example.com', 'タイトル', '本文', '抜粋\nこれは抜粋です', 'slug-99999', '1', '2', '3');
+    const selects = prepareSelects(0, 2);
+    selects.add(engine.createItem('1!', '非負整数でない値を選択'));
+    setDataItem('Tags', 10, 'SELECT_CHECKBOX', selects);
+    assertError('Tag ID must be a non-negative integer.');
 });
 
     ]]></test>
