@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Drive: Download File</label>
+    <label locale="ja">Google Drive: ファイルダウンロード</label>
+<!--    <last-modified>2024-02-13</last-modified> -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+<!--
+    <summary>This item sends a message to a Gemini model on Google Vertex AI
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Google Vertex AI 上で動作する Gemini
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-vertexai-gemini-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-vertexai-gemini-chat/</help-page-url>
+-->
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+            <label>C1: 認証設定</label>
+            <label locale="ja">C1: Authentication Setting</label>
+        </config>
+        <config name="conf_FileIds" form-type="SELECT" select-data-type="STRING" required="true">
+            <label>C2: File IDs to download (Write one per line)</label>
+            <label locale="ja">C2: ダウンロードするファイル ID (1 行 1 ID)</label>
+        </config>
+        <config name="conf_FileData" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C4: Data item to add the downloaded file</label>
+            <label locale="ja">C4: ダウンロードファイルを追加保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const fileIdsData = configs.getObject('conf_FileIds');
+    const fileIds = engine.getData(fileIdsData);
+    const FileData = configs.getObject('conf_FileData');
+
+    ////// == 演算 / Calculating ==
+    fileIds.map(fileId => downloadFile(auth, fileId));
+}
+
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getCustomSecret2();
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    if (scope === '') {
+        throw new Error('Scope must be set to Custom Secret 2.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        scope
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
+/**
+ * ファイルダウンロード
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ */
+const downloadFile = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("supportsAllDrives", "true")
+        .queryParam("alt", "media")
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw `Failed to download file. status: ${status}`;
+    }
+    const respJson = JSON.parse(respTxt);
+    return {
+        name: respJson.name,
+        contentType: respJson.mimeType
+    };
+};
+]]></script>
+
+    <icon>
+        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
+        RU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+]]></test>
+</service-task-definition>
