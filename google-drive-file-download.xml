@@ -34,15 +34,31 @@
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
-    const fileIdsData = configs.getObject('conf_FileIds');
-    const fileIds = engine.getData(fileIdsData);
-    const FileData = configs.getObject('conf_FileData');
+
+    const fileIdsDef = configs.getObject('conf_FileIds');
+    const fileIdsStr = engine.findData(fileIdsDef);
+    const fileIds = fileIdsStr.split("\n").filter(key => key.length !== 0);
+
+    const fileDef = configs.getObject('conf_FileData');
+    let files = engine.findData( fileDef );
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
 
     ////// == 演算 / Calculating ==
-    fileIds.map(fileId => downloadFile(auth, fileId));
+    fileIds.forEach(fileId => {
+        const {name, contentType} = getFileMetadata(auth, fileId);
+        const content = getFile(auth, fileId);
+        const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+            name, contentType, content
+        );
+        files.add( qfile );
+    });
+    engine.setData(fileDef, files);
 }
 
 const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
 /**
  * @param auth HTTP 認証設定
@@ -52,7 +68,6 @@ const getAccessToken = (auth) => {
     const privateKeyId = auth.getPrivateKeyId();
     const privateKey = auth.getPrivateKey();
     const serviceAccount = auth.getCustomSecret1();
-    const scope = auth.getCustomSecret2();
     if (privateKeyId === '') {
         throw new Error('Private Key ID is required.');
     }
@@ -61,9 +76,6 @@ const getAccessToken = (auth) => {
     }
     if (serviceAccount === '') {
         throw new Error('Service Account must be set to Custom Secret 1.');
-    }
-    if (scope === '') {
-        throw new Error('Scope must be set to Custom Secret 2.');
     }
     const header = {
         "alg": "RS256",
@@ -82,7 +94,7 @@ const getAccessToken = (auth) => {
          * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
          * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
          */
-        scope
+        "scope": SCOPE
     };
     const keyB = rsa.readKeyFromPkcs8(privateKey);
     const assertion = jwt.build(header, payload, keyB);
@@ -105,11 +117,37 @@ const getAccessToken = (auth) => {
 };
 
 /**
- * ファイルダウンロード
+ * ファイルメタデータ取得
  * @param auth HTTP 認証設定
  * @param fileId ファイルID
  */
-const downloadFile = (auth, fileId) => {
+const getFileMetadata = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("supportsAllDrives", "true")
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw `Failed to download file. status: ${status}`;
+    }
+    const respJson = JSON.parse(respTxt);
+    return {
+        name: respJson.name,
+        contentType: respJson.mimeType
+    };
+};
+
+/**
+ * ファイル取得
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ */
+const getFile = (auth, fileId) => {
     const URL = `https://www.googleapis.com/drive/v3/files/${fileId}`;
 
     const response = httpClient.begin()
@@ -124,11 +162,7 @@ const downloadFile = (auth, fileId) => {
         engine.log(respTxt);
         throw `Failed to download file. status: ${status}`;
     }
-    const respJson = JSON.parse(respTxt);
-    return {
-        name: respJson.name,
-        contentType: respJson.mimeType
-    };
+    return response.getResponse();
 };
 ]]></script>
 
