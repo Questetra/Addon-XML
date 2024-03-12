@@ -42,6 +42,10 @@
             <label>C5: Maximum number of tokens to consume (model default if blank)</label>
             <label locale="ja">C5: 使用するトークン数の上限（空白の場合、モデルのデフォルト値）</label>
         </config>
+        <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
+            <label>C6: Temperature (0.0 - 1.0) (model default if blank)</label>
+            <label locale="ja">C6: 温度（0.0 〜 1.0）（空白の場合、モデルのデフォルト値）</label>
+        </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
             <label>U1: User Message</label>
@@ -73,6 +77,7 @@ function main() {
     const projectId = configs.get('conf_ProjectId');
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
+    const temperature = retrieveTemperature();
     const message = configs.get('conf_Message1');
     if (message === '') {
         throw new Error('User Message is empty.');
@@ -80,7 +85,7 @@ function main() {
     const inlineImages = retrieveImages();
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(auth, region, projectId, model, maxTokens, message, inlineImages);
+    const answer = invokeModel(auth, region, projectId, model, maxTokens, temperature, message, inlineImages);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -103,19 +108,36 @@ function retrieveRegion() {
 
 /**
  * config から最大トークン数を読み出す
- * 未定義の場合、-1 を返す
+ * 未定義の場合、null を返す
  * @returns {Number}
  */
 const retrieveMaxTokens = () => {
     const maxTokens = configs.get('conf_MaxTokens');
     if (maxTokens === '') {
-        return -1;
+        return null;
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
         throw new Error('Maximum number of tokens must be a positive integer.');
     }
     return parseInt(maxTokens, 10);
+};
+
+/**
+ * config から温度を読み出す
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveTemperature = () => {
+    const temperature = configs.get('conf_Temperature');
+    if (temperature === '') {
+        return null;
+    }
+    const regExp = /^(0(\.\d+)?|1(\.0+)?)$/;
+    if (!regExp.test(temperature)) {
+        throw new Error('Temperature must be a number from 0 to 1.');
+    }
+    return parseFloat(temperature);
 };
 
 /**
@@ -225,16 +247,20 @@ const getAccessToken = (auth) => {
  * @param projectId
  * @param model
  * @param maxTokens
+ * @param temperature
  * @param message
  * @param inlineImages
  * @returns {String} answer
  */
-const invokeModel = (auth, region, projectId, model, maxTokens, message, inlineImages) => {
+const invokeModel = (auth, region, projectId, model, maxTokens, temperature, message, inlineImages) => {
     const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
 
     const generation_config = {};
-    if (maxTokens > 0) {
+    if (maxTokens !== null) {
         generation_config.maxOutputTokens = maxTokens;
+    }
+    if (temperature !== null) {
+        generation_config.temperature = temperature;
     }
     const payload = {
         "contents": {
