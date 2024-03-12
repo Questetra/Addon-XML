@@ -46,6 +46,10 @@
             <label>C6: Temperature (0.0 - 1.0) (model default if blank)</label>
             <label locale="ja">C6: 温度（0.0 〜 1.0）（空白の場合、モデルのデフォルト値）</label>
         </config>
+        <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
+            <label>C7: Stop Sequences (write one per line, up to five)</label>
+            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
+        </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
             <label>U1: User Message</label>
@@ -78,6 +82,7 @@ function main() {
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
     const temperature = retrieveTemperature();
+    const stopSequences = retrieveStopSequences();
     const message = configs.get('conf_Message1');
     if (message === '') {
         throw new Error('User Message is empty.');
@@ -85,7 +90,7 @@ function main() {
     const inlineImages = retrieveImages();
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(auth, region, projectId, model, maxTokens, temperature, message, inlineImages);
+    const answer = invokeModel(auth, region, projectId, model, maxTokens, temperature, stopSequences, message, inlineImages);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -138,6 +143,23 @@ const retrieveTemperature = () => {
         throw new Error('Temperature must be a number from 0 to 1.');
     }
     return parseFloat(temperature);
+};
+
+/**
+ * config から停止シーケンスを読み出す
+ * @returns {Array<String>}
+ */
+const retrieveStopSequences = () => {
+    const stopSequencesStr = configs.get('conf_StopSequences');
+    if (stopSequencesStr === '') {
+        return [];
+    }
+    const stopSequences = stopSequencesStr.split('\n')
+        .filter(s => s !== '');
+    if (stopSequences.length > 5) {
+        throw new Error('Too many stop sequences. The maximum number is 5.');
+    }
+    return stopSequences;
 };
 
 /**
@@ -248,11 +270,12 @@ const getAccessToken = (auth) => {
  * @param model
  * @param maxTokens
  * @param temperature
+ * @param stopSequences
  * @param message
  * @param inlineImages
  * @returns {String} answer
  */
-const invokeModel = (auth, region, projectId, model, maxTokens, temperature, message, inlineImages) => {
+const invokeModel = (auth, region, projectId, model, maxTokens, temperature, stopSequences, message, inlineImages) => {
     const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
 
     const generation_config = {};
@@ -262,6 +285,7 @@ const invokeModel = (auth, region, projectId, model, maxTokens, temperature, mes
     if (temperature !== null) {
         generation_config.temperature = temperature;
     }
+    generation_config.stopSequences = stopSequences;
     const payload = {
         "contents": {
             "role": "user",
