@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <last-modified>2022-08-18</last-modified>
+    <last-modified>2024-03-11</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Start: Google Calendar: Event Started</label>
     <label locale="ja">開始: Google カレンダー: 予定開始時</label>
     <summary>This item starts a process when Event's start time has passed on Google
@@ -59,9 +60,23 @@
 
 
     <script><![CDATA[
+
+const DATETIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ssX";
+const DATETIME_FORMAT_FOR_ALL_DAY = "yyyy-MM-dd HH:mm:ss";
+
+/** 日時フォーマッター */
+const datetimeFormatter = new java.text.SimpleDateFormat(DATETIME_FORMAT);
+
+/** 終日予定用フォーマッター */
+const allDayFormatter = new java.text.SimpleDateFormat(DATETIME_FORMAT_FOR_ALL_DAY);
+
 /**
- * @typedef {Object} timestamp java.sql.Timestamp オブジェクト
+ * 日時文字列をパースして java.sql.Timestamp オブジェクトを返す
+ * @param {string} formatter 適用するフォーマッター
+ * @param {string} str 日時文字列
+ * @return {timestamp} java.sql.Timestamp オブジェクト
  */
+const parseDatetime = (formatter, str) => new java.sql.Timestamp(formatter.parse(str).getTime());
 
 /**
  * 開始時刻を経過したイベントの検索
@@ -86,14 +101,6 @@ const list = (limit, timestampLowerLimit) => {
     logEvents(events);
     return events;
 }
-
-/** 日時フォーマッター */
-const datetimeFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX");
-/**
- * @param {string} str 日時文字列
- * @return {timestamp} java.sql.Timestamp オブジェクト
- */
-const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str).getTime());
 
 /**
  * イベントのログ出力
@@ -170,9 +177,6 @@ const getEvents = (quser, calendarId, limit, timestampLowerLimit) => {
     return json.items.map(formatItem).reverse();
 };
 
-/** 終日予定用フォーマッター */
-const allDayFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
 /**
  * start or end のパース
  * @param start
@@ -180,12 +184,11 @@ const allDayFormatter = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
  */
 const parseStartEndDatetime = (start) => {
     if (start.dateTime !== undefined) {
-        return parseDatetime(start.dateTime);
+        return parseDatetime(datetimeFormatter, start.dateTime);
     }
     // 「終日予定」の処理。「終日予定」はタイムゾーンの概念がない。
     // 終日予定の日付は、QBPMS タイムゾーンにおいて、「その日の 00:00:00」と解釈する。
-    const time = allDayFormatter.parse(`${start.date} 00:00:00`).getTime();
-    return new java.sql.Timestamp(time);
+    return parseDatetime(allDayFormatter, `${start.date} 00:00:00`);
 };
 ]]></script>
 
@@ -229,8 +232,6 @@ const prepareConfigs = (configs, calenderId) => {
 
     configs.put('conf_CalendarId', calenderId);
 };
-
-const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
 
 /**
  * GET リクエストのテスト
@@ -345,9 +346,6 @@ test('Success', () => {
     const calendarId = '23456789';
     prepareConfigs(configs, calendarId);
 
-    // <script> のスクリプトを実行
-    execute();
-
     const limit = 3;
     const timestampMin = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
 
@@ -439,9 +437,6 @@ test('Success - including all day event', () => {
     const calendarId = '01234';
     prepareConfigs(configs, calendarId);
 
-    // <script> のスクリプトを実行
-    execute();
-
     const limit = 5;
     const timestampMin = new com.questetra.bpms.util.AddableTimestamp().addDays(-7);
 
@@ -462,10 +457,10 @@ test('Success - including all day event', () => {
         null,
         'https://www.google.com/calendar/event?eid=amkwN2NoczkyOHJmYjZsZWRlbXB2ZDg4amcgaGF0YW5ha2FAcXVlc3RldHJhLmNvbQ'
     );
-    assertEvent(result[1],
+    assertEvent(result[1], // 終日のイベント
         '9q31gco50okhgjblv5lg81r3fg',
-        dateFormatter.parse(DATETIME_FORMAT, '2008-04-05T00:00:00+09:00'),
-        dateFormatter.parse(DATETIME_FORMAT, '2008-04-06T00:00:00+09:00'),
+        dateFormatter.parse(DATETIME_FORMAT_FOR_ALL_DAY, '2008-04-05 00:00:00'),
+        dateFormatter.parse(DATETIME_FORMAT_FOR_ALL_DAY, '2008-04-06 00:00:00'),
         null,
         null,
         'https://www.google.com/calendar/event?eid=OXEzMWdjbzUwb2toZ2pibHY1bGc4MXIzZmcgaGF0YW5ha2FAcXVlc3RldHJhLmNvbQ'
@@ -479,9 +474,6 @@ test('Success - including all day event', () => {
 test('Fail', () => {
     const calendarId = '13579';
     prepareConfigs(configs, calendarId);
-
-    // <script> のスクリプトを実行
-    execute();
 
     const limit = 4;
     const timestampMin = new com.questetra.bpms.util.AddableTimestamp().addDays(-3);
