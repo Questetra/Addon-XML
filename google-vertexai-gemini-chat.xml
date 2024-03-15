@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2024-02-13</last-modified>
+    <last-modified>2024-03-14</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -15,8 +15,8 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-vertexai-gemini-chat/</help-page-url>
     <configs>
         <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
-            <label>C1: 認証設定</label>
-            <label locale="ja">C1: Authentication Setting</label>
+            <label>C1: サービスアカウント設定</label>
+            <label locale="ja">C1: Service Account Setting</label>
         </config>
         <config name="conf_Region" required="true" form-type="TEXTFIELD">
             <label>C2: Region Code</label>
@@ -26,19 +26,27 @@
             <label>C3: Project ID</label>
             <label locale="ja">C3: プロジェクト ID</label>
         </config>
-        <config name="conf_Model" required="true" form-type="SELECT_ITEM">
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
             <label>C4: Model</label>
             <label locale="ja">C4: モデル</label>
-            <item value="gemini-pro">
-                <label>Gemini Pro</label>
+            <item value="gemini-1.0-pro">
+                <label>Gemini 1.0 Pro</label>
             </item>
-            <item value="gemini-pro-vision">
-                <label>Gemini Pro Vision</label>
+            <item value="gemini-1.0-pro-vision">
+                <label>Gemini 1.0 Pro Vision</label>
             </item>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C5: Maximum number of tokens to consume (model default if blank)</label>
             <label locale="ja">C5: 使用するトークン数の上限（空白の場合、モデルのデフォルト値）</label>
+        </config>
+        <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
+            <label>C6: Temperature (0.0 - 1.0) (model default if blank)</label>
+            <label locale="ja">C6: 温度（0.0 〜 1.0）（空白の場合、モデルのデフォルト値）</label>
+        </config>
+        <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
+            <label>C7: Stop Sequences (write one per line, up to five)</label>
+            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -69,8 +77,10 @@ function main() {
 
     const region = retrieveRegion();
     const projectId = configs.get('conf_ProjectId');
-    const model = configs.get('conf_Model');
+    const model = retrieveModel();
     const maxTokens = retrieveMaxTokens();
+    const temperature = retrieveTemperature();
+    const stopSequences = retrieveStopSequences();
     const message = configs.get('conf_Message1');
     if (message === '') {
         throw new Error('User Message is empty.');
@@ -78,7 +88,7 @@ function main() {
     const inlineImages = retrieveImages();
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(auth, region, projectId, model, maxTokens, message, inlineImages);
+    const answer = invokeModel(auth, region, projectId, model, maxTokens, temperature, stopSequences, message, inlineImages);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -100,20 +110,68 @@ function retrieveRegion() {
 }
 
 /**
+ * config からモデル ID を読み出す
+ * モデル ID として不正な文字が含まれている場合はエラー
+ * @return {String}
+ */
+function retrieveModel() {
+    const model = configs.get('conf_Model');
+    const reg = new RegExp('^[a-z0-9.-]+$');
+    if (!reg.test(model)) {
+        throw new Error('Model includes an invalid character.');
+    }
+    return model;
+}
+
+/**
  * config から最大トークン数を読み出す
- * 未定義の場合、-1 を返す
+ * 未定義の場合、null を返す
  * @returns {Number}
  */
 const retrieveMaxTokens = () => {
     const maxTokens = configs.get('conf_MaxTokens');
     if (maxTokens === '') {
-        return -1;
+        return null;
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
         throw new Error('Maximum number of tokens must be a positive integer.');
     }
     return parseInt(maxTokens, 10);
+};
+
+/**
+ * config から温度を読み出す
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveTemperature = () => {
+    const temperature = configs.get('conf_Temperature');
+    if (temperature === '') {
+        return null;
+    }
+    const regExp = /^(0(\.\d+)?|1(\.0+)?)$/;
+    if (!regExp.test(temperature)) {
+        throw new Error('Temperature must be a number from 0 to 1.');
+    }
+    return parseFloat(temperature);
+};
+
+/**
+ * config から停止シーケンスを読み出す
+ * @returns {Array<String>}
+ */
+const retrieveStopSequences = () => {
+    const stopSequencesStr = configs.get('conf_StopSequences');
+    if (stopSequencesStr === '') {
+        return [];
+    }
+    const stopSequences = stopSequencesStr.split('\n')
+        .filter(s => s !== '');
+    if (stopSequences.length > 5) {
+        throw new Error('Too many stop sequences. The maximum number is 5.');
+    }
+    return stopSequences;
 };
 
 /**
@@ -165,6 +223,10 @@ const getAccessToken = (auth) => {
     const privateKeyId = auth.getPrivateKeyId();
     const privateKey = auth.getPrivateKey();
     const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (scope === null || !scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
     if (privateKeyId === '') {
         throw new Error('Private Key ID is required.');
     }
@@ -191,7 +253,7 @@ const getAccessToken = (auth) => {
          * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
          * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
          */
-        "scope": SCOPE
+        scope
     };
     const keyB = rsa.readKeyFromPkcs8(privateKey);
     const assertion = jwt.build(header, payload, keyB);
@@ -219,17 +281,23 @@ const getAccessToken = (auth) => {
  * @param projectId
  * @param model
  * @param maxTokens
+ * @param temperature
+ * @param stopSequences
  * @param message
  * @param inlineImages
  * @returns {String} answer
  */
-const invokeModel = (auth, region, projectId, model, maxTokens, message, inlineImages) => {
+const invokeModel = (auth, region, projectId, model, maxTokens, temperature, stopSequences, message, inlineImages) => {
     const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
 
     const generation_config = {};
-    if (maxTokens > 0) {
+    if (maxTokens !== null) {
         generation_config.maxOutputTokens = maxTokens;
     }
+    if (temperature !== null) {
+        generation_config.temperature = temperature;
+    }
+    generation_config.stopSequences = stopSequences;
     const payload = {
         "contents": {
             "role": "user",
@@ -262,11 +330,20 @@ const invokeModel = (auth, region, projectId, model, maxTokens, message, inlineI
         engine.log(respTxt);
         throw new Error(`Failed to invoke model. status: ${status}`);
     }
-    engine.log(respTxt);
     const json = JSON.parse(respTxt);
-    return json
-        .map(({candidates}) => candidates[0].content.parts[0].text)
-        .join('');
+    let answers = [];
+    for (const {candidates, usageMetadata} of json) {
+        answers.push(candidates[0].content.parts[0].text);
+        const finishReason = candidates[0].finishReason;
+        if (finishReason !== undefined) {
+            engine.log(`Finish Reason: ${finishReason}`);
+        }
+        if (usageMetadata !== undefined) {
+            engine.log(`Prompt Token Count: ${usageMetadata.promptTokenCount !== undefined ? usageMetadata.promptTokenCount : 0}`);
+            engine.log(`Candidates Token Count: ${usageMetadata.candidatesTokenCount !== undefined ? usageMetadata.candidatesTokenCount : 0}`);
+        }
+    }
+    return answers.join('');
 };
 
 /**
@@ -365,6 +442,7 @@ lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
 
 /**
  * 設定の準備
+ * @param scome スコープ
  * @param privateKeyId 秘密鍵 ID
  * @param privateKey 秘密鍵
  * @param serviceAccount サービスアカウント
@@ -372,18 +450,22 @@ lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
  * @param projectId プロジェクト ID
  * @param model モデル
  * @param maxTokens トークン数の最大値
+ * @param temperature 温度
+ * @param stopSequences 停止シーケンス
  * @param message ユーザーのメッセージ
  * @returns {ProcessDataDefinitionView} answerDef
  */
-const prepareConfigs = (privateKeyId, privateKey, serviceAccount, region, projectId, model, maxTokens, message) => {
+const prepareConfigs = (scope, privateKeyId, privateKey, serviceAccount, region, projectId, model, maxTokens, temperature, stopSequences, message) => {
     // 認証設定を作成し、指定
-    const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', '', '', privateKeyId, privateKey, serviceAccount, '');
+    const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', scope, '', '', privateKeyId, privateKey, serviceAccount, '');
     configs.putObject('conf_Auth', jwtAuth);
 
     configs.put('conf_Region', region);
     configs.put('conf_ProjectId', projectId);
     configs.put('conf_Model', model);
     configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_Temperature', temperature);
+    configs.put('conf_StopSequences', stopSequences);
     configs.put('conf_Message1', message);
 
     // 回答を保存するデータ項目を作成し、指定
@@ -417,10 +499,10 @@ test('Region Code is invalid - no hyphens', () => {
     const privateKeyId = 'key-12345';
     const region = 'invalidregioncode';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
+    const model = 'gemini-1.0-pro';
     const serviceAccount = 'service@questetra.com';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     assertError('Region Code is invalid.');
 });
@@ -433,26 +515,40 @@ test('Region Code is invalid - too many characters', () => {
     const serviceAccount = 'service@questetra.com';
     const region = 'northamerica-northamericatoooomany1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     assertError('Region Code is invalid.');
 });
 
 /**
- * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ * モデルの指定が不正 - 英数字、ピリオド、ハイフン以外の文字を含む
+ */
+test('Invalid model', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = '不正なモデル';
+    const message = 'Hi. How are you?';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
+
+    assertError('Model includes an invalid character.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む
  */
 test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
     const privateKeyId = 'key-12345';
     const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
+    const model = 'gemini-1.0-pro';
     const maxTokens = '1.1';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, '', '', message);
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -465,12 +561,64 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
     const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
+    const model = 'gemini-1.0-pro';
     const maxTokens = '0';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, '', '', message);
 
     assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * 温度が不正 - 数字、小数点でない文字を含む
+ */
+test('Invalid temperature - includes a non-numeric character', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-1.0-pro';
+    const maxTokens = '100';
+    const temperature = '-0.1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, temperature, '', message);
+
+    assertError('Temperature must be a number from 0 to 1.');
+});
+
+/**
+ * 温度が不正 - 1 を超える
+ */
+test('Invalid temperature - bigger than 1', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-1.0-pro';
+    const maxTokens = '100';
+    const temperature = '1.1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, temperature, '', message);
+
+    assertError('Temperature must be a number from 0 to 1.');
+});
+
+/**
+ * 停止シークエンスの数が多すぎる
+ */
+test('Too many stop sequences', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-1.0-pro';
+    const maxTokens = '100';
+    const temperature = '1.0';
+    const stopSequences = 'a\n'.repeat(6);
+    const message = 'Hi. How are you?';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, temperature, stopSequences, message);
+
+    assertError('Too many stop sequences. The maximum number is 5.');
 });
 
 /**
@@ -481,12 +629,43 @@ test('Message is empty', () => {
     const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
-    const maxTokens = '';
-    const message = '';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    const model = 'gemini-1.0-pro';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', '');
 
     assertError('User Message is empty.');
+});
+
+/**
+ * スコープが空
+ */
+test('Scope is empty', () => {
+    const scope = '';
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-1.0-pro';
+    const message = 'Hi. How are you?';
+    prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
+});
+
+const ANOTHER_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/**
+ * スコープに必須スコープを含まない
+ */
+test('Required scope is missing', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-1.0-pro';
+    const message = 'Hi. How are you?';
+    prepareConfigs(ANOTHER_SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
 });
 
 /**
@@ -497,10 +676,9 @@ test('Private Key ID is empty', () => {
     const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     assertError('Private Key ID is required.');
 });
@@ -514,10 +692,9 @@ test('Service Account is empty', () => {
     const serviceAccount = '';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     assertError('Service Account must be set to Custom Secret 1.');
 });
@@ -564,10 +741,9 @@ test('Too many attached files', () => {
     const serviceAccount = 'service@example.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro-vision';
     const message = 'Please describe each image attached.';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     // 添付ファイルを指定
     const images = [];
@@ -587,10 +763,9 @@ test('Attached file is too large', () => {
     const serviceAccount = 'service@example.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro-vision';
     const message = 'Please describe each image attached.';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -608,10 +783,9 @@ test('Attached file is neither an image nor a video', () => {
     const serviceAccount = 'service@example.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro-vision';
     const message = 'Please describe each image attached.';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     // 添付ファイルを指定
     const video = createQfile('動画', 'video/mp4', 200);
@@ -622,12 +796,13 @@ test('Attached file is neither an image nor a video', () => {
 });
 
 /**
- * API リクエストのテスト
+ * トークン取得リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
  * @param request.contentType
  * @param request.body
+ * @param {String} scope
  * @param {String} serviceAccount
  */
 const assertTokenRequest = ({
@@ -635,7 +810,7 @@ const assertTokenRequest = ({
                                 method,
                                 contentType,
                                 body
-                            }, serviceAccount) => {
+                            }, scope, serviceAccount) => {
     expect(url).toEqual(URL_TOKEN_REQUEST);
     expect(method).toEqual('POST');
     expect(contentType).startsWith('application/x-www-form-urlencoded');
@@ -650,7 +825,7 @@ const assertTokenRequest = ({
     const payload = JSON.parse(payloadJson);
     expect(payload.iss).toEqual(serviceAccount);
     expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
-    expect(payload.scope).toEqual(SCOPE);
+    expect(payload.scope).toEqual(scope);
 };
 
 /**
@@ -666,6 +841,8 @@ const assertTokenRequest = ({
  * @param {String} projectId
  * @param {String} model
  * @param {Number} maxTokens
+ * @param {Number} temperature
+ * @param {Array<String>} stopSequences
  * @param {String} message
  * @param {Array<Qfile>} images
  */
@@ -675,18 +852,24 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, token, region, projectId, model, maxTokens, message, images = []) => {
+                       }, token, region, projectId, model, maxTokens, temperature, stopSequences, message, images = []) => {
     expect(url).toEqual(`https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     expect(headers.Authorization).toEqual(`Bearer ${token}`);
     const bodyObj = JSON.parse(body);
     expect(bodyObj.contents.parts[0].text).toEqual(message);
-    if(maxTokens > 0) {
+    if (maxTokens !== null) {
         expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
-    }else{
+    } else {
         expect(bodyObj.generation_config.maxOutputTokens).toEqual(undefined);
     }
+    if (temperature !== null) {
+        expect(bodyObj.generation_config.temperature).toEqual(temperature);
+    } else {
+        expect(bodyObj.generation_config.temperature).toEqual(undefined);
+    }
+    expect(bodyObj.generation_config.stopSequences).toEqual(stopSequences);
     images.forEach((image, i) => {
         expect(bodyObj.contents.parts[i + 1].inlineData.mimeType).toEqual(image.getContentType());
         expect(bodyObj.contents.parts[i + 1].inlineData.data).toEqual(base64.encodeToString(fileRepository.readFile(image)));
@@ -726,21 +909,20 @@ test('Fail to request', () => {
     const serviceAccount = 'service@questetra.com';
     const region = 'asia-northeast1';
     const projectId = 'project-67890';
-    const model = 'gemini-pro';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro';
     const message = 'Hi. How are you?';
-    prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
 
     const token = 'token';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request, serviceAccount);
+            assertTokenRequest(request, SCOPE, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, -1, message);
+        assertRequest(request, token, region, projectId, model, null, null, [], message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -748,8 +930,9 @@ test('Fail to request', () => {
 
 /**
  * 成功
- * gemini-pro
- * 最大トークン数を指定する
+ * gemini-1.0-pro
+ * 必須スコープのみ
+ * 最大トークン数、温度、停止シーケンスを指定する
  * 添付ファイルなし（データ項目の指定なし）
  */
 test('Success - with max tokens, no attached files', () => {
@@ -757,21 +940,23 @@ test('Success - with max tokens, no attached files', () => {
     const region = 'asia-northeast1';
     const projectId = 'project-12345';
     const serviceAccount = 'service@example.com';
-    const model = 'gemini-pro';
+    const model = 'gemini-1.0-pro';
     const maxTokens = '2048';
+    const temperature = '0.5';
+    const stopSequences = 'a\nb\nc\nd\ne\n';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    const answerDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, temperature, stopSequences, message);
 
     const token = 'token-12345';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request, serviceAccount);
+            assertTokenRequest(request, SCOPE, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, 2048, message);
+        assertRequest(request, token, region, projectId, model, 2048, 0.5, ['a', 'b', 'c', 'd', 'e'], message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse('Fine, thanks. ', 'How about you?'));
     });
 
@@ -781,31 +966,35 @@ test('Success - with max tokens, no attached files', () => {
 
 /**
  * 成功
- * gemini-pro-vision
- * 最大トークン数を指定
+ * gemini-1.0-pro-vision
+ * 必須スコープ以外も指定
+ * 最大トークン数、温度を指定
+ * 停止シーケンス指定なし
  * 添付ファイルなし（データ項目は指定しているが、添付ファイルなし）
  */
 test('Success - withmax tokens, empty attached files', () => {
+    const scope = `${SCOPE} ${ANOTHER_SCOPE}`;
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
     const serviceAccount = 'service@questetra.com';
-    const model = 'gemini-pro-vision';
+    const model = 'gemini-1.0-pro-vision';
     const maxTokens = '1024';
+    const temperature = '0';
     const message = 'こんにちは。';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    const answerDef = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, temperature, '', message);
     attachImages([]);
 
     const token = 'token-67890';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request, serviceAccount);
+            assertTokenRequest(request, scope, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, 1024, message);
+        assertRequest(request, token, region, projectId, model, 1024, 0, [], message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse('こんにちは。元気ですか？'));
     });
 
@@ -815,19 +1004,20 @@ test('Success - withmax tokens, empty attached files', () => {
 
 /**
  * 成功
- * gemini-pro-vision
- * 最大トークン数を指定しない
+ * gemini-1.0-pro-vision
+ * 必須スコープ以外も指定
+ * 最大トークン数、温度、停止シーケンスを指定しない
  * 画像ファイルを最大個数添付
  */
 test('Success - with default tokens, with max number of attached images', () => {
+    const scope = `${ANOTHER_SCOPE} ${SCOPE}`;
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
     const serviceAccount = 'service@questetra.com';
-    const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro-vision';
     const message = 'Please describe each image attached.';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    const answerDef = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
     
     // 添付ファイルを指定
     const images = [];
@@ -840,12 +1030,12 @@ test('Success - with default tokens, with max number of attached images', () => 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request, serviceAccount);
+            assertTokenRequest(request, scope, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, -1, message, images);
+        assertRequest(request, token, region, projectId, model, null, null, [], message, images);
         return httpClient.createHttpResponse(200, 'application/json', createResponse('The 1st image shows a cat. The 2nd image shows a dog.'));
     });
 
@@ -855,8 +1045,10 @@ test('Success - with default tokens, with max number of attached images', () => 
 
 /**
  * 成功
- * gemini-pro-vision
- * 最大トークン数を指定しない
+ * gemini-1.0-pro-vision
+ * 必須スコープのみ
+ * 最大トークン数、停止シーケンスを指定しない
+ * 温度を指定
  * 動画ファイルを 1 つ添付
  */
 test('Success - with default tokens, with an attached video', () => {
@@ -864,10 +1056,10 @@ test('Success - with default tokens, with an attached video', () => {
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
     const serviceAccount = 'service@questetra.com';
-    const model = 'gemini-pro-vision';
-    const maxTokens = '';
+    const model = 'gemini-1.0-pro-vision';
+    const temperature = '1.00';
     const message = 'Please describe the video attached.';
-    const answerDef = prepareConfigs(privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, maxTokens, message);
+    const answerDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', temperature, '', message);
     
     // 添付ファイルを指定
     const video = createQfile('動画.mp4', 'video/mp4', MAX_IMAGE_SIZE);
@@ -877,12 +1069,12 @@ test('Success - with default tokens, with an attached video', () => {
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount++ === 0) {
-            assertTokenRequest(request, serviceAccount);
+            assertTokenRequest(request, SCOPE, serviceAccount);
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
             }));
         }
-        assertRequest(request, token, region, projectId, model, -1, message, [video]);
+        assertRequest(request, token, region, projectId, model, null, 1, [], message, [video]);
         return httpClient.createHttpResponse(200, 'application/json', createResponse('The video shows a sleeping cat.'));
     });
 
