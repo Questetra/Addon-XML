@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <label>Google Sheets: Append New Rows (Table type data)</label>
 <label locale="ja">Google スプレッドシート: 行追加 (テーブル型データ)</label>
 <summary>This item appends values of a Table type data item at the last of the sheet.</summary>
 <summary locale="ja">この工程は、シート末尾にテーブル型データの値を入力します。</summary>
-<last-modified>2023-02-16</last-modified>
+<last-modified>2024-03-19</last-modified>
 <help-page-url>https://support.questetra.com/bpmn-icons/googlesheets-appendtable/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googlesheets-appendtable/</help-page-url>
 
 <configs>
-  <config name="conf_OAuth2" required="true" form-type="OAUTH2"
+  <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
           oauth2-setting-name="https://www.googleapis.com/auth/spreadsheets">
     <label>C1: OAuth2 Config</label>
     <label locale="ja">C1: OAuth2 設定</label>
@@ -77,11 +78,9 @@
 // Consumer Key: (Get by Google Developers Console)
 // Consumer Secret: (Get by Google Developers Console)
 
-main();
-
 function main() {
     const tableDataDef = configs.getObject("conf_DataIdT");
-    const oauth2 = configs.get( "conf_OAuth2" );
+    const oauth2 = configs.getObject("conf_OAuth2");
     const spreadsheetId = retrieveStringData("conf_DataIdW", "Target Spreadsheet ID");
     const sheetName = retrieveStringData("conf_DataIdX", "Target Sheet Title");
     const fieldNames = getFieldNames();
@@ -143,7 +142,7 @@ function getFieldNames() {
 
 /**
  * シート名からシート ID の取得
- * @param {String} oauth2
+ * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {String} spreadsheetId
  * @param {String} sheetName
  * @return {Number}
@@ -285,7 +284,7 @@ function getCellValue(rowNumber, tableData, subDataDefMap, fieldName) {
 
 /**
  * データを Google Sheets に送信する
- * @param {String} oauth2
+ * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {String} sheetId
  * @param {String} spreadsheetId
  * @param {Array<Object>} rows
@@ -347,7 +346,17 @@ const COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
  * @return {tableDef, expectedRows}
  */
 const prepareConfigs = (spreadSheetId, sheetTitle) => {
-    configs.put('conf_OAuth2', 'Google');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
 
     // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
     const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
@@ -395,13 +404,30 @@ const prepareConfigs = (spreadSheetId, sheetTitle) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
+/**
  * スプレッドシートの ID をデータ項目で指定し、値が空でエラーになる場合
  */
 test('Target Spreadsheet ID is empty', () => {
     prepareConfigs(null, 'シート1');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Target Spreadsheet ID is empty.');
+    assertError(main, 'Target Spreadsheet ID is empty.');
 });
 
 /**
@@ -411,7 +437,7 @@ test('Target Sheet Title is empty', () => {
     prepareConfigs('abc123', null);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Target Sheet Title is empty.');
+    assertError(main, 'Target Sheet Title is empty.');
 });
 
 /**
@@ -422,7 +448,7 @@ test('No field names', () => {
     COLUMNS.forEach(col => configs.put(`conf_DataId${col}`, '')); // 空文字列で上書き
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('No Data to add is selected.');
+    assertError(main, 'No Data to add is selected.');
 });
 
 /**
@@ -433,7 +459,7 @@ test('Table is empty', () => {
     engine.setData(tableDef, null); // null で上書き
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('the table data is empty.');
+    assertError(main, 'the table data is empty.');
 });
 
 /**
@@ -446,7 +472,7 @@ test('Table has an empty row', () => {
     engine.setData(tableDef, table);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('There is an empty row in data to append.');
+    assertError(main, 'There is an empty row in data to append.');
 });
 
 /**
@@ -457,7 +483,7 @@ test('Field name does not exist', () => {
     configs.put('conf_DataIdB', '存在しないフィールド名'); // B 列を存在しないフィールド名で上書き
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Field Name 存在しないフィールド名 does not exist');
+    assertError(main, 'Field Name 存在しないフィールド名 does not exist');
 });
 
 /**
@@ -472,7 +498,7 @@ test('Over 50,000 characters', () => {
     engine.setData(tableDef, table);
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow("Can't set text over 50,000 character.");
+    assertError(main, "Can't set text over 50,000 character.");
 });
 
 const SAMPLE_GET = {
@@ -589,7 +615,7 @@ test('Success - 1st sheet', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -611,7 +637,7 @@ test('Success - 2nd sheet', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 /**
@@ -625,7 +651,7 @@ test('Fail in GET Request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow("Can't get sheet information. status: 400");
+    assertError(main, "Can't get sheet information. status: 400");
 });
 
 /**
@@ -639,7 +665,7 @@ test('Sheet does not exist', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_GET))
     });
 
-    expect(execute).toThrow('Sheet 存在しないシート does not exist');
+    assertError(main, 'Sheet 存在しないシート does not exist');
 });
 
 /**
@@ -660,7 +686,7 @@ test('Fail in POST Request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to append data. status: 400');
+    assertError(main, 'Failed to append data. status: 400');
 });
 
 /**
@@ -672,7 +698,17 @@ test('Fail in POST Request', () => {
  * @return {tableDef, expectedRows}
  */
 const prepareConfigsWithVariousDataTypes = (spreadSheetId, sheetTitle) => {
-    configs.put('conf_OAuth2', 'Google');
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
     configs.put('conf_DataIdW', spreadSheetId);
     configs.put('conf_DataIdX', sheetTitle);
 
@@ -761,7 +797,7 @@ test('Success - Various data types', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 });
 
 ]]></test>
