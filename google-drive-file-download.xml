@@ -15,7 +15,7 @@
             <label>C1: サービスアカウント設定</label>
             <label locale="ja">C1: Service Account Setting</label>
         </config>
-        <config name="conf_FileIds" form-type="SELECT" select-data-type="STRING" required="true">
+        <config name="conf_FileIds" required="true" form-type="SELECT" select-data-type="STRING">
             <label>C2: File IDs to download (Write one per line)</label>
             <label locale="ja">C2: ダウンロードするファイル ID（1 行に 1 つ）</label>
         </config>
@@ -29,10 +29,7 @@
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
-
-    const fileIdsDef = configs.getObject('conf_FileIds');
-    const fileIdsStr = engine.findData(fileIdsDef);
-    const fileIds = fileIdsStr.split("\n").filter(key => key.length !== 0);
+    const fileIds = retrieveFileIds();
 
     const fileDef = configs.getObject('conf_FileData');
     let files = engine.findData( fileDef );
@@ -41,16 +38,40 @@ function main() {
     }
 
     ////// == 演算 / Calculating ==
+    const REQUEST_NUM_PER_FILE = 4; // ファイル 1 つにつき 4 回リクエストを行う
+    if (fileIds.length * REQUEST_NUM_PER_FILE > httpClient.getRequestingLimit()) {
+        throw new Error('Number of File IDs exceeds the limit.');
+    }
     fileIds.forEach(fileId => {
         const {name, contentType} = getFileMetadata(auth, fileId);
         const content = getFile(auth, fileId);
         const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
             name, contentType, content
         );
-        files.add( qfile );
+        files.add(qfile);
     });
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
     engine.setData(fileDef, files);
 }
+
+/**
+ * config からファイル ID を読み出す
+ * ファイル ID が設定されていない場合はエラー
+ * @returns {Array<String>} ファイル ID の配列
+ */
+const retrieveFileIds = () => {
+    const fileIdsDef = configs.getObject('conf_FileIds');
+    const fileIdsStr = engine.findData(fileIdsDef);
+    if (fileIdsStr === null) {
+        throw new Error('No File IDs.');
+    }
+    const fileIds =  fileIdsStr.split('\n').filter(key => key.length !== 0);
+    if (fileIds.length === 0) {
+        throw new Error('No File IDs.');
+    }
+    return fileIds;
+};
 
 const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -132,7 +153,7 @@ const getFileMetadata = (auth, fileId) => {
     const respTxt = response.getResponseAsString();
     if (status !== 200) {
         engine.log(respTxt);
-        throw `Failed to download file. status: ${status}`;
+        throw new Error(`Failed to get metadata of file. status: ${status}`);
     }
     const respJson = JSON.parse(respTxt);
     return {
@@ -159,7 +180,7 @@ const getFile = (auth, fileId) => {
     const respTxt = response.getResponseAsString();
     if (status !== 200) {
         engine.log(respTxt);
-        throw `Failed to download file. status: ${status}`;
+        throw new Error(`Failed to download file. status: ${status}`);
     }
     return response.getResponse();
 };
