@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Drive: Download File</label>
     <label locale="ja">Google ドライブ: ファイルダウンロード</label>
-<!--    <last-modified>2024-02-13</last-modified> -->
+    <last-modified>2024-03-28</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item downloads the specified files on Google Drive.</summary>
     <summary locale="ja">この工程は、Google ドライブ内の指定ファイルをダウンロードします。</summary>
@@ -384,7 +384,7 @@ test('No File IDs - blank line', () => {
 test('Too many File IDs', () => {
     const privateKeyId = 'key-12345';
     const serviceAccount = 'service@questetra.com';
-    const fileIds = '';
+    let fileIds = '';
     let httpReqCount = 0;
     while (true) {
         fileIds += '1234567890\n';
@@ -448,7 +448,30 @@ const assertGetMetadataRequest = ({url, method, headers, body}, token, fileId) =
     expect(headers.Authorization).toEqual(`Bearer ${token}`);
 };
 
-// TODO ファイルメタデータの取得に失敗
+/**
+ * メタデータ取得の API リクエストでエラー
+ */
+test('Fail to get metadata', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileId = '123456789';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileId, []);
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertGetMetadataRequest(request, token, fileId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get metadata of file. status: 400');
+});
+
 
 /**
  * メタデータ取得の API レスポンスを作成
@@ -480,38 +503,86 @@ const assertGetFileRequest = ({url, method, headers, body}, token, fileId) => {
     expect(headers.Authorization).toEqual(`Bearer ${token}`);
 };
 
-// TODO ファイルダウンロードに失敗
+/**
+ * ファイルダウンロードの API リクエストでエラー
+ */
+test('Fail to download file', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileId = '123456789';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileId, []);
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount === 1) {
+            assertGetMetadataRequest(request, token, fileId);
+            reqCount++;
+            return createMetadataResponse('ファイル.html', 'text/html');
+        }
+        assertGetFileRequest(request, token, fileId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to download file. status: 400');
+});
+
+/**
+ * ファイルデータの準備
+ * @param {String} id
+ * @param {String} name
+ * @param {String} contentType
+ * @param {String} body
+ * @returns {Object}
+ */
+const prepareFileData = (id, name, contentType, body) => {
+    return {
+        id,
+        name,
+        contentType,
+        body
+    };
+};
 
 /**
  * ファイルのテスト
  * @param file
- * @param name
- * @param contentType
- * @param encoding
- * @param body
+ * @param expectedFile.name
+ * @param expectedFile.contentType
+ * @param expectedFile.body
  */
-const assertFile = (file, name, contentType, encoding, body) => {
+const assertFile = (file, {name, contentType, body}) => {
     expect(file.getName()).toEqual(name);
     expect(file.getContentType()).toEqual(contentType);
     let text = '';
-    fileRepository.readFile(file, encoding, line => text += line + '\n');
-    expect(text).toEqual(body);
+    fileRepository.readFile(file, 'UTF-8', line => text += line + '\n');
+    expect(text).toEqual(`${body}\n`);
 };
 
 /**
- * 成功 - 既存のファイルがない場合
+ * 成功 - 事前にファイルが添付されていない場合
  */
-test('Succeed - no existing files', () => {
+test('Succeed - no pre-attached files', () => {
     const privateKeyId = 'key-12345';
     const serviceAccount = 'service@questetra.com';
-    const fileIdsStr = '1234567890\n';
-    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIdsStr, []);
+    const filesToDownload = [
+        prepareFileData('id-1', 'file1.txt', 'text/plain', 'Hello, World!'),
+        prepareFileData('id-2', 'file2.txt', 'text/plain', 'こんにちは、世界！'),
+        prepareFileData('id-3', 'PDFファイル.pdf', 'application/pdf', 'PDF data'),
+    ];
+    const fileIdsStr = filesToDownload.map(file => file.id).join('\n') + '\n';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIdsStr, []);
 
-    const fileIds = ['1234567890'];
     const token = 'token1';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        const fileId = fileIds[Math.floor(reqCount / REQUEST_NUM_PER_FILE)];
+        const fileData = filesToDownload[Math.floor(reqCount / REQUEST_NUM_PER_FILE)];
         if (reqCount % REQUEST_NUM_PER_FILE === 0 || reqCount % REQUEST_NUM_PER_FILE === 2) {
             assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
@@ -520,20 +591,68 @@ test('Succeed - no existing files', () => {
             }));
         }
         if (reqCount % REQUEST_NUM_PER_FILE === 1) { // メタデータ取得のリクエスト
-            assertGetMetadataRequest(request, token, fileId);
+            assertGetMetadataRequest(request, token, fileData.id);
             reqCount++;
-            return createMetadataResponse('file1.txt', 'text/plain');
+            return createMetadataResponse(fileData.name, fileData.contentType);
         }
         // ファイルダウンロードのリクエスト
-        assertGetFileRequest(request, token, fileId);
+        assertGetFileRequest(request, token, fileData.id);
         reqCount++;
-        return httpClient.createHttpResponse(200, 'text/plain', 'Hello, World!');
+        return httpClient.createHttpResponse(200, fileData.contentType, fileData.body);
     });
-    expect(reqCount).toEquals(fileIds.length * REQUEST_NUM_PER_FILE);
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(filesToDownload.length * REQUEST_NUM_PER_FILE);
 
-    // TODO ファイルのテスト
+    // ファイルのテスト
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(filesToDownload.length);
+    filesToDownload.forEach((expectedFile, i) => assertFile(files[i], expectedFile));
 });
 
+/**
+ * 成功 - 事前にファイルが添付されている場合
+ */
+test('Succeed - with pre-attached files', () => {
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const filesToDownload = [
+        prepareFileData('id-1', 'file1.txt', 'text/plain', 'Hello, World!')
+    ];
+    const fileIdsStr = filesToDownload.map(file => file.id).join('\n');
+    const preattachedFiles = new java.util.ArrayList();
+    preattachedFiles.add(engine.createQfile('test.html', 'text/html', '<html lang="ja"></html>'));
+    preattachedFiles.add(engine.createQfile('test.xml', 'text/xml', '<xml>さようなら</xml>'));
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIdsStr, preattachedFiles);
+
+    const token = 'token1';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const fileData = filesToDownload[Math.floor(reqCount / REQUEST_NUM_PER_FILE)];
+        if (reqCount % REQUEST_NUM_PER_FILE === 0 || reqCount % REQUEST_NUM_PER_FILE === 2) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount % REQUEST_NUM_PER_FILE === 1) { // メタデータ取得のリクエスト
+            assertGetMetadataRequest(request, token, fileData.id);
+            reqCount++;
+            return createMetadataResponse(fileData.name, fileData.contentType);
+        }
+        // ファイルダウンロードのリクエスト
+        assertGetFileRequest(request, token, fileData.id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, fileData.contentType, fileData.body);
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(filesToDownload.length * REQUEST_NUM_PER_FILE);
+
+    // ファイルのテスト
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(filesToDownload.length + 2); // 事前にファイルが 2 つ添付されている
+    filesToDownload.forEach((expectedFile, i) => assertFile(files[i + 2], expectedFile));
+});
 
 ]]></test>
 </service-task-definition>
