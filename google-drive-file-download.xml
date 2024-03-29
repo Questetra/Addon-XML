@@ -1,0 +1,670 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Drive: Download File</label>
+    <label locale="ja">Google ドライブ: ファイルダウンロード</label>
+    <last-modified>2024-03-29</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item downloads the specified files on Google Drive. You can download multiple files at once.
+        When you download multiple files, you should write one File ID per line.
+    </summary>
+    <summary locale="ja">
+        この工程は、Google ドライブ内の指定ファイルをダウンロードします。一度に複数のダウンロードが可能です。複数ダウンロードする場合、データ項目では
+        1 行につき 1 つずつファイル ID を書くようにしてください。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-drive-file-download/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-drive-file-download/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+            <label>C1: サービスアカウント設定</label>
+            <label locale="ja">C1: Service Account Setting</label>
+        </config>
+        <config name="conf_FileIds" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA" editable="true">
+            <label>C2: File IDs to download (Write one per line)</label>
+            <label locale="ja">C2: ダウンロードするファイルの ID（1 行に 1 つ）</label>
+        </config>
+        <config name="conf_FileData" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: Data item to add the downloaded file</label>
+            <label locale="ja">C3: ダウンロードファイルを追加保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const REQUEST_NUM_PER_FILE = 4; // ファイル 1 つにつき 4 回リクエストを行う
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const fileIds = retrieveFileIds();
+
+    const fileDef = configs.getObject('conf_FileData');
+    let files = engine.findData( fileDef );
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+
+    ////// == 演算 / Calculating ==
+    if (fileIds.length * REQUEST_NUM_PER_FILE > httpClient.getRequestingLimit()) {
+        throw new Error('Number of File IDs exceeds the limit.');
+    }
+    fileIds.forEach(fileId => {
+        const {name, contentType} = getFileMetadata(auth, fileId);
+        const content = getFile(auth, fileId);
+        const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+            name, contentType, content
+        );
+        files.add(qfile);
+    });
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    engine.setData(fileDef, files);
+}
+
+/**
+ * config からファイル ID を読み出す
+ * ファイル ID が設定されていない場合はエラー
+ * @returns {Array<String>} ファイル ID の配列
+ */
+const retrieveFileIds = () => {
+    let fileIdsStr = configs.get('conf_FileIds');
+    const fileIdsDef = configs.getObject('conf_FileIds');
+    if (fileIdsDef !== null) {
+        fileIdsStr = engine.findData(fileIdsDef);
+    }
+    if (fileIdsStr === null) {
+        throw new Error('No File IDs.');
+    }
+    const fileIds =  fileIdsStr.split('\n').filter(key => key.length !== 0);
+    if (fileIds.length === 0) {
+        throw new Error('No File IDs.');
+    }
+    return fileIds;
+};
+
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (!scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        scope
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
+/**
+ * ファイルメタデータ取得
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ */
+const getFileMetadata = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("supportsAllDrives", "true")
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to get metadata of file. status: ${status}`);
+    }
+    const respJson = JSON.parse(respTxt);
+    return {
+        name: respJson.name,
+        contentType: respJson.mimeType
+    };
+};
+
+/**
+ * ファイル取得
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ */
+const getFile = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("supportsAllDrives", "true")
+        .queryParam("alt", "media")
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to download file. status: ${status}`);
+    }
+    return response.getResponse();
+};
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
+        hUBmYabNj19/dglzM7ERirGerpkshNTA5ImOgvTClGu/fjEq5AfeYdeX+YrT0cv2S3y69kjgVGv7
+        IjdiHEGUAzKK0nKf8X9peyz5ntv5jty/7qTzTPgML51n+O/rbyaH6f3TjxByBFEOSMxO/XZB/wnH
+        d6k/DGpnRb82WT/nwhcKF59w/5++VfnmzP45WhQ7IL0wdfZzga8Rt4xfc4MM43zGwkBMKICi4vBt
+        idoZfbMm43ME3hAAJbx/DL9nHXR+qAEzBOQA2eeCBEMBpD5psv6P+VNnc5HtgOrKuF2XOf5YwnyP
+        7oiN4XfAoYILEJMgcYYAyPdPBT5uR7ccFg2gUAgX+/I3yvEFHyUJEqcDQNnulOZTDVDCQwegaAAB
+        g4syPwhlS1CCXL1Xdi+ubInVAbBsh833yNEAcgAb2/8HM9IvwdMIttDAlyAxHIAt4WEzFJQdJT9w
+        rwDJ2am9DMUXFfiyJYYD0LMdNstBUQDyPSyFg8qJebkXOQglyEO3xFfP7J+diqwOxQGk+F7qI08V
+        LI+DosxW9UUzoQQJypYcbCxuyCUkigPwJTzkuDe7Ln0DvZQD6c30vqtOqIRET5BwBxCT8ECOsN8r
+        f4OJgTUNvZyHhR6pCRLuAOTyHldcwhIeejzC1IPSDyhBBuvu42MXwV4NoGdLsAOISXj4fA9zACwU
+        JgavwJktQQ4DZUtYgoQ6AHehAzMc5HvhV9zM/xkl/uFL7SA5xv8vmAg1XD7//nsLlI7ADiAm/i23
+        K/y48ywQnNXY9S0ZePlx1zGfP37D60aZN33fONheVoJyETwN4MsBIN+/vxADrngIWU4odDjeH/vP
+        93kpvK0AdwCszXfc8wFKgQKyXOi1MuPdp5ZclFoOchz/3ZZvnKxvPGC5CK0cwGx8gEo8UNBTw3KI
+        75fNQ85FGEUxLDvCajtqWQ5KF8ofSzEKMAwHwBIkyAGgoH8iUsSFL8ERinOYPCjoYQkPZ12AKFBS
+        rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
+        6/Q2AAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD3Zg0KVn2jff8t
+NHk7p8uWEvsaxA59CkGi1v81kyVsnd+yxm23nWIKhGplhy0hK7dnBP3OMB0YCfvo
+yXqryQMJb96xMyPkW+n9a1uh3wOibpPzhw/QbVzd5vgMcK9qN2M5oB1iYLEUvlGq
+ogQ8r1gYUlt/Of0oIYKIwe9HiQXUTNxnNyW+wrURNkDio4QKMvAEqdG4iEzShAzE
+bNLOG4YAdmKxZ+gL0646s5XRTIO7q/3haiF9BszxFul9GiugQ8rdPKxJEvQ9YMMt
+cz39wVM4ZvJ8gmUrD5wwucDQXfeiP7bU9meBAQGpXcmYBFpBHI0hTEHYqM0MZ7pW
+JVB9eEeFAgMBAAECggEBAK5LBCbjVjJHgu37COoBRcmd57AsrbRj9Gffpf69guEp
+vD570zJHu5mDPl32xNGYteXrO0/2z5hu+D1BLJ43yF7upGociE3Kf2fdKbo5nprh
+4nPwFDEXyxQ+M0S4YqynBs3DQtBbJIZjqq9W4ztJoPvJkdJpLTQHn6nvTz8LhsLQ
+XN9nTWqTNQ3KSiUXPrXkV0dZ2sm2OCjQE99X9rm7araP6Y1FO2irGySPftwGnR+C
+/jw1vLzeTCsI9+pZQ2A3JZMwYB5UPQPo/roWJ7tfrT/aT6h+eLpavDUd5W0Wowh/
+HqzFQE2bJGE09F8w9mHaQAI+hG/Lr7BbO4sl3n5E3GUCgYEA/TZZc96Jqsom2f5g
+iXtl6hX/5DrKVfHp6RzRpQ8aKNokJdTvtd25YiWHUY8h25O28Wdo9QDsKMkuCnlz
+EOV3/624iiTGzuVCpB2/LInO4uL5mqYtBVHVDwR41WCOM2RbX5HyB8NqpycIHSO5
+gZtb48OSJnGZbHEn1BkoaoywzwcCgYEA+h9Q/Bz/09GHfMNUfsjp4cQ67IX1iHqA
+noPqnD8KY1UA2+KR3SBa04zk4KQkilNN5wb1r4XLvFnIWjEEicCQqsw2aEnJwGBI
+6Tvd6KWw4xON2SqPlgPH75AOUQwbrsF0Gbee3OktMdOPsG86cTES7XwCOj1syN9d
+kxyEMbIbRhMCgYAA8Vbb65QvopkKbrwFRwRWHsbZHq7qKwBn8ceGCcxbIpTH30cV
+MkIib2lVkGbb3mzr8Sqe3uYCMN2PBGy9P113AjqRqRlkY84ftkyj6c9vYND1FnFM
+d8WHTMj2YmmlH1aHwI9aIAwhmy+YjC2AogdxjaTZp8qecL1pOL7BxsxRuQKBgQCJ
+qkjhqnhoNk/zLHNKIP0RhPbFjemZR4uZM5QikVP/Xh7N54NPCOrUuxySQ+XUuIsN
+GDiLdgGv1l6+vXH4+6LkTue3OL2xg409yfSWgvO719xf5dwHvmcCBPDMTPTDl7h2
+Gyl1/2UfoojYnC+3c0Iuse1r7rj8SmxvduePjq8SPwKBgACswSW/FWGFyqfhXvIv
+QWSZF/yiIsywjJgiTsRp92Cr98QDQNC0c8SCQWew3T1r/CHX3EDqjf3djx5qISpi
+ESFz5+HMVWL2lMD5KqLxIdHZNe4fbPyW779yMNdyd0rlgOS1kM3WrYdV9tgjc1VI
+lweR14IODzhshANib/N8F47e
+-----END PRIVATE KEY-----`;
+
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIDbzCCAlegAwIBAgIUPV0u0uVd+8UHrS6NRz/xVad9oRUwDQYJKoZIhvcNAQEL
+BQAwRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYDVQQKDAlRdWVz
+dGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MB4XDTI0MDExODA4MDYxMVoXDTI0
+MDIxNzA4MDYxMVowRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYD
+VQQKDAlRdWVzdGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA92YNClZ9o33/LTR5O6fLlhL7GsQOfQpBotb/
+NZMlbJ3fssZtt51iCoRqZYctISu3ZwT9zjAdGAn76Ml6q8kDCW/esTMj5Fvp/Wtb
+od8Dom6T84cP0G1c3eb4DHCvajdjOaAdYmCxFL5RqqIEPK9YGFJbfzn9KCGCiMHv
+R4kF1EzcZzclvsK1ETZA4qOECjLwBKnRuIhM0oQMxGzSzhuGAHZisWfoC9OuOrOV
+0UyDu6v94WohfQbM8RbpfRoroEPK3TysSRL0PWDDLXM9/cFTOGbyfIJlKw+cMLnA
+0F33oj+21PZngQEBqV3JmARaQRyNIUxB2KjNDGe6ViVQfXhHhQIDAQABo1MwUTAd
+BgNVHQ4EFgQU+XQRQgTm3ffYqLngkqr03TFcbvcwHwYDVR0jBBgwFoAU+XQRQgTm
+3ffYqLngkqr03TFcbvcwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAOnZodDZ4tqjkofJbIcuXczFGPta6geFl/my3H2Ubf2PJNEkDxklgml7uMych
+vs/lWi0p7YQII52lbMytADKeG/YLOBVQMp5e3WDI3D+630b3T20AwZcXW3KuAYn1
+sQuSh7RijcOKDoTMQNUCMjgBbzr5Z4eq0HYl/Uivmkdh5YH0nU2+LbU/G1RDDodh
+Q+J3TyL+Ms9ba5V8/7gs7Vaz9uuRBdYpq/MP+Iyb78/yIGOxk9Qj0fXdc+W69XGP
+rqpI6o1cfaFHC3zkRdyZA9Tvh3yE3XID9J5xRZRmUuCzUR4YkJQx436E7EzVohq7
+lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
+-----END CERTIFICATE-----`;
+
+/**
+ * 設定の準備
+ * ファイル ID をデータ項目で指定
+ * @param scome スコープ
+ * @param privateKeyId 秘密鍵 ID
+ * @param privateKey 秘密鍵
+ * @param serviceAccount サービスアカウント
+ * @param fileIds ファイル ID
+ * @param files 事前に添付されているファイル
+ * @returns {ProcessDataDefinitionView} fileDef
+ */
+const prepareConfigs = (scope, privateKeyId, privateKey, serviceAccount, fileIds, files) => {
+    // 認証設定を作成し、指定
+    const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', scope, '', '', privateKeyId, privateKey, serviceAccount, '');
+    configs.putObject('conf_Auth', jwtAuth);
+
+    // ファイル ID が保存されているデータ項目を作成し、指定
+    const fileIdsDef = engine.createDataDefinition('ファイル ID', 1, 'q_fileIds', 'STRING_TEXTAREA');
+    configs.putObject('conf_FileIds', fileIdsDef);
+    engine.setData(fileIdsDef, fileIds);
+
+    // ファイルを保存するデータ項目を作成し、指定
+    const fileDef = engine.createDataDefinition('ファイル', 2, 'q_files', 'FILE');
+    configs.putObject('conf_FileData', fileDef);
+    engine.setData(fileDef, files);
+    return fileDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * スコープが空
+ */
+test('Scope is empty', () => {
+    const scope = '';
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileIds = '1234567890';
+    prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
+});
+
+const ANOTHER_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+
+/**
+ * スコープに必須スコープを含まない
+ */
+test('Required scope is missing', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileIds = '1234567890';
+    prepareConfigs(ANOTHER_SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
+});
+
+/**
+ * 秘密鍵 ID が空
+ */
+test('Private Key ID is empty', () => {
+    const privateKeyId = '';
+    const serviceAccount = 'service@questetra.com';
+    const fileIds = '1234567890';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError('Private Key ID is required.');
+});
+
+/**
+ * カスタム秘密情報1 に設定されているサービスアカウントが空
+ */
+test('Service Account is empty', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = '';
+    const fileIds = '1234567890';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError('Service Account must be set to Custom Secret 1.');
+});
+
+/**
+ * ファイル ID が空
+ */
+test('No File IDs - null', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, null, []);
+
+    assertError('No File IDs.');
+});
+
+/**
+ * ファイル ID が空行のみ
+ */
+test('No File IDs - blank line', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileIds = '\n\n';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError('No File IDs.');
+});
+
+/**
+ * ファイル ID の数が多すぎる
+ */
+test('Too many File IDs', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    let fileIds = '';
+    let httpReqCount = 0;
+    while (true) {
+        fileIds += '1234567890\n';
+        httpReqCount += REQUEST_NUM_PER_FILE;
+        if (httpReqCount > httpClient.getRequestingLimit()) {
+            break;
+        }
+    }
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIds, []);
+
+    assertError('Number of File IDs exceeds the limit.');
+});
+
+/**
+ * トークン取得リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} scope
+ * @param {String} serviceAccount
+ */
+const assertTokenRequest = ({
+                                url,
+                                method,
+                                contentType,
+                                body
+                            }, scope, serviceAccount) => {
+    expect(url).toEqual(URL_TOKEN_REQUEST);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const query = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=`;
+    expect(body).startsWith(query);
+    const assertion = decodeURIComponent(body.substring(query.length));
+
+    const publicKey = rsa.readKeyFromX509(CERTIFICATE);
+    expect(jwt.verify(assertion, publicKey)).toEqual(true);
+
+    const payloadJson = base64.decodeFromUrlSafeString(assertion.split('.')[1]);
+    const payload = JSON.parse(payloadJson);
+    expect(payload.iss).toEqual(serviceAccount);
+    expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
+    expect(payload.scope).toEqual(scope);
+};
+
+/**
+ * メタデータ取得の API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param {String} token
+ * @param {String} fileId
+ */
+const assertGetMetadataRequest = ({url, method, headers, body}, token, fileId) => {
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
+};
+
+/**
+ * メタデータ取得の API リクエストでエラー
+ */
+test('Fail to get metadata', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileId = '123456789';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileId, []);
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertGetMetadataRequest(request, token, fileId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get metadata of file. status: 400');
+});
+
+
+/**
+ * メタデータ取得の API レスポンスを作成
+ * @param {String} name
+ * @param {String} mimeType
+ * @returns {HttpResponse}
+ */
+const createMetadataResponse = (name, mimeType) => {
+    const json = {
+        name,
+        mimeType
+    };
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(json));
+}
+
+/**
+ * ファイルダウンロードの API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.body
+ * @param {String} token
+ * @param {String} fileId
+ */
+const assertGetFileRequest = ({url, method, headers, body}, token, fileId) => {
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&alt=media`);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
+};
+
+/**
+ * ファイルダウンロードの API リクエストでエラー
+ */
+test('Fail to download file', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const fileId = '123456789';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileId, []);
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount === 1) {
+            assertGetMetadataRequest(request, token, fileId);
+            reqCount++;
+            return createMetadataResponse('ファイル.html', 'text/html');
+        }
+        assertGetFileRequest(request, token, fileId);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to download file. status: 400');
+});
+
+/**
+ * ファイルデータの準備
+ * @param {String} id
+ * @param {String} name
+ * @param {String} contentType
+ * @param {String} body
+ * @returns {Object}
+ */
+const prepareFileData = (id, name, contentType, body) => {
+    return {
+        id,
+        name,
+        contentType,
+        body
+    };
+};
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param expectedFile.name
+ * @param expectedFile.contentType
+ * @param expectedFile.body
+ */
+const assertFile = (file, {name, contentType, body}) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+    let text = '';
+    fileRepository.readFile(file, 'UTF-8', line => text += line + '\n');
+    expect(text).toEqual(`${body}\n`);
+};
+
+/**
+ * 成功 - ファイル ID をデータ項目で指定し、事前にファイルが添付されていない場合
+ */
+test('Succeed - file IDs set by data item, no pre-attached files', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const filesToDownload = [
+        prepareFileData('id-1', 'file1.txt', 'text/plain', 'Hello, World!'),
+        prepareFileData('id-2', 'file2.txt', 'text/plain', 'こんにちは、世界！'),
+        prepareFileData('id-3', 'PDFファイル.pdf', 'application/pdf', 'PDF data'),
+    ];
+    const fileIdsStr = filesToDownload.map(file => file.id).join('\n') + '\n';
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, fileIdsStr, []);
+
+    const token = 'token1';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const fileData = filesToDownload[Math.floor(reqCount / REQUEST_NUM_PER_FILE)];
+        if (reqCount % REQUEST_NUM_PER_FILE === 0 || reqCount % REQUEST_NUM_PER_FILE === 2) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount % REQUEST_NUM_PER_FILE === 1) { // メタデータ取得のリクエスト
+            assertGetMetadataRequest(request, token, fileData.id);
+            reqCount++;
+            return createMetadataResponse(fileData.name, fileData.contentType);
+        }
+        // ファイルダウンロードのリクエスト
+        assertGetFileRequest(request, token, fileData.id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, fileData.contentType, fileData.body);
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(filesToDownload.length * REQUEST_NUM_PER_FILE);
+
+    // ファイルのテスト
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(filesToDownload.length);
+    filesToDownload.forEach((expectedFile, i) => assertFile(files[i], expectedFile));
+});
+
+/**
+ * 成功 - ファイル ID を固定値で指定し、事前にファイルが添付されている場合
+ */
+test('Succeed - file ID set as fixed value, with pre-attached files', () => {
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const filesToDownload = [
+        prepareFileData('id-1', 'file1.txt', 'text/plain', 'Hello, World!')
+    ];
+    const fileIdsStr = filesToDownload.map(file => file.id).join('\n');
+    const preattachedFiles = new java.util.ArrayList();
+    preattachedFiles.add(engine.createQfile('test.html', 'text/html', '<html lang="ja"></html>'));
+    preattachedFiles.add(engine.createQfile('test.xml', 'text/xml', '<xml>さようなら</xml>'));
+    const fileDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'dummyFileId', preattachedFiles);
+    // ファイル ID を固定値で指定
+    configs.put('conf_FileIds', fileIdsStr);
+
+    const token = 'token1';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        const fileData = filesToDownload[Math.floor(reqCount / REQUEST_NUM_PER_FILE)];
+        if (reqCount % REQUEST_NUM_PER_FILE === 0 || reqCount % REQUEST_NUM_PER_FILE === 2) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount % REQUEST_NUM_PER_FILE === 1) { // メタデータ取得のリクエスト
+            assertGetMetadataRequest(request, token, fileData.id);
+            reqCount++;
+            return createMetadataResponse(fileData.name, fileData.contentType);
+        }
+        // ファイルダウンロードのリクエスト
+        assertGetFileRequest(request, token, fileData.id);
+        reqCount++;
+        return httpClient.createHttpResponse(200, fileData.contentType, fileData.body);
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(filesToDownload.length * REQUEST_NUM_PER_FILE);
+
+    // ファイルのテスト
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(filesToDownload.length + 2); // 事前にファイルが 2 つ添付されている
+    filesToDownload.forEach((expectedFile, i) => assertFile(files[i + 2], expectedFile));
+});
+
+]]></test>
+</service-task-definition>
