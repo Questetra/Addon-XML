@@ -67,6 +67,11 @@
             <label>U1: User Message</label>
             <label locale="ja">U1: ユーザメッセージ</label>
         </config>
+        <config name="conf_Images1" required="false" form-type="SELECT"
+                select-data-type="FILE">
+            <label>I1: Images to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
+        </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTAREA">
             <label>A1: Data item to save response</label>
@@ -90,13 +95,10 @@ function main() {
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
     const systemPrompt = configs.get('conf_SystemPrompt');
-    const message = configs.get('conf_Message1');
-    if (message === '') {
-        throw new Error('User Message is empty.');
-    }
+    const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, message);
+    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -191,6 +193,76 @@ const retrieveStopSequences = () => {
 };
 
 /**
+ * config からユーザメッセージ（添付画像を含む）を読み出す
+ * ユーザメッセージが空の場合、添付画像が不正な場合はエラー
+ * @returns {Object} ユーザメッセージオブジェクト
+ */
+const retrieveUserMessage = () => {
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+    const inlineImages = retrieveImages();
+    const userMessage = {
+        role: 'user',
+        content: [
+            {
+                type: 'text',
+                text: message
+            },
+            ...inlineImages
+        ]
+    };
+    return userMessage;
+};
+
+const MAX_IMAGE_NUM = 20; // Messages API の制限。1 ユーザメッセージにつき添付画像 20 個まで
+const MAX_IMAGE_SIZE = 3032160; // Messages API の制限。1 ファイルにつき 3.75 MB まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * config から画像を読み出す
+ * 以下の場合はエラー
+ * - 添付ファイルの総数が多すぎる場合
+ * - ファイルサイズが大きすぎる場合
+ * - Content-Type が許可されていない場合
+ * @returns {Array<Object>} 画像オブジェクトの配列
+ */
+const retrieveImages = () => {
+    const imagesDef = configs.getObject('conf_Images1');
+    if (imagesDef === null) {
+        return [];
+    }
+    const images = engine.findData(imagesDef);
+    if (images === null) {
+        return [];
+    }
+    if (images.size() > MAX_IMAGE_NUM) {
+        throw new Error(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
+    }
+    const inlineImages = [];
+    images.forEach(image => {
+        if (image.getLength() > MAX_IMAGE_SIZE) {
+            throw new Error(`Attached file "${image.getName()}" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+        }
+        const contentType = image.getContentType().split(';')[0];
+        if (!ALLOWED_MEDIA_TYPES.includes(contentType)) {
+            throw new Error(`Content-Type of the attached file "${image.getName()}" is not allowed.`);
+        }
+        const inlineImage = {
+            type: 'image',
+            source: {
+                type: 'base64',
+                media_type: contentType,
+                data: base64.encodeToString(fileRepository.readFile(image))
+            }
+        };
+        inlineImages.push(inlineImage);
+    });
+    return inlineImages;
+};
+
+/**
  * モデルの実行
  * @param awsKey
  * @param awsSecret
@@ -200,10 +272,10 @@ const retrieveStopSequences = () => {
  * @param temperature
  * @param stopSequences
  * @param systemPrompt
- * @param message
+ * @param userMessage
  * @returns {String} answer
  */
-const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, message) => {
+const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
     const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`;
     const payload = {
         anthropic_version: ANTHROPIC_VERSION,
@@ -211,17 +283,7 @@ const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, s
         temperature,
         stop_sequences: stopSequences,
         system: systemPrompt,
-        messages: [
-            {
-                role: 'user',
-                content: [
-                    {
-                        type: 'text',
-                        text: message
-                    }
-                ]
-            }
-        ]
+        messages: [userMessage]
     };
 
     const response = httpClient.begin()
