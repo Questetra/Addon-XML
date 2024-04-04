@@ -321,17 +321,21 @@ const saveData = (configName, data) => {
  * @param {String} organizationId
  * @param {String} model
  * @param {String} maxTokens
+ * @param {String} temperature
+ * @param {String} stopSequences
  * @param {String} gptRole
  * @param {String} message
  * @returns {DataDefinitionView} answerDef
  */
-const prepareConfigs = (authKey, organizationId, model, maxTokens, gptRole, message) => {
+const prepareConfigs = (authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message) => {
     const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
     configs.putObject('conf_Auth', authSetting);
 
     configs.put('conf_OrganizationId', organizationId);
     configs.put('conf_Model', model);
     configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_Temperature', temperature);
+    configs.put('conf_StopSequences', stopSequences);
     configs.put('conf_GPT_Role', gptRole);
     configs.put('conf_Message1', message);
 
@@ -346,11 +350,15 @@ const prepareConfigs = (authKey, organizationId, model, maxTokens, gptRole, mess
  * @param errorMsg
  */
 const assertError = (errorMsg) => {
+    let failed = false;
     try {
         main();
-        fail();
     } catch (e) {
+        failed = true;
         expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -358,7 +366,7 @@ const assertError = (errorMsg) => {
  * メッセージが空
  */
 test('Message is empty', () => {
-    prepareConfigs('key', '', 'gpt-4', '', '', '');
+    prepareConfigs('key', '', 'gpt-4', '', '', '', '', '');
     assertError('User Message is empty.');
 });
 
@@ -366,7 +374,7 @@ test('Message is empty', () => {
  * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
  */
 test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
-    prepareConfigs('key', '', 'gpt-4', '1.1', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '1.1', '', '', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
 });
 
@@ -374,8 +382,36 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
  * トークン数の最大値が正の整数でない - ゼロ
  */
 test('Maximum number of tokens must be a positive integer - 0', () => {
-    prepareConfigs('key', '', 'gpt-4', '0', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '0', '', '', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
+});
+
+/**
+ * 温度が不正 - 数字、小数点でない文字を含む
+ */
+test('Invalid temperature - includes a non-numeric character', () => {
+    prepareConfigs('key', '', 'gpt-4', '', '-1', '', '', 'こんにちは');
+    assertError('Temperature must be a number from 0 to 2.');
+});
+
+/**
+ * 温度が不正 - 2 を超える
+ */
+test('Invalid temperature - bigger than 2', () => {
+    prepareConfigs('key', '', 'gpt-4', '', '2.1', '', '', 'こんにちは');
+    assertError('Temperature must be a number from 0 to 2.');
+});
+
+/**
+ * 停止シークエンスの数が多すぎる
+ */
+test('Too many stop sequences', () => {
+    let stopSequences = '\n';
+    for (let i = 0; i < MAX_STOP_SEQUENCE_NUM + 1; i++) {
+        stopSequences += `stop${i}\n`;
+    }
+    prepareConfigs('key', '', 'gpt-4', '', '', stopSequences, '', 'こんにちは');
+    assertError(`Too many stop sequences. The maximum number is ${MAX_STOP_SEQUENCE_NUM}.`);
 });
 
 /**
@@ -406,7 +442,7 @@ const createQfile = (name, contentType, size) => {
  * 添付画像のサイズが大きすぎる
  */
 test('Image file is too large', () => {
-    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', 'こんにちは');
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -422,7 +458,7 @@ test('Image file is too large', () => {
  * 添付画像の Content-Type がサポート外
  */
 test('Content-Type of image file is not supported', () => {
-    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', 'こんにちは');
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -446,7 +482,9 @@ test('Content-Type of image file is not supported', () => {
  * @param {String} authKey
  * @param {String} organizationId
  * @param {String} model
- * @param {String} maxTokens
+ * @param {Number} maxTokens
+ * @param {Number} temperature
+ * @param {Array<String>} stopSequences
  * @param {String} gptRole
  * @param {String} message
  * @param {Array<String>} imageContentTypes
@@ -457,7 +495,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, maxTokens, gptRole, message, imageContentTypes) => {
+                       }, authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message, imageContentTypes) => {
     expect(url).toEqual('https://api.openai.com/v1/chat/completions');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -466,8 +504,12 @@ const assertRequest = ({
         expect(headers['OpenAI-Organization']).toEqual(organizationId);
     }
     const bodyObj = JSON.parse(body);
+    expect(bodyObj.user).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
     expect(bodyObj.model).toEqual(model);
+    expect(bodyObj.n).toEqual(1);
     expect(bodyObj.max_tokens).toEqual(maxTokens);
+    expect(bodyObj.temperature).toEqual(temperature);
+    expect(bodyObj.stop).toEqual(stopSequences);
     if (gptRole === '') {
         expect(bodyObj.messages.length).toEqual(1);
     } else {
@@ -507,10 +549,10 @@ const assertAttachment = (userMessage, index, contentType) => {
  * API リクエストでエラー
  */
 test('Fail to request', () => {
-    prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', 'こんにちは');
+    prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', '', '', 'こんにちは');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', 2048, '', 'こんにちは', []);
+        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', MAX_TOKENS_DEFAULT, 1, [], '', 'こんにちは', []);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -548,11 +590,11 @@ const createResponse = (answerText) => {
  * 成功
  */
 test('Success to request', () => {
-    const answerDef = prepareConfigs('key3', '', 'gpt-4', '', 'Robot', 'Hello World');
+    const answerDef = prepareConfigs('key3', '', 'gpt-4', '', '', '', 'Robot', 'Hello World');
     // 添付画像指定なし
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key3', '', 'gpt-4', MAX_TOKENS_DEFAULT, 'Robot', 'Hello World', []);
+        assertRequest(request, 'key3', '', 'gpt-4', MAX_TOKENS_DEFAULT, 1, [], 'Robot', 'Hello World', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("\n\nHello there, how may I assist you today?"));
     });
     main();
@@ -565,14 +607,14 @@ test('Success to request', () => {
  * 成功 - 組織 ID を指定
  */
 test('Success to request - with organization ID', () => {
-    const answerDef = prepareConfigs('key4', 'org-1', 'gpt-4-32k', '', '', 'Hi!');
+    const answerDef = prepareConfigs('key4', 'org-1', 'gpt-4-32k', '', '', '', '', 'Hi!');
 
     // 添付画像はデータ項目の指定はあるが、ファイル添付なし
     const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
     configs.putObject('conf_Images1', imagesDef);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key4', 'org-1', 'gpt-4-32k', MAX_TOKENS_DEFAULT, '', 'Hi!', []);
+        assertRequest(request, 'key4', 'org-1', 'gpt-4-32k', MAX_TOKENS_DEFAULT, 1, [], '', 'Hi!', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! How can I help you?"));
     });
     main();
@@ -585,10 +627,47 @@ test('Success to request - with organization ID', () => {
  * 成功 - 最大トークン数を指定
  */
 test('Success to request - with max_tokens', () => {
-    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '100', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '100', '', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', 100, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', 100, 1, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("Hi! It's sunny today.");
+});
+
+/**
+ * 成功 - 温度を指定
+ */
+test('Success to request - with temperature', () => {
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-turbo-preview', '', '0.8', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key5', '', 'gpt-4-turbo-preview', MAX_TOKENS_DEFAULT, 0.8, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("Hi! It's sunny today.");
+});
+
+/**
+ * 成功 - 停止シーケンスを指定
+ */
+test('Success to request - with stop', () => {
+    const stopSequences = [];
+    for (let i = 0; i < MAX_STOP_SEQUENCE_NUM; i++) {
+        stopSequences.push(`stop${i}`);
+    }
+    const stopSequencesStr = stopSequences.join('\n') + '\n';
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-turbo-preview', '', '', stopSequencesStr, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key5', '', 'gpt-4-turbo-preview', MAX_TOKENS_DEFAULT, 1, stopSequences, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -601,7 +680,7 @@ test('Success to request - with max_tokens', () => {
  * 成功 - 画像を添付
  */
 test('Success to request - with attached images', () => {
-    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '', '', 'Describe the images attached.');
+    const answerDef = prepareConfigs('key5', '', 'gpt-4-vision-preview', '', '', '', '', 'Describe the images attached.');
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -614,7 +693,7 @@ test('Success to request - with attached images', () => {
 
     const imageContentTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', MAX_TOKENS_DEFAULT, '', 'Describe the images attached.', imageContentTypes);
+        assertRequest(request, 'key5', '', 'gpt-4-vision-preview', MAX_TOKENS_DEFAULT, 1, [], '', 'Describe the images attached.', imageContentTypes);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
     });
     main();
