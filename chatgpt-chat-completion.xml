@@ -54,10 +54,18 @@
             <label>C4: Maximum number of tokens to consume (2048 if blank)</label>
             <label locale="ja">C4: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
+        <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
+            <label>C5: Temperature (0.0 - 2.0) (1.0 if blank)</label>
+            <label locale="ja">C5: 温度（0.0 〜 2.0）（空白の場合、1.0）</label>
+        </config>
+        <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
+            <label>C6: Stop Sequences (write one per line, up to four)</label>
+            <label locale="ja">C6: 停止シーケンス（1 行に 1 つ、最大 4 つ）</label>
+        </config>
         <config name="conf_GPT_Role" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C5: Role for ChatGPT</label>
-            <label locale="ja">C5: ChatGPT に与える役割</label>
+            <label>C7: Role for ChatGPT</label>
+            <label locale="ja">C7: ChatGPT に与える役割</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -88,6 +96,8 @@ function main() {
     const organizationId = configs.get('conf_OrganizationId');
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
+    const temperature = retrieveTemperature();
+    const stopSequences = retrieveStopSequences();
 
     // https://platform.openai.com/docs/guides/safety-best-practices
     // Sending end-user IDs in your requests can be a useful tool to help OpenAI monitor and detect abuse.
@@ -101,7 +111,7 @@ function main() {
     const imageUrls1 = retrieveImageUrls('conf_Images1');
 
     ////// == 演算 / Calculating ==
-    const answer1 = createChat(auth, organizationId, model, maxTokens, requestUser, gptRole, message1, imageUrls1);
+    const answer1 = createChat(auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer1 ?? '');
@@ -122,6 +132,42 @@ const retrieveMaxTokens = () => {
         throw new Error('Maximum number of tokens must be a positive integer.');
     }
     return parseInt(maxTokens, 10);
+};
+
+/**
+ * config から温度を読み出す
+ * 指定なしの場合、1 を返す
+ * @returns {Number}
+ */
+const retrieveTemperature = () => {
+    const temperature = configs.get('conf_Temperature');
+    if (temperature === '') {
+        return 1;
+    }
+    const regExp = /^([0-1](\.\d+)?|2(\.0+)?)$/;
+    if (!regExp.test(temperature)) {
+        throw new Error('Temperature must be a number from 0 to 2.');
+    }
+    return parseFloat(temperature);
+};
+
+const MAX_STOP_SEQUENCE_NUM = 4;
+
+/**
+ * config から停止シーケンスを読み出す
+ * @returns {Array<String>}
+ */
+const retrieveStopSequences = () => {
+    const stopSequencesStr = configs.get('conf_StopSequences');
+    if (stopSequencesStr === '') {
+        return [];
+    }
+    const stopSequences = stopSequencesStr.split('\n')
+        .filter(s => s !== '');
+    if (stopSequences.length > MAX_STOP_SEQUENCE_NUM) {
+        throw new Error(`Too many stop sequences. The maximum number is ${MAX_STOP_SEQUENCE_NUM}.`);
+    }
+    return stopSequences;
 };
 
 /**
@@ -158,19 +204,26 @@ const retrieveImageUrls = (configName) => {
  * @param organizationId
  * @param model
  * @param maxTokens
+ * @param temperature
+ * @param stopSequences
  * @param requestUser
  * @param gptRole
  * @param message1
  * @param imageUrls1
  * @returns {String} answer1
  */
-const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole, message1, imageUrls1) => {
+const createChat = (auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1) => {
     //// OpenAI API > Documentation > API REFERENCE > CHAT
     //// https://platform.openai.com/docs/api-reference/chat
 
     /// prepare json
     const requestJson = {
+        user: requestUser,
         model,
+        n: 1,
+        max_tokens: maxTokens,
+        temperature,
+        stop: stopSequences,
         messages: []
     };
     if (gptRole !== '') {
@@ -196,10 +249,6 @@ const createChat = (auth, organizationId, model, maxTokens, requestUser, gptRole
         role: 'user',
         content: message1Content
     });
-
-    requestJson.n = 1;
-    requestJson.max_tokens = maxTokens;
-    requestJson.user = requestUser;
 
     let request = httpClient.begin().authSetting(auth)
         .body(JSON.stringify(requestJson), 'application/json');
