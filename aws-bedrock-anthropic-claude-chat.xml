@@ -397,6 +397,7 @@ const assertError = (errorMsg) => {
 const MODEL_1 = 'anthropic.claude-instant-v1';
 const MODEL_2 = 'anthropic.claude-v2';
 const MODEL_2_1 = 'anthropic.claude-v2:1';
+const MODEL_3_SONNET = 'anthropic.claude-3-sonnet-20240229-v1:0';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -529,6 +530,99 @@ test('Message is empty', () => {
 });
 
 /**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 画像を添付
+ * @param {Array<Qfile>} images
+ */
+const attachImages = (images) => {
+    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, images);
+    configs.putObject('conf_Images1', imagesDef);
+};
+
+/**
+ * 添付ファイルの数が多すぎる
+ */
+test('Too many files attached', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+
+    // 添付ファイルを指定
+    const images = [];
+    for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
+        images.push(createQfile(`画像${i}.png`, 'image/png', 100));
+    }
+    attachImages(images);
+
+    assertError(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
+});
+
+/**
+ * 添付ファイルのサイズが大きすぎる
+ */
+test('Attached image is too large', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+
+    // 添付ファイルを指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE + 1);
+    attachImages([image1, image2]);
+
+    assertError(`Attached file "画像2.jpg" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+});
+
+/**
+ * 添付ファイルに許可されていない Content-Type のファイルを含む
+ */
+test('Content-Type of an attached file is not allowed', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+
+    // 添付ファイルを指定
+    const image1 = createQfile('画像1.png', 'image/png;filename="画像1.png"', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', 200);
+    const image3 = createQfile('画像3.gif', 'image/gif', 300);
+    const image4 = createQfile('画像4.webp', 'image/webp', 100);
+    const imageNotAllowed = createQfile('許可されていない画像.svg', 'image/svg+xml', 200);
+    attachImages([image1, image2, image3, image4, imageNotAllowed]);
+
+    assertError('Content-Type of the attached file "許可されていない画像.svg" is not allowed.');
+});
+
+/**
  * API リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -542,13 +636,14 @@ test('Message is empty', () => {
  * @param {Array<String>} stopSequences
  * @param {String} systemPrompt
  * @param {String} message
+ * @param {Array<Qfile>} images
  */
 const assertRequest = ({
                            url,
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message) => {
+                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, images = []) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -562,6 +657,13 @@ const assertRequest = ({
     expect(bodyObj.messages[0].role).toEqual('user');
     expect(bodyObj.messages[0].content[0].type).toEqual('text');
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
+    expect(bodyObj.messages[0].content.length).toEqual(images.length + 1);
+    images.forEach((image, i) => {
+        expect(bodyObj.messages[0].content[i + 1].type).toEqual('image');
+        expect(bodyObj.messages[0].content[i + 1].source.type).toEqual('base64');
+        expect(bodyObj.messages[0].content[i + 1].source.media_type).toEqual(image.getContentType().split(';')[0]);
+        expect(bodyObj.messages[0].content[i + 1].source.data).toEqual(base64.encodeToString(fileRepository.readFile(image)));
+    });
 };
 
 /**
@@ -653,8 +755,9 @@ test('Success - with max tokens and temperature', () => {
 
 /**
  * 成功 - 温度、停止シーケンス、システムプロンプトを指定
+ * 添付画像のデータ項目は指定しているが、添付ファイルなし
  */
-test('Success - with temperature, stop sequences and system prompt', () => {
+test('Success - with temperature, stop sequences and system prompt, empty attached files', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'eu-central-2';
@@ -664,11 +767,43 @@ test('Success - with temperature, stop sequences and system prompt', () => {
     const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
     const message = 'Hi. How are you?';
     const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, maxTokens, temperature, stopSequences, systemPrompt, message);
+    attachImages([]);
 
     const answer = 'こんにちは。お元気ですか？';
     httpClient.setRequestHandler((request) => {
         assertRequest(request, region, MODEL_2_1, MAX_TOKENS_DEFAULT, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_1, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 添付画像を最大個数指定
+ */
+test('Success - with attached images', () => {
+    const key = 'key-54321';
+    const secret = 'secret-99999';
+    const region = 'ap-northeast-1';
+    const maxTokens = '';
+    const temperature = '';
+    const stopSequences = '';
+    const message = 'Describe each image attached.';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_3_SONNET, maxTokens, temperature, stopSequences, '', message);
+
+    // 添付ファイルを指定
+    const images = [];
+    for (let i = 0; i < MAX_IMAGE_NUM - 1; i++) {
+        images.push(createQfile(`画像${i}.png`, ALLOWED_MEDIA_TYPES[i % 4], 100));
+    }
+    images.push(createQfile('最大サイズの画像.jpg', 'image/jpeg;filename="最大サイズの画像.jpg"', MAX_IMAGE_SIZE));
+    attachImages(images);
+
+    const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_3_SONNET, MAX_TOKENS_DEFAULT, 1, [], '', message, images);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_SONNET, answer));
     });
 
     expect(main()).toEqual(undefined);
