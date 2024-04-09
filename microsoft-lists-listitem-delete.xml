@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Delete List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム削除</label>
-    <!--
-    <last-modified>2024-04-08</last-modified>
-    -->
+    <last-modified>2024-04-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -13,7 +11,7 @@
         When you delete multiple ones, you should write one list item ID on each line.
     </summary>
     <summary locale="ja">
-        この工程は、Microsoft Lists のリストアイテムを削除します。一度に複数の削除が可能です。複数削除する場合、データ項目では
+        この工程は、Microsoft Lists のリストアイテムを削除します。一度に複数の削除が可能です。複数削除する場合、文字型データ項目では
         1 行につき 1 つずつリストアイテム ID を書くようにしてください。
     </summary>
     <configs>
@@ -58,7 +56,7 @@ const main = () => {
 
     //// == 演算 / Calculating ==
     if (listItemIds.length + 1 > httpClient.getRequestingLimit()) { // 1 additional request for getting site ID
-        throw new Error('Too many list item IDs to delete.');
+        throw new Error('Too many list item IDs.');
     }
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
     listItemIds.forEach(listItemId => {
@@ -192,6 +190,278 @@ const deleteListItem = (oauth2, siteId, listTitle, listItemId) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param listItemIdsDef
+ */
+const prepareConfigs = (siteUrl, listTitle, listItemIdsDef) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Microsoft Lists',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+    configs.putObject('conf_ListItemIds', listItemIdsDef);
+};
+
+/**
+ * リストアイテム ID の準備（文字型データ項目の場合）
+ * @param listItemIds
+ * @return listItemIdsDef
+ */
+const preparelistItemIdsStringDef = (listItemIds) => {
+    // 文字型データ項目（複数行）を準備
+    const listItemIdsDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemIds', 'STRING_TEXTAREA');
+    if (listItemIds !== null) {
+        const listItemIdsStr = listItemIds.join('\n') + '\n\n\n'; // 改行のみの行は無視される
+        engine.setData(listItemIdsDef, listItemIdsStr);
+    }
+    return listItemIdsDef;
+};
+
+/**
+ * リストアイテム ID の準備（選択型データ項目の場合）
+ * @param listItemIds
+ * @return listItemIdsDef
+ */
+const preparelistItemIdsSelectDef = (listItemIds) => {
+    // 選択型データ項目を準備
+    const listItemIdsDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemIds', 'SELECT_CHECKBOX');
+    const select = new java.util.ArrayList();
+    listItemIds.forEach(listItemId => {
+        const item = engine.createItem(listItemId, `${listItemId} を選択`);
+        select.add(item);
+    });
+    engine.setData(listItemIdsDef, select);
+    return listItemIdsDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空
+ */
+test('No list item IDs - null', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsStringDef(null);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs.');
+});
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空行のみ
+ */
+test('No list item IDs - empty lines', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsStringDef([]);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs.');
+});
+
+/**
+ * リストアイテム ID を選択型データ項目で設定し、ひとつも選択されていない
+ */
+test('No list item IDs selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsSelectDef([]);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs selected.');
+});
+
+/**
+ * リストアイテム ID を指定個数準備
+ * @param num
+ * @return listItemIds
+ */
+const prepareListItemIds = (num) => {
+    const listItemIds = [];
+    for (let i = 0; i < num; i++) {
+        listItemIds.push(`${i + 1}`);
+    }
+    return listItemIds;
+};
+
+/**
+ * リストアイテム ID の指定個数が多すぎる - 文字型データ項目の場合
+ */
+test('Too many list item IDs - String', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit());
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('Too many list item IDs.');
+});
+
+/**
+ * リストアイテム ID の指定個数が多すぎる - 選択型データ項目の場合
+ */
+test('Too many list item IDs - Select', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit());
+    const listItemIdsDef = preparelistItemIdsSelectDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('Too many list item IDs.');
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(1);
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * リストアイテム削除の DELETE リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ * @param listItemId
+ */
+const assertDeleteListItemRequest = ({ url, method, headers }, siteId, listTitle, listItemId) => {
+    let expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('DELETE');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * リストアイテム削除の DELETE リクエストでエラー
+ */
+test('Fail in DELETE request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(1);
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[0]);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to delete list item. id: 1, status: 400');
+});
+
+/**
+ * 成功 - リストアイテム ID を文字型データ項目で指定
+ */
+test('Success - list item IDs set by String', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit() - 1); // 最大個数指定
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[reqCount - 1]);
+        reqCount++;
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(listItemIds.length + 1);
+});
+
+/**
+ * 成功 - リストアイテム ID を選択型データ項目で指定
+ */
+test('Success - list item IDs set by Select', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment/';
+    const listTitle = '共有リスト 2';
+    const listItemIds = prepareListItemIds(10);
+    const listItemIdsDef = preparelistItemIdsSelectDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[reqCount - 1]);
+        reqCount++;
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(listItemIds.length + 1);
+});
 
 ]]></test>
 
