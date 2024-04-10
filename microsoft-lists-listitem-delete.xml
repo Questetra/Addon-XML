@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Microsoft Lists: Delete List Item</label>
+    <label locale="ja">Microsoft Lists: リストアイテム削除</label>
+    <last-modified>2024-04-09</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>
+        This item deletes list items on Microsoft Lists. You can delete multiple list items at once.
+        When you delete multiple ones, you should write one list item ID on each line.
+    </summary>
+    <summary locale="ja">
+        この工程は、Microsoft Lists のリストアイテムを削除します。一度に複数の削除が可能です。複数削除する場合、文字型データ項目では
+        1 行につき 1 つずつリストアイテム ID を書くようにしてください。
+    </summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/Sites.ReadWrite.All">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_SiteUrl" required="true" form-type="TEXTFIELD">
+            <label>C2: SharePoint Site URL</label>
+            <label locale="ja">C2: SharePoint サイトの URL</label>
+        </config>
+        <config name="conf_ListTitle" required="true" form-type="TEXTFIELD">
+            <label>C3: List Title</label>
+            <label locale="ja">C3: リストの名前</label>
+        </config>
+        <config name="conf_ListItemIds" required="true" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C4: Data item with list item IDs to delete</label>
+            <label locale="ja">C4: 削除するリストアイテムの ID が保存されているデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-lists-listitem-delete/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-microsoft-lists-listitem-delete/</help-page-url>
+
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: https://graph.microsoft.com/Sites.ReadWrite.All offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
+
+const main = () => {
+    //// == 工程コンフィグの参照 / Config Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const siteUrl = retrieveSiteUrl();
+    const listTitle = configs.get('conf_ListTitle');
+    const listItemIds = retrieveListItemIds();
+
+    //// == 演算 / Calculating ==
+    if (listItemIds.length + 1 > httpClient.getRequestingLimit()) { // 1 additional request for getting site ID
+        throw new Error('Too many list item IDs.');
+    }
+    const siteId = getSiteIdByUrl(oauth2, siteUrl);
+    listItemIds.forEach(listItemId => {
+        deleteListItem(oauth2, siteId, listTitle, listItemId);
+    });
+};
+
+/**
+ * 工程コンフィグからサイトの URL を取得する
+ * @returns {String} サイトの URL
+ */
+const retrieveSiteUrl = () => {
+    let siteUrl = configs.get('conf_SiteUrl');
+    // 末尾にスラッシュがある場合、削除
+    if (siteUrl.endsWith('/')) {
+        siteUrl = siteUrl.slice(0, -1);
+    }
+    return siteUrl;
+};
+
+/**
+ * 工程コンフィグからリストアイテム ID を取得する
+ * @returns {Array<String>} リストアイテム ID
+ */
+const retrieveListItemIds = () => {
+    const dataDef = configs.getObject('conf_ListItemIds');
+    if (dataDef.matchDataType('SELECT')) { // 選択型データ項目の場合
+        const select = engine.findData(dataDef);
+        if (select === null || select.size() === 0) { // 未選択
+            throw new Error('No list item IDs selected.');
+        }
+        const ids = [];
+        for (let i = 0; i < select.size(); i++) {
+            ids.push(select.get(i).getValue());
+        }
+        return ids;
+    }
+    // 文字型データ項目の場合
+    const value = engine.findData(dataDef);
+    if (value === null) {
+        throw new Error('No list item IDs.');
+    }
+    const ids = value.split('\n').filter(id => id !== '');
+    if (ids.length === 0) {
+        throw new Error('No list item IDs.');
+    }
+    return ids;
+};
+
+/**
+ * サイトのメタデータを取得し、siteId を返す
+ * APIの仕様: https://docs.microsoft.com/ja-jp/onedrive/developer/rest-api/api/shares_get?view=odsp-graph-online
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} siteUrl  SharePoint サイトの URL
+ * @returns {String} siteId
+ */
+const getSiteIdByUrl = (oauth2, siteUrl) => {
+    // encoding sharing URL
+    const encodedSharingUrl = encodeSharingUrl(siteUrl);
+
+    // preparing for API Request
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('select', 'id')
+        .get(`${GRAPH_URI}shares/${encodedSharingUrl}/site`);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get site info. status: ${status}`);
+    }
+    return JSON.parse(responseStr).id;
+};
+
+/**
+ * 共有URLを unpadded base64url 形式にエンコードする
+ * @param {String} sharingUrl  共有URL
+ * @returns {String} encodedSharingUrl  エンコードされた共有URL
+ */
+const encodeSharingUrl = (sharingUrl) => {
+    let encodedSharingUrl = base64.encodeToUrlSafeString(sharingUrl);
+    while (encodedSharingUrl.slice(-1) === '=') {
+        encodedSharingUrl = encodedSharingUrl.slice(0, -1);
+    }
+    return `u!${encodedSharingUrl}`;
+};
+
+/**
+ * リストアイテムを削除する
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} siteId  SharePoint サイトの ID
+ * @param {String} listTitle  リストの名前
+ * @param {String} listItemId  リストアイテム ID
+ */
+const deleteListItem = (oauth2, siteId, listTitle, listItemId) => {
+    const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}`;
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .delete(url);
+    const status = response.getStatusCode();
+    if (status !== 204) {
+        engine.log(response.getResponseAsString());
+        throw new Error(`Failed to delete list item. id: ${listItemId}, status: ${status}`);
+    }
+};
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABFlJREFUWEfF
+        l3tsU3UUx7/nrqVlbPiAZbjhhhLCdAYXxKBolKi49VZ0+KiKYbgIoa1mwbJuREKCJurWLghlrh1O
+        EFgwARPjY+0GkqB/CD7+mDMb8lhSjchkKDKY69b1HtLbdbCtt/dmML1/3dyex+c8fud3SvifH9Lq
+        v6Fw881hXeRxgJcw406AbiHiDFmfcZaBLoDaCTigj6R8tarF8bcW26oAHz5Znd4fEd4C82tEpNNi
+        lJkHAfIMsuHNskBZTzIdRQAGk090rwShCqBMLY5HyzBzF0GosPrXNRKIE9lQBKgT3U4CqkFQzVJS
+        OAYzwWFvcm7RBLDvuX0p53qDO4ioZDxRK+kwsGV6am65Zb8lcrXMmOjqzO61BLx3PZ3HbTHw+uhM
+        jADwiTVLJJKaCSRMDABLBEG0NZW3xO0PA+xcvMkYmpIaTNZwt86fhQfXPAqQelv8e74Xn1V+PDYO
+        xpm+8ymzHUccfdEfhy15Rdd6EL2rFHnOgttQuKEY39QewO+tv8piUkQCS1eam4SYOSLC895S7Hyh
+        NqG5q0sha0SPnFd0/0FEMxJpxJ0frPoCwe9OaapOyW4bdpd4E8syzlj95dnRoykD1Jmq7yNBOJJI
+        OnteDpa+bcHJwx043fabJudRoUWrH8EOi0dRniXpfnug8mgMwOyuIqAykXTRxmLcNHMaLp7tgaAT
+        kJmXhdM/jQRhSQIJI/t2ZkEuthdvVgYAqu1NzvUxANF1mIgeTiRt2rgMnd+ewIlD7TBOnYxnt65A
+        Y+l21Uy8vPdVfLT8fWUA5q/t/orFcYBfiGjufwxw3O6vyJMBvKLrHxDdoASQNS8H4dAAhBQBxvTJ
+        6L8UUs2AIc0I39IaZTnmCzZ/xY1DGXCHiGBQAgj+0IljzW1Iy0hHsetFTSVYscuKPSt9mgGCRMjV
+        BrAcjaX1qhlQA2DmKyWoE91HibBQCUCfOgndJ7swKc2IOQ/lod3fqgqQby5AwzNbtTWhV3T7QFij
+        BGBIN+Kv4DnojXrc/sAcHD/UkRQg77F89F/qVx5EselXb/M7rXIP+ERXERMFtJ2CkqQlKNzwFGbc
+        kY29qxsQ7htQBCVmk9Vf0SwDeEweg55CfyY6CdE5EPy+E8da2lTnQHRoZc7NUnXOjJ7pU3ozLPs3
+        DQxfRkrT8O6n78V8y0JEwhH5ktEZdAiHwrHIovdQ1AID0YtooLcfn6zdkzTyITV5CkbfhwE8Js9U
+        HYVOEVFs052gh5m7DTqe/crnlRdHAMgDyVxTyJD8E7mQCCwUWf3lB+Pxjdks1PaCa0mM6koWN+4V
+        XR+AaNW1OBujO3TsRn9X3K28pup1IMF9PdZyMMpsAWfC9Sjpcud9wr0MjG0AsseVDeYgBHLYvnR+
+        qqSvul3W31OvlzIvvARQGYAC1YywfDhbQVw7LXXWrtH/AzSXIBGxx/ROhp50ZgYWALiLiPKH5kEH
+        g38m4McwDzaVBd7o1pox1QxoNTReucsdycEwUqG3yAAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param listItemIdsDef
+ */
+const prepareConfigs = (siteUrl, listTitle, listItemIdsDef) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Microsoft Lists',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+    configs.putObject('conf_ListItemIds', listItemIdsDef);
+};
+
+/**
+ * リストアイテム ID の準備（文字型データ項目の場合）
+ * @param listItemIds
+ * @return listItemIdsDef
+ */
+const preparelistItemIdsStringDef = (listItemIds) => {
+    // 文字型データ項目（複数行）を準備
+    const listItemIdsDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemIds', 'STRING_TEXTAREA');
+    if (listItemIds !== null) {
+        const listItemIdsStr = listItemIds.join('\n') + '\n\n\n'; // 改行のみの行は無視される
+        engine.setData(listItemIdsDef, listItemIdsStr);
+    }
+    return listItemIdsDef;
+};
+
+/**
+ * リストアイテム ID の準備（選択型データ項目の場合）
+ * @param listItemIds
+ * @return listItemIdsDef
+ */
+const preparelistItemIdsSelectDef = (listItemIds) => {
+    // 選択型データ項目を準備
+    const listItemIdsDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemIds', 'SELECT_CHECKBOX');
+    const select = new java.util.ArrayList();
+    listItemIds.forEach(listItemId => {
+        const item = engine.createItem(listItemId, `${listItemId} を選択`);
+        select.add(item);
+    });
+    engine.setData(listItemIdsDef, select);
+    return listItemIdsDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空
+ */
+test('No list item IDs - null', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsStringDef(null);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs.');
+});
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空行のみ
+ */
+test('No list item IDs - empty lines', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsStringDef([]);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs.');
+});
+
+/**
+ * リストアイテム ID を選択型データ項目で設定し、ひとつも選択されていない
+ */
+test('No list item IDs selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdsDef = preparelistItemIdsSelectDef([]);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('No list item IDs selected.');
+});
+
+/**
+ * リストアイテム ID を指定個数準備
+ * @param num
+ * @return listItemIds
+ */
+const prepareListItemIds = (num) => {
+    const listItemIds = [];
+    for (let i = 0; i < num; i++) {
+        listItemIds.push(`${i + 1}`);
+    }
+    return listItemIds;
+};
+
+/**
+ * リストアイテム ID の指定個数が多すぎる - 文字型データ項目の場合
+ */
+test('Too many list item IDs - String', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit());
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('Too many list item IDs.');
+});
+
+/**
+ * リストアイテム ID の指定個数が多すぎる - 選択型データ項目の場合
+ */
+test('Too many list item IDs - Select', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit());
+    const listItemIdsDef = preparelistItemIdsSelectDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    assertError('Too many list item IDs.');
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(1);
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * リストアイテム削除の DELETE リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteId
+ * @param listTitle
+ * @param listItemId
+ */
+const assertDeleteListItemRequest = ({ url, method, headers }, siteId, listTitle, listItemId) => {
+    let expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('DELETE');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * リストアイテム削除の DELETE リクエストでエラー
+ */
+test('Fail in DELETE request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(1);
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[0]);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to delete list item. id: 1, status: 400');
+});
+
+/**
+ * 成功 - リストアイテム ID を文字型データ項目で指定
+ */
+test('Success - list item IDs set by String', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIds = prepareListItemIds(httpClient.getRequestingLimit() - 1); // 最大個数指定
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[reqCount - 1]);
+        reqCount++;
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(listItemIds.length + 1);
+});
+
+/**
+ * 成功 - リストアイテム ID を選択型データ項目で指定
+ */
+test('Success - list item IDs set by Select', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment/';
+    const listTitle = '共有リスト 2';
+    const listItemIds = prepareListItemIds(10);
+    const listItemIdsDef = preparelistItemIdsSelectDef(listItemIds);
+    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertDeleteListItemRequest(request, siteId, listTitle, listItemIds[reqCount - 1]);
+        reqCount++;
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(listItemIds.length + 1);
+});
+
+]]></test>
+
+</service-task-definition>
