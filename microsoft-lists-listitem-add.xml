@@ -206,10 +206,9 @@ const encodeSharingUrl = (sharingUrl) => {
  */
 const addListItem = (oauth2, siteId, listTitle, listItemObj) => {
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`;
-    engine.log(JSON.stringify(listItemObj)); // テスト用
     const response = httpClient.begin()
         .authSetting(oauth2)
-        .queryParam('select', 'id')
+        .queryParam('$select', 'id')
         .body(JSON.stringify(listItemObj), 'application/json; charset=UTF-8')
         .post(url);
     const status = response.getStatusCode();
@@ -260,6 +259,235 @@ function saveData(dataDef, dataString){
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param listItemIdDef
+ * @param columnNames
+ * @param columnValues
+ * @return {DataDefinitionView} listItemIdDef
+ */
+const prepareConfigs = (siteUrl, listTitle, columnNames, columnValues) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Microsoft Lists',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+
+    // リストアイテム ID を保存するデータ項目を作成し、設定
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'STRING_TEXTFIELD');
+    engine.setData(listItemIdDef, '事前文字列');
+
+    // 列の名前と値を設定
+    for (let i = 0; i < COLUMN_NUM; i++) {
+        configs.put(`conf_ColumnName${i + 1}`, columnNames[i]);
+        configs.put(`conf_ColumnValue${i + 1}`, columnValues[i]);
+    }
+    return listItemIdDef;
+};
+
+/**
+ * リストアイテム ID の準備（文字型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdStringDef = (listItemId) => {
+    // 文字型データ項目（単一行）を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'STRING_TEXTFIELD');
+    engine.setData(listItemIdDef, listItemId);
+    return listItemIdDef;
+};
+
+/**
+ * リストアイテム ID の準備（選択型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdSelectDef = (listItemId) => {
+    // 選択型データ項目を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(listItemId, `${listItemId} を選択`);
+    select.add(item);
+    engine.setData(listItemIdDef, select);
+    return listItemIdDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+const BLANKS = ['', '', '', '', '', '', ''];
+
+const SAMPLE_COLUMN_NAMES = [
+    'SingleLineOfText',
+    'MultiLineOfText',
+    'Number',
+    'Currency',
+    'ChoiceSingle',
+    'Datetime',
+    'Date'
+];
+
+const SAMPLE_COLUMN_VALUES = [
+    'text',
+    'text\nwith\nline\nbreaks',
+    '123',
+    '1000',
+    'Choice 1',
+    '2022-02-22T12:34:56+09:00',
+    '2022-02-22'
+];
+
+const SAMPLE_LIST_ITEM_OBJECT = {
+    fields: {
+        SingleLineOfText: 'text',
+        MultiLineOfText: 'text\nwith\nline\nbreaks',
+        Number: '123',
+        Currency: '1000',
+        ChoiceSingle: 'Choice 1',
+        Datetime: '2022-02-22T12:34:56+09:00',
+        Date: '2022-02-22'
+    }
+};
+
+/**
+ * 列の値だけ指定されている組がある
+ */
+test('Column value is specified while its field name is not selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const columnValues = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnValues[2] = '123';
+    prepareConfigs(siteUrl, listTitle, BLANKS, columnValues);
+
+    assertError('C-V3 is set while C-K3 is blank.');
+});
+
+/**
+ * 列名の指定が重複
+ */
+test('The same field name is set multiple times', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const columnNames = JSON.parse(JSON.stringify(SAMPLE_COLUMN_NAMES)); // ディープコピー
+    columnNames[5] = SAMPLE_COLUMN_NAMES[0];
+    prepareConfigs(siteUrl, listTitle, columnNames, SAMPLE_COLUMN_VALUES);
+
+    assertError(`The field name "${SAMPLE_COLUMN_NAMES[0]}" is set multiple times.`);
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    prepareConfigs(siteUrl, listTitle, BLANKS, BLANKS);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#formParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * リストアイテム追加の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.body
+ * @param siteId
+ * @param listTitle
+ * @param fields
+ */
+const assertPostRequest = ({ url, method, headers, body }, siteId, listTitle, fields) => {
+    let expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items`
+        + `?${generateQueryString('$select', 'id')}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.fields).toEqual(fields);
+};
+
+/**
+ * リストアイテム追加の POST リクエストでエラー
+ */
+test('Fail in POST request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    prepareConfigs(siteUrl, listTitle, BLANKS, BLANKS);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPostRequest(request, siteId, listTitle, {});
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to add list item. status: 400');
+});
 
 ]]></test>
 
