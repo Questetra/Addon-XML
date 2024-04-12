@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Delete List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム削除</label>
-    <last-modified>2024-04-09</last-modified>
+    <last-modified>2024-04-11</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -55,9 +55,6 @@ const main = () => {
     const listItemIds = retrieveListItemIds();
 
     //// == 演算 / Calculating ==
-    if (listItemIds.length + 1 > httpClient.getRequestingLimit()) { // 1 additional request for getting site ID
-        throw new Error('Too many list item IDs.');
-    }
     const siteId = getSiteIdByUrl(oauth2, siteUrl);
     listItemIds.forEach(listItemId => {
         deleteListItem(oauth2, siteId, listTitle, listItemId);
@@ -79,31 +76,34 @@ const retrieveSiteUrl = () => {
 
 /**
  * 工程コンフィグからリストアイテム ID を取得する
- * @returns {Array<String>} リストアイテム ID
+ * @returns {Set<String>} リストアイテム ID
  */
 const retrieveListItemIds = () => {
     const dataDef = configs.getObject('conf_ListItemIds');
+    let ids = [];
     if (dataDef.matchDataType('SELECT')) { // 選択型データ項目の場合
         const select = engine.findData(dataDef);
         if (select === null || select.size() === 0) { // 未選択
             throw new Error('No list item IDs selected.');
         }
-        const ids = [];
         for (let i = 0; i < select.size(); i++) {
             ids.push(select.get(i).getValue());
         }
-        return ids;
+    } else { // 文字型データ項目の場合
+        const value = engine.findData(dataDef);
+        if (value === null) {
+            throw new Error('No list item IDs.');
+        }
+        ids = value.split('\n').filter(id => id !== '');
+        if (ids.length === 0) {
+            throw new Error('No list item IDs.');
+        }
     }
-    // 文字型データ項目の場合
-    const value = engine.findData(dataDef);
-    if (value === null) {
-        throw new Error('No list item IDs.');
+    const idsSet = new Set(ids); // 重複を除外
+    if (idsSet.size + 1 > httpClient.getRequestingLimit()) { // 1 additional request to get site ID
+        throw new Error('Too many list item IDs.');
     }
-    const ids = value.split('\n').filter(id => id !== '');
-    if (ids.length === 0) {
-        throw new Error('No list item IDs.');
-    }
-    return ids;
+    return idsSet;
 };
 
 /**
@@ -418,7 +418,12 @@ test('Success - list item IDs set by String', () => {
     const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
     const listTitle = 'リスト 1';
     const listItemIds = prepareListItemIds(httpClient.getRequestingLimit() - 1); // 最大個数指定
-    const listItemIdsDef = preparelistItemIdsStringDef(listItemIds);
+    // 重複した ID が無視されることの確認のため、重複を追加
+    const listItemIdsWithDuplication = [...listItemIds];
+    listItemIdsWithDuplication.push(listItemIds[0]);
+    listItemIdsWithDuplication.push(listItemIds[3]);
+    listItemIdsWithDuplication.push(listItemIds[9]);
+    const listItemIdsDef = preparelistItemIdsStringDef(listItemIdsWithDuplication);
     prepareConfigs(siteUrl, listTitle, listItemIdsDef);
 
     let reqCount = 0;
@@ -441,11 +446,11 @@ test('Success - list item IDs set by String', () => {
  * 成功 - リストアイテム ID を選択型データ項目で指定
  */
 test('Success - list item IDs set by Select', () => {
-    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment/';
+    const siteUrl = 'https://test.sharepoint.com/sites/SalesDepartment';
     const listTitle = '共有リスト 2';
     const listItemIds = prepareListItemIds(10);
     const listItemIdsDef = preparelistItemIdsSelectDef(listItemIds);
-    prepareConfigs(siteUrl, listTitle, listItemIdsDef);
+    prepareConfigs(`${siteUrl}/`, listTitle, listItemIdsDef); // サイト URL 末尾のスラッシュは除外されて処理される
 
     let reqCount = 0;
     const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
