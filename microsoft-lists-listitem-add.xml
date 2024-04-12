@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Add List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム追加</label>
-    <!--
-    <last-modified>2024-04-11</last-modified>
-    -->
+    <last-modified>2024-04-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -286,6 +284,7 @@ const prepareConfigs = (siteUrl, listTitle, columnNames, columnValues) => {
     // リストアイテム ID を保存するデータ項目を作成し、設定
     const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'STRING_TEXTFIELD');
     engine.setData(listItemIdDef, '事前文字列');
+    configs.putObject('conf_ListItemId', listItemIdDef);
 
     // 列の名前と値を設定
     for (let i = 0; i < COLUMN_NUM; i++) {
@@ -361,16 +360,14 @@ const SAMPLE_COLUMN_VALUES = [
     '2022-02-22'
 ];
 
-const SAMPLE_LIST_ITEM_OBJECT = {
-    fields: {
-        SingleLineOfText: 'text',
-        MultiLineOfText: 'text\nwith\nline\nbreaks',
-        Number: '123',
-        Currency: '1000',
-        ChoiceSingle: 'Choice 1',
-        Datetime: '2022-02-22T12:34:56+09:00',
-        Date: '2022-02-22'
-    }
+const SAMPLE_FIELDS = {
+    SingleLineOfText: 'text',
+    MultiLineOfText: 'text\nwith\nline\nbreaks',
+    Number: '123',
+    Currency: '1000',
+    ChoiceSingle: 'Choice 1',
+    Datetime: '2022-02-22T12:34:56+09:00',
+    Date: '2022-02-22'
 };
 
 /**
@@ -393,7 +390,7 @@ test('The same field name is set multiple times', () => {
     const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
     const listTitle = 'リスト 1';
     const columnNames = JSON.parse(JSON.stringify(SAMPLE_COLUMN_NAMES)); // ディープコピー
-    columnNames[5] = SAMPLE_COLUMN_NAMES[0];
+    columnNames[5] = SAMPLE_COLUMN_NAMES[0]; // 重複させる
     prepareConfigs(siteUrl, listTitle, columnNames, SAMPLE_COLUMN_VALUES);
 
     assertError(`The field name "${SAMPLE_COLUMN_NAMES[0]}" is set multiple times.`);
@@ -487,6 +484,106 @@ test('Fail in POST request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to add list item. status: 400');
+});
+
+/**
+ * 成功 - 列の指定なし
+ */
+test('Succeed - no columns', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdDef = prepareConfigs(siteUrl, listTitle, BLANKS, BLANKS);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    const listItemId = '1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPostRequest(request, siteId, listTitle, {});
+        return httpClient.createHttpResponse(201, 'application/json', `{"id":"${listItemId}"}`);
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(listItemIdDef)).toEqual(listItemId);
+});
+
+/**
+ * 成功 - すべての列名と値を指定
+ */
+test('Succeed - all columns', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト 1';
+    // サイト URL の末尾にスラッシュがある場合、無視して処理される
+    const listItemIdDef = prepareConfigs(`${siteUrl}/`, listTitle, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    const listItemId = '21';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPostRequest(request, siteId, listTitle, SAMPLE_FIELDS);
+        return httpClient.createHttpResponse(201, 'application/json', `{"id":"${listItemId}"}`);
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(listItemIdDef)).toEqual(listItemId);
+});
+
+/**
+ * 成功 - 一部の列のみ指定し、列の値が空のものも含む。リストアイテム ID を保存しない
+ */
+test('Succeed - some columns, including empty values', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト 2';
+    const columnNames = [
+        '',
+        'Column1',
+        '',
+        '',
+        'Column2',
+        'COlumn3',
+        ''
+    ];
+    const columnValues = [
+        '',
+        'text',
+        '',
+        '',
+        'Choice 1',
+        '',
+        ''
+    ];
+    const fields = {
+        Column1: 'text',
+        Column2: 'Choice 1',
+        COlumn3: null
+    };
+    const listItemIdDef = prepareConfigs(`${siteUrl}/`, listTitle, columnNames, columnValues);
+    configs.put('conf_ListItemId', null);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    const listItemId = '21';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPostRequest(request, siteId, listTitle, fields);
+        return httpClient.createHttpResponse(201, 'application/json', `{"id":"${listItemId}"}`);
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(listItemIdDef)).toEqual('事前文字列');
 });
 
 ]]></test>
