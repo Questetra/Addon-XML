@@ -2,9 +2,7 @@
 <service-task-definition>
     <label>Microsoft Lists: Update List Item</label>
     <label locale="ja">Microsoft Lists: リストアイテム更新</label>
-    <!--
-    <last-modified>2024-04-11</last-modified>
-    -->
+    <last-modified>2024-04-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -227,7 +225,6 @@ const encodeSharingUrl = (sharingUrl) => {
  */
 const updateListItemFields = (oauth2, siteId, listTitle, listItemId, fields) => {
     const url = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}/fields`;
-    engine.log(JSON.stringify(fields)); // テスト用
     const response = httpClient.begin()
         .authSetting(oauth2)
         .body(JSON.stringify(fields), 'application/json; charset=UTF-8')
@@ -270,6 +267,333 @@ const updateListItemFields = (oauth2, siteId, listTitle, listItemId, fields) => 
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * @param siteUrl
+ * @param listTitle
+ * @param listItemIdDef
+ * @param columnNames
+ * @param columnValues
+ */
+const prepareConfigs = (siteUrl, listTitle, listItemIdDef, columnNames, columnValues) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Microsoft Lists',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Sites.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SiteUrl', siteUrl);
+    configs.put('conf_ListTitle', listTitle);
+    configs.putObject('conf_ListItemId', listItemIdDef);
+
+    // 列の名前と値を設定
+    for (let i = 0; i < COLUMN_NUM; i++) {
+        configs.put(`conf_ColumnName${i + 1}`, columnNames[i]);
+        configs.put(`conf_ColumnValue${i + 1}`, columnValues[i]);
+    }
+};
+
+/**
+ * リストアイテム ID の準備（文字型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdStringDef = (listItemId) => {
+    // 文字型データ項目（単一行）を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'STRING_TEXTFIELD');
+    engine.setData(listItemIdDef, listItemId);
+    return listItemIdDef;
+};
+
+/**
+ * リストアイテム ID の準備（選択型データ項目の場合）
+ * @param listItemId
+ * @return listItemIdDef
+ */
+const preparelistItemIdSelectDef = (listItemId) => {
+    // 選択型データ項目を準備
+    const listItemIdDef = engine.createDataDefinition('リストアイテム ID', 1, 'q_listItemId', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(listItemId, `${listItemId} を選択`);
+    select.add(item);
+    engine.setData(listItemIdDef, select);
+    return listItemIdDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+const SAMPLE_COLUMN_NAMES = [
+    'SingleLineOfText',
+    'MultiLineOfText',
+    'Number',
+    'Currency',
+    'ChoiceSingle',
+    'Datetime',
+    'Date'
+];
+
+const SAMPLE_COLUMN_VALUES = [
+    'text',
+    'text\nwith\nline\nbreaks',
+    '123',
+    '1000',
+    'Choice 1',
+    '2022-02-22T12:34:56+09:00',
+    '2022-02-22'
+];
+
+const SAMPLE_FIELDS = {
+    SingleLineOfText: 'text',
+    MultiLineOfText: 'text\nwith\nline\nbreaks',
+    Number: '123',
+    Currency: '1000',
+    ChoiceSingle: 'Choice 1',
+    Datetime: '2022-02-22T12:34:56+09:00',
+    Date: '2022-02-22'
+};
+
+/**
+ * リストアイテム ID を文字型データ項目で設定し、値が空
+ */
+test('List Item ID is blank', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdDef = preparelistItemIdStringDef(null);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+    
+    assertError('List Item ID is blank.');
+});
+
+/**
+ * リストアイテム ID を選択型データ項目で設定し、値が空
+ */
+test('List Item ID is not selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemIdDef = preparelistItemIdSelectDef('dummy');
+    engine.setData(listItemIdDef, null); // 選択を解除
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+    
+    assertError('List Item ID is not selected.');
+});
+
+const BLANKS = ['', '', '', '', '', '', ''];
+
+/**
+ * 列がひとつも指定されていない
+ */
+test('No field to update is set', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, BLANKS, BLANKS);
+
+    assertError('No field to update is set.');
+});
+
+/**
+ * 列の値だけ指定されている組がある
+ */
+test('Column value is specified while its field name is not selected', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const columnValues = JSON.parse(JSON.stringify(BLANKS)); // ディープコピー
+    columnValues[4] = '123';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, BLANKS, columnValues);
+
+    assertError('C-V5 is set while C-K5 is blank.');
+});
+
+/**
+ * 列名の指定が重複
+ */
+test('The same field name is set multiple times', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const columnNames = JSON.parse(JSON.stringify(SAMPLE_COLUMN_NAMES)); // ディープコピー
+    columnNames[5] = SAMPLE_COLUMN_NAMES[0]; // 重複させる
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, SAMPLE_COLUMN_VALUES);
+
+    assertError(`The field name "${SAMPLE_COLUMN_NAMES[0]}" is set multiple times.`);
+});
+
+/**
+ * サイト情報取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param siteUrl
+ */
+const assertGetSiteInfoRequest = ({ url, method, headers }, siteUrl) => {
+    const encodedUrl = encodeSharingUrl(siteUrl);
+    const expectedUrl = `${GRAPH_URI}shares/${encodedUrl}/site?select=id`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * サイト情報取得の GET リクエストでエラー
+ */
+test('Fail in GET request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetSiteInfoRequest(request, siteUrl);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to get site info. status: 400');
+});
+
+/**
+ * リストアイテム更新の PATCH リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.headers
+ * @param request.body
+ * @param siteId
+ * @param listTitle
+ * @param listItemId
+ * @param fields
+ */
+const assertPatchRequest = ({ url, method, contentType, headers, body }, siteId, listTitle, listItemId, fields) => {
+    const expectedUrl = `${GRAPH_URI}sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listTitle)}/items/${encodeURIComponent(listItemId)}/fields`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('PATCH');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj).toEqual(fields);
+};
+
+/**
+ * リストアイテム更新の PATCH リクエストでエラー
+ */
+test('Fail in PATCH request', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPatchRequest(request, siteId, listTitle, listItemId, SAMPLE_FIELDS);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to update fields of list item. status: 400');
+});
+
+/**
+ * 成功 - すべての列名と値を指定。リストアイテム ID は文字型データ項目で指定
+ */
+test('Succeed - all columns, listItemId set by STRING', () => {
+    const siteUrl = 'https://test-my.sharepoint.com/personal/user_test_onmicrosoft_com';
+    const listTitle = 'リスト 1';
+    const listItemId = '1';
+    const listItemIdDef = preparelistItemIdStringDef(listItemId);
+    // サイト URL の末尾にスラッシュがある場合、無視して処理される
+    prepareConfigs(`${siteUrl}/`, listTitle, listItemIdDef, SAMPLE_COLUMN_NAMES, SAMPLE_COLUMN_VALUES);
+
+    let reqCount = 0;
+    const siteId = 'test-my.sharepoint.com,1234abcd-5e6f-7g8h-9i0j,1a2b3c4d-1a2b3c4d5e6f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPatchRequest(request, siteId, listTitle, listItemId, SAMPLE_FIELDS);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - 一部の列のみ指定し、列の値が空のものも含む。リストアイテム ID は選択型データ項目で指定
+ */
+test('Succeed - some columns, including empty values, listItemId set by SELECT', () => {
+    const siteUrl = 'https://test.sharepoint.com/sites/MarketingDepartment';
+    const listTitle = '共有リスト 1';
+    const listItemId = '100';
+    const listItemIdDef = preparelistItemIdSelectDef(listItemId);
+    const columnNames = [
+        'Column1',
+        '',
+        '',
+        '',
+        'Column2',
+        'COlumn3',
+        ''
+    ];
+    const columnValues = [
+        'text',
+        '',
+        '',
+        '',
+        '',
+        'Choice 1',
+        ''
+    ];
+    const fields = {
+        Column1: 'text',
+        Column2: null,
+        COlumn3: 'Choice 1'
+    };
+    prepareConfigs(siteUrl, listTitle, listItemIdDef, columnNames, columnValues);
+
+    let reqCount = 0;
+    const siteId = 'test.sharepoint.com,9876abcd-5e6f-7g8h-9i0j,1a2b3c4d-9a8b7c6d5e4f';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetSiteInfoRequest(request, siteUrl);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', `{"id":"${siteId}"}`);
+        }
+        assertPatchRequest(request, siteId, listTitle, listItemId, fields);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    expect(main()).toEqual(undefined);
+});
 
 ]]></test>
 
