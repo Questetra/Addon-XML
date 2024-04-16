@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-06-14</last-modified>
+    <last-modified>2024-04-16</last-modified>
 
     <label>(Any Website): Download File</label>
     <label locale="ja">(任意Webサイト): ファイル ダウンロード</label>
@@ -11,7 +11,8 @@
     <summary locale="ja">この工程は、ファイルをダウンロードし、ファイル型データに追加します。指定したURLへGETリクエストが投げられ、そのレスポンスがファイルとして保存されます。</summary>
 
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
 
     <help-page-url>https://support.questetra.com/bpmn-icons/any-website-file-download/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/any-website-file-download/</help-page-url>
@@ -36,10 +37,9 @@
     </configs>
 
     <script><![CDATA[
-main();
 function main() {
   //// == Config Retrieving / 工程コンフィグの参照 ==
-  const oauth2 = configs.get("conf_OAuth2");
+  const oauth2 = configs.getObject("conf_OAuth2");
   
   const fileUrl = configs.get( "conf_DataIdA" );
   const dataIdB = configs.get( "conf_DataIdB" );
@@ -70,7 +70,7 @@ function main() {
 
 /**
   * ダウンロードファイルの URL に GET リクエストを送信し、ファイルを取得する
-  * @param {String} oauth2
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
   * @param {String} fileUrl  ダウンロードファイルの URL
   * @return {HttpResponseWrapper} response  レスポンス
   */
@@ -132,10 +132,27 @@ function updateData( processFiles, dataIdB, qfile ) {
  * @param fileName
  * @return {Object}
  */
-const prepareConfigs = (configs,  url, files, fileName, auth) => {
-    configs.put('conf_OAuth2', auth);
-    configs.put('conf_DataIdA', url);
+const prepareConfigs = (configs, url, files, fileName, authType) => {
+    let auth;
+    if (authType !== "") {
+        if (authType === "Box") {
+            auth = httpClient.createAuthSettingOAuth2(
+                'Box',
+                'https://account.box.com/api/oauth2/authorize',
+                'https://api.box.com/oauth2/token',
+                'root_readwrite',
+                'consumer_key',
+                'consumer_secret',
+                'access_token'
+            );
+        }
+        if (authType === "Basic") {
+            auth = httpClient.createAuthSettingBasic('Basic Auth', 'user', 'pass');
+        }
+        configs.putObject('conf_OAuth2', auth);
+    }
 
+    configs.put('conf_DataIdA', url);
     const fileDef = engine.createDataDefinition('ファイル', 1, 'q_file', 'FILE');
     configs.putObject('conf_DataIdB', fileDef);
     engine.setData(fileDef, files);
@@ -174,7 +191,22 @@ const assertFile = (file, name, contentType, encoding, body) => {
     expect(text).toEqual(body);
 };
 
-
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
 
 /**
  * ファイル名が空でエラーになる場合
@@ -184,7 +216,7 @@ test('FileName is blank', () => {
 
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow(`Downloaded File Name isn\'t set`);
+    assertError(main, 'Downloaded File Name isn\'t set');
 });
 
 
@@ -196,7 +228,7 @@ test('URL is invalid', () => {
     prepareConfigs(configs, 'ftp://example.com', null, 'test.txt', 'Box');
 	
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow(`Invalid URL. URL must start with either http or https.`);
+    assertError(main, 'Invalid URL. URL must start with either http or https.');
 });
 
 
@@ -214,7 +246,7 @@ test('Success / not Auth - URL that does not require HTTP authentication setting
         return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'こんにちは');
     });
 
-    execute();
+    main();
 
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(1);
@@ -226,10 +258,10 @@ test('Success / not Auth - URL that does not require HTTP authentication setting
 /**
  * ダウンロード成功
  * HTTP 認証設定を指定  
- * Basic 認証や OAuth2 が必要な URL  
+ * OAuth2 が必要な URL  
  * 添付ファイル有
  */
-test('Success / set Auth - URL that requires HTTP authentication settings', () => {
+test('Success / set OAuth2 - URL that requires HTTP authentication settings', () => {
     let files = new java.util.ArrayList();
     files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
     files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
@@ -240,7 +272,32 @@ test('Success / set Auth - URL that requires HTTP authentication settings', () =
         return httpClient.createHttpResponse(200, 'text/plain; charset=EUC-JP', 'さようなら');
     });
 
-    execute();
+    main();
+
+    files = engine.findData(fileDef);
+    expect(files.size()).toEqual(3);
+    assertFile(files.get(2), ' ', 'text/plain', 'EUC-JP', 'さようなら\n');
+});
+
+
+/**
+ * ダウンロード成功
+ * HTTP 認証設定を指定  
+ * Basic 認証が必要な URL  
+ * 添付ファイル有
+ */
+test('Success / set Basic - URL that requires HTTP authentication settings', () => {
+    let files = new java.util.ArrayList();
+    files.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+    files.add(engine.createQfile('test.xml', 'text/xml; charset=UTF-16', '<xml>さようなら</xml>'));
+    const fileDef = prepareConfigs(configs, 'https://test.questetra.net/API/Feed/File/downloadThumbnail?id=11111', files, ' ', 'Basic');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'https://test.questetra.net/API/Feed/File/downloadThumbnail?id=11111');
+        return httpClient.createHttpResponse(200, 'text/plain; charset=EUC-JP', 'さようなら');
+    });
+
+    main();
 
     files = engine.findData(fileDef);
     expect(files.size()).toEqual(3);
@@ -263,7 +320,7 @@ test('Success / not Auth - URL that requires HTTP authentication settings', () =
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow(`Failed to download. STATUS: 401`);
+    assertError(main, 'Failed to download. STATUS: 401');
 });
 
 
@@ -282,7 +339,7 @@ test('Success / set Auth - URL that does not require HTTP authentication setting
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow(`Failed to download. STATUS: 404`);
+    assertError(main, 'Failed to download. STATUS: 404');
 });
 
 ]]></test>
