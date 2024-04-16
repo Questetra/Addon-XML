@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2022-11-04</last-modified>
+<last-modified>2024-04-16</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
-<engine-type>2</engine-type>
+<engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <summary>This item gets an email message in Gmail.</summary>
 <summary locale="ja">この工程は、Gmail のメールを取得します。</summary>
 <configs>
-  <config name="conf_auth" required="true" form-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/gmail.readonly">
+  <config name="conf_auth" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/gmail.readonly">
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
@@ -60,10 +61,9 @@
 // - Consumer Key: (Get by Google Developer Console)
 // - Consumer Secret: (Get by Google Developer Console)
 
-main();
 function main(){
   //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-  const auth = configs.get("conf_auth");
+  const auth = configs.getObject("conf_auth");
   const messageId = engine.findData( configs.getObject("conf_messageId") );
   const defs = retrieveDefs();
 
@@ -381,7 +381,7 @@ function getContentType( part ) {
   * ない場合は Gmail REST API に添付ファイル取得の GET リクエストを送信し、
   * 本体データを追加する
   * @param {String} apiUri  API の URI（/messages/{messageId} まで）
-  * @param {String} auth  認証設定名
+  * @param {AuthSettingWrapper} auth  OAuth2 認証設定
   * @param {Array<Object>} attachments  添付ファイルの情報（オブジェクト）が格納された配列
   *  配列内の添付ファイルの情報の形式は：
   *   {
@@ -472,7 +472,17 @@ S023j9MN1Lsm1b9qWLIw6P4tOAAAAABJRU5ErkJggg==
  * @return dataDefs
  */
 const prepareConfigs = (messageId) => {
-  configs.put('conf_auth', 'Google');
+  const auth = httpClient.createAuthSettingOAuth2(
+    'Google',
+    'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+    'https://accounts.google.com/o/oauth2/token',
+    'gmail',
+    'consumer_key',
+    'consumer_secret',
+    'access_token'
+  );
+
+  configs.putObject('conf_auth', auth);
 
   // メール ID を設定
   const messageIdDef = engine.createDataDefinition('メール ID', 1, 'q_messageId', 'STRING_TEXTFIELD');
@@ -513,13 +523,30 @@ const prepareConfigs = (messageId) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+  let failed = false;
+  try {
+    main();
+  } catch (e) {
+    failed = true;
+  }
+  if (!failed) {
+    fail();
+  }
+};
+
+/**
  * メール ID が空であればエラー
  */
 test('Message ID is empty', () => {
   prepareConfigs(null);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('Message ID is empty.');
+  assertError(main, 'Message ID is empty.');
 });
 
 /**
@@ -534,7 +561,7 @@ test('Data items not set', () => {
   configs.putObject('conf_messageId', messageIdDef);
 
   // スクリプトを実行
-  execute();
+  main();
 });
 
 /**
@@ -546,7 +573,7 @@ test('The same data item is set multiple times - fromAddress and subject', () =>
   configs.putObject('conf_subject', dataDefs.fromAddress);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('The same data item is set multiple times.');
+  assertError(main, 'The same data item is set multiple times.');
 });
 
 /**
@@ -558,7 +585,7 @@ test('The same data item is set multiple times - recipientNames and body', () =>
   configs.putObject('conf_recipientNames', dataDefs.body);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  expect(execute).toThrow('The same data item is set multiple times.');
+  assertError(main, 'The same data item is set multiple times.');
 });
 
 /**
@@ -602,7 +629,7 @@ test('Fail in 1st GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  expect(execute).toThrow('Failed to get message. status: 400');
+  assertError(main, 'Failed to get message. status: 400');
 });
 
 /**
@@ -755,7 +782,7 @@ test('200 Success - Multipart message with one attachment', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
@@ -801,7 +828,7 @@ test('Fail in 2nd GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  expect(execute).toThrow('Failed to get attachment. status: 400');
+  assertError(main, 'Failed to get attachment. status: 400');
 });
 
 /**
@@ -969,7 +996,7 @@ test('200 Success - Multipart message with two attachments', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From2@example.com');
@@ -1071,7 +1098,7 @@ test('200 Success - Single-part message with text/plain body encoded in Shift_JI
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
@@ -1182,7 +1209,7 @@ test('200 Success - Single-part message with text/html body', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
@@ -1257,7 +1284,7 @@ test('200 Success - Single-part message with no Content-Type/To/Cc/Bcc/Subject h
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
@@ -1326,7 +1353,7 @@ test('Number of HTTP requests is over the limit', () => {
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
   });
 
-  expect(execute).toThrow('Number of HTTP requests is over the limit.');
+  assertError(main, 'Number of HTTP requests is over the limit.');
 });
 
 /**
@@ -1358,7 +1385,7 @@ test('200 Success - Number of HTTP requests is within the limit', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存されているファイルの個数をチェック。事前ファイルは削除されるので、合計 httpRequestLimit - 1 個のはず
   const files = engine.findData(dataDefs.attachments);
@@ -1391,7 +1418,7 @@ test('200 Success - Attachment has no name', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1427,7 +1454,7 @@ test('200 Success - Attachment has no Content-Type', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1464,7 +1491,7 @@ test('200 Success - Attachment has no Content-Disposition', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1489,7 +1516,7 @@ test('200 Success - Attachments not saved', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // データ項目の値をチェック。事前ファイルは残ったまま
   const files = engine.findData(dataDefs.attachments);
@@ -1522,7 +1549,7 @@ test('200 Success - No files were pre-set', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック。ファイルが追加されている
   const files = engine.findData(fileDataDef);
@@ -1558,7 +1585,7 @@ test('200 Success - Some data items are not set', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 
   // 保存先データ項目の値をチェック。設定されたデータ項目にのみ値が保存される
   expect(engine.findData(dataDefs.fromAddress)).toEqual('事前文字列');
