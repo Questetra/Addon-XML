@@ -1,19 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-07-29</last-modified>
+    <last-modified>2024-04-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Slack: Post Chat (Bots)</label>
     <label locale="ja">Slack: チャット投稿 (Bots)</label>
     <summary>This item sends a message to Slack with Bots.</summary>
     <summary locale="ja">この工程は、Bots 機能を使って Slack にメッセージを投稿します。</summary>
     <configs>
-        <config name="conf_OAuth2" deprecated="true" form-type="OAUTH2"
-                oauth2-setting-name="https://slack.com/oauth2/chat:write,files:write">
-            <label>C1-deprecated: OAuth2 Setting (To change scopes)</label>
-            <label locale="ja">C1-deprecated: OAuth2 設定 (スコープ変更のため)</label>
-        </config>
-        <config name="conf_OAuth2_V2" required="true" form-type="OAUTH2"
+        <config name="conf_OAuth2_V2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
                 oauth2-setting-name="https://slack.com/oauth2/chat:write,users:read,users:read.email">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
@@ -54,10 +50,9 @@
     <help-page-url>https://support.questetra.com/bpmn-icons/slack-chat-post-bots/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/slack-chat-post-bots/</help-page-url>
     <script><![CDATA[
-main();
 
 function main() {
-    const oauth2 = decideOAuth2Setting();
+    const oauth2 = configs.getObject("conf_OAuth2_V2");
     let text = "";
     if (configs.get("Text") !== "" && configs.get("Text") !== null) {
         text = configs.get("Text");
@@ -88,16 +83,6 @@ function main() {
     sendMessage(oauth2, channel, text, attachment);
 }
 
-/**
- * @return 使用する OAuth2 設定
- */
-function decideOAuth2Setting() {
-    const v1 = configs.get("conf_OAuth2");
-    if (v1 !== null && v1 !== "") {
-        return v1;
-    }
-    return configs.get("conf_OAuth2_V2");
-}
 
 /**
  * メンション相手のメールアドレス（Slack アカウント）をconfigから読み出す
@@ -134,7 +119,7 @@ function decideSlackIdNum(oauth2) {
 /**
  * メールアドレスから Slack ID を取得する
  * users.lookupByEmail https://api.slack.com/methods/users.lookupByEmail
- * @param {String} oauth2
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} email
  * @return {String} responseJson.user.id  Slack ID
  */
@@ -170,7 +155,7 @@ function usersLookupByEmail(oauth2, email) {
 
 /**
  * Send Message with Bots  チャット投稿
- * @param {String} oauth2
+ * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
  * @param {String} channel
  * @param {String} text
  * @param {String} attachment
@@ -261,7 +246,17 @@ function attachAdd(attachment, config, attachName) {
  * @return attachment
  */
 const prepareConfigs = (configs, channelName, text, mention, fallback, color, title, titleLink, attachText) => {
-  configs.put('conf_OAuth2_V2', 'Slack');
+  const auth = httpClient.createAuthSettingOAuth2(
+    'Slack',
+    'https://slack.com/oauth/v2/authorize',
+    'https://slack.com/api/oauth.v2.access',
+    'chat:write,users:read,users:read.email',
+    'consumer_key',
+    'consumer_secret',
+    'access_token'
+  );
+
+  configs.putObject('conf_OAuth2_V2', auth);
   configs.put('ChannelName', channelName);
   configs.put('Text', text);
 
@@ -333,7 +328,22 @@ const assertPostRequest = ({url, method, contentType, body}, channel, text, atta
     expect(bodyObj.attachments).toEqual(attachArray);
 };
 
-
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+  let failed = false;
+  try {
+    main();
+  } catch (e) {
+    failed = true;
+  }
+  if (!failed) {
+    fail();
+  }
+};
 
 /**
  * チャット投稿失敗の場合
@@ -345,7 +355,7 @@ test('Message to send isn\'t set', () => {
 
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Message to send isn\'t set.`);
+  assertError(main, 'Message to send isn\'t set.');
 });
 
 
@@ -389,7 +399,6 @@ const preparePostResponse = (channel,text) => {
 };
 
 
-
 /**
  * POST API リクエストでエラーになる場合（Slack ID 取得）
  */
@@ -402,7 +411,7 @@ test('POST GetId Failed', () => {
   });
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
+  assertError(main, 'Failed to send');
 });
 
 
@@ -425,7 +434,7 @@ test('Not Slack account email address', () => {
   });
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
+  assertError(main, 'Failed to send');
 });
 
 
@@ -448,7 +457,7 @@ test('POST Failed', () => {
     });
 
    // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
+  assertError(main, 'Failed to send');
 });
 
 
@@ -472,7 +481,7 @@ test('Success - Mention is a string data item', () => {
     });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -505,7 +514,7 @@ test('Success - Mention is a fixed value', () => {
     });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -530,7 +539,7 @@ test('Success - Channel and Attachment-text ', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -558,7 +567,7 @@ test('Success - Channel and Attachment-title ', () => {
   });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -595,7 +604,7 @@ test('Success - Mention is a user-type data items - Invalid color setting and In
     });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -619,7 +628,7 @@ test('Success - Mention is a empty for user-type data items', () => {
     });
 
   // <script> のスクリプトを実行
-  execute();
+  main();
 });
 
 
@@ -648,7 +657,7 @@ test('Failed - Mention is a empty for user-type data items - Non-existent channe
   });
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);  
+  assertError(main, 'Failed to send');  
  });
  
 
@@ -677,7 +686,7 @@ test('Failed - Mention is a empty for user-type data items - Channel that bot is
   });
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-   expect(execute).toThrow(`Failed to send`);
+  assertError(main, 'Failed to send');
 });
 
 ]]></test>
