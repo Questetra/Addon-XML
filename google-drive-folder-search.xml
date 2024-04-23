@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-03-08</last-modified>
+<!--
+<last-modified>2024-04-23</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -11,9 +13,13 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <configs>
-  <config name="OAuth" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
-    <label>C1: OAuth2 Setting</label>
-    <label locale="ja">C1: OAuth2設定</label>
+  <config name="OAuth" deprecated="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
+    <label>C1-deprecated: OAuth2 Setting</label>
+    <label locale="ja">C1-deprecated: OAuth2設定</label>
+  </config>
+  <config name="OAuth_V2" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+    <label>C1: Service Account Setting</label>
+    <label locale="ja">C1: サービスアカウント設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
     <label>C2: Parent Folder ID (When empty, search in My Drive root)</label>
@@ -51,10 +57,11 @@ function main() {
         throw "Neither of Data Items to save result are set.";
     }
     const oauth = configs.getObject("OAuth");
+    const oauthV2 = configs.getObject("OAuth_V2");
 
     //// == 演算 / Calculating ==
-    const driveId = getDriveId(oauth, parentFolderId);
-    const folders = searchFolder(oauth, driveId, parentFolderId, folderName);
+    const driveId = getDriveId(oauth, oauthV2, parentFolderId);
+    const folders = searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName);
     const folderNum = folders.length;
     if (folderNum === 0) {
         throw `Could not find Folder:${folderName} with Parent Folder ID:${parentFolderId}`;
@@ -71,21 +78,88 @@ function main() {
     setFolderData(urlDataDef, folderUrlList);
 }
 
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (!scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        scope
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
 /**
  * 親フォルダのドライブ ID を取得する
  * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} parentFolderId 親フォルダの ID
  * @return {String} driveId ドライブ ID (共有ドライブになければ null)
  */
-function getDriveId(oauth, parentFolderId) {
+function getDriveId(oauth, oauthV2, parentFolderId) {
     if (parentFolderId === "root") {
         return null;
     }
     const url = `https://www.googleapis.com/drive/v3/files/${parentFolderId}`;
-    const response = httpClient
-        .begin()
-        .authSetting(oauth)
-        .queryParam("fields", "driveId")
+    let request = httpClient.begin();
+    if (oauthV2 !== null) {
+        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
+    } else {
+        request = request.authSetting(oauth);
+    }
+    const response = request.queryParam("fields", "driveId")
         .queryParam("supportsAllDrives", "true")
         .get(url);
     const status = response.getStatusCode();
@@ -105,6 +179,7 @@ function getDriveId(oauth, parentFolderId) {
 /**
  * Google ドライブのフォルダを検索
  * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} driveId 親フォルダのドライブ ID (共有ドライブになければ null)
  * @param {String} parentFolderId 親フォルダの ID
  * @param {String} folderName 検索するフォルダの名前
@@ -112,14 +187,17 @@ function getDriveId(oauth, parentFolderId) {
  * @return {String} folders[].id フォルダの ID
  * @return {String} folders[].webViewLink フォルダの表示 URL
  */
-function searchFolder(oauth, driveId, parentFolderId, folderName) {
+function searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName) {
     const folderNameRep = folderName.replace(/['\\]/g, "\\$&"); // ' と \ をエスケープ
     const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
     const url = "https://www.googleapis.com/drive/v3/files";
-    let request = httpClient
-        .begin()
-        .authSetting(oauth)
-        .queryParam("q", q)
+    let request = httpClient.begin();
+    if (oauthV2 !== null) {
+        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
+    } else {
+        request = request.authSetting(oauth);
+    }
+    request = request.queryParam("q", q)
         .queryParam("pageSize", "1000")
         .queryParam("fields", "files(id,webViewLink)");
     if (driveId !== null) { // 親フォルダが共有ドライブにある場合
