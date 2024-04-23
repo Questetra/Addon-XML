@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-12</last-modified>
+    <last-modified>2024-04-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Create Draft Invoice</label>
     <label locale="ja">Stripe: 請求書ドラフト作成</label>
 
@@ -17,7 +18,7 @@
     </summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -83,11 +84,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const customerId = retrieveCustomerId();
     const description = configs.get('conf_Description');
     const currency = configs.get('conf_Currency');
@@ -221,7 +220,7 @@ function parseBigDecimalToLong(bigDecimal, label, i) {
 
 /**
   * 請求書のドラフトを作成する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @param {String} description 説明
   * @param {String} currency 通貨
@@ -250,7 +249,7 @@ function createInvoice(auth, customerId, description, currency) {
 
 /**
   * 請求書ドラフトにラインアイテムを追加する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @param {String} invoiceId 請求書ドラフトの ID
   * @param {Object} item
@@ -311,7 +310,8 @@ const STRIPE_VERSION = '2022-08-01';
  * @return returnObj.invoiceUrlDef
  */
 const prepareConfigs = (customerId, description, lineItems) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 顧客 ID が保存されている文字型データ項目（単一行）を準備し、設定
     const customerIdDef = engine.createDataDefinition('顧客 ID', 1, 'q_customerId', 'STRING_TEXTFIELD');
@@ -358,11 +358,28 @@ const SAMPLE_LINE_ITEMS = [
 ];
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
+/**
  * 顧客 ID が空
  */
 test('Customer ID is blank', () => {
     prepareConfigs('', '請求書の説明', SAMPLE_LINE_ITEMS);
-    expect(execute).toThrow('Customer ID is blank.');
+    assertError(main, 'Customer ID is blank.');
 });
 
 /**
@@ -374,7 +391,7 @@ test('Too many line items', () => {
         lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
     }
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
-    expect(execute).toThrow('Too many line items. Number of necessary HTTP requests exceeds the limit.');
+    assertError(main, 'Too many line items. Number of necessary HTTP requests exceeds the limit.');
 });
 
 /**
@@ -395,7 +412,7 @@ test('Invalid line items - too few columns', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    expect(execute).toThrow('The line items must include item description, unit amount, and quantity.');
+    assertError(main, 'The line items must include item description, unit amount, and quantity.');
 });
 
 /**
@@ -417,7 +434,7 @@ test('Invalid line items - 1st column is not STRING', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    expect(execute).toThrow('Line item name (1st column) must be STRING.');
+    assertError(main, 'Line item name (1st column) must be STRING.');
 });
 
 /**
@@ -439,7 +456,7 @@ test('Invalid line items - 2nd column is not DECIMAL', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    expect(execute).toThrow('Line item unit amount (2nd column) must be DECIMAL.');
+    assertError(main, 'Line item unit amount (2nd column) must be DECIMAL.');
 });
 
 /**
@@ -461,7 +478,7 @@ test('Invalid line items - 3rd column is not DECIMAL', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    expect(execute).toThrow('Line item quantity (3rd column) must be DECIMAL.');
+    assertError(main, 'Line item quantity (3rd column) must be DECIMAL.');
 });
 
 /**
@@ -475,7 +492,7 @@ test('Invalid line items - Item name is blank', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('Line item 2 is invalid. Item name must not be blank.');
+    assertError(main, 'Line item 2 is invalid. Item name must not be blank.');
 });
 
 /**
@@ -489,7 +506,7 @@ test('Invalid line items - Unit amount is decimal', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('Line item 3 is invalid. Unit amount must be integer.');
+    assertError(main, 'Line item 3 is invalid. Unit amount must be integer.');
 });
 
 /**
@@ -503,7 +520,7 @@ test('Invalid line items - Unit amount is negative', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('Line item 1 is invalid. Unit amount must not be negative.');
+    assertError(main, 'Line item 1 is invalid. Unit amount must not be negative.');
 });
 
 /**
@@ -517,7 +534,7 @@ test('Invalid line items - Quantity is decimal', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('Line item 2 is invalid. Quantity must be integer.');
+    assertError('Line item 2 is invalid. Quantity must be integer.');
 });
 
 /**
@@ -531,7 +548,7 @@ test('Invalid line items - Quantity is negative', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('Line item 3 is invalid. Quantity must not be negative.');
+    assertError('Line item 3 is invalid. Quantity must not be negative.');
 });
 
 /**
@@ -543,7 +560,7 @@ test('Total amount exceeds the limit - one line item', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+    assertError('The total amount of line items must be less than 100000000.');
 });
 
 /**
@@ -557,7 +574,7 @@ test('Total amount exceeds the limit - multiple line items', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    expect(execute).toThrow('The total amount of line items must be less than 100000000.');
+    assertError('The total amount of line items must be less than 100000000.');
 });
 
 /**
@@ -594,7 +611,7 @@ test('Fail to create invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create draft invoice. status: 400');
+    assertError('Failed to create draft invoice. status: 400');
 });
 
 /**
@@ -609,7 +626,7 @@ test('Success - No line items', () => {
         return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -629,7 +646,7 @@ test('Success - No list-type data item is set', () => {
         return httpClient.createHttpResponse(200, 'application/json', `{"id": "${invoiceId}"}`);
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -680,7 +697,7 @@ test('Fail to attach an invoice item', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to attach an invoice item. status: 400');
+    assertError('Failed to attach an invoice item. status: 400');
 });
 
 /**
@@ -701,7 +718,7 @@ test('Success - customer ID set by string-type data item, one line item', () => 
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -735,7 +752,7 @@ test('Success - customer ID set by select-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -743,7 +760,7 @@ test('Success - customer ID set by select-type data item', () => {
 });
 
 /**
- * 成功 - 顧客 ID を選択型データ項目で指定し、選択されていない
+ * 顧客 ID を選択型データ項目で指定し、選択されていない
  */
 test('Customer ID is set by select-type data item and not selected', () => {
     const {invoiceIdDef, invoiceUrlDef} = prepareConfigs('dummyString', '請求書の説明', SAMPLE_LINE_ITEMS);
@@ -752,7 +769,7 @@ test('Customer ID is set by select-type data item and not selected', () => {
     const customerIdDef = engine.createDataDefinition('顧客 ID を選択', 5, 'q_customerIdSelect', 'SELECT_SINGLE');
     configs.putObject('conf_CustomerId_V2', customerIdDef);
 
-    expect(execute).toThrow('Customer ID is not selected.');
+    assertError('Customer ID is not selected.');
 });
 
 /**
@@ -774,7 +791,7 @@ test('Success - customer ID set as fixed value', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -806,7 +823,7 @@ test('Success - multiple line items, maximum total amount', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -837,7 +854,7 @@ test('Success - maximum number of line items', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -862,7 +879,7 @@ test('Success - invoice description is blank', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -889,7 +906,7 @@ test('Success - draft invoice ID and URL not saved', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -937,7 +954,7 @@ test('Success - currency is selected', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
@@ -963,7 +980,7 @@ test('Success - customer ID set by deprecated config', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(invoiceIdDef)).toEqual(invoiceId);
