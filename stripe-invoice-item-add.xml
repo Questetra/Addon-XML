@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-12</last-modified>
+    <last-modified>2024-04-22</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Add Item to Draft Invoice</label>
     <label locale="ja">Stripe: 請求書ドラフトに項目を追加</label>
 
@@ -14,7 +15,7 @@
     <summary locale="ja">この工程は、Stripe 上のドラフト状態の請求書に請求項目を追加します。</summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -45,11 +46,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const invoiceId = retrieveInvoiceId();
     const itemPropertyMap = retrieveItemPropertyMap();
 
@@ -203,7 +202,7 @@ function findAndParseDecimal(dataDef, label) {
 
 /**
   * 請求書オブジェクトを取得し、請求書に設定されている顧客の ID を返す
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} invoiceId 請求書の ID
   * @return {String} customerId 顧客 ID
   */
@@ -225,7 +224,7 @@ function getCustomerFromInvoice(auth, invoiceId) {
 
 /**
   * 請求書ドラフトにラインアイテムを追加する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @param {String} invoiceId 請求書ドラフトの ID
   * @param {Map<String, String>} itemPropertyMap ラインアイテムのプロパティの Map
@@ -282,7 +281,8 @@ const STRIPE_VERSION = '2022-08-01';
  * @param quantity
  */
 const prepareConfigsWithPriceId = (invoiceId, priceId, quantity) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
     const invoiceIdDef = engine.createDataDefinition('請求書 ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
@@ -303,11 +303,28 @@ const prepareConfigsWithPriceId = (invoiceId, priceId, quantity) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
+/**
  * 請求書 ID が空
  */
 test('Invoice ID is blank', () => {
     prepareConfigsWithPriceId(null, 'price_00001', 1);
-    expect(execute).toThrow('Invoice ID is blank.');
+    assertError(main, 'Customer ID is blank.');
 });
 
 /**
@@ -315,7 +332,7 @@ test('Invoice ID is blank', () => {
  */
 test('Price ID is blank', () => {
     prepareConfigsWithPriceId('in_00001', null, 1);
-    expect(execute).toThrow('Price ID is blank.');
+    assertError(main, 'Price ID is blank.');
 });
 
 /**
@@ -324,7 +341,7 @@ test('Price ID is blank', () => {
 test('Both Price ID and item name are set', () => {
     prepareConfigsWithPriceId('in_00001', 'price_00001', 1);
     configs.put('conf_ItemName', '商品名');
-    expect(execute).toThrow('Price ID and item name cannot be set at the same time.');
+    assertError(main, 'Price ID and item name cannot be set at the same time.');
 });
 
 /**
@@ -334,7 +351,7 @@ test('Both Price ID and unit amount are set', () => {
     prepareConfigsWithPriceId('in_00001', 'price_00001', 1);
     const unitAmountDef = engine.createDataDefinition('単価', 3, 'q_unitAmount', 'DECIMAL');
     configs.putObject('conf_UnitAmount', unitAmountDef);
-    expect(execute).toThrow('Price ID and unit amount cannot be set at the same time.');
+    assertError(main, 'Price ID and unit amount cannot be set at the same time.');
 });
 
 /**
@@ -342,7 +359,7 @@ test('Both Price ID and unit amount are set', () => {
  */
 test('Quantity is blank', () => {
     prepareConfigsWithPriceId('in_00001', 'price_00001', null);
-    expect(execute).toThrow('Quantity is blank.');
+    assertError(main, 'Quantity is blank.');
 });
 
 /**
@@ -350,7 +367,7 @@ test('Quantity is blank', () => {
  */
 test('Quantity is not integer', () => {
     prepareConfigsWithPriceId('in_00001', 'price_00001', 1.5);
-    expect(execute).toThrow('Quantity must be integer.');
+    assertError(main, 'Quantity must be integer.');
 });
 
 /**
@@ -358,7 +375,7 @@ test('Quantity is not integer', () => {
  */
 test('Quantity is negative', () => {
     prepareConfigsWithPriceId('in_00001', 'price_00001', -1);
-    expect(execute).toThrow('Quantity must not be negative.');
+    assertError(main, 'Quantity must not be negative.');
 });
 
 /**
@@ -386,7 +403,7 @@ test('Fail to get invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to get invoice. status: 400');
+    assertError(main, 'Failed to get invoice. status: 400');
 });
 
 /**
@@ -431,7 +448,7 @@ test('Fail to attach an invoice item', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to attach an invoice item. status: 400');
+    assertError(main, 'Failed to attach an invoice item. status: 400');
 });
 
 /**
@@ -451,7 +468,7 @@ test('Success - With Price ID set by string-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -480,7 +497,7 @@ test('Success - With Price ID set by select-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -493,7 +510,7 @@ test('Price ID is set by select-type data item and not selected', () => {
     const idDef = engine.createDataDefinition('価格 ID を選択', 5, 'q_priceIdSelect', 'SELECT_SINGLE');
     configs.putObject('conf_PriceId', idDef);
 
-    expect(execute).toThrow('Price ID is not selected.');
+    assertError(main, 'Price ID is not selected.');
 });
 
 /**
@@ -515,7 +532,7 @@ test('Success - With Price ID and quantity set as fixed value', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -525,7 +542,7 @@ test('Quantity is set as fixed value and it is not a non-negative integer', () =
     prepareConfigsWithPriceId('in_00005', 'price_00015', 1);
     configs.put('conf_Quantity', '1.03');
 
-    expect(execute).toThrow('Quantity must be a non-negative integer.');
+    assertError(main, 'Quantity must be a non-negative integer.');
 });
 
 /// 商品名と単価を設定する場合
@@ -553,7 +570,8 @@ const createString = (length) => {
  * @param quantity
  */
 const prepareConfigsWithTempItem = (invoiceId, itemName, unitAmount, quantity) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
     const invoiceIdDef = engine.createDataDefinition('請求書 ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
@@ -582,7 +600,7 @@ const prepareConfigsWithTempItem = (invoiceId, itemName, unitAmount, quantity) =
  */
 test('Item name is blank', () => {
     prepareConfigsWithTempItem('in_00001', '', 100, 1);
-    expect(execute).toThrow('Item name is blank. It is required when Price ID is not set.');
+    assertError(main, 'Item name is blank. It is required when Price ID is not set.');
 });
 
 /**
@@ -591,7 +609,7 @@ test('Item name is blank', () => {
 test('Item name is too long', () => {
     const name = createString(NAME_MAX_LENGTH + 1);
     prepareConfigsWithTempItem('in_00001', name, 100, 1);
-    expect(execute).toThrow(`Item name must be at most ${NAME_MAX_LENGTH} characters.`);
+    assertError(main, `Item name must be at most ${NAME_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -600,7 +618,7 @@ test('Item name is too long', () => {
 test('Unit amount is not set', () => {
     prepareConfigsWithTempItem('in_00001', '商品名', null, 1);
     configs.put('conf_UnitAmount', ''); // 単価の設定を解除
-    expect(execute).toThrow('Unit amount is not set. It is required when Price ID is not set.');
+    assertError(main, 'Unit amount is not set. It is required when Price ID is not set.');
 });
 
 /**
@@ -608,7 +626,7 @@ test('Unit amount is not set', () => {
  */
 test('Unit amount is blank', () => {
     prepareConfigsWithTempItem('in_00001', '商品名', null, 1);
-    expect(execute).toThrow('Unit amount is blank.');
+    assertError(main, 'Unit amount is blank.');
 });
 
 /**
@@ -616,7 +634,7 @@ test('Unit amount is blank', () => {
  */
 test('Unit amount is not integer', () => {
     prepareConfigsWithTempItem('in_00001', '商品名', 100.1, 1);
-    expect(execute).toThrow('Unit amount must be integer.');
+    assertError(main, 'Unit amount must be integer.');
 });
 
 /**
@@ -624,7 +642,7 @@ test('Unit amount is not integer', () => {
  */
 test('Unit amount is negative', () => {
     prepareConfigsWithTempItem('in_00001', '商品名', -100, 1);
-    expect(execute).toThrow('Unit amount must not be negative.');
+    assertError('Unit amount must not be negative.');
 });
 
 /**
@@ -632,7 +650,7 @@ test('Unit amount is negative', () => {
  */
 test('Unit amount exceeds the limit', () => {
     prepareConfigsWithTempItem('in_00001', '商品名', MAX_UNIT_AMOUNT + 1, 1);
-    expect(execute).toThrow(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
+    assertError(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
 });
 
 /**
@@ -681,7 +699,7 @@ test('Success - With item name and unit amount', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -702,7 +720,7 @@ test('Success - With item name at its max length and unit amount at its max valu
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -722,7 +740,7 @@ test('Success - Unit amount and quantity are decimal but the numbers after the d
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
     ]]></test>
