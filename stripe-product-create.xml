@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-10-03</last-modified>
+    <last-modified>2024-04-19</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Create Product</label>
     <label locale="ja">Stripe: 商品を作成</label>
 
@@ -15,7 +16,7 @@
     </summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -225,11 +226,9 @@
 const STRIPE_API_VERSION = '2022-08-01';
 const CURRENCY_OPTIONS_NUM = 4; // サブ通貨の最大設定数
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const name = retrieveConfig('conf_Name', 'Product Name', true, 250);
     const description = retrieveConfig('conf_Description', 'Product Description', false, 250);
     const currency = configs.get('conf_Currency');
@@ -337,7 +336,7 @@ function retrieveCurrencyOptions(mainCurrency) {
 
 /**
   * 商品オブジェクトを作成する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} name 商品名
   * @param {String} description 商品説明
   * @param {String} currency 通貨
@@ -439,7 +438,8 @@ const createString = (length) => {
  * @return returnObj.priceUrlDef
  */
 const prepareConfigs = (name, description, currency, unitAmount) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
     configs.put('conf_Name', name);
     configs.put('conf_Description', description);
     configs.put('conf_Currency', currency);
@@ -475,11 +475,28 @@ const prepareConfigs = (name, description, currency, unitAmount) => {
 }
 
 /**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
+/**
  * 商品名が空
  */
 test('Product Name is blank', () => {
     prepareConfigs('', '商品の説明', 'jpy', 100);
-    expect(execute).toThrow('Product Name is blank.');
+    assertError(main, 'Product Name is blank.');
 });
 
 /**
@@ -488,7 +505,7 @@ test('Product Name is blank', () => {
 test('Product Name is too long', () => {
     const name = createString(NAME_MAX_LENGTH + 1);
     prepareConfigs(name, '商品の説明', 'jpy', 100);
-    expect(execute).toThrow(`Product Name must be at most ${NAME_MAX_LENGTH} characters.`);
+    assertError(main, `Product Name must be at most ${NAME_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -497,7 +514,7 @@ test('Product Name is too long', () => {
 test('Product Description is too long', () => {
     const description = createString(DESCRIPTION_MAX_LENGTH + 1);
     prepareConfigs('テスト商品 1', description, 'jpy', 100);
-    expect(execute).toThrow(`Product Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+    assertError(main, `Product Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -505,7 +522,7 @@ test('Product Description is too long', () => {
  */
 test('Unit amount is blank', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', null);
-    expect(execute).toThrow('Unit amount is blank.');
+    assertError(main, 'Unit amount is blank.');
 });
 
 /**
@@ -513,7 +530,7 @@ test('Unit amount is blank', () => {
  */
 test('Unit amount is not integer', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100.01);
-    expect(execute).toThrow('Unit amount must be integer.');
+    assertError(main, 'Unit amount must be integer.');
 });
 
 /**
@@ -521,7 +538,7 @@ test('Unit amount is not integer', () => {
  */
 test('Unit amount is negative', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', -100);
-    expect(execute).toThrow('Unit amount must not be negative.');
+    assertError(main, 'Unit amount must not be negative.');
 });
 
 /**
@@ -529,7 +546,7 @@ test('Unit amount is negative', () => {
  */
 test('Unit amount exceeds the limit', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', MAX_UNIT_AMOUNT + 1);
-    expect(execute).toThrow(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
+    assertError(`Unit amount must be smaller than ${MAX_UNIT_AMOUNT + 1}.`);
 });
 
 /**
@@ -555,7 +572,7 @@ const setSubCurrency = (i, currency, unitAmount) => {
 test('Unit amount for a sub-currency is set while the sub-currency is not selected', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     setSubCurrency(1, '', 200);
-    expect(execute).toThrow('Unit amount for sub-currency 1 is set while sub-currency 1 is not selected.');
+    assertError(main, 'Unit amount for sub-currency 1 is set while sub-currency 1 is not selected.');
 });
 
 /**
@@ -564,7 +581,7 @@ test('Unit amount for a sub-currency is set while the sub-currency is not select
 test('Sub-currency is the same as the main currency', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     setSubCurrency(2, 'jpy', 200);
-    expect(execute).toThrow('Currency JPY is set multiple times.');
+    assertError('Currency JPY is set multiple times.');
 });
 
 /**
@@ -574,7 +591,7 @@ test('Sub-currency is the same as another sub-currency', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     setSubCurrency(1, 'usd', 200);
     setSubCurrency(3, 'usd', 250);
-    expect(execute).toThrow('Currency USD is set multiple times.');
+    assertError('Currency USD is set multiple times.');
 });
 
 /**
@@ -583,7 +600,7 @@ test('Sub-currency is the same as another sub-currency', () => {
 test('Unit amount for a sub-currency is not set', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     configs.put('conf_Opt1_Currency', 'usd');
-    expect(execute).toThrow('Unit amount for sub-currency 1 is not set.');
+    assertError('Unit amount for sub-currency 1 is not set.');
 });
 
 /**
@@ -592,7 +609,7 @@ test('Unit amount for a sub-currency is not set', () => {
 test('Unit amount for a sub-currency is invalid', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     setSubCurrency(4, 'usd', 200.5);
-    expect(execute).toThrow('Unit amount for sub-currency 4 must be integer.');
+    assertError('Unit amount for sub-currency 4 must be integer.');
 });
 
 /**
@@ -641,7 +658,7 @@ test('Fail to create product', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create product. status: 400');
+    assertError('Failed to create product. status: 400');
 });
 
 /**
@@ -659,7 +676,7 @@ test('Success - JPY, Unit amount is integer, With description, No sub-currencies
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(productIdDef)).toEqual('prod_10001');
@@ -686,7 +703,7 @@ test('Success - USD, Unit amount can be parsed to integer, Without description, 
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(productIdDef)).toEqual('prod_10002');
@@ -717,7 +734,7 @@ test('Success - KRW, String configs with longest length, Unit amount at its maxi
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(productIdDef)).toEqual('prod_10003');
@@ -744,7 +761,7 @@ test('Success - Price ID and URL not saved, sub-currency is ignored as its unit 
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(productIdDef)).toEqual('prod_20001');
@@ -779,7 +796,7 @@ test('Success - Product ID and URL not saved, all sub-currencies are set', () =>
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(productObj));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(productIdDef)).toEqual('事前文字列');
