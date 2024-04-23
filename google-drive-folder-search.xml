@@ -56,6 +56,9 @@ function main() {
     }
     const oauth = configs.getObject("OAuth");
     const oauthV2 = configs.getObject("OAuth_V2");
+    if (oauthV2 !== null && parentFolderId === "root") {
+        throw new Error("When using Service Account Setting, Parent Folder ID must be set.");
+    }
 
     //// == 演算 / Calculating ==
     const driveId = getDriveId(oauth, oauthV2, parentFolderId);
@@ -437,6 +440,17 @@ test('Neither of Data Items to save result are set.', () => {
 });
 
 /**
+ * サービスアカウント設定を使用する場合、親フォルダ ID が設定されていないとエラー
+ */
+test('When using Service Account Setting, Parent Folder ID must be set.', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, '', 'フォルダ1');
+
+    assertError('When using Service Account Setting, Parent Folder ID must be set.');
+});
+
+/**
  * トークン取得リクエストのテスト
  * @param {Object} request
  * @param request.url
@@ -656,6 +670,7 @@ test('Success - Shared drive - UrlData Items to save result are not set', () => 
  *（フォルダを検索する）
  */
 test('Success - My drive - Escape character', () => {
+    const scope = `${SCOPE} ${ANOTHER_SCOPE}`; // スコープを複数セットした場合のテスト
     const privateKeyId = 'key-67890';
     const serviceAccount = 'service2@questetra.com';
     const folderId = 'folderId-67890';
@@ -663,13 +678,13 @@ test('Success - My drive - Escape character', () => {
     const {
         idDef,
         urlDef
-    } = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+    } = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
 
     let reqCount = 0;
     const token = 'token3';
     httpClient.setRequestHandler((request) => {
         if (reqCount % 2 === 0) {
-            assertTokenRequest(request, SCOPE, serviceAccount);
+            assertTokenRequest(request, scope, serviceAccount);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
@@ -697,13 +712,14 @@ test('Success - My drive - Escape character', () => {
  *（フォルダを検索する）
  */
 test('Success - Shared drive - IdData Items to save result are not set', () => {
+    const scope = `${ANOTHER_SCOPE} ${SCOPE}`; // スコープを複数セットした場合のテスト
     const privateKeyId = 'key-67890';
     const serviceAccount = 'service2@questetra.com';
     const folderId = 'folderId-67890';
     const folderName = 'フォルダ5';
     const {
         urlDef
-    } = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+    } = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
 
     // ID を保存する文字型データ項目を未設定に上書き
     configs.put('FolderIdItem', '');
@@ -713,7 +729,7 @@ test('Success - Shared drive - IdData Items to save result are not set', () => {
     const driveId = 'driveId-ghi012';
     httpClient.setRequestHandler((request) => {
         if (reqCount % 2 === 0) {
-            assertTokenRequest(request, SCOPE, serviceAccount);
+            assertTokenRequest(request, scope, serviceAccount);
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
                 'access_token': token
@@ -890,6 +906,29 @@ test('Success - Deprecated OAuth2, My drive', () => {
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
         assertSearchFolderRequest(request, 'access_token', null, folderId, folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
+    });
+    // <script> のスクリプトを実行
+    main();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
+});
+
+/**
+ * GET API 成功 - Deprecated な OAuth2 設定を使用する場合、ルートフォルダも検索できる
+ */
+test('Success - Deprecated OAuth2, root', () => {
+    const folderName = 'フォルダ';
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs('', '', '', '', '', folderName);
+    configs.put('OAuth_V2', ''); // サービスアカウント設定を解除
+    prepareOAuth2Deprecated();
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchFolderRequest(request, 'access_token', null, 'root', folderName);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
     });
     // <script> のスクリプトを実行
