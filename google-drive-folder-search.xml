@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-03-08</last-modified>
+<last-modified>2024-04-23</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -11,13 +11,17 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <configs>
-  <config name="OAuth" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
-    <label>C1: OAuth2 Setting</label>
-    <label locale="ja">C1: OAuth2設定</label>
+  <config name="OAuth" deprecated="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
+    <label>C1-deprecated: OAuth2 Setting</label>
+    <label locale="ja">C1-deprecated: OAuth2設定</label>
+  </config>
+  <config name="OAuth_V2" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+    <label>C1: Service Account Setting</label>
+    <label locale="ja">C1: サービスアカウント設定</label>
   </config>
   <config name="ParentFolderId" el-enabled="true">
-    <label>C2: Parent Folder ID (When empty, search in My Drive root)</label>
-    <label locale="ja">C2: 検索するフォルダの親フォルダの ID (空白の場合マイドライブのルートを検索します)</label>
+    <label>C2: Parent Folder ID</label>
+    <label locale="ja">C2: 検索するフォルダの親フォルダの ID</label>
   </config>
   <config name="FolderName" required="true" el-enabled="true">
     <label>C3: Folder Name to search for</label>
@@ -42,22 +46,26 @@ function main() {
     }
     const folderName = configs.get("FolderName");
     if (folderName === "" || folderName === null) {
-        throw "Folder Name is blank.";
+        throw new Error("Folder Name is blank.");
     }
     const idDataDef = configs.getObject("FolderIdItem");
     const urlDataDef = configs.getObject("WebViewUrlItem");
     // If neither C4 nor C5 are set, throw error
     if (idDataDef === null && urlDataDef === null) {
-        throw "Neither of Data Items to save result are set.";
+        throw new Error("Neither of Data Items to save result are set.");
     }
     const oauth = configs.getObject("OAuth");
+    const oauthV2 = configs.getObject("OAuth_V2");
+    if (oauthV2 !== null && parentFolderId === "root") {
+        throw new Error("When using Service Account Setting, Parent Folder ID must be set.");
+    }
 
     //// == 演算 / Calculating ==
-    const driveId = getDriveId(oauth, parentFolderId);
-    const folders = searchFolder(oauth, driveId, parentFolderId, folderName);
+    const driveId = getDriveId(oauth, oauthV2, parentFolderId);
+    const folders = searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName);
     const folderNum = folders.length;
     if (folderNum === 0) {
-        throw `Could not find Folder:${folderName} with Parent Folder ID:${parentFolderId}`;
+        throw new Error(`Could not find Folder:${folderName} with Parent Folder ID:${parentFolderId}`);
     }
     const folderIdList = [];
     const folderUrlList = [];
@@ -71,29 +79,96 @@ function main() {
     setFolderData(urlDataDef, folderUrlList);
 }
 
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (!scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        scope
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
 /**
  * 親フォルダのドライブ ID を取得する
  * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} parentFolderId 親フォルダの ID
  * @return {String} driveId ドライブ ID (共有ドライブになければ null)
  */
-function getDriveId(oauth, parentFolderId) {
+function getDriveId(oauth, oauthV2, parentFolderId) {
     if (parentFolderId === "root") {
         return null;
     }
     const url = `https://www.googleapis.com/drive/v3/files/${parentFolderId}`;
-    const response = httpClient
-        .begin()
-        .authSetting(oauth)
-        .queryParam("fields", "driveId")
+    let request = httpClient.begin();
+    if (oauthV2 !== null) {
+        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
+    } else {
+        request = request.authSetting(oauth);
+    }
+    const response = request.queryParam("fields", "driveId")
         .queryParam("supportsAllDrives", "true")
         .get(url);
     const status = response.getStatusCode();
     const responseTxt = response.getResponseAsString();
     if (status >= 300) {
-        const error = `Failed to get parent folder with parent folder ID:${parentFolderId}. status:${status}`;
+        const errorMsg = `Failed to get parent folder with parent folder ID:${parentFolderId}. status:${status}`;
         engine.log(responseTxt);
-        throw error;
+        throw new Error(errorMsg);
     }
     const driveId = JSON.parse(responseTxt).driveId;
     if (driveId === undefined) {
@@ -105,6 +180,7 @@ function getDriveId(oauth, parentFolderId) {
 /**
  * Google ドライブのフォルダを検索
  * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
+ * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} driveId 親フォルダのドライブ ID (共有ドライブになければ null)
  * @param {String} parentFolderId 親フォルダの ID
  * @param {String} folderName 検索するフォルダの名前
@@ -112,14 +188,17 @@ function getDriveId(oauth, parentFolderId) {
  * @return {String} folders[].id フォルダの ID
  * @return {String} folders[].webViewLink フォルダの表示 URL
  */
-function searchFolder(oauth, driveId, parentFolderId, folderName) {
+function searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName) {
     const folderNameRep = folderName.replace(/['\\]/g, "\\$&"); // ' と \ をエスケープ
     const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
     const url = "https://www.googleapis.com/drive/v3/files";
-    let request = httpClient
-        .begin()
-        .authSetting(oauth)
-        .queryParam("q", q)
+    let request = httpClient.begin();
+    if (oauthV2 !== null) {
+        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
+    } else {
+        request = request.authSetting(oauth);
+    }
+    request = request.queryParam("q", q)
         .queryParam("pageSize", "1000")
         .queryParam("fields", "files(id,webViewLink)");
     if (driveId !== null) { // 親フォルダが共有ドライブにある場合
@@ -133,9 +212,9 @@ function searchFolder(oauth, driveId, parentFolderId, folderName) {
     const status = response.getStatusCode();
     const responseTxt = response.getResponseAsString();
     if (status >= 300) {
-        const error = `Failed to search. status:${status}`;
+        const errorMsg = `Failed to search. status:${status}`;
         engine.log(responseTxt);
-        throw error;
+        throw new Error(errorMsg);
     }
     const folders = JSON.parse(responseTxt).files;
     return folders;
@@ -150,7 +229,7 @@ function setFolderData(dataDef, folderInfoList) {
     if (dataDef !== null) {
         //Multiple Judge
         if (dataDef.matchDataType("STRING_TEXTFIELD") && folderInfoList.length > 1) {
-            throw "Multiple folders are found. Can't set data to single-line string Data Item.";
+            throw new Error("Multiple folders are found. Can't set data to single-line string Data Item.");
         }
         const folderInfoStr = folderInfoList.join("\n");
         engine.setData(dataDef, folderInfoStr);
@@ -179,41 +258,89 @@ rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
 </icon>
     
 <test><![CDATA[
+const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD3Zg0KVn2jff8t
+NHk7p8uWEvsaxA59CkGi1v81kyVsnd+yxm23nWIKhGplhy0hK7dnBP3OMB0YCfvo
+yXqryQMJb96xMyPkW+n9a1uh3wOibpPzhw/QbVzd5vgMcK9qN2M5oB1iYLEUvlGq
+ogQ8r1gYUlt/Of0oIYKIwe9HiQXUTNxnNyW+wrURNkDio4QKMvAEqdG4iEzShAzE
+bNLOG4YAdmKxZ+gL0646s5XRTIO7q/3haiF9BszxFul9GiugQ8rdPKxJEvQ9YMMt
+cz39wVM4ZvJ8gmUrD5wwucDQXfeiP7bU9meBAQGpXcmYBFpBHI0hTEHYqM0MZ7pW
+JVB9eEeFAgMBAAECggEBAK5LBCbjVjJHgu37COoBRcmd57AsrbRj9Gffpf69guEp
+vD570zJHu5mDPl32xNGYteXrO0/2z5hu+D1BLJ43yF7upGociE3Kf2fdKbo5nprh
+4nPwFDEXyxQ+M0S4YqynBs3DQtBbJIZjqq9W4ztJoPvJkdJpLTQHn6nvTz8LhsLQ
+XN9nTWqTNQ3KSiUXPrXkV0dZ2sm2OCjQE99X9rm7araP6Y1FO2irGySPftwGnR+C
+/jw1vLzeTCsI9+pZQ2A3JZMwYB5UPQPo/roWJ7tfrT/aT6h+eLpavDUd5W0Wowh/
+HqzFQE2bJGE09F8w9mHaQAI+hG/Lr7BbO4sl3n5E3GUCgYEA/TZZc96Jqsom2f5g
+iXtl6hX/5DrKVfHp6RzRpQ8aKNokJdTvtd25YiWHUY8h25O28Wdo9QDsKMkuCnlz
+EOV3/624iiTGzuVCpB2/LInO4uL5mqYtBVHVDwR41WCOM2RbX5HyB8NqpycIHSO5
+gZtb48OSJnGZbHEn1BkoaoywzwcCgYEA+h9Q/Bz/09GHfMNUfsjp4cQ67IX1iHqA
+noPqnD8KY1UA2+KR3SBa04zk4KQkilNN5wb1r4XLvFnIWjEEicCQqsw2aEnJwGBI
+6Tvd6KWw4xON2SqPlgPH75AOUQwbrsF0Gbee3OktMdOPsG86cTES7XwCOj1syN9d
+kxyEMbIbRhMCgYAA8Vbb65QvopkKbrwFRwRWHsbZHq7qKwBn8ceGCcxbIpTH30cV
+MkIib2lVkGbb3mzr8Sqe3uYCMN2PBGy9P113AjqRqRlkY84ftkyj6c9vYND1FnFM
+d8WHTMj2YmmlH1aHwI9aIAwhmy+YjC2AogdxjaTZp8qecL1pOL7BxsxRuQKBgQCJ
+qkjhqnhoNk/zLHNKIP0RhPbFjemZR4uZM5QikVP/Xh7N54NPCOrUuxySQ+XUuIsN
+GDiLdgGv1l6+vXH4+6LkTue3OL2xg409yfSWgvO719xf5dwHvmcCBPDMTPTDl7h2
+Gyl1/2UfoojYnC+3c0Iuse1r7rj8SmxvduePjq8SPwKBgACswSW/FWGFyqfhXvIv
+QWSZF/yiIsywjJgiTsRp92Cr98QDQNC0c8SCQWew3T1r/CHX3EDqjf3djx5qISpi
+ESFz5+HMVWL2lMD5KqLxIdHZNe4fbPyW779yMNdyd0rlgOS1kM3WrYdV9tgjc1VI
+lweR14IODzhshANib/N8F47e
+-----END PRIVATE KEY-----`;
+
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIDbzCCAlegAwIBAgIUPV0u0uVd+8UHrS6NRz/xVad9oRUwDQYJKoZIhvcNAQEL
+BQAwRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYDVQQKDAlRdWVz
+dGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MB4XDTI0MDExODA4MDYxMVoXDTI0
+MDIxNzA4MDYxMVowRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYD
+VQQKDAlRdWVzdGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA92YNClZ9o33/LTR5O6fLlhL7GsQOfQpBotb/
+NZMlbJ3fssZtt51iCoRqZYctISu3ZwT9zjAdGAn76Ml6q8kDCW/esTMj5Fvp/Wtb
+od8Dom6T84cP0G1c3eb4DHCvajdjOaAdYmCxFL5RqqIEPK9YGFJbfzn9KCGCiMHv
+R4kF1EzcZzclvsK1ETZA4qOECjLwBKnRuIhM0oQMxGzSzhuGAHZisWfoC9OuOrOV
+0UyDu6v94WohfQbM8RbpfRoroEPK3TysSRL0PWDDLXM9/cFTOGbyfIJlKw+cMLnA
+0F33oj+21PZngQEBqV3JmARaQRyNIUxB2KjNDGe6ViVQfXhHhQIDAQABo1MwUTAd
+BgNVHQ4EFgQU+XQRQgTm3ffYqLngkqr03TFcbvcwHwYDVR0jBBgwFoAU+XQRQgTm
+3ffYqLngkqr03TFcbvcwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAOnZodDZ4tqjkofJbIcuXczFGPta6geFl/my3H2Ubf2PJNEkDxklgml7uMych
+vs/lWi0p7YQII52lbMytADKeG/YLOBVQMp5e3WDI3D+630b3T20AwZcXW3KuAYn1
+sQuSh7RijcOKDoTMQNUCMjgBbzr5Z4eq0HYl/Uivmkdh5YH0nU2+LbU/G1RDDodh
+Q+J3TyL+Ms9ba5V8/7gs7Vaz9uuRBdYpq/MP+Iyb78/yIGOxk9Qj0fXdc+W69XGP
+rqpI6o1cfaFHC3zkRdyZA9Tvh3yE3XID9J5xRZRmUuCzUR4YkJQx436E7EzVohq7
+lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
+-----END CERTIFICATE-----`;
+
 /**
  * 設定の準備 - 保存する文字型データ項目が複数行
- * @param configs
- * @param folderId
- * @param folderName
+ * @param scome スコープ
+ * @param privateKeyId 秘密鍵 ID
+ * @param privateKey 秘密鍵
+ * @param serviceAccount サービスアカウント
+ * @param folderId フォルダ ID
+ * @param folderName フォルダ名
+ * @param isSingleLine 保存先データ項目が単一業かどうか
  * @return {
  *     idDef: {Object},
  *     urlDef: {Object}
  * }
  */
-const prepareConfigs = (configs, folderId, folderName) => {
-    const auth = httpClient.createAuthSettingOAuth2(
-        'Google',
-        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
-        'https://accounts.google.com/o/oauth2/token',
-        'spreadsheets',
-        'consumer_key',
-        'consumer_secret',
-        'access_token'
-    );
+const prepareConfigs = (scope, privateKeyId, privateKey, serviceAccount, folderId, folderName, isSingleLine = false) => {
+    // 認証設定を作成し、指定
+    const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', scope, '', '', privateKeyId, privateKey, serviceAccount, '');
+    configs.putObject('OAuth_V2', jwtAuth);
 
-    configs.putObject('OAuth', auth);
     configs.put('ParentFolderId', folderId,);
     configs.put('FolderName', folderName);
 
     // 文字型データ項目を準備して、config に指定
-    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', 'STRING_TEXTAREA');
+    let dataType = 'STRING_TEXTAREA';
+    if (isSingleLine) {
+        dataType = 'STRING_TEXTFIELD';
+    }
+    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', dataType);
     configs.putObject('FolderIdItem', idDef);
-    // 文字型データ項目の値（検索したフォルダの ID を保存する文字型データ項目）を指定
     engine.setData(idDef, '事前文字列');
-
-    // 文字型データ項目を準備して、config に指定
-    const urlDef = engine.createDataDefinition('表示URL', 4, 'q_urls', 'STRING_TEXTAREA');
+    const urlDef = engine.createDataDefinition('表示URL', 4, 'q_urls', dataType);
     configs.putObject('WebViewUrlItem', urlDef);
-    // 文字型データ項目の値（検索したフォルダの表示 URL を保存するデータ項目）を指定
     engine.setData(urlDef, '事前文字列');
 
     return {
@@ -221,85 +348,86 @@ const prepareConfigs = (configs, folderId, folderName) => {
         urlDef
     };
 };
-
-
-/**
- * 設定の準備 - 保存する文字型データ項目が単一行
- * @param configs
- * @param folderId
- * @param folderName
- * @return {
- *     idDef: {Object},
- *     urlDef: {Object}
- * }
- */
-const prepareSingleLineConfigs = (configs, folderId, folderName) => {
-    const auth = httpClient.createAuthSettingOAuth2(
-        'Google',
-        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
-        'https://accounts.google.com/o/oauth2/token',
-        'spreadsheets',
-        'consumer_key',
-        'consumer_secret',
-        'access_token'
-    );
-
-    configs.putObject('OAuth', auth);
-    configs.put('ParentFolderId', folderId,);
-    configs.put('FolderName', folderName);
-
-    // 文字型データ項目を準備して、config に指定
-    const idDef = engine.createDataDefinition('ファイルID', 3, 'q_ids', 'STRING_TEXTFIELD');
-    configs.putObject('FolderIdItem', idDef);
-    // 文字型データ項目の値（検索したフォルダの ID を保存する文字型データ項目）を指定
-    engine.setData(idDef, '事前文字列');
-
-    // 文字型データ項目を準備して、config に指定
-    const urlDef = engine.createDataDefinition('表示URL', 4, 'q_urls', 'STRING_TEXTFIELD');
-    configs.putObject('WebViewUrlItem', urlDef);
-    // 文字型データ項目の値（検索したフォルダの表示 URL を保存するデータ項目）を指定
-    engine.setData(urlDef, '事前文字列');
-
-    return {
-        idDef,
-        urlDef
-    };
-};
-
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
         fail();
     }
 };
 
+/**
+ * スコープが空
+ */
+test('Scope is empty', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs('', privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', 'フォルダ1');
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
+});
+
+const ANOTHER_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+
+/**
+ * スコープに必須スコープを含まない
+ */
+test('Required scope is missing', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(ANOTHER_SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', 'フォルダ1');
+
+    assertError(`Scope ${SCOPE} must be included in the scope.`);
+});
+
+/**
+ * 秘密鍵 ID が空
+ */
+test('Private Key ID is empty', () => {
+    const privateKeyId = '';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', 'フォルダ1');
+
+    assertError('Private Key ID is required.');
+});
+
+/**
+ * カスタム秘密情報1 に設定されているサービスアカウントが空
+ */
+test('Service Account is empty', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = '';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', 'フォルダ1');
+
+    assertError('Service Account must be set to Custom Secret 1.');
+});
 
 /**
  * フォルダ名が空でエラーになる場合
  */
 test('Folder Name is blank.', () => {
-    prepareConfigs(configs, '12345abcde', '');
-    // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Folder Name is blank.');
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', '');
 });
-
 
 /**
  * 検索したフォルダの ID を保存する文字型データ項目と検索したフォルダの表示 URL を保存するデータ項目の両方が未設定でエラーになる場合
  */
 test('Neither of Data Items to save result are set.', () => {
-    prepareConfigs(configs, '12345abcde', 'folder0');
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, 'folderId-12345', 'フォルダ1');
 
     // ID を保存する文字型データ項目を未設定に上書き
     configs.put('FolderIdItem', '');
@@ -308,20 +436,66 @@ test('Neither of Data Items to save result are set.', () => {
     configs.put('WebViewUrlItem', '');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Neither of Data Items to save result are set.');
+    assertError('Neither of Data Items to save result are set.');
 });
 
+/**
+ * サービスアカウント設定を使用する場合、親フォルダ ID が設定されていないとエラー
+ */
+test('When using Service Account Setting, Parent Folder ID must be set.', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, '', 'フォルダ1');
+
+    assertError('When using Service Account Setting, Parent Folder ID must be set.');
+});
+
+/**
+ * トークン取得リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} scope
+ * @param {String} serviceAccount
+ */
+const assertTokenRequest = ({
+                                url,
+                                method,
+                                contentType,
+                                body
+                            }, scope, serviceAccount) => {
+    expect(url).toEqual(URL_TOKEN_REQUEST);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const query = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=`;
+    expect(body).startsWith(query);
+    const assertion = decodeURIComponent(body.substring(query.length));
+
+    const publicKey = rsa.readKeyFromX509(CERTIFICATE);
+    expect(jwt.verify(assertion, publicKey)).toEqual(true);
+
+    const payloadJson = base64.decodeFromUrlSafeString(assertion.split('.')[1]);
+    const payload = JSON.parse(payloadJson);
+    expect(payload.iss).toEqual(serviceAccount);
+    expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
+    expect(payload.scope).toEqual(scope);
+};
 
 /**
  * リクエストのテスト（親フォルダのドライブ ID を取得する）
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
+ * @param token
  * @param parentFolderId
  */
-const assertGetDriveIdRequest = ({ url, method }, parentFolderId) => {
+const assertGetDriveIdRequest = ({ url, method, headers }, token, parentFolderId) => {
     expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${parentFolderId}?fields=driveId&supportsAllDrives=true`);
     expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
 };
 
 
@@ -330,22 +504,28 @@ const assertGetDriveIdRequest = ({ url, method }, parentFolderId) => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
+ * @param token
  * @param driveId (共有ドライブになければ null)
  * @param parentFolderId
  * @param folderName
  */
-const assertSearchFolderRequest = ({ url, method }, driveId, parentFolderId, folderName) => {
-
-    const q = `mimeType+%3D+%27application%2Fvnd.google-apps.folder%27+and+trashed+%3D+false+and+name+%3D+%27${folderName}%27+and+%27${parentFolderId}%27+in+parents`;
-
+const assertSearchFolderRequest = ({ url, method, headers }, token, driveId, parentFolderId, folderName) => {
+    const encodedFolderName = encodeURIComponent(folderName)
+        .replace(/%20/g, '+') // HttpRequestWrapper#queryParam() はスペースを + に置き換える
+        .replace(/\!/g, '%21') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/'/g, '%27')
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    const q = `mimeType+%3D+%27application%2Fvnd.google-apps.folder%27+and+trashed+%3D+false+and+name+%3D+%27${encodedFolderName}%27+and+%27${parentFolderId}%27+in+parents`;
     if (driveId !== null) { // 親フォルダが共有ドライブにある場合
         expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=drive&driveId=${driveId}`);
     } else {
         expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29`);
     }
     expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
 };
-
 
 /**
  * GET リクエスト（親フォルダのドライブ ID を取得する）のレスポンスを準備
@@ -354,10 +534,9 @@ const assertSearchFolderRequest = ({ url, method }, driveId, parentFolderId, fol
  */
 const prepareGetDriveIdResponse = (id) => {
     return {
-        "driveId": `Drive_${id}`
+        "driveId": id
     }
 };
-
 
 /**
  * GET リクエスト（フォルダを検索する）のレスポンスを準備
@@ -365,7 +544,7 @@ const prepareGetDriveIdResponse = (id) => {
  * @param num
  * @return {Object} responseObj
  */
-const prepareGetSerchDriveResponse = (id) => {
+const prepareGetSearchDriveResponse = (id) => {
     return {
         "files": [
             {
@@ -384,42 +563,65 @@ const prepareGetSerchDriveResponse = (id) => {
     };
 };
 
-
 /**
  * GET API リクエストでエラー
  *（親フォルダのドライブ ID を取得する）
  */
 test('GET Get Parent folderId Failed', () => {
-    prepareConfigs(configs, 'abcd12345678', 'folder1');
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const folderId = 'folderId-12345';
+    const folderName = 'フォルダ1';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+
+    let reqCount = 0;
+    const token = 'token';
     httpClient.setRequestHandler((request) => {
-        assertGetDriveIdRequest(request, 'abcd12345678', 'folder1');
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertGetDriveIdRequest(request, token, folderId);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Failed to get parent folder with parent folder ID:abcd12345678. status:400');
+    assertError(`Failed to get parent folder with parent folder ID:${folderId}. status:400`);
 });
-
 
 /**
  * GET API リクエストでエラー
  *（フォルダを検索する）
  */
 test('GET Search Failed', () => {
-    prepareConfigs(configs, 'efgh23456789', 'folder2');
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'folderId-67890';
+    const folderName = 'フォルダ2';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+    
     let reqCount = 0;
+    const token = 'token';
+    const driveId = 'driveId-12345';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'efgh23456789');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('abc123')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
         }
-        assertSearchFolderRequest(request, "Drive_abc123", "efgh23456789", 'folder2',);
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse(driveId)));
+        }
+        assertSearchFolderRequest(request, token, driveId, folderId, folderName);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Failed to search. status:400');
+    assertError('Failed to search. status:400');
 });
-
 
 /**
  * GET API 成功 - 共有ドライブでフォルダが見つかる場合 - URL を保存する文字型データ項目が未設定
@@ -427,22 +629,34 @@ test('GET Search Failed', () => {
  *（フォルダを検索する）
  */
 test('Success - Shared drive - UrlData Items to save result are not set', () => {
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'folderId-67890';
+    const folderName = 'フォルダ2';
     const {
         idDef
-    } = prepareConfigs(configs, 'ijkl34567890', 'folder3');
+    } = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
 
     // URL を保存する文字型データ項目を未設定に上書き
     configs.put('WebViewUrlItem', '');
 
     let reqCount = 0;
+    const token = 'token2';
+    const driveId = 'driveId-67890';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'ijkl34567890');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('efg789')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
         }
-        assertSearchFolderRequest(request, "Drive_efg789", "ijkl34567890", 'folder3');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('aaabbbccc111222333')));
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse(driveId)));
+        }
+        assertSearchFolderRequest(request, token, driveId, folderId, folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('aaabbbccc111222333')));
     });
     // <script> のスクリプトを実行
     main();
@@ -450,28 +664,39 @@ test('Success - Shared drive - UrlData Items to save result are not set', () => 
     expect(engine.findData(idDef)).toEqual('Folder1_aaabbbccc111222333\nFolder2_aaabbbccc111222333\nFolder3_aaabbbccc111222333');
 });
 
-
 /**
  * GET API 成功 - フォルダが見つかる場合 - マイドライブでフォルダが見つかる場合 - エスケープ文字
  *（親フォルダのドライブ ID を取得する）
  *（フォルダを検索する）
  */
-
 test('Success - My drive - Escape character', () => {
+    const scope = `${SCOPE} ${ANOTHER_SCOPE}`; // スコープを複数セットした場合のテスト
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'folderId-67890';
+    const folderName = 'Fol\\d\'er';
     const {
         idDef,
         urlDef
-    } = prepareConfigs(configs, 'mnop45678901', 'Fol\\d\'er');
+    } = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+
     let reqCount = 0;
+    const token = 'token3';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'mnop45678901');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, scope, serviceAccount);
             reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
             // マイドライブの場合、ドライブIDが無い
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
-        assertSearchFolderRequest(request, null, "mnop45678901", 'Fol%5C%5Cd%5C%27er');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('dddeeefff444555666')));
+        assertSearchFolderRequest(request, token, null, folderId, 'Fol\\\\d\\\'er');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
     });
     // <script> のスクリプトを実行
     main();
@@ -481,30 +706,41 @@ test('Success - My drive - Escape character', () => {
     expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
 });
 
-
-
 /**
  * GET API 成功 - フォルダが見つかる場合 - ID を保存する文字型データ項目が未設定
  *（親フォルダのドライブ ID を取得する）
  *（フォルダを検索する）
  */
 test('Success - Shared drive - IdData Items to save result are not set', () => {
+    const scope = `${ANOTHER_SCOPE} ${SCOPE}`; // スコープを複数セットした場合のテスト
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'folderId-67890';
+    const folderName = 'フォルダ5';
     const {
         urlDef
-    } = prepareConfigs(configs, 'qrst45678901', 'folder5');
+    } = prepareConfigs(scope, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
 
     // ID を保存する文字型データ項目を未設定に上書き
     configs.put('FolderIdItem', '');
 
     let reqCount = 0;
+    const token = 'token4';
+    const driveId = 'driveId-ghi012';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'qrst45678901');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, scope, serviceAccount);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('ghi012')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
         }
-        assertSearchFolderRequest(request, "Drive_ghi012", "qrst45678901", 'folder5');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('ggghhhiii777888999')));
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse(driveId)));
+        }
+        assertSearchFolderRequest(request, token, driveId, folderId, folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('ggghhhiii777888999')));
     });
     // <script> のスクリプトを実行
     main();
@@ -512,24 +748,34 @@ test('Success - Shared drive - IdData Items to save result are not set', () => {
     expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_ggghhhiii777888999\nhttps://drive.google.com/drive/folders/Folder2_ggghhhiii777888999\nhttps://drive.google.com/drive/folders/Folder3_ggghhhiii777888999');
 });
 
-
 /**
  * GET API 成功 - 検索したフォルダが見つからずエラー
  *（親フォルダのドライブ ID を取得する）
  *（フォルダを検索する）
  */
 test('Could not find Folder', () => {
-    prepareConfigs(configs, 'uvwx56789012', 'folder6');
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'uvwx56789012';
+    const folderName = 'folder6';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
 
     let reqCount = 0;
+    const token = 'token5';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'uvwx56789012');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
             // マイドライブの場合、ドライブIDが無い
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
-        assertSearchFolderRequest(request, null, "uvwx56789012", 'folder6');
+        assertSearchFolderRequest(request, token, null, folderId, folderName);
         // 親フォルダ内にリストが無い		
         const responsePostObj = {
             "files": []
@@ -537,9 +783,8 @@ test('Could not find Folder', () => {
         return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responsePostObj));
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Could not find Folder:folder6 with Parent Folder ID:uvwx56789012');
+    assertError('Could not find Folder:folder6 with Parent Folder ID:uvwx56789012');
 });
-
 
 /**
  * GET API 成功 - フォルダが複数見つかるが、 ID、URL を保存する文字型データ項目が単一行でエラー
@@ -547,42 +792,65 @@ test('Could not find Folder', () => {
  *（フォルダを検索する）
  */
 test('Cannot set multiple Folders to single-line string Data Item', () => {
-    prepareSingleLineConfigs(configs, 'yzab67890123', 'folder7');
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'yzab67890123';
+    const folderName = 'folder7';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName, true);
 
     let reqCount = 0;
+    const token = 'token6';
+    const driveId = 'Drive_jkl345';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'yzab67890123');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('jkl345')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
         }
-        assertSearchFolderRequest(request, "Drive_jkl345", "yzab67890123", 'folder7');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSerchDriveResponse('jjjkkklll000111222')));
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse(driveId)));
+        }
+        assertSearchFolderRequest(request, token, driveId, folderId, folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('jjjkkklll000111222')));
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    assertError(main, 'Multiple folders are found. Can\'t set data to single-line string Data Item.');
+    assertError('Multiple folders are found. Can\'t set data to single-line string Data Item.');
 });
 
-
 /**
- * GET API 成功 - フォルダが1つ見つかる　 ID、URL を保存する文字型データ項目が単一行
+ * GET API 成功 - フォルダが1つ見つかる ID、URL を保存する文字型データ項目が単一行
  *（親フォルダのドライブ ID を取得する）
  *（フォルダを検索する）
  */
-test('Success -　Set a Folder to single-line string Data Item', () => {
+test('Success - Set a Folder to single-line string Data Item', () => {
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'cdef78901234';
+    const folderName = 'folder8';
     const {
         idDef,
         urlDef
-    } = prepareSingleLineConfigs(configs, 'cdef78901234', 'folder8');
+    } = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName, true);
 
     let reqCount = 0;
+    const token = 'token7';
+    const driveId = 'Drive_mno678';
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetDriveIdRequest(request, 'cdef78901234');
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse('mno678')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
         }
-        assertSearchFolderRequest(request, "Drive_mno678", "cdef78901234", 'folder8');
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetDriveIdResponse(driveId)));
+        }
+        assertSearchFolderRequest(request, token, driveId, folderId, folderName);
         // 親フォルダ内に検索したフォルダが1つ見つかる
         const responsePostObj = {
             "files": [
@@ -599,6 +867,76 @@ test('Success -　Set a Folder to single-line string Data Item', () => {
     // 文字型データ項目の値をチェック	  
     expect(engine.findData(idDef)).toEqual('Folder1_mmmnnnooo333444555');
     expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_mmmnnnooo333444555');
-});	
+});
+
+/**
+ * OAuth2 設定（Deprecated）の設定をする
+ */
+const prepareOAuth2Deprecated = () => {
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+    configs.putObject('OAuth', auth);
+};
+
+/**
+ * GET API 成功 - Deprecated な OAuth2 設定を使用する場合
+ */
+test('Success - Deprecated OAuth2, My drive', () => {
+    const folderId = 'folderId-67890';
+    const folderName = 'フォルダ';
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs('', '', '', '', folderId, folderName);
+    configs.put('OAuth_V2', ''); // サービスアカウント設定を解除
+    prepareOAuth2Deprecated();
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertGetDriveIdRequest(request, 'access_token', folderId);
+            // マイドライブの場合、ドライブIDが無い
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSearchFolderRequest(request, 'access_token', null, folderId, folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
+    });
+    // <script> のスクリプトを実行
+    main();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
+});
+
+/**
+ * GET API 成功 - Deprecated な OAuth2 設定を使用する場合、ルートフォルダも検索できる
+ */
+test('Success - Deprecated OAuth2, root', () => {
+    const folderName = 'フォルダ';
+    const {
+        idDef,
+        urlDef
+    } = prepareConfigs('', '', '', '', '', folderName);
+    configs.put('OAuth_V2', ''); // サービスアカウント設定を解除
+    prepareOAuth2Deprecated();
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchFolderRequest(request, 'access_token', null, 'root', folderName);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
+    });
+    // <script> のスクリプトを実行
+    main();
+    // 文字型データ項目の値をチェック	  
+    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
+});
+
 ]]></test>
 </service-task-definition>
