@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2024-04-19</last-modified>
+    <last-modified>2024-04-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -262,10 +262,10 @@ function main(){
 function retrieveConfig(confName, label, required, maxLength) {
     const value = configs.get(confName);
     if (required && value === '') {
-        throw `${label} is blank.`;
+        throw new Error( `${label} is blank.`);
     }
     if (value.length > maxLength) {
-        throw `${label} must be at most ${maxLength} characters.`;
+        throw new Error(`${label} must be at most ${maxLength} characters.`);
     }
     return value;
 }
@@ -283,7 +283,7 @@ function retrieveUnitAmount(dataDef, label, required) {
     const bigDecimal = engine.findData(dataDef);
     if (bigDecimal === null) {
         if (required) {
-            throw `${label} is blank.`;
+            throw new Error(`${label} is blank.`);
         }
         return null; // 必須項目でない場合にのみ null を返す
     }
@@ -291,13 +291,13 @@ function retrieveUnitAmount(dataDef, label, required) {
     try {
         longValue = bigDecimal.longValueExact();
     } catch (e) {
-        throw `${label} must be integer.`;
+        throw new Error(`${label} must be integer.`);
     }
     if (longValue < 0) {
-        throw `${label} must not be negative.`;
+        throw new Error(`${label} must not be negative.`);
     }
     if (longValue > maxAmount) {
-        throw `${label} must be smaller than ${maxAmount + 1}.`;
+        throw new Error(`${label} must be smaller than ${maxAmount + 1}.`);
     }
     return longValue.toString();
 }
@@ -318,13 +318,13 @@ function retrieveCurrencyOptions(mainCurrency) {
             if (unitAmountDef === null) { // 通貨、単価がともに未設定の組は無視
                 continue;
             }
-            throw `Unit amount for sub-currency ${i+1} is set while sub-currency ${i+1} is not selected.`;
+            throw new Error(`Unit amount for sub-currency ${i+1} is set while sub-currency ${i+1} is not selected.`);
         }
         if (currency === mainCurrency || currencyOptions.has(currency)) { // 通貨の指定が重複
-            throw `Currency ${currency.toUpperCase()} is set multiple times.`;
+            throw new Error(`Currency ${currency.toUpperCase()} is set multiple times.`);
         }
         if (unitAmountDef === null) { // 単価のデータ項目が未選択
-            throw `Unit amount for sub-currency ${i+1} is not set.`;
+            throw new Error(`Unit amount for sub-currency ${i+1} is not set.`);
         }
         const unitAmount = retrieveUnitAmount(unitAmountDef, `Unit amount for sub-currency ${i+1}`, false);
         if (unitAmount !== null) { // 単価のデータ項目の値が空の場合は無視。空でない場合のみ設定
@@ -365,7 +365,7 @@ function createProduct(auth, name, description, currency, unitAmount, currencyOp
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to create product. status: ${status}`;
+        throw new Error(`Failed to create product. status: ${status}`);
     }
     const productObj = JSON.parse(responseStr);
     const productId = productObj.id;
@@ -476,18 +476,18 @@ const prepareConfigs = (name, description, currency, unitAmount) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -496,7 +496,7 @@ const assertError = (func, errorMsg) => {
  */
 test('Product Name is blank', () => {
     prepareConfigs('', '商品の説明', 'jpy', 100);
-    assertError(main, 'Product Name is blank.');
+    assertError('Product Name is blank.');
 });
 
 /**
@@ -505,7 +505,7 @@ test('Product Name is blank', () => {
 test('Product Name is too long', () => {
     const name = createString(NAME_MAX_LENGTH + 1);
     prepareConfigs(name, '商品の説明', 'jpy', 100);
-    assertError(main, `Product Name must be at most ${NAME_MAX_LENGTH} characters.`);
+    assertError(`Product Name must be at most ${NAME_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -514,7 +514,7 @@ test('Product Name is too long', () => {
 test('Product Description is too long', () => {
     const description = createString(DESCRIPTION_MAX_LENGTH + 1);
     prepareConfigs('テスト商品 1', description, 'jpy', 100);
-    assertError(main, `Product Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+    assertError(`Product Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -522,7 +522,7 @@ test('Product Description is too long', () => {
  */
 test('Unit amount is blank', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', null);
-    assertError(main, 'Unit amount is blank.');
+    assertError('Unit amount is blank.');
 });
 
 /**
@@ -530,7 +530,7 @@ test('Unit amount is blank', () => {
  */
 test('Unit amount is not integer', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100.01);
-    assertError(main, 'Unit amount must be integer.');
+    assertError('Unit amount must be integer.');
 });
 
 /**
@@ -538,7 +538,7 @@ test('Unit amount is not integer', () => {
  */
 test('Unit amount is negative', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', -100);
-    assertError(main, 'Unit amount must not be negative.');
+    assertError('Unit amount must not be negative.');
 });
 
 /**
@@ -572,7 +572,7 @@ const setSubCurrency = (i, currency, unitAmount) => {
 test('Unit amount for a sub-currency is set while the sub-currency is not selected', () => {
     prepareConfigs('テスト商品 1', '商品の説明', 'jpy', 100);
     setSubCurrency(1, '', 200);
-    assertError(main, 'Unit amount for sub-currency 1 is set while sub-currency 1 is not selected.');
+    assertError('Unit amount for sub-currency 1 is set while sub-currency 1 is not selected.');
 });
 
 /**
