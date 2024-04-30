@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2024-04-22</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -64,7 +64,7 @@ function main(){
 function retrieveInvoiceId() {
     const invoiceId = engine.findData(configs.getObject('conf_InvoiceId'));
     if (invoiceId === null) {
-        throw 'Invoice ID is blank.';
+        throw new Error('Invoice ID is blank.');
     }
     return invoiceId;
 }
@@ -89,22 +89,22 @@ function checkInvoice(auth, invoiceId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) { // 削除済みの場合もエラーレスポンス
         engine.log(responseStr);
-        throw `Failed to retrieve invoice. status: ${status}`;
+        throw new Error(`Failed to retrieve invoice. status: ${status}`);
     }
     const invoiceObj = JSON.parse(responseStr);
     switch (invoiceObj.status) {
         case 'draft':
-            throw 'The invoice is still draft. It needs to be finalized first.';
+            throw new Error('The invoice is still draft. It needs to be finalized first.');
         case 'paid':
-            throw 'The invoice is already paid.';
+            throw new Error('The invoice is already paid.');
         case 'void':
-            throw 'The invoice is void.';
+            throw new Error('The invoice is void.');
         default: // open or uncollectible
             // do nothing
     }
     if (invoiceObj.collection_method !== 'send_invoice') {
         // collection_method が send_invoice でない場合は、Stripe の仕様で請求書をメール送付できない
-        throw 'The collection method of the invoice is not send_invoice.';
+        throw new Error('The collection method of the invoice is not send_invoice.');
     }
     const customerId = invoiceObj.customer;
     const paymentIntentId = invoiceObj.payment_intent;
@@ -129,17 +129,17 @@ function checkCustomer(auth, customerId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to retrieve customer. status: ${status}`;
+        throw new Error(`Failed to retrieve customer. status: ${status}`);
     }
     const customerObj = JSON.parse(responseStr);
     if (customerObj.deleted) {
-        throw 'The customer is deleted.';
+        throw new Error('The customer is deleted.');
     }
     const customerEmail = customerObj.email;
     if (customerEmail === null) {
         // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
         // 「請求先メールアドレス」の設定有無によらず、顧客のメールアドレスが設定されていない場合はエラーにする
-        throw "The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.";
+        throw new Error("The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.");
     }
     return customerEmail;
 }
@@ -160,7 +160,7 @@ function updatePaymentMethodTypes(auth, invoiceId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) { // 請求書のステータスが uncollectible の場合、更新に失敗
         engine.log(responseStr);
-        throw `Failed to update invoice. status: ${status}`;
+        throw new Error(`Failed to update invoice. status: ${status}`);
     }
 }
 
@@ -195,7 +195,7 @@ function updatePaymentIntent(auth, paymentIntentId, notSetupFutureUsage, sendRec
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to update payment intent. status: ${status}`;
+        throw new Error(`Failed to update payment intent. status: ${status}`);
     }
 }
 
@@ -215,7 +215,7 @@ function sendInvoice(auth, invoiceId) {
     if (status !== 200) {
         // 顧客のメールアドレスが未設定の場合でもここではエラーにならず、レスポンスからも送信先はわからない
         engine.log(responseStr);
-        throw `Failed to send invoice. status: ${status}`;
+        throw new Error(`Failed to send invoice. status: ${status}`);
     }
 }
 
@@ -264,18 +264,18 @@ const prepareConfigs = (invoiceId, notSetupFutureUsage, sendReceipt) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -284,7 +284,7 @@ const assertError = (func, errorMsg) => {
  */
 test('Invoice ID is blank', () => {
     prepareConfigs(null, false, true);
-    assertError(main, 'Invoice ID is blank.');
+    assertError('Invoice ID is blank.');
 });
 
 /**
@@ -312,7 +312,7 @@ test('Fail to retrieve invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to retrieve invoice. status: 400');
+    assertError('Failed to retrieve invoice. status: 400');
 });
 
 /**
@@ -326,7 +326,7 @@ test('Invalid status - draft', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
     });
 
-    assertError(main, 'The invoice is still draft. It needs to be finalized first.');
+    assertError('The invoice is still draft. It needs to be finalized first.');
 });
 
 /**
@@ -340,7 +340,7 @@ test('Invalid status - paid', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "paid"}');
     });
 
-    assertError(main, 'The invoice is already paid.');
+    assertError('The invoice is already paid.');
 });
 
 /**
@@ -354,7 +354,7 @@ test('Invalid status - void', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "void"}');
     });
 
-    assertError(main, 'The invoice is void.');
+    assertError('The invoice is void.');
 });
 
 /**
@@ -373,7 +373,7 @@ test('Invalid collection method', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(invoiceObj));
     });
 
-    assertError(main, 'The collection method of the invoice is not send_invoice.');
+    assertError('The collection method of the invoice is not send_invoice.');
 });
 
 const SAMPLE_INVOICE_1 = {
@@ -421,7 +421,7 @@ test('Fail to retrieve customer', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to retrieve customer. status: 400');
+    assertError('Failed to retrieve customer. status: 400');
 });
 
 /**
@@ -441,7 +441,7 @@ test('Customer is deleted', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"deleted": true}');
     });
 
-    assertError(main, 'The customer is deleted.');
+    assertError('The customer is deleted.');
 });
 
 /**
@@ -461,7 +461,7 @@ test('Customer email is null', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"email": null}');
     });
 
-    assertError(main, "The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.");
+    assertError("The customer's email is not set. Update the customer or send the invoice from Stripe dashboard.");
 });
 
 const SAMPLE_CUSTOMER_1 = {
@@ -512,7 +512,7 @@ test('Fail to update invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to update invoice. status: 400');
+    assertError('Failed to update invoice. status: 400');
 });
 
 /**
@@ -566,7 +566,7 @@ test('Fail to update payment intent', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to update payment intent. status: 400');
+    assertError('Failed to update payment intent. status: 400');
 });
 
 /**
@@ -615,7 +615,7 @@ test('Fail to send invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to send invoice. status: 400');
+    assertError('Failed to send invoice. status: 400');
 });
 
 /**
