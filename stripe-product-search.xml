@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2024-04-19</last-modified>
+    <last-modified>2024-04-26</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -78,11 +78,11 @@ function main(){
 function checkDataDefs(...dataDefs) {
     const dataDefList = dataDefs.filter(dataDef => dataDef !== null);
     if (dataDefList.length === 0) { // 保存先データ項目が一つも設定されていない
-        throw 'No data item to save the search result is set.';
+        throw new Error('No data item to save the search result is set.');
     }
     const dataNumSet = new Set(dataDefList.map(dataDef => dataDef.getNumber())); // 重複確認用
     if (dataNumSet.size < dataDefList.length) { // 保存先データ項目が重複
-        throw 'Same data item is set multiple times.';
+        throw new Error('Same data item is set multiple times.');
     }
     return dataDefList.some(dataDef => dataDef.matchDataType("STRING_TEXTFIELD"));
 }
@@ -103,7 +103,7 @@ function searchProducts(auth, query, singleLineFlag) {
     const defaultPriceIds = [];
     let nextPage = search(auth, query, null, productIds, productNames, defaultPriceIds);
     if (singleLineFlag && productIds.length > 1) { // 保存先データ項目が単一行なのに複数件あればエラー
-        throw 'More than one products were found while the data item to save the result is Single-Line.';
+        throw new Error('More than one products were found while the data item to save the result is Single-Line.');
     }
     while (nextPage !== null) {
         engine.log(`Current search result: ${productIds.length} products found. Fetching next page...`);
@@ -138,12 +138,12 @@ function search(auth, query, page, productIds, productNames, defaultPriceIds) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to search products. status: ${status}`;
+        throw new Error(`Failed to search products. status: ${status}`);
     }
     const responseObj = JSON.parse(responseStr);
     const products = responseObj.data;
     if (page === null && products.length === 0) { // 1 回目の検索で、結果の件数が 0
-        throw 'No products found.';
+        throw new Error('No products found.');
     }
     // 結果を配列に追加
     products.forEach(product => {
@@ -236,18 +236,18 @@ const SAMPLE_QUERY_2 = 'active:"true"\nAND metadata["key"]:"value"'; // 複数�
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -260,7 +260,7 @@ test('Search query is blank', () => {
     configs.put('conf_ProductUrls', '');
     configs.put('conf_ProductNames', '');
     configs.put('conf_DefaultPriceIds', '');
-    assertError(main, 'No data item to save the search result is set.');
+    assertError('No data item to save the search result is set.');
 });
 
 /**
@@ -269,7 +269,7 @@ test('Search query is blank', () => {
 test('Same data item is set multiple times - ID and URL', () => {
     const {idDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_ProductUrls', idDef);
-    assertError(main, 'Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -278,7 +278,7 @@ test('Same data item is set multiple times - ID and URL', () => {
 test('Same data item is set multiple times - URL and Name', () => {
     const {urlDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_ProductNames', urlDef);
-    assertError(main, 'Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -287,7 +287,7 @@ test('Same data item is set multiple times - URL and Name', () => {
 test('Same data item is set multiple times - Name and Price ID', () => {
     const {nameDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_DefaultPriceIds', nameDef);
-    assertError(main, 'Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -296,7 +296,7 @@ test('Same data item is set multiple times - Name and Price ID', () => {
 test('Same data item is set multiple times - ID and Price ID', () => {
     const {priceIdDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_ProductIds', priceIdDef);
-    assertError(main, 'Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /** 1 リクエストで取得できる件数 */
@@ -333,7 +333,7 @@ test('Fail to search products', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to search products. status: 400');
+    assertError('Failed to search products. status: 400');
 });
 
 /**
@@ -347,7 +347,7 @@ test('No products found', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"data": []}');
     });
 
-    assertError(main, 'No products found.');
+    assertError('No products found.');
 });
 
 /**
@@ -487,7 +487,7 @@ test('Success - max number of products found, with some default_price null', () 
 });
 
 /**
- * 検索クエリが空で、全件取得。検索結果が多すぎて HTTP リクエスト数の上限を超える
+ * 検索クエリが空で、全件取得。検索結果が多すぎて HTTP リクエスト数の上限を超える スクリプトエンジンのエラー
  */
 test('Search query is blank. Number of HTTP requests exceeds the limit', () => {
     const {idDef, urlDef, nameDef, priceIdDef} = prepareConfigs('');
@@ -513,7 +513,16 @@ test('Search query is blank. Number of HTTP requests exceeds the limit', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    assertError(main, `HTTP requests must be up to ${REQ_LIMIT}.`); // スクリプトエンジンのエラー
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        // スクリプトエンジンのエラーなので、エラーメッセージはテストしない
+    }
+    if (!failed) {
+        fail();
+    }
 });
 
 /**
@@ -532,7 +541,7 @@ test('Cannot save multiple results to single-line data item - ID', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
     });
 
-    assertError(main, 'More than one products were found while the data item to save the result is Single-Line.'); 
+    assertError('More than one products were found while the data item to save the result is Single-Line.'); 
 });
 
 /**
@@ -553,7 +562,7 @@ test('Cannot save multiple results to single-line data item - URL', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    assertError(main, 'More than one products were found while the data item to save the result is Single-Line.'); 
+    assertError('More than one products were found while the data item to save the result is Single-Line.'); 
 });
 
 /**
@@ -572,7 +581,7 @@ test('Cannot save multiple results to single-line data item - Name', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
     });
 
-    assertError(main, 'More than one products were found while the data item to save the result is Single-Line.'); 
+    assertError('More than one products were found while the data item to save the result is Single-Line.'); 
 });
 
 /**
@@ -591,7 +600,7 @@ test('Cannot save multiple results to single-line data item - Price ID', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, results, null));
     });
 
-    assertError(main, 'More than one products were found while the data item to save the result is Single-Line.'); 
+    assertError('More than one products were found while the data item to save the result is Single-Line.'); 
 });
 
 /**
