@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-09</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Update Customer</label>
     <label locale="ja">Stripe: 顧客を更新</label>
 
@@ -14,7 +15,7 @@
     <summary locale="ja">この工程は、Stripe 上の顧客オブジェクトを更新します。値が設定されていない項目は変更されません。</summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -53,11 +54,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const customerId = retrieveCustomerId();
     const name = retrieveConfig('conf_Name', 'Customer Name', 256);
     const language = configs.get('conf_Language');
@@ -79,7 +78,7 @@ function retrieveCustomerId() {
         if (customerIdDef.matchDataType('SELECT_SINGLE')) { // 選択型データ項目の場合
             const select = engine.findData(customerIdDef);
             if (select === null || select.size() === 0) { // 未選択
-              throw 'Customer ID is not selected.';
+              throw new Error('Customer ID is not selected.');
             }
             customerId = select.get(0).getValue();
         } else { // 文字型データ項目の場合
@@ -87,7 +86,7 @@ function retrieveCustomerId() {
         }
     }
     if (customerId === null || customerId === '') {
-        throw 'Customer ID is blank.';
+        throw new Error('Customer ID is blank.');
     }
     return customerId;
 }
@@ -102,14 +101,14 @@ function retrieveCustomerId() {
 function retrieveConfig(confName, label, maxLength) {
     const value = configs.get(confName);
     if (value.length > maxLength) {
-        throw `${label} must be at most ${maxLength} characters.`;
+        throw new Error(`${label} must be at most ${maxLength} characters.`);
     }
     return value;
 }
 
 /**
   * 顧客を更新する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @param {String} name 名前
   * @param {String} language 言語
@@ -130,7 +129,7 @@ function updateCustomer(auth, customerId, name, language, email, description) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to update customer. status: ${status}`;
+        throw new Error(`Failed to update customer. status: ${status}`);
     }
 }
 
@@ -149,7 +148,7 @@ function prepareFormParams(name, language, email, description) {
     addParamIfNotBlank(formParams, 'email', email);
     addParamIfNotBlank(formParams, 'description', description);
     if (Object.keys(formParams).length === 0) {
-        throw 'No fields to update.';
+        throw new Error('No fields to update.');
     }
     return formParams;
 }
@@ -214,7 +213,8 @@ const createString = (length) => {
  * @param description
  */
 const prepareConfigs = (customerId, name, language, email, description) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 顧客 ID が保存されている文字型データ項目（単一行）を準備し、設定
     const idDef = engine.createDataDefinition('顧客 ID', 1, 'q_customerId', 'STRING_TEXTFIELD');
@@ -228,11 +228,28 @@ const prepareConfigs = (customerId, name, language, email, description) => {
 }
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * 顧客 ID が空
  */
 test('Customer ID is blank', () => {
     prepareConfigs('', 'テスト顧客 1', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
-    expect(execute).toThrow('Customer ID is blank.');
+    assertError('Customer ID is blank.');
 });
 
 /**
@@ -241,7 +258,7 @@ test('Customer ID is blank', () => {
 test('Customer Name is too long', () => {
     const name = createString(NAME_MAX_LENGTH + 1);
     prepareConfigs('cus_00001', name, 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
-    expect(execute).toThrow(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
+    assertError(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -250,7 +267,7 @@ test('Customer Name is too long', () => {
 test('Customer Email is too long', () => {
     const email = createString(EMAIL_MAX_LENGTH + 1);
     prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', email, 'これはテスト顧客 1 です。');
-    expect(execute).toThrow(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
+    assertError(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -259,7 +276,7 @@ test('Customer Email is too long', () => {
 test('Customer Description is too long', () => {
     const description = createString(DESCRIPTION_MAX_LENGTH + 1);
     prepareConfigs('cus_00001', 'テスト顧客 1', 'ja-JP', 'test1@example.com', description);
-    expect(execute).toThrow(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+    assertError(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -267,7 +284,7 @@ test('Customer Description is too long', () => {
  */
 test('No fields to update', () => {
     prepareConfigs('cus_00001', '', '', '', '');
-    expect(execute).toThrow('No fields to update.');
+    assertError('No fields to update.');
 });
 
 /**
@@ -322,7 +339,7 @@ test('Fail to update customer', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to update customer. status: 400');
+    assertError('Failed to update customer. status: 400');
 });
 
 /**
@@ -339,7 +356,7 @@ test('Success - set customer ID by string-type data item, update all fields', ()
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -353,7 +370,7 @@ test('Success - without name', () => {
         return httpClient.createHttpResponse(200, 'application/json', '');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -367,7 +384,7 @@ test('Success - without email', () => {
         return httpClient.createHttpResponse(200, 'application/json', '');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -381,7 +398,7 @@ test('Success - without language', () => {
         return httpClient.createHttpResponse(200, 'application/json', '');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -395,7 +412,7 @@ test('Success - without description', () => {
         return httpClient.createHttpResponse(200, 'application/json', '');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -418,7 +435,7 @@ test('Success - customer ID is set by select-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -431,7 +448,7 @@ test('Customer ID is set by select-type data item and it is not selected', () =>
     const idDef = engine.createDataDefinition('顧客 ID を選択', 2, 'q_customerIdSelect', 'SELECT_SINGLE');
     configs.putObject('conf_CustomerId', idDef);
 
-    expect(execute).toThrow('Customer ID is not selected.');
+    assertError('Customer ID is not selected.');
 });
 
 /**
@@ -446,7 +463,7 @@ test('Success - customer ID is set as fixed value', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
     ]]></test>

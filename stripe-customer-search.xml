@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-12</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Search Customers</label>
     <label locale="ja">Stripe: 顧客を検索</label>
 
@@ -14,7 +15,7 @@
     <summary locale="ja">この工程は、検索クエリに合致する Stripe 上の顧客オブジェクトを検索します。</summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -44,11 +45,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     let query = configs.get('conf_Query');
     if (query === '') { // 検索クエリが空の場合、全件取得する
         query = 'created>0';
@@ -83,18 +82,18 @@ function checkDataDefs(customerIdsDef, customerUrlsDef, customerNamesDef, custom
     const dataDefList = [customerIdsDef, customerUrlsDef, customerNamesDef, customerEmailsDef]
         .filter(dataDef => dataDef !== null);
     if (dataDefList.length === 0) { // 保存先データ項目が一つも設定されていない
-        throw 'No data item to save the search result is set.';
+        throw new Error('No data item to save the search result is set.');
     }
     const dataNumSet = new Set(dataDefList.map(dataDef => dataDef.getNumber())); // 重複確認用
     if (dataNumSet.size < dataDefList.length) { // 保存先データ項目が重複
-        throw 'Same data item is set multiple times.';
+        throw new Error('Same data item is set multiple times.');
     }
     return dataDefList.some(dataDef => dataDef.matchDataType("STRING_TEXTFIELD"));
 }
 
 /**
   * 顧客を検索する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} query 検索クエリ
   * @param {boolean} singleLineFlag 保存先データ項目のいずれかが単一行であれば true
   * @return {Object} returnObj
@@ -108,7 +107,7 @@ function searchCustomers(auth, query, singleLineFlag) {
     const customerEmails = [];
     let nextPage = search(auth, query, null, customerIds, customerNames, customerEmails);
     if (singleLineFlag && customerIds.length > 1) { // 保存先データ項目が単一行なのに複数件あればエラー
-        throw 'More than one customers were found while the data item to save the result is Single-Line.';
+        throw new Error('More than one customers were found while the data item to save the result is Single-Line.');
     }
     while (nextPage !== null) {
         engine.log(`Current search result: ${customerIds.length} customers found. Fetching next page...`);
@@ -120,7 +119,7 @@ function searchCustomers(auth, query, singleLineFlag) {
 
 /**
   * 顧客を検索する API リクエストを送信する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} query 検索クエリ
   * @param {String} page 取得するページ。最初のリクエストの場合は null
   * @param {List<String>} customerIds 検索結果の顧客 ID を格納する配列
@@ -143,12 +142,12 @@ function search(auth, query, page, customerIds, customerNames, customerEmails) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to search customers. status: ${status}`;
+        throw new Error(`Failed to search customers. status: ${status}`);
     }
     const responseObj = JSON.parse(responseStr);
     const customers = responseObj.data;
     if (page === null && customers.length === 0) { // 1 回目の検索で、結果の件数が 0
-        throw 'No customers found.';
+        throw new Error('No customers found.');
     }
     // 結果を配列に追加
     Array.prototype.push.apply(customerIds, customers.map(customer => customer.id));
@@ -207,7 +206,8 @@ const STRIPE_VERSION = '2022-08-01';
  * @return returnObj.emailDef
  */
 const prepareConfigs = (query) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
     configs.put('conf_Query', query);
 
     // 顧客の ID 一覧を保存する文字型データ項目（複数行）を準備し、設定
@@ -237,6 +237,23 @@ const SAMPLE_QUERY_1 = 'name~"テスト顧客"';
 const SAMPLE_QUERY_2 = 'created>946652400\nAND metadata["key"]:"value"'; // 複数行
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * 保存先データ項目がひとつも設定されていない
  */
 test('Search query is blank', () => {
@@ -245,7 +262,7 @@ test('Search query is blank', () => {
     configs.put('conf_CustomerUrls', '');
     configs.put('conf_CustomerNames', '');
     configs.put('conf_CustomerEmails', '');
-    expect(execute).toThrow('No data item to save the search result is set.');
+    assertError('No data item to save the search result is set.');
 });
 
 /**
@@ -254,7 +271,7 @@ test('Search query is blank', () => {
 test('Same data item is set multiple times - ID and URL', () => {
     const {idDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_CustomerUrls', idDef);
-    expect(execute).toThrow('Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -263,7 +280,7 @@ test('Same data item is set multiple times - ID and URL', () => {
 test('Same data item is set multiple times - URL and Name', () => {
     const {urlDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_CustomerNames', urlDef);
-    expect(execute).toThrow('Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -272,7 +289,7 @@ test('Same data item is set multiple times - URL and Name', () => {
 test('Same data item is set multiple times - Name and Email', () => {
     const {nameDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_CustomerEmails', nameDef);
-    expect(execute).toThrow('Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /**
@@ -281,7 +298,7 @@ test('Same data item is set multiple times - Name and Email', () => {
 test('Same data item is set multiple times - Email and ID', () => {
     const {emailDef} = prepareConfigs(SAMPLE_QUERY_1);
     configs.putObject('conf_CustomerIds', emailDef);
-    expect(execute).toThrow('Same data item is set multiple times.');
+    assertError('Same data item is set multiple times.');
 });
 
 /** 1 リクエストで取得できる顧客数 */
@@ -318,7 +335,7 @@ test('Fail to search customers', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to search customers. status: 400');
+    assertError('Failed to search customers. status: 400');
 });
 
 /**
@@ -332,7 +349,7 @@ test('No customers found', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"data": []}');
     });
 
-    expect(execute).toThrow('No customers found.');
+    assertError('No customers found.');
 });
 
 /**
@@ -383,7 +400,7 @@ test('Success - 1 customer found', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('cus_1');
@@ -424,7 +441,7 @@ test('Success - 1 customer found, saved to single-line data items', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('cus_1');
@@ -464,7 +481,7 @@ test('Success - max number of customers found', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     const ids = engine.findData(idDef).split('\n');
@@ -510,7 +527,16 @@ test('Number of HTTP requests exceeds the limit', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    expect(execute).toThrow(`HTTP requests must be up to ${REQ_LIMIT}.`); // スクリプトエンジンのエラー
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        // スクリプトエンジンのエラーなので、エラーメッセージはテストしない
+    }
+    if (!failed) {
+        fail();
+    }
 });
 
 /**
@@ -529,7 +555,7 @@ test('Cannot save multiple results to single-line data item - ID', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+    assertError('More than one customers were found while the data item to save the result is Single-Line.');
 });
 
 /**
@@ -550,7 +576,7 @@ test('Cannot save multiple results to single-line data item - URL', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+    assertError('More than one customers were found while the data item to save the result is Single-Line.');
 });
 
 /**
@@ -569,7 +595,7 @@ test('Cannot save multiple results to single-line data item - Name', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+    assertError('More than one customers were found while the data item to save the result is Single-Line.');
 });
 
 /**
@@ -588,7 +614,7 @@ test('Cannot save multiple results to single-line data item - Email', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    expect(execute).toThrow('More than one customers were found while the data item to save the result is Single-Line.');
+    assertError('More than one customers were found while the data item to save the result is Single-Line.');
 });
 
 /**
@@ -606,7 +632,7 @@ test('Success - Data item to save IDs and Emails are not set', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
@@ -636,7 +662,7 @@ test('Success - Data item to save URLs and Names are not set', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(urlDef)).toEqual('事前文字列');
@@ -666,7 +692,7 @@ test('Success - Some customers do not have their name or email address', () => {
         return httpClient.createHttpResponse(200, 'application/json', searchResponse(false, customers, null));
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     const ids = engine.findData(idDef).split('\n');
@@ -723,7 +749,7 @@ test('Search query is blank - get all customers', () => {
         return httpClient.createHttpResponse(200, 'application/json', response);
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     const ids = engine.findData(idDef).split('\n');

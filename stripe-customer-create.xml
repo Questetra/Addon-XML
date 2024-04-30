@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-12</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Create Customer</label>
     <label locale="ja">Stripe: 顧客を作成</label>
 
@@ -14,7 +15,7 @@
     <summary locale="ja">この工程は、Stripe 上に顧客オブジェクトを作成します。</summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -56,11 +57,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const name = retrieveConfig('conf_Name', 'Customer Name', true, 256);
     const language = configs.get('conf_Language');
     const email = retrieveConfig('conf_Email', 'Customer Email', true, 512);
@@ -93,17 +92,17 @@ function main(){
 function retrieveConfig(confName, label, required, maxLength) {
     const value = configs.get(confName);
     if (required && value === '') {
-        throw `${label} is blank.`;
+        throw new Error(`${label} is blank.`);
     }
     if (value.length > maxLength) {
-        throw `${label} must be at most ${maxLength} characters.`;
+        throw new Error(`${label} must be at most ${maxLength} characters.`);
     }
     return value;
 }
 
 /**
   * 顧客を作成する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} name 名前
   * @param {String} language 言語
   * @param {String} email メールアドレス
@@ -124,7 +123,7 @@ function createCustomer(auth, name, language, email, description) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to create customer. status: ${status}`;
+        throw new Error(`Failed to create customer. status: ${status}`);
     }
     const customerObj = JSON.parse(responseStr);
     return customerObj.id;
@@ -180,7 +179,8 @@ const createString = (length) => {
  * @return returnObj.urlDef
  */
 const prepareConfigs = (name, language, email, description) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-api-key-12345');
+    configs.putObject('conf_Auth', auth);
     configs.put('conf_Name', name);
     configs.put('conf_Language', language);
     configs.put('conf_Email', email);
@@ -200,11 +200,28 @@ const prepareConfigs = (name, language, email, description) => {
 }
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * 顧客の名前が空
  */
 test('Customer Name is blank', () => {
     prepareConfigs('', 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
-    expect(execute).toThrow('Customer Name is blank.');
+    assertError('Customer Name is blank.');
 });
 
 /**
@@ -213,7 +230,7 @@ test('Customer Name is blank', () => {
 test('Customer Name is too long', () => {
     const name = createString(NAME_MAX_LENGTH + 1);
     prepareConfigs(name, 'ja-JP', 'test1@example.com', 'これはテスト顧客 1 です。');
-    expect(execute).toThrow(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
+    assertError(`Customer Name must be at most ${NAME_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -221,7 +238,7 @@ test('Customer Name is too long', () => {
  */
 test('Customer Email is blank', () => {
     prepareConfigs('テスト顧客 1', 'ja-JP', '', 'これはテスト顧客 1 です。');
-    expect(execute).toThrow('Customer Email is blank.');
+    assertError('Customer Email is blank.');
 });
 
 /**
@@ -230,7 +247,7 @@ test('Customer Email is blank', () => {
 test('Customer Email is too long', () => {
     const email = createString(EMAIL_MAX_LENGTH + 1);
     prepareConfigs('テスト顧客 1', 'ja-JP', email, 'これはテスト顧客 1 です。');
-    expect(execute).toThrow(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
+    assertError(`Customer Email must be at most ${EMAIL_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -239,7 +256,7 @@ test('Customer Email is too long', () => {
 test('Customer Description is too long', () => {
     const description = createString(DESCRIPTION_MAX_LENGTH + 1);
     prepareConfigs('テスト顧客 1', 'ja-JP', 'test1@example.com', description);
-    expect(execute).toThrow(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
+    assertError(`Customer Description must be at most ${DESCRIPTION_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -279,7 +296,7 @@ test('Fail to create customer', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to create customer. status: 400');
+    assertError('Failed to create customer. status: 400');
 });
 
 /**
@@ -293,7 +310,7 @@ test('Success - with description', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00001"}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('cus_00001');
@@ -311,7 +328,7 @@ test('Success - without description', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00002"}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('cus_00002');
@@ -331,7 +348,7 @@ test('Success - ID and URL not saved', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00003"}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('事前文字列');
@@ -352,7 +369,7 @@ test('Success - maximum length', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"id": "cus_00004"}');
     });
 
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(idDef)).toEqual('cus_00004');

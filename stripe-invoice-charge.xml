@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-09-12</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Charge by Invoice</label>
     <label locale="ja">Stripe: 請求書で課金</label>
 
@@ -18,7 +19,7 @@
     </summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -36,11 +37,9 @@
 
 const STRIPE_API_VERSION = '2022-08-01';
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const invoiceId = retrieveInvoiceId();
     const sendReceipt = configs.getObject('conf_SendReceipt');
 
@@ -58,7 +57,7 @@ function main(){
 function retrieveInvoiceId() {
     const invoiceId = engine.findData(configs.getObject('conf_InvoiceId'));
     if (invoiceId === null) {
-        throw 'Invoice ID is blank.';
+        throw new Error('Invoice ID is blank.');
     }
     return invoiceId;
 }
@@ -66,7 +65,7 @@ function retrieveInvoiceId() {
 /**
   * 請求書のステータスをチェックし、顧客 ID と支払オブジェクトの ID を返す
   * - ステータスが open, uncollectible 以外の場合はエラー
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} invoiceId 請求書の ID
   * @return {Object} returnObj
   * @return {String} returnObj.customerId 顧客 ID
@@ -82,16 +81,16 @@ function checkInvoice(auth, invoiceId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) { // 削除済みの場合もエラーレスポンス
         engine.log(responseStr);
-        throw `Failed to retrieve invoice. status: ${status}`;
+        throw new Error(`Failed to retrieve invoice. status: ${status}`);
     }
     const invoiceObj = JSON.parse(responseStr);
     switch (invoiceObj.status) {
         case 'draft':
-            throw 'The invoice is still draft. It needs to be finalized first.';
+            throw new Error('The invoice is still draft. It needs to be finalized first.');
         case 'paid':
-            throw 'The invoice is already paid.';
+            throw new Error('The invoice is already paid.');
         case 'void':
-            throw 'The invoice is void.';
+            throw new Error('The invoice is void.');
         default: // open or uncollectible
             // do nothing
     }
@@ -103,7 +102,7 @@ function checkInvoice(auth, invoiceId) {
 /**
   * 顧客オブジェクトを取得し、メールアドレスとデフォルトの支払方法の ID を返す
   * - 顧客が削除済みの場合、エラー
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @return {Object} returnObj
   * @return {String} returnObj.customerEmail 顧客のメールアドレス。未設定の場合は null
@@ -119,11 +118,11 @@ function getCustomer(auth, customerId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to retrieve customer. status: ${status}`;
+        throw new Error(`Failed to retrieve customer. status: ${status}`);
     }
     const customerObj = JSON.parse(responseStr);
     if (customerObj.deleted) {
-        throw 'The customer is deleted.';
+        throw new Error('The customer is deleted.');
     }
     // 顧客のメールアドレス以外に「請求先メールアドレス」もダッシュボードからは設定できるが、API では取得不可
     const customerEmail = customerObj.email;
@@ -137,7 +136,7 @@ function getCustomer(auth, customerId) {
 
 /**
   * 支払オブジェクトを更新し、領収書送付先メールアドレスを設定する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} paymentIntentId 支払オブジェクトの ID
   * @param {boolean} sendReceipt 領収書をメール送付するかどうか
   * @param {String} customerEmail 顧客のメールアドレス
@@ -146,7 +145,7 @@ function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) 
     let receiptEmail = '';
     if (sendReceipt) {
         if (customerEmail === null) {
-            throw "The customer's email is not set. Unable to send the receipt.";
+            throw new Error("The customer's email is not set. Unable to send the receipt.");
         }
         receiptEmail = customerEmail;
     }
@@ -160,7 +159,7 @@ function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) 
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to update payment intent. status: ${status}`;
+        throw new Error(`Failed to update payment intent. status: ${status}`);
     }
 }
 
@@ -168,7 +167,7 @@ function updatePaymentIntent(auth, paymentIntentId, sendReceipt, customerEmail) 
   * 請求書で課金する。課金を試みる支払方法の順序は
   * 1. 顧客のデフォルトの支払方法
   * 2. 顧客の予備の支払方法（カード）
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} invoiceId 請求書の ID
   * @param {String} defaultPaymentMethodId 顧客のデフォルトの支払方法の ID
   * @param {String} customerId 顧客 ID (デフォルトの支払方法に失敗した場合に使用)
@@ -190,12 +189,12 @@ function chargeByInvoice(auth, invoiceId, defaultPaymentMethodId, customerId) {
             return;
         }
     }
-    throw 'No payment method succeeded.';
+    throw new Error('No payment method succeeded.');
 }
 
 /**
   * 指定した支払方法への課金を試みる
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} invoiceId 請求書の ID
   * @param {String} paymentMethodId 支払方法の ID
   * @return {boolean} succeeded 課金が成功したかどうか
@@ -223,7 +222,7 @@ function tryCharge(auth, invoiceId, paymentMethodId) {
 
 /**
   * 顧客の支払方法（カード）の ID 一覧を取得する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} customerId 顧客 ID
   * @return {Array<String>} paymentMethodIds 支払方法（カード）の ID 一覧
   */
@@ -239,12 +238,12 @@ function getCustomerPaymentMethodIds(auth, customerId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get the customer's payment methods. status: ${status}`;
+        throw new Error(`Failed to get the customer's payment methods. status: ${status}`);
     }
     const responseObj = JSON.parse(responseStr);
     const paymentMethods = responseObj.data;
     if (paymentMethods.length === 0) {
-        throw 'The customer has no card-type payment methods.';
+        throw new Error('The customer has no card-type payment methods.');
     }
     return paymentMethods.map(paymentMethod => paymentMethod.id);
 }
@@ -279,7 +278,8 @@ const STRIPE_VERSION = '2022-08-01';
  * @param sendReceipt
  */
 const prepareConfigs = (invoiceId, sendReceipt) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 請求書 ID が保存されている文字型データ項目（単一行）を準備
     const invoiceIdDef = engine.createDataDefinition('確定済み請求書の ID', 1, 'q_invoiceId', 'STRING_TEXTFIELD');
@@ -290,11 +290,28 @@ const prepareConfigs = (invoiceId, sendReceipt) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * 請求書 ID が空
  */
 test('Invoice ID is blank', () => {
     prepareConfigs(null, true);
-    expect(execute).toThrow('Invoice ID is blank.');
+    assertError('Invoice ID is blank.');
 });
 
 /**
@@ -322,7 +339,7 @@ test('Fail to retrieve invoice', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to retrieve invoice. status: 400');
+    assertError('Failed to retrieve invoice. status: 400');
 });
 
 /**
@@ -336,7 +353,7 @@ test('Invalid status - draft', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "draft"}');
     });
 
-    expect(execute).toThrow('The invoice is still draft. It needs to be finalized first.');
+    assertError('The invoice is still draft. It needs to be finalized first.');
 });
 
 /**
@@ -350,7 +367,7 @@ test('Invalid status - paid', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "paid"}');
     });
 
-    expect(execute).toThrow('The invoice is already paid.');
+    assertError('The invoice is already paid.');
 });
 
 /**
@@ -364,7 +381,7 @@ test('Invalid status - void', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "void"}');
     });
 
-    expect(execute).toThrow('The invoice is void.');
+    assertError('The invoice is void.');
 });
 
 /**
@@ -415,7 +432,7 @@ test('Fail to retrieve customer', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to retrieve customer. status: 400');
+    assertError('Failed to retrieve customer. status: 400');
 });
 
 /**
@@ -436,7 +453,7 @@ test('Customer is deleted', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"deleted": true}');
     });
 
-    expect(execute).toThrow('The customer is deleted.');
+    assertError('The customer is deleted.');
 });
 
 /**
@@ -475,7 +492,7 @@ test('Customer email is null while sendReceipt is true', () => {
         return httpClient.createHttpResponse(200, 'application/json', customerRes(null, 'pm_00001', null));
     });
 
-    expect(execute).toThrow("The customer's email is not set. Unable to send the receipt.");
+    assertError("The customer's email is not set. Unable to send the receipt.");
 });
 
 /**
@@ -522,7 +539,7 @@ test('Fail to update payment intent', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to update payment intent. status: 400');
+    assertError('Failed to update payment intent. status: 400');
 });
 
 /**
@@ -573,7 +590,7 @@ test('Success - default payment method', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -606,7 +623,7 @@ test('Success - default payment method, sendReceipt is false', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -639,7 +656,7 @@ test('Success - default payment method, sendReceipt is false, customerEmail is n
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -672,7 +689,7 @@ test('Success - default payment method, uncollectible invoice', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -704,7 +721,7 @@ test('Success - default payment method (default_source)', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -750,7 +767,7 @@ test('Fail to retrieve payment methods', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow("Failed to get the customer's payment methods. status: 400");
+    assertError("Failed to get the customer's payment methods. status: 400");
 });
 
 /**
@@ -798,7 +815,7 @@ test('No card-type payment methods', () => {
         return httpClient.createHttpResponse(200, 'application/json', paymentMethodsRes(0));
     });
 
-    expect(execute).toThrow('The customer has no card-type payment methods.');
+    assertError('The customer has no card-type payment methods.');
 });
 
 const HTTP_LIMIT = httpClient.getRequestingLimit();
@@ -841,7 +858,7 @@ test('No payment method succeeded - without default payment method', () => {
         return httpClient.createHttpResponse(401, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('No payment method succeeded.');
+    assertError('No payment method succeeded.');
 });
 
 /**
@@ -887,7 +904,7 @@ test('Success - without default payment method, one of the cards succeeds', () =
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 // スクリプトエンジンの HTTP リクエスト数の上限
@@ -932,7 +949,16 @@ test('Number of HTTP requests exceeds the limit - without default payment method
         return httpClient.createHttpResponse(401, 'application/json', '{}');
     });
 
-    expect(execute).toThrow(`HTTP requests must be up to ${REQ_LIMIT}.`); // スクリプトエンジンのエラー
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        // スクリプトエンジンのエラーなので、エラーメッセージはテストしない
+    }
+    if (!failed) {
+        fail();
+    }
 });
 
 /**
@@ -984,7 +1010,7 @@ test('No payment method succeeded - default payment method fails', () => {
         return httpClient.createHttpResponse(401, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('No payment method succeeded.');
+    assertError('No payment method succeeded.');
 });
 
 /**
@@ -1041,7 +1067,7 @@ test('Success - default payment method fails, one of the cards succeeds', () => 
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -1093,7 +1119,16 @@ test('Number of HTTP requests exceeds the limit - default payment method fails',
         return httpClient.createHttpResponse(401, 'application/json', '{}');
     });
 
-    expect(execute).toThrow(`HTTP requests must be up to ${REQ_LIMIT}.`); // スクリプトエンジンのエラー
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        // スクリプトエンジンのエラーなので、エラーメッセージはテストしない
+    }
+    if (!failed) {
+        fail();
+    }
 });
 
 /**
@@ -1149,7 +1184,7 @@ test('Success - default source fails, one of the cards succeeds', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -1187,7 +1222,7 @@ test('No payment method succeeded - only default payment method', () => {
             .createHttpResponse(200, 'application/json', paymentMethodsRes(1)); // デフォルトの支払方法のみ
     });
 
-    expect(execute).toThrow('No payment method succeeded.');
+    assertError('No payment method succeeded.'); 
 });
 
     ]]></test>

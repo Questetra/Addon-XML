@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2022-10-31</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <engine-type>2</engine-type>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <label>Stripe: Update Metadata of Customer/Product/Invoice</label>
     <label locale="ja">Stripe: 顧客/商品/請求書のメタデータを更新</label>
 
@@ -16,7 +17,7 @@
     </summary>
 
     <configs>
-        <config name="conf_Auth" required="true" form-type="OAUTH2">
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Secret Key is set</label>
             <label locale="ja">C1: API シークレットキーを設定した認証設定</label>
         </config>
@@ -98,11 +99,9 @@ const FIELD_NUM = 8; // 扱うフィールドの数
 const MAX_KEY_LENGTH = 40; // メタデータの key の最大文字数（Stripe の制限）
 const MAX_VALUE_LENGTH = 500; // メタデータの value の最大文字数（Stripe の制限）
 
-main();
-
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const id = retrieveId();
     const apiUri = decideApiUri(id);
     const metadataMap = retrieveMetadataMap();
@@ -122,7 +121,7 @@ function retrieveId() {
         if (idDef.matchDataType('SELECT_SINGLE')) { // 選択型データ項目の場合
             const select = engine.findData(idDef);
             if (select === null || select.size() === 0) { // 未選択
-                throw 'Customer/Product/Invoice ID is not selected.';
+                throw new Error('Customer/Product/Invoice ID is not selected.');
             }
             id = select.get(0).getValue();
         } else { // 文字型データ項目の場合
@@ -130,7 +129,7 @@ function retrieveId() {
         }
     }
     if (id === null || id === '') {
-        throw 'Customer/Product/Invoice ID is blank.';
+        throw new Error('Customer/Product/Invoice ID is blank.');
     }
     return id;
 }
@@ -151,7 +150,7 @@ function decideApiUri(id) {
         case 'in':
             return `${baseUrl}invoices/${encodeURIComponent(id)}`;
         default:
-            throw 'Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".';
+            throw new Error('Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".');
     }
 }
 
@@ -174,28 +173,28 @@ function retrieveMetadataMap() {
                 // key, value がともに空白の組は無視
                 continue;
             }
-            throw `C-V${i+1} is set but C-K${i+1} is blank.`;
+            throw new Error(`C-V${i+1} is set but C-K${i+1} is blank.`);
         }
         if (metadataMap.has(key)) { // key の指定が重複
-            throw `Field Key "${key}" is set multiple times.`;
+            throw new Error(`Field Key "${key}" is set multiple times.`);
         }
         if (key.length > MAX_KEY_LENGTH) {
-            throw `C-K${i+1} exceeds the limit of ${MAX_KEY_LENGTH} characters.`;
+            throw new Error(`C-K${i+1} exceeds the limit of ${MAX_KEY_LENGTH} characters.`);
         }
         if (value.length > MAX_VALUE_LENGTH) {
-            throw `C-V${i+1} exceeds the limit of ${MAX_VALUE_LENGTH} characters.`;
+            throw new Error(`C-V${i+1} exceeds the limit of ${MAX_VALUE_LENGTH} characters.`);
         }
         metadataMap.set(key, value);
     }
     if (metadataMap.size === 0) {
-        throw 'No metadata fields to update.';
+        throw new Error('No metadata fields to update.');
     }
     return metadataMap;
 }
 
 /**
   * メタデータを更新する
-  * @param {String} oauth 認証設定
+  * @param {AuthSettingWrapper} auth  HTTP 認証設定 トークン直接指定
   * @param {String} apiUri リクエスト URI
   * @param {Map<String, String>} metadataMap メタデータの Map
   */
@@ -211,7 +210,7 @@ function updateMetadata(auth, apiUri, metadataMap) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to update metadata. status: ${status}`;
+        throw new Error(`Failed to update metadata. status: ${status}`);
     }
 }
 
@@ -261,7 +260,8 @@ const createString = (length) => {
  * @param values
  */
 const prepareConfigs = (id, keys, values) => {
-    configs.put('conf_Auth', 'Stripe');
+    const auth = httpClient.createAuthSettingToken('stripe API Key', 'stripe-secret-key-12345');
+    configs.putObject('conf_Auth', auth);
 
     // 顧客/商品/請求書 ID が保存されている文字型データ項目（単一行）を準備し、設定
     const idDef = engine.createDataDefinition('顧客/請求書 ID', 1, 'q_id', 'STRING_TEXTFIELD');
@@ -278,11 +278,28 @@ const SAMPLE_KEYS = new Array(FIELD_SIZE).fill('').map((_, i) => `フィール�
 const SAMPLE_VALUES = new Array(FIELD_SIZE).fill('').map((_, i) => `フィールド ${i+1} の値`);
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * ID が空
  */
 test('ID is blank', () => {
     prepareConfigs('', SAMPLE_KEYS, SAMPLE_VALUES);
-    expect(execute).toThrow('Customer/Product/Invoice ID is blank.');
+    assertError('Customer/Product/Invoice ID is blank.');
 });
 
 /**
@@ -290,7 +307,7 @@ test('ID is blank', () => {
  */
 test('ID is invalid - no underscore', () => {
     prepareConfigs('No-Underscore', SAMPLE_KEYS, SAMPLE_VALUES);
-    expect(execute).toThrow('Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".');
+    assertError('Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".');
 });
 
 /**
@@ -298,7 +315,7 @@ test('ID is invalid - no underscore', () => {
  */
 test('ID is invalid - prefix not supported', () => {
     prepareConfigs('pi_00001', SAMPLE_KEYS, SAMPLE_VALUES);
-    expect(execute).toThrow('Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".');
+    assertError('Customer/Product/Invoice ID must start with "cus_", "prod_" or "in_".');
 });
 
 /**
@@ -307,7 +324,7 @@ test('ID is invalid - prefix not supported', () => {
 test('Key is blank while its value is set', () => {
     prepareConfigs('cus_00001', SAMPLE_KEYS, SAMPLE_VALUES);
     configs.put('conf_Key1', '');
-    expect(execute).toThrow('C-V1 is set but C-K1 is blank.');
+    assertError('C-V1 is set but C-K1 is blank.');
 });
 
 /**
@@ -316,7 +333,7 @@ test('Key is blank while its value is set', () => {
 test('Same key is set multiple times', () => {
     prepareConfigs('cus_00001', SAMPLE_KEYS, SAMPLE_VALUES);
     configs.put('conf_Key2', SAMPLE_KEYS[7]); // 2 番目と 8 番目が重複
-    expect(execute).toThrow('Field Key "フィールド 8" is set multiple times.');
+    assertError('Field Key "フィールド 8" is set multiple times.');
 });
 
 /**
@@ -325,7 +342,7 @@ test('Same key is set multiple times', () => {
 test('Key is too long', () => {
     prepareConfigs('cus_00001', SAMPLE_KEYS, SAMPLE_VALUES);
     configs.put('conf_Key3', createString(KEY_MAX_LENGTH + 1));
-    expect(execute).toThrow(`C-K3 exceeds the limit of ${KEY_MAX_LENGTH} characters.`);
+    assertError(`C-K3 exceeds the limit of ${KEY_MAX_LENGTH} characters.`);
 });
 
 /**
@@ -334,7 +351,7 @@ test('Key is too long', () => {
 test('Value is too long', () => {
     prepareConfigs('cus_00001', SAMPLE_KEYS, SAMPLE_VALUES);
     configs.put('conf_Value4', createString(VALUE_MAX_LENGTH + 1));
-    expect(execute).toThrow(`C-V4 exceeds the limit of ${VALUE_MAX_LENGTH} characters.`);
+    assertError(`C-V4 exceeds the limit of ${VALUE_MAX_LENGTH} characters.`);
 });
 
 const ALL_BLANK = new Array(FIELD_SIZE).fill('');
@@ -344,7 +361,7 @@ const ALL_BLANK = new Array(FIELD_SIZE).fill('');
  */
 test('No fields to update', () => {
     prepareConfigs('cus_00001', ALL_BLANK, ALL_BLANK);
-    expect(execute).toThrow('No metadata fields to update.');
+    assertError('No metadata fields to update.');
 });
 
 /**
@@ -403,7 +420,7 @@ test('Success - Customer ID set by string-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -418,7 +435,7 @@ test('Success - Product ID set by string-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -433,7 +450,7 @@ test('Success - Invoice ID set by string-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -448,7 +465,7 @@ test('Fail to update metadata', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to update metadata. status: 400');
+    assertError('Failed to update metadata. status: 400');
 });
 
 /**
@@ -470,7 +487,7 @@ test('Success - Some keys and values are blank', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -494,7 +511,7 @@ test('Success - Customer ID set by select-type data item', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -507,7 +524,7 @@ test('Customer/Invoice ID set by select-type data item and not selected', () => 
     const idDef = engine.createDataDefinition('ID を選択', 2, 'q_idSelect', 'SELECT_SINGLE');
     configs.putObject('conf_Id', idDef);
 
-    expect(execute).toThrow('Customer/Product/Invoice ID is not selected.');
+    assertError('Customer/Product/Invoice ID is not selected.');
 });
 
 /**
@@ -523,7 +540,7 @@ test('Success - Invoice ID set as fixed value', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
     ]]></test>
