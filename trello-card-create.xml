@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Trello: Create Card</label>
     <label locale="ja">Trello: カード作成</label>
-    <last-modified>2023-09-25</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -124,10 +124,10 @@ function main() {
   * @return {String} auth.apiToken
   */
 function retrieveAuth() {
-    const apiKeySetting = configs.get('conf_ApiKey');
-    const apiKey = httpClient.getOAuth2Token(apiKeySetting);
-    const apiTokenSetting = configs.get('conf_ApiToken');
-    const apiToken = httpClient.getOAuth2Token(apiTokenSetting);
+    const authKey = configs.getObject("conf_ApiKey");
+    const authToken = configs.getObject("conf_ApiToken");
+    const apiKey = authKey.getToken();
+    const apiToken = authToken.getToken();
     return {apiKey, apiToken};
 }
 
@@ -144,14 +144,14 @@ function retrieveListId() {
     if (listIdDef.matchDataType('STRING_TEXTFIELD')) {
         const listId = engine.findData(listIdDef);
         if (listId === null) {
-            throw 'List ID is blank.';
+            throw new Error('List ID is blank.');
         }
         return listId;
     }
     // 選択型データ項目の場合
     const selects = engine.findData(listIdDef);
     if (selects === null || selects.size() === 0) {
-        throw 'List ID is not selected.';
+        throw new Error('List ID is not selected.');
     }
     return selects.get(0).getValue();
 }
@@ -163,7 +163,7 @@ function retrieveListId() {
 function retrieveName() {
     const name = configs.get('conf_Name');
     if (name === null || name === '') {
-        throw 'Card Title is blank.';
+        throw new Error('Card Title is blank.');
     }
     return name;
 }
@@ -275,7 +275,7 @@ function createCard({apiKey, apiToken}, listId, name, desc, labelIds, memberIds,
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to create card. status: ${status}`;
+        throw new Error(`Failed to create card. status: ${status}`);
     }
     return JSON.parse(responseStr);
 }
@@ -328,8 +328,20 @@ function setData(dataDef, value) {
   * @return returnObj.urlDef
   */
 const prepareConfigs = (listId, name, desc, labelIdsStr, memberIdsStr) => {
-    configs.put('conf_ApiKey', 'TrelloApiKey');
-    configs.put('conf_ApiToken', 'TrelloApiToken');
+    //configs.put('conf_ApiKey', 'TrelloApiKey');
+    //configs.put('conf_ApiToken', 'TrelloApiToken');
+    const authKey = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiKey',
+    );
+    configs.putObject('conf_ApiKey', authKey);
+
+    const authToken = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiToken',
+    );
+    configs.putObject('conf_ApiToken', authToken);
+
     setDataItem('ListId', 1, 'STRING_TEXTFIELD', listId);
     configs.put('conf_Name', name);
     configs.put('conf_Desc', desc);
@@ -361,16 +373,19 @@ const setDataItem = (name, index, type, value) => {
 };
 
 /**
-  * 異常系のテスト
-  * @param func
-  * @param errorMsg
-  */
-const assertError = (func, errorMsg) => {
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
     try {
-        func();
-        fail();
+        main();
     } catch (e) {
-        expect(e.toString()).toEqual(errorMsg);
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -392,7 +407,7 @@ const createListString = (num) => {
   */
 test('List ID is blank - set by STRING', () => {
     prepareConfigs(null, 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
-    assertError(main, 'List ID is blank.');
+    assertError('List ID is blank.');
 });
 
 /**
@@ -401,7 +416,7 @@ test('List ID is blank - set by STRING', () => {
 test('List ID is not selected - set by SELECT', () => {
     prepareConfigs('dummy', 'Card Title', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
     setDataItem('ListId', 11, 'SELECT_SINGLE', new java.util.ArrayList());
-    assertError(main, 'List ID is not selected.');
+    assertError('List ID is not selected.');
 });
 
 /**
@@ -409,7 +424,7 @@ test('List ID is not selected - set by SELECT', () => {
   */
 test('Card Title is blank', () => {
     prepareConfigs('listId1', '', 'Card Description', 'labelId1\nlabelId2', 'memberId1\nmemberId2');
-    assertError(main, 'Card Title is blank.');
+    assertError('Card Title is blank.');
 });
 
 /**
@@ -429,7 +444,7 @@ test('Card Title is blank', () => {
   * @param dueReminder
   */
 const assertCreateRequest = ({url, method, contentType, body}, listId, name, desc, labelIds, memberIds, start, due, dueReminder) => {
-    expect(url).toEqual('https://api.trello.com/1/cards?key=token&token=token'); // 認証設定のトークンのテスト時の値は token
+    expect(url).toEqual('https://api.trello.com/1/cards?key=TrelloApiKey&token=TrelloApiToken'); // 認証設定のトークンのテスト時の値は token
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     const bodyObj = JSON.parse(body);
@@ -452,7 +467,7 @@ test('Fail to create card', () => {
         assertCreateRequest(request, 'listId1', 'Card Title', 'Card Description', ['labelId1', 'labelId2'], ['memberId1', 'memberId2'], null, null, null);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
-    assertError(main, 'Failed to create card. status: 400');
+    assertError('Failed to create card. status: 400');
 });
 
 /**
