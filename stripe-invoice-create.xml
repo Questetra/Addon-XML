@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <last-modified>2024-04-19</last-modified>
+    <last-modified>2024-04-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -124,7 +124,7 @@ function retrieveCustomerId() {
         if (customerIdDef.matchDataType('SELECT_SINGLE')) { // 選択型データ項目の場合
             const select = engine.findData(customerIdDef);
             if (select === null || select.size() === 0) { // 未選択
-              throw 'Customer ID is not selected.';
+              throw new Error('Customer ID is not selected.');
             }
             customerId = select.get(0).getValue();
         } else { // 文字型データ項目の場合
@@ -132,7 +132,7 @@ function retrieveCustomerId() {
         }
     }
     if (customerId === null || customerId === '') {
-        throw 'Customer ID is blank.';
+        throw new Error('Customer ID is blank.');
     }
     return customerId;
 }
@@ -157,22 +157,22 @@ function retrieveItems() {
         return [];
     }
     if (table.size() > httpClient.getRequestingLimit() - 1) { // 請求書ドラフトの作成で 1 回、各アイテムの添付でリクエスト 1 回
-        throw 'Too many line items. Number of necessary HTTP requests exceeds the limit.';
+        throw new Error('Too many line items. Number of necessary HTTP requests exceeds the limit.');
     }
 
     // サブデータ項目の数と型をチェック
     const subDataDefs = itemsDef.getSubDataDefinitions(); // List<SubDataDefinitionView>
     if (subDataDefs.size() < 3) {
-        throw 'The line items must include item description, unit amount, and quantity.';
+        throw new Error('The line items must include item description, unit amount, and quantity.');
     }
     if (!subDataDefs.get(0).matchDataType('STRING')) {
-        throw 'Line item name (1st column) must be STRING.';
+        throw new Error('Line item name (1st column) must be STRING.');
     }
     if (!subDataDefs.get(1).matchDataType('DECIMAL')) {
-        throw 'Line item unit amount (2nd column) must be DECIMAL.';
+        throw new Error('Line item unit amount (2nd column) must be DECIMAL.');
     }
     if (!subDataDefs.get(2).matchDataType('DECIMAL')) {
-        throw 'Line item quantity (3rd column) must be DECIMAL.';
+        throw new Error('Line item quantity (3rd column) must be DECIMAL.');
     }
 
     // オブジェクトの配列に整形
@@ -182,14 +182,14 @@ function retrieveItems() {
         const row = table.getRow(i);
         const description = row.getObject(0);
         if (description === null) {
-            throw `Line item ${i+1} is invalid. Item name must not be blank.`;
+            throw new Error(`Line item ${i+1} is invalid. Item name must not be blank.`);
         }
         const unitAmount = parseBigDecimalToLong(row.getObject(1), 'Unit amount', i);
         const quantity = parseBigDecimalToLong(row.getObject(2), 'Quantity', i);
         totalAmount += unitAmount * quantity;
         // 請求額は Stripe の制限で最大 8 桁まで。IDR のみ 12 桁までだが、ここでは一律で 8 桁までとする
         if (totalAmount > 99999999) {
-            throw 'The total amount of line items must be less than 100000000.';
+            throw new Error('The total amount of line items must be less than 100000000.');
         }
         const item = {description, unitAmount, quantity};
         items.push(item);
@@ -210,10 +210,10 @@ function parseBigDecimalToLong(bigDecimal, label, i) {
     try {
         longValue = bigDecimal.longValueExact();
     } catch (e) {
-        throw `Line item ${i+1} is invalid. ${label} must be integer.`;
+        throw new Error(`Line item ${i+1} is invalid. ${label} must be integer.`);
     }
     if (longValue < 0) {
-        throw `Line item ${i+1} is invalid. ${label} must not be negative.`;
+        throw new Error(`Line item ${i+1} is invalid. ${label} must not be negative.`);
     }
     return longValue;
 }
@@ -242,7 +242,7 @@ function createInvoice(auth, customerId, description, currency) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to create draft invoice. status: ${status}`;
+        throw new Error(`Failed to create draft invoice. status: ${status}`);
     }
     return JSON.parse(responseStr).id;
 }
@@ -272,7 +272,7 @@ function attachInvoiceItem(auth, customerId, invoiceId, {description, unitAmount
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to attach an invoice item. status: ${status}`;
+        throw new Error(`Failed to attach an invoice item. status: ${status}`);
     }
 }
 
@@ -359,18 +359,18 @@ const SAMPLE_LINE_ITEMS = [
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -379,7 +379,7 @@ const assertError = (func, errorMsg) => {
  */
 test('Customer ID is blank', () => {
     prepareConfigs('', '請求書の説明', SAMPLE_LINE_ITEMS);
-    assertError(main, 'Customer ID is blank.');
+    assertError('Customer ID is blank.');
 });
 
 /**
@@ -391,7 +391,7 @@ test('Too many line items', () => {
         lineItems.push([`テスト商品 ${i + 1}`, '50', '1']);
     }
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
-    assertError(main, 'Too many line items. Number of necessary HTTP requests exceeds the limit.');
+    assertError('Too many line items. Number of necessary HTTP requests exceeds the limit.');
 });
 
 /**
@@ -412,7 +412,7 @@ test('Invalid line items - too few columns', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    assertError(main, 'The line items must include item description, unit amount, and quantity.');
+    assertError('The line items must include item description, unit amount, and quantity.');
 });
 
 /**
@@ -434,7 +434,7 @@ test('Invalid line items - 1st column is not STRING', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    assertError(main, 'Line item name (1st column) must be STRING.');
+    assertError('Line item name (1st column) must be STRING.');
 });
 
 /**
@@ -456,7 +456,7 @@ test('Invalid line items - 2nd column is not DECIMAL', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    assertError(main, 'Line item unit amount (2nd column) must be DECIMAL.');
+    assertError('Line item unit amount (2nd column) must be DECIMAL.');
 });
 
 /**
@@ -478,7 +478,7 @@ test('Invalid line items - 3rd column is not DECIMAL', () => {
     engine.setData(tableDef, table);
     configs.putObject('conf_LineItems', tableDef);
 
-    assertError(main, 'Line item quantity (3rd column) must be DECIMAL.');
+    assertError('Line item quantity (3rd column) must be DECIMAL.');
 });
 
 /**
@@ -492,7 +492,7 @@ test('Invalid line items - Item name is blank', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    assertError(main, 'Line item 2 is invalid. Item name must not be blank.');
+    assertError('Line item 2 is invalid. Item name must not be blank.');
 });
 
 /**
@@ -506,7 +506,7 @@ test('Invalid line items - Unit amount is decimal', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    assertError(main, 'Line item 3 is invalid. Unit amount must be integer.');
+    assertError('Line item 3 is invalid. Unit amount must be integer.');
 });
 
 /**
@@ -520,7 +520,7 @@ test('Invalid line items - Unit amount is negative', () => {
     ];
     prepareConfigs('cus_000001', '請求書の説明', lineItems);
 
-    assertError(main, 'Line item 1 is invalid. Unit amount must not be negative.');
+    assertError('Line item 1 is invalid. Unit amount must not be negative.');
 });
 
 /**
