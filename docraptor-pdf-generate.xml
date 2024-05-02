@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>DocRaptor: Generate PDF</label>
     <label locale="ja">DocRaptor: PDF 生成</label>
-    <last-modified>2023-07-03</last-modified>
+    <last-modified>2024-05-02</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -39,7 +39,7 @@ const MAX_SOURCE_FILE_SIZE = 1048576; // 1MB。標準アイテムではファイ
 
 function main(){
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const html = retrieveSourceHtml();
     const filesDef = configs.getObject('conf_Files');
     const deleteOtherFiles = configs.getObject('conf_DeleteOtherFiles');
@@ -65,7 +65,7 @@ function proceed() {
     //// == Restoring Temporary Data / 一時データの読み出し ==
     const statusId = engine.restoreTemporaryData();
     if (statusId === null) {
-        throw 'Temporary data has not been saved.';
+        throw new Error('Temporary data has not been saved.');
     }
 
     //// == 演算 / Calculating ==
@@ -86,7 +86,7 @@ function retrieveSourceHtml() {
     // 文字型データ項目の場合
     const html = engine.findData(sourceHtmlDef);
     if (html === null) {
-        throw 'Source HTML is empty.';
+        throw new Error('Source HTML is empty.');
     }
     return html;
 }
@@ -99,21 +99,21 @@ function retrieveSourceHtml() {
 function retrieveSourceHtmlFromFile(sourceFilesDef) {
     const sourceFiles = engine.findData(sourceFilesDef);
     if (sourceFiles === null) {
-        throw 'No source file attached.';
+        throw new Error('No source file attached.');
     }
     if (sourceFiles.size() > 1) {
-        throw 'More than one source files attached.';
+        throw new Error('More than one source files attached.');
     }
     const sourceFile = sourceFiles.get(0);
     if (sourceFile.getLength() === 0) {
-        throw 'Source file is empty.';
+        throw new Error('Source file is empty.');
     }
     if (sourceFile.getLength() > MAX_SOURCE_FILE_SIZE) {
-        throw 'Source file is too large.';
+        throw new Error('Source file is too large.');
     }
     const contentType = sourceFile.getContentType();
     if (!contentType.startsWith('text/html')) {
-        throw 'Content-Type of the source file is not text/html.';
+        throw new Error('Content-Type of the source file is not text/html.');
     }
     return fileRepository.readFile(sourceFile, decideCharset(sourceFile));
 }
@@ -126,7 +126,7 @@ function retrieveSourceHtmlFromFile(sourceFilesDef) {
 function retrieveFileName() {
     const fileName = configs.get('conf_FileName');
     if (fileName === '') {
-        throw 'File name is blank.';
+        throw new Error('File name is blank.');
     }
     return fileName;
 }
@@ -148,7 +148,7 @@ function decideCharset(sourceFile) {
 /**
   * DocRaptor の PDF 生成 API に POST リクエストを送信し、ステータス ID を返す
   * プロセスがデバッグ実行の場合、PDF 生成をテスト扱いにする
-  * @param {String} auth  認証設定名
+  * @param {AuthSettingWrapper} auth  Basic 認証設定
   * @param {String} html  HTML ソース
   * @return {String} statusId  ステータス ID
   */
@@ -162,7 +162,7 @@ function generatePdf(auth, html) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to post PDF generation request. status: ${status}`;
+        throw new Error(`Failed to post PDF generation request. status: ${status}`);
     }
     return JSON.parse(responseStr).status_id;
 }
@@ -191,7 +191,7 @@ function generateRequestBody(html) {
 /**
   * PDF ファイル生成の処理状態を確認し、完了していればファイルを保存する
   * 未完了の場合は false を返す
-  * @param {String} auth  認証設定名
+  * @param {AuthSettingWrapper} auth  Basic 認証設定
   * @param {String} statusId  ステータス ID
   * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
   * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
@@ -206,13 +206,13 @@ function checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, file
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get PDF generation status. status: ${status}`;
+        throw new Error(`Failed to get PDF generation status. status: ${status}`);
     }
     const json = JSON.parse(responseStr);
     switch (json.status) {
         case 'failed':
             engine.log(JSON.stringify(json));
-            throw 'Failed to generate PDF.';
+            throw new Error('Failed to generate PDF.');
         case 'completed':
             downloadAndSaveFile(auth, json.download_url, filesDef, deleteOtherFiles, fileName);
             break;
@@ -223,7 +223,7 @@ function checkStatusAndSaveFile(auth, statusId, filesDef, deleteOtherFiles, file
 
 /**
   * PDF ファイルをダウンロードし、を保存する
-  * @param {String} auth  認証設定名
+  * @param {AuthSettingWrapper} auth  Basic 認証設定
   * @param {String} downloadUrl  ダウンロード先 URL
   * @param {DataDefinitionView} filesDef  ファイルを保存するデータ項目
   * @param {boolean} deleteOtherFiles  添付されている他のファイルを削除するかどうか
@@ -237,7 +237,7 @@ function downloadAndSaveFile(auth, downloadUrl, filesDef, deleteOtherFiles, file
     const status = response.getStatusCode();
     if (status !== 200) {
         engine.log(response.getResponseAsString());
-        throw `Failed to download PDF file. status: ${status}`;
+        throw new Error(`Failed to download PDF file. status: ${status}`);
     }
     const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileName, response.getContentType(), response.getResponse()
@@ -286,7 +286,8 @@ const MAX_FILE_SIZE = 1048576;
  * @return filesDef
  */
 const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName) => {
-    configs.put('conf_Auth', 'DocRaptor');
+    const basic = httpClient.createAuthSettingBasic('DocRaptor Basic Auth', 'user', 'pass');
+    configs.putObject('conf_Auth', basic);
 
     // ファイル型データ項目を作成・設定し、変換元ファイルを添付
     const sourceFilesDef = engine.createDataDefinition('変換元ファイル', 1, 'q_SourceFiles', 'FILE');
@@ -308,15 +309,18 @@ const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
+    let failed = false;
     try {
-        func();
-        fail();
+        main();
     } catch (e) {
-        expect(e.toString()).toEqual(errorMsg);
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -325,7 +329,7 @@ const assertError = (func, errorMsg) => {
  */
 test('No source file', () => {
     prepareConfigs(null, false, '変換後.pdf');
-    assertError(main, 'No source file attached.');
+    assertError('No source file attached.');
 });
 
 /**
@@ -336,7 +340,7 @@ test('More than one source files', () => {
     sourceFiles.add(engine.createQfile('ファイル1.html', 'text/html', ''));
     sourceFiles.add(engine.createQfile('ファイル2.html', 'text/html', ''));
     prepareConfigs(sourceFiles, false, '変換後.pdf');
-    assertError(main, 'More than one source files attached.');
+    assertError('More than one source files attached.');
 });
 
 /**
@@ -346,7 +350,7 @@ test('Source file is empty', () => {
     const sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('変換元.html', 'text/html', ''));
     prepareConfigs(sourceFiles, false, '変換後.pdf');
-    assertError(main, 'Source file is empty.');
+    assertError('Source file is empty.');
 });
 
 /**
@@ -378,7 +382,7 @@ test('Source file is too large', () => {
     const sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('変換元.html', 'text/html', createText(MAX_FILE_SIZE + 1)));
     prepareConfigs(sourceFiles, false, '変換後.pdf');
-    assertError(main, 'Source file is too large.');
+    assertError('Source file is too large.');
 });
 
 /**
@@ -388,7 +392,7 @@ test('Content-Type of the source file is not text/html', () => {
     const sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('変換元.html', 'text/plain', 'aaa'));
     prepareConfigs(sourceFiles, false, '変換後.pdf');
-    assertError(main, 'Content-Type of the source file is not text/html.');
+    assertError('Content-Type of the source file is not text/html.');
 });
 
 /**
@@ -398,7 +402,7 @@ test('File name is blank', () => {
     const sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('変換元.html', 'text/html', 'aaa'));
     prepareConfigs(sourceFiles, false, '');
-    assertError(main, 'File name is blank.');
+    assertError('File name is blank.');
 });
 
 /**
@@ -436,7 +440,7 @@ test('Fail to generate PDF', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to post PDF generation request. status: 400');
+    assertError('Failed to post PDF generation request. status: 400');
 });
 
 /**
@@ -470,7 +474,7 @@ test('Fail to get PDF generation status', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to get PDF generation status. status: 400');
+    assertError('Failed to get PDF generation status. status: 400');
 });
 
 /**
@@ -506,7 +510,7 @@ test('PDF generation failed', () => {
         return httpClient.createHttpResponse(200, 'application/json', createStatusResponse('failed', null));
     });
 
-    assertError(main, 'Failed to generate PDF.');
+    assertError('Failed to generate PDF.');
 });
 
 /**
@@ -546,7 +550,7 @@ test('Fail to download PDF file', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to download PDF file. status: 400');
+    assertError('Failed to download PDF file. status: 400');
 });
 
 const SAMPLE_HTML = `
@@ -745,7 +749,8 @@ test('Succeed - Max source file size, add file, proceed once', () => {
  * @return filesDef
  */
 const prepareConfigsWithString = (sourceHtml, deleteOtherFiles, fileName) => {
-    configs.put('conf_Auth', 'DocRaptor');
+    const basic = httpClient.createAuthSettingBasic('DocRaptor Basic Auth', 'user', 'pass');
+    configs.putObject('conf_Auth', basic);
 
     // 文字型データ項目を作成・設定し、変換元 HTML を保存
     const sourceHtmlDef = engine.createDataDefinition('変換元 HTML', 1, 'q_SourceHtml', 'STRING_TEXTAREA');
@@ -770,7 +775,7 @@ const prepareConfigsWithString = (sourceHtml, deleteOtherFiles, fileName) => {
  */
 test('Source HTML is empty.', () => {
     prepareConfigsWithString(null, false, '変換後.pdf');
-    assertError(main, 'Source HTML is empty.');
+    assertError('Source HTML is empty.');
 });
 
 /**
