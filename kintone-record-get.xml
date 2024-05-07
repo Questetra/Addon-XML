@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Get Record</label>
 <label locale="ja">kintone: レコード取得</label>
-<last-modified>2023-07-03</last-modified>
+<last-modified>2024-05-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <summary>This item gets values of a record in a Kintone App.</summary>
 <summary locale="ja">この工程は、kintone アプリのレコード（1件）の内容を取得します。</summary>
 <configs>
@@ -95,11 +96,10 @@
 
 const FIELD_NUM = 7; // 扱えるフィールドの数
 
-main();
 function main() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const auth = configs.get("conf_auth");
-    const basic = configs.get("conf_basic");
+    const auth = configs.getObject("conf_auth");
+    const basic = configs.getObject("conf_basic");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
@@ -109,7 +109,7 @@ function main() {
     const fieldValueDefList = [];
     retrieveFieldConfigs(fieldCodeList, fieldValueDefList);
 
-    const apiToken = httpClient.getOAuth2Token(auth);
+    const apiToken = auth.getToken();
 
     //// == 演算 / Calculating ==
     const apiUri = determineApiUri(domain, guestSpaceId, appId, recordId);
@@ -130,7 +130,7 @@ function retrieveRecordId() {
     if (recordIdDef.matchDataType("SELECT_SINGLE")) { // 選択型データ項目の場合
         const select = engine.findData(recordIdDef);
         if (select === null || select.size() === 0) { // 未選択
-            throw "Record ID is not selected.";
+            throw new Error("Record ID is not selected.");
         }
         return select.get(0).getValue();
     }
@@ -157,24 +157,24 @@ function retrieveFieldConfigs(fieldCodeList, fieldValueDefList) {
         const dataItemNum = configs.get(fieldValueConfigName); // データ項目の重複確認用
         if (fieldCode === "" || fieldCode === null) { // フィールドコードが空
             if (fieldValueDef !== null) { // 値を保存するデータ項目が設定されている
-                throw `Field Code ${i + 1} is empty but Data item that will save Value ${i + 1} is set.`;
+                throw new Error(`Field Code ${i + 1} is empty but Data item that will save Value ${i + 1} is set.`);
             } else { // 値を保存するデータ項目が設定されていない
                 continue;
             }
         } else { // フィールドコードが設定されている
             if (fieldValueDef === null) { // 値を保存するデータ項目が設定されていない
-                throw `Data item to save the value of ${fieldCode} is not set.`;
+                throw new Error(`Data item to save the value of ${fieldCode} is not set.`);
             }
         }
         if (dataItemNumList.indexOf(dataItemNum) !== -1) { // 既に指定されているデータ項目
-            throw "The same data item is set multiple times.";
+            throw new Error("The same data item is set multiple times.");
         }
         fieldCodeList.push(fieldCode);
         fieldValueDefList.push(fieldValueDef);
         dataItemNumList.push(dataItemNum); // データ項目の重複確認用
     }
     if (fieldCodeList.length === 0) { // フィールドコードが一つも設定されていない
-        throw "No Field Code is set.";
+        throw new Error("No Field Code is set.");
     }
 }
 
@@ -194,7 +194,7 @@ function determineApiUri(domain, guestSpaceId, appId, recordId) {
         apiUri = `https://${domain}/k/v1/record.json?app=${appId}&id=${recordId}`;
     } else {
         if (!isValidId(guestSpaceId)) {
-            throw "Invalid Guest Space ID.";
+            throw new Error("Invalid Guest Space ID.");
         }
         apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/record.json?app=${appId}&id=${recordId}`;
     }
@@ -209,23 +209,23 @@ function determineApiUri(domain, guestSpaceId, appId, recordId) {
   */
 function checkDomainAndIds(domain, appId, recordId) {
     if (domain === "" || domain === null) { // required="true" なので空になることはないが、チェック
-        throw "Domain is empty.";
+        throw new Error("Domain is empty.");
     }
     const reg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
     if (!reg.test(domain)) {
-        throw "Invalid Kintone domain.";
+        throw new Error("Invalid Kintone domain.");
     }
     if (appId === "" || appId === null) { // required="true" なので空になることはないが、チェック
-        throw "App ID is empty.";
+        throw new Error("App ID is empty.");
     }
     if (!isValidId(appId)) {
-        throw "Invalid App ID.";
+        throw new Error("Invalid App ID.");
     }
     if (recordId === "" || recordId === null) { // required="true" だが、データ項目の値が空の可能性がある
-        throw "Record ID is empty.";
+        throw new Error("Record ID is empty.");
     }
     if (!isValidId(recordId)) {
-        throw "Invalid Record ID.";
+        throw new Error("Invalid Record ID.");
     }
 }
 
@@ -243,7 +243,7 @@ function isValidId(idString) {
   * kintone REST API にレコード取得の GET リクエストを送信する
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {Array<String>} fieldCodeList  フィールドコードが格納された配列
   * @param {Array<String>} fieldValueList  フィールドの値を格納する配列
   * @param {Array<String>} fieldTypeList  フィールドの型を格納する配列
@@ -262,7 +262,7 @@ function getRecord(apiUri, apiToken, basic, fieldCodeList, fieldValueList, field
         engine.log(`API URI: ${apiUri}`);
         const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
         engine.log(accessLog);
-        throw `Failed to get record. status: ${status}`;
+        throw new Error(`Failed to get record. status: ${status}`);
     }
     const json = JSON.parse(responseJson);
     extractFieldValues(json.record, fieldCodeList, fieldValueList, fieldTypeList);
@@ -278,7 +278,7 @@ function getRecord(apiUri, apiToken, basic, fieldCodeList, fieldValueList, field
 function extractFieldValues(recordObj, fieldCodeList, fieldValueList, fieldTypeList) {
     for (const i in fieldCodeList) {
         if (recordObj[fieldCodeList[i]] === undefined) { // レコード情報に一致するフィールドコードがない場合、エラー
-            throw `${fieldCodeList[i]} does not exist in the record.`;
+            throw new Error(`${fieldCodeList[i]} does not exist in the record.`);
         }
         const fieldValueObj = recordObj[fieldCodeList[i]].value;
         const fieldType = recordObj[fieldCodeList[i]].type;
@@ -289,7 +289,7 @@ function extractFieldValues(recordObj, fieldCodeList, fieldValueList, fieldTypeL
             fieldValueList.push(fieldValueObj);
             fieldTypeList.push(fieldType);
         } else { // String 以外のクラス（Object）であればエラー
-            throw `Unable to save the value of ${fieldCodeList[i]}. Field Type ${fieldType} is not supported.`;
+            throw new Error(`Unable to save the value of ${fieldCodeList[i]}. Field Type ${fieldType} is not supported.`);
         }
     }
 }
@@ -302,7 +302,7 @@ function extractFieldValues(recordObj, fieldCodeList, fieldValueList, fieldTypeL
   */
 function setDataByLists(dataDefList, dataStringList, fieldTypeList) {
     if ((dataDefList.length !== dataStringList.length) || (dataDefList.length !== fieldTypeList.length)) {
-        throw "Array length does not match.";
+        throw new Error("Array length does not match.");
     }
     for (let i in dataDefList) {
         if (dataDefList[i] !== null) {
@@ -340,7 +340,7 @@ function convertTypeAndSetData(dataDef, dataString, fieldType, dataType, dataTyp
         "DATETIME": ["DATETIME", "CREATED_TIME", "UPDATED_TIME", "CALC"]
     };
     if (supportedFieldTypes[dataType].indexOf(fieldType) === -1) { // 対応しないフィールド型の場合はエラー
-        throw `The value of Field Type ${fieldType} cannot be saved to ${dataTypeLabel} type data item.`;
+        throw new Error(`The value of Field Type ${fieldType} cannot be saved to ${dataTypeLabel} type data item.`);
     }
     let convertedData;
     if (dataString === "" || dataString === null) { // 空値の場合は null を設定
@@ -364,7 +364,7 @@ function convertTypeAndSetData(dataDef, dataString, fieldType, dataType, dataTyp
                     break;
             }
         } catch (e) { // 変換できない値の場合はエラー
-            throw `Returned value "${dataString}" cannot be saved to ${dataTypeLabel} type data item.`;
+            throw new Error(`Returned value "${dataString}" cannot be saved to ${dataTypeLabel} type data item.`);
         }
     }
     engine.setData(dataDef, convertedData);
@@ -407,7 +407,9 @@ const FIELD_SIZE = 7;
  * @return dataDefList
  */
 const prepareConfigs = (domain, guestSpaceId, appId, recordIdDef) => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
+
     configs.put('conf_domain', domain);
     configs.put('conf_guestSpaceId', guestSpaceId);
     configs.put('conf_appId', appId);
@@ -484,11 +486,28 @@ const assertRequestWithGuestSpaceId = ({ url, method }, domain, guestSpaceId, ap
 };
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * ドメインが不正な文字列でエラーになる場合
  */
 test('Invalid Kintone domain', () => {
     prepareConfigs('invalidDomain', '1', '2', prepareRecordIdStringDef('3'));
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 /**
@@ -496,7 +515,7 @@ test('Invalid Kintone domain', () => {
  */
 test('Invalid Guest Space ID', () => {
     prepareConfigs('xxxxx.kintone.com', 'invalidId', '2', prepareRecordIdStringDef('3'));
-    expect(execute).toThrow('Invalid Guest Space ID.');
+    assertError('Invalid Guest Space ID.');
 });
 
 /**
@@ -504,7 +523,7 @@ test('Invalid Guest Space ID', () => {
  */
 test('Invalid App ID', () => {
     prepareConfigs('xxxxx.kintone.com', '1', 'invalidId', prepareRecordIdStringDef('3'));
-    expect(execute).toThrow('Invalid App ID.');
+    assertError('Invalid App ID.');
 });
 
 /**
@@ -512,7 +531,7 @@ test('Invalid App ID', () => {
  */
 test('Invalid Record ID - String', () => {
     prepareConfigs('xxxxx.kintone.com', '1', '2', prepareRecordIdStringDef('invalidId'));
-    expect(execute).toThrow('Invalid Record ID.');
+    assertError('Invalid Record ID.');
 });
 
 /**
@@ -520,7 +539,7 @@ test('Invalid Record ID - String', () => {
  */
 test('Invalid Record ID - Select', () => {
     prepareConfigs('xxxxx.kintone.com', '1', '2', prepareRecordIdSelectDef('invalidId'));
-    expect(execute).toThrow('Invalid Record ID.');
+    assertError('Invalid Record ID.');
 });
 
 /**
@@ -528,7 +547,7 @@ test('Invalid Record ID - Select', () => {
  */
 test('Record ID is empty', () => {
     prepareConfigs('xxxxx.kintone.com', '1', '2', prepareRecordIdStringDef(''));
-    expect(execute).toThrow('Record ID is empty.');
+    assertError('Record ID is empty.');
 });
 
 /**
@@ -541,7 +560,7 @@ test('Record ID is not selected', () => {
     engine.setData(recordIdDef, select); // 空のままセット
     prepareConfigs('xxxxx.kintone.com', '1', '2', recordIdDef);
 
-    expect(execute).toThrow('Record ID is not selected.');
+    assertError('Record ID is not selected.');
 });
 
 /**
@@ -550,14 +569,15 @@ test('Record ID is not selected', () => {
 test('Field Code is empty while Data item to save the value is set', () => {
     prepareConfigs('xxxxx.kintone.com', '1', '2', prepareRecordIdStringDef('3'));
     configs.put('conf_fieldCode3', ''); // 3 番目のフィールドコードを空に
-    expect(execute).toThrow('Field Code 3 is empty but Data item that will save Value 3 is set.');
+    assertError('Field Code 3 is empty but Data item that will save Value 3 is set.');
 });
 
 /**
  * フィールドコードが設定されているのに値を保存するデータ項目が設定されておらず、エラーになる場合
  */
 test('Data item to save the value is not set', () => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
@@ -572,7 +592,7 @@ test('Data item to save the value is not set', () => {
         }
     }
 
-    expect(execute).toThrow('Data item to save the value of フィールドコード_4 is not set.');
+    assertError('Data item to save the value of フィールドコード_4 is not set.');
 });
 
 /**
@@ -584,7 +604,7 @@ test('The same data item is set multiple times', () => {
     // 5 番目の値を保存するデータ項目を、4 番目のものと同じに
     configs.putObject('conf_fieldValue5', dataDefList[3]);
 
-    expect(execute).toThrow('The same data item is set multiple times.');
+    assertError('The same data item is set multiple times.');
 });
 
 /**
@@ -595,7 +615,7 @@ test('No Field Code is set', () => {
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
-    expect(execute).toThrow('No Field Code is set.');
+    assertError('No Field Code is set.');
 });
 
 /**
@@ -623,7 +643,7 @@ test('200 Success - without guestSpaceId, recordId with String, SINGLE_LINE_TEXT
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     for (let i = 0; i < FIELD_SIZE; i++) {
@@ -669,7 +689,7 @@ test('200 Success - with guestSpaceId, recordId with Select, MULTI_LINE_TEXT to 
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     for (let i = 0; i < FIELD_SIZE; i++) {
@@ -692,7 +712,8 @@ test('GET Failed', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to get record. status: 400');
+    //expect(execute).toThrow('Failed to get record. status: 400');
+    assertError('Failed to get record. status: 400');
 });
 
 /**
@@ -719,7 +740,7 @@ test('Field Code does not exist', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow('存在しないフィールドコード does not exist in the record.');
+    assertError('存在しないフィールドコード does not exist in the record.');
 });
 
 /**
@@ -750,7 +771,7 @@ test('Field Value is an Array', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow('Unable to save the value of フィールドコード_7. Field Type CHECK_BOX is not supported.');
+    assertError('Unable to save the value of フィールドコード_7. Field Type CHECK_BOX is not supported.');
 });
 
 /**
@@ -784,7 +805,7 @@ test('Field Value is an Object', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow('Unable to save the value of フィールドコード_1. Field Type CREATOR is not supported.');
+    assertError('Unable to save the value of フィールドコード_1. Field Type CREATOR is not supported.');
 });
 
 /**
@@ -813,7 +834,7 @@ test('Field Type not supported', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow('The value of Field Type SINGLE_LINE_TEXT cannot be saved to Numeric type data item.');
+    assertError('The value of Field Type SINGLE_LINE_TEXT cannot be saved to Numeric type data item.');
 });
 
 /**
@@ -838,7 +859,8 @@ const assertDatetime = (dataDef, timezone, expectedString) => {
  * 7. UPDATED_TIME to DATETIME
  */
 test('200 Success - Saved to various data-type items', () => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
@@ -904,7 +926,7 @@ test('200 Success - Saved to various data-type items', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // データ項目の値をチェック
     const string = new java.text.DecimalFormat('#,###.0').format(engine.findData(dataDefList[0]));
@@ -932,7 +954,8 @@ test('200 Success - Saved to various data-type items', () => {
  * 7. 設定なし
  */
 test('200 Success - CALC data saved to various data-type items', () => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
@@ -996,7 +1019,7 @@ test('200 Success - CALC data saved to various data-type items', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // データ項目の値をチェック
     const string = new java.text.DecimalFormat('#,###.0').format(engine.findData(dataDefList[1]));
@@ -1010,7 +1033,8 @@ test('200 Success - CALC data saved to various data-type items', () => {
  * パースできず保存に失敗する場合
  */
 test('Failed to save CALC data', () => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
@@ -1034,7 +1058,7 @@ test('Failed to save CALC data', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
-    expect(execute).toThrow('Returned value "2022-02-02T02:22:22Z" cannot be saved to Numeric type data item.');
+    assertError('Returned value "2022-02-02T02:22:22Z" cannot be saved to Numeric type data item.');
 });
 
 /**
@@ -1048,7 +1072,8 @@ test('Failed to save CALC data', () => {
  * 7. null (DATETIME) to DATETIME
  */
 test('200 Success - null or blank data saved to various data-type items', () => {
-    configs.put('conf_auth', 'kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', 'xxxxx.kintone.com');
     configs.put('conf_appId', '123');
     configs.putObject('conf_recordId', prepareRecordIdStringDef('456'));
@@ -1117,7 +1142,7 @@ test('200 Success - null or blank data saved to various data-type items', () => 
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // データ項目の値をチェック。文字型データ項目は空文字列、それ以外は null のはず
     for (let i = 0; i < FIELD_SIZE; i++) {
