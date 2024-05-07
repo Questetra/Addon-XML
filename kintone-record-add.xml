@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Add New Record</label>
 <label locale="ja">kintone: レコード追加</label>
-<last-modified>2023-06-09</last-modified>
+<last-modified>2024-05-02</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <summary>This item adds a new record to a Kintone App.</summary>
 <summary locale="ja">この工程は、kintone アプリにレコードを１件追加します。</summary>
 <configs>
@@ -95,16 +96,15 @@
 
 const FIELD_NUM = 7; // 扱えるフィールドの数
 
-main();
 function main() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const auth = configs.get("conf_auth");
-    const basic = configs.get("conf_basic");
+    const auth = configs.getObject("conf_auth");
+    const basic = configs.getObject("conf_basic");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
     const recordIdDef = configs.getObject("conf_recordId");
-    const apiToken = httpClient.getOAuth2Token(auth);
+    const apiToken = auth.getToken();
     const recordObj = retrieveRecordContent();
 
     //// == 演算 / Calculating ==
@@ -130,7 +130,7 @@ function retrieveRecordContent() {
             continue;
         }
         if (recordObj[fieldCode] !== undefined) { // フィールドコードの指定が重複
-            throw "The same Field Code is set multiple times.";
+            throw new Error("The same Field Code is set multiple times.");
         }
 
         let fieldValue = configs.get(fieldValueConfigName);
@@ -154,18 +154,18 @@ function retrieveRecordContent() {
   */
 function determineApiUri(domain, guestSpaceId) {
     if (domain === "" || domain === null) {
-        throw "Domain is empty.";
+        throw new Error("Domain is empty.");
     }
     const domainReg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
     if (!domainReg.test(domain)) {
-        throw "Invalid Kintone domain.";
+        throw new Error("Invalid Kintone domain.");
     }
     let apiUri = "";
     if (guestSpaceId === "" || guestSpaceId === null) {
         apiUri = `https://${domain}/k/v1/record.json`;
     } else {
         if (!isValidId(guestSpaceId)) {
-            throw "Invalid Guest Space ID.";
+            throw new Error("Invalid Guest Space ID.");
         }
         apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/record.json`;
     }
@@ -177,17 +177,17 @@ function determineApiUri(domain, guestSpaceId) {
   * アプリ ID が空、または不正な文字列であればエラーとする
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {Object} recordObj  レコード情報の JSON オブジェクト
   * @return {String} recordId  レコード ID
   */
 function addRecord(apiUri, apiToken, basic, appId, recordObj) {
     if (appId === "" || appId === null) {
-        throw "App ID is empty.";
+        throw new Error("App ID is empty.");
     }
     if (!isValidId(appId)) {
-        throw "Invalid App ID.";
+        throw new Error("Invalid App ID.");
     }
     const body = {
         "app": appId,
@@ -206,7 +206,7 @@ function addRecord(apiUri, apiToken, basic, appId, recordObj) {
     const status = response.getStatusCode();
     if (status >= 300) { // when error thrown
         engine.log(`---POST request--- ${status}\n${responseStr}`);
-        throw `Failed to add record. status: ${status}`;
+        throw new Error(`Failed to add record. status: ${status}`);
     }
     const json = JSON.parse(responseStr);
     return json.id;
@@ -269,9 +269,15 @@ const FIELD_SIZE = 7;
  * @param guestSpaceId
  * @param appId
  */
-const prepareConfigs = (configs, basic, domain, guestSpaceId, appId) => {
-    configs.put('conf_auth', 'kintone');
-    configs.put('conf_basic', basic);
+const prepareConfigs = (configs, basicSetting, domain, guestSpaceId, appId) => {
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
+
+    if (basicSetting !== "" && basicSetting !== null){
+        const basic = httpClient.createAuthSettingBasic('kintone Basic Auth', 'user', 'pass');
+        configs.putObject('conf_basic', basic);
+    }
+
     configs.put('conf_domain', domain);
     configs.put('conf_guestSpaceId', guestSpaceId);
     configs.put('conf_appId', appId);
@@ -291,7 +297,22 @@ const prepareConfigs = (configs, basic, domain, guestSpaceId, appId) => {
     return recordIdDef;
 };
 
-
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
 
 /**
  * ドメインが不正な文字列でエラーになる場合
@@ -303,7 +324,7 @@ test('Invalid Kintone domain', () => {
     configs.put(`conf_fieldValue1`, 'test1');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 
@@ -317,7 +338,7 @@ test('Invalid Guest Space ID', () => {
     configs.put(`conf_fieldValue2`, 'test2');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Invalid Guest Space ID.');
+    assertError('Invalid Guest Space ID.');
 });
 
 
@@ -331,7 +352,7 @@ test('Invalid App ID', () => {
     configs.put(`conf_fieldValue3`, 'test3');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Invalid App ID.');
+    assertError('Invalid App ID.');
 });
 
 
@@ -350,7 +371,7 @@ test('The same Field Code is set multiple times', () => {
     configs.put('conf_fieldCode2', 'フィールドコード_1');
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('The same Field Code is set multiple times.');
+    assertError('The same Field Code is set multiple times.');
 });
 
 
@@ -402,7 +423,7 @@ test('POST Failed', () => {
     });
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
-    expect(execute).toThrow('Failed to add record. status: 400');
+    assertError('Failed to add record. status: 400');
 });
 
 
@@ -434,7 +455,7 @@ test('Sucsess - 7fieldCodes', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(recordIdDef)).toEqual('2');
@@ -469,7 +490,7 @@ test('Sucsess - fieldValue is empty', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(recordIdDef)).toEqual('3');
@@ -499,7 +520,7 @@ test('Sucsess - 7fieldCodes are empty', () => {
     });
 
     // <script> のスクリプトを実行
-    execute();
+    main();
 
     // 文字型データ項目の値をチェック
     expect(engine.findData(recordIdDef)).toEqual('4');
