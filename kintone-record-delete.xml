@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>kintone: Delete Record</label>
 <label locale="ja">kintone: レコード削除</label>
-<last-modified>2023-06-09</last-modified>
+<last-modified>2024-05-07</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
+<addon-version>2</addon-version>
 <summary>This item deletes records in a Kintone App. It can delete multiple ones at once. It must contain one record ID per line.</summary>
 <summary locale="ja">この工程は、kintone アプリのレコードを削除します。一度に複数の削除が可能です。1行につき1つのレコード IDが含まれている必要があります。</summary>
 <configs>
@@ -37,17 +38,16 @@
 
 <script><![CDATA[
 
-main();
 function main() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const auth = configs.get("conf_auth");
-    const basic = configs.get("conf_basic");
+    const auth = configs.getObject("conf_auth");
+    const basic = configs.getObject("conf_basic");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
     const recordIds = retrieveRecordIds();
 
-    const apiToken = httpClient.getOAuth2Token(auth);
+    const apiToken = auth.getToken();
 
     //// == 演算 / Calculating ==
     const apiUri = determineApiUri(domain, guestSpaceId);
@@ -66,15 +66,15 @@ function retrieveRecordIds() {
         recordIds = engine.findData(recordIdDef);
     }
     if (recordIds === "" || recordIds === null) {
-        throw "Record IDs aren't set.";
+        throw new Error("Record IDs aren't set.");
     }
     const idStrArray = recordIds.split("\n").filter(id => id !== ""); // 空文字列を削除
     if (idStrArray.length === 0) {
-        throw "Record IDs aren't set.";
+        throw new Error("Record IDs aren't set.");
     }
     const isValid = idStrArray.every(id => isValidId(id)); // すべての ID をチェック
     if (!isValid) {
-        throw "Includes invalid Record ID.";
+        throw new Error("Includes invalid Record ID.");
     }
     return idStrArray;
 }
@@ -99,18 +99,18 @@ function isValidId(idString) {
   */
 function determineApiUri(domain, guestSpaceId) {
     if (domain === "" || domain === null) {
-        throw "Domain is empty.";
+        throw new Error("Domain is empty.");
     }
     const domainReg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
     if (!domainReg.test(domain)) {
-        throw "Invalid Kintone domain.";
+        throw new Error("Invalid Kintone domain.");
     }
     let apiUri = "";
     if (guestSpaceId === "" || guestSpaceId === null) {
         apiUri = `https://${domain}/k/v1/records.json`;
     } else {
         if (!isValidId(guestSpaceId)) {
-            throw "Invalid Guest Space ID.";
+            throw new Error("Invalid Guest Space ID.");
         }
         apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/records.json`;
     }
@@ -122,16 +122,16 @@ function determineApiUri(domain, guestSpaceId) {
   * アプリ ID が空または不正な文字列であればエラーとする
   * @param {String} apiUri  API の URI
   * @param {String} apiToken  API トークン
-  * @param {String} basic  Basic 認証設定
+  * @param {AuthSettingWrapper} basic  Basic 認証設定
   * @param {String} appId  アプリ ID
   * @param {Array<String>} recordIds  レコード ID の配列
   */
 function deleteRecords(apiUri, apiToken, basic, appId, recordIds) {
     if (appId === "" || appId === null) {
-        throw "App ID is empty.";
+        throw new Error("App ID is empty.");
     }
     if (!isValidId(appId)) {
-        throw "Invalid App ID.";
+        throw new Error("Invalid App ID.");
     }
     let request = httpClient.begin()
         .header("X-Cybozu-API-Token", apiToken)
@@ -149,7 +149,7 @@ function deleteRecords(apiUri, apiToken, basic, appId, recordIds) {
         const responseStr = response.getResponseAsString();
         const accessLog = `---DELETE request--- ${status}\n${responseStr}\n`;
         engine.log(accessLog);
-        throw `Failed to delete records. status: ${status}`;
+        throw new Error(`Failed to delete records. status: ${status}`);
     }
 }
 
@@ -189,10 +189,15 @@ mQmirpfS/4OJF76WW0zU82Figqjr06y0m+r2OJ2u/nfz8xwerN4wOc7tdwAAAABJRU5ErkJggg==
  * @param appId
  * @param recordId
  */
-const prepareConfigs = (basic, domain, guestSpaceId, appId, recordId) => {
-    configs.put('conf_auth', 'kintone');
+const prepareConfigs = (basicSetting, domain, guestSpaceId, appId, recordId) => {
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
 
-    configs.put('conf_basic', basic);
+    if (basicSetting !== "" && basicSetting !== null){ 
+        const basic = httpClient.createAuthSettingBasic('kintone Basic Auth', 'user', 'pass');
+        configs.putObject('conf_basic', basic);
+    }
+
     configs.put('conf_domain', domain);
     configs.put('conf_guestSpaceId', guestSpaceId);
     configs.put('conf_appId', appId);
@@ -204,12 +209,29 @@ const prepareConfigs = (basic, domain, guestSpaceId, appId, recordId) => {
 };
 
 /**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
  * レコードID がnullでエラー
  */
 test('record IDs are null', () => {
     prepareConfigs('', 'test-01.cybozu.com', '', '1', null);
 
-    expect(execute).toThrow('Record IDs aren\'t set.');
+    assertError('Record IDs aren\'t set.');
 });
 
 /**
@@ -218,7 +240,7 @@ test('record IDs are null', () => {
 test('record IDs are blank lines.', () => {
     prepareConfigs('basic', 'test-02.kintone.com', '', '2', '\n\n\n');
 
-    expect(execute).toThrow('Record IDs aren\'t set.');
+    assertError('Record IDs aren\'t set.');
 });
 
 /**
@@ -227,7 +249,7 @@ test('record IDs are blank lines.', () => {
 test('record IDs contain a non-natural number', () => {
     prepareConfigs('', 'test-03.cybozu.com', '', '3', '33\n-1');
 
-    expect(execute).toThrow('Includes invalid Record ID.');
+    assertError('Includes invalid Record ID.');
 });
 
 /**
@@ -236,7 +258,7 @@ test('record IDs contain a non-natural number', () => {
 test('domain is not {subdomain}.kintone.com or {subdomain}.cybozu.com', () => {
     prepareConfigs('', 'test-04.test.com', '', '4', '44');
 
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 /**
@@ -245,7 +267,7 @@ test('domain is not {subdomain}.kintone.com or {subdomain}.cybozu.com', () => {
 test('subdomain contains an underscore', () => {
     prepareConfigs('', 'test_05.cybozu.com', '', '5', '55');
 
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 /**
@@ -255,7 +277,7 @@ test('subdomain is not 32 characters or less', () => {
     const subdomain = 'test-06';
     prepareConfigs('', `${subdomain.padEnd(33, 'a')}.cybozu.com`, '', '6', '66');
 
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 /**
@@ -264,7 +286,7 @@ test('subdomain is not 32 characters or less', () => {
 test('subdomain is not 3 characters or more', () => {
     prepareConfigs('', 'te.cybozu.com', '', '7', '77');
 
-    expect(execute).toThrow('Invalid Kintone domain.');
+    assertError('Invalid Kintone domain.');
 });
 
 /**
@@ -273,7 +295,7 @@ test('subdomain is not 3 characters or more', () => {
 test('Guest Space ID is a non-natural number', () => {
     prepareConfigs('', 'test-08.cybozu.com', '8.8', '8', '88');
 
-    expect(execute).toThrow('Invalid Guest Space ID.');
+    assertError('Invalid Guest Space ID.');
 });
 
 /**
@@ -282,7 +304,7 @@ test('Guest Space ID is a non-natural number', () => {
 test('App ID is a non-natural number', () => {
     prepareConfigs('', 'test-09.cybozu.com', '', '-9', '99');
 
-    expect(execute).toThrow('Invalid App ID.');
+    assertError('Invalid App ID.');
 });
 
 /**
@@ -317,7 +339,7 @@ test('200 Success - 1 record, with Basic Authentication', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -332,7 +354,7 @@ test('200 Success - 2 records, reocord Ids with blank lines, specify guest space
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -355,7 +377,7 @@ test('200 Success - 100 records', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    execute();
+    main();
 });
 
 /**
@@ -376,7 +398,7 @@ test('DELETE Failed - more than 100', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
 
-    expect(execute).toThrow('Failed to delete records. status:');
+    assertError('Failed to delete records. status: 400');
 });
 
 ]]></test>
