@@ -3,9 +3,10 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: kintone: Record Created</label>
     <label locale="ja">開始: kintone: レコード作成時</label>
-    <last-modified>2023-06-26</last-modified>
+    <last-modified>2024-05-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
     <summary>
         This item starts a process when a record has been created in a Kintone App by specifying the field code of Created datetime in C6.
         It is also possible to specify the field code of Updated datetime or another datetime field to start a process accordingly.
@@ -83,8 +84,8 @@ const parseDatetime = str => new java.sql.Timestamp(datetimeFormatter.parse(str)
  * @return {string} result.basic Basic 認証設定
  */
 const prepare = () => {
-    const auth = configs.get("conf_auth");
-    const basic = configs.get("conf_basic");
+    const auth = configs.getObject("conf_auth");
+    const basic = configs.getObject("conf_basic");
     const domain = configs.get("conf_domain");
     const guestSpaceId = configs.get("conf_guestSpaceId");
     const appId = configs.get("conf_appId");
@@ -94,7 +95,7 @@ const prepare = () => {
     checkAppId(appId);
     const apiUri = determineApiUri(domain, guestSpaceId);
 
-    const apiToken = httpClient.getOAuth2Token(auth);
+    const apiToken = auth.getToken();
 
     return {
         appId,
@@ -120,7 +121,7 @@ const determineApiUri = (domain, guestSpaceId) => {
         apiUri = `https://${domain}/k/v1/`;
     } else {
         if (!isValidId(guestSpaceId)) {
-            throw "Invalid Guest Space ID.";
+            throw new Error("Invalid Guest Space ID.");
         }
         apiUri = `https://${domain}/k/guest/${guestSpaceId}/v1/`;
     }
@@ -133,11 +134,11 @@ const determineApiUri = (domain, guestSpaceId) => {
  */
 const checkDomain = (domain) => {
     if (domain === "" || domain === null) {
-        throw "Domain is empty.";
+        throw new Error("Domain is empty.");
     }
     const reg = new RegExp('^[0-9a-zA-Z-]{3,32}.(?:kintone.com|cybozu.com)$');
     if (!reg.test(domain)) {
-        throw "Invalid Kintone domain.";
+        throw new Error("Invalid Kintone domain.");
     }
 };
 
@@ -147,10 +148,10 @@ const checkDomain = (domain) => {
  */
 const checkAppId = (appId) => {
     if (appId === "" || appId === null) {
-        throw "App ID is empty.";
+        throw new Error("App ID is empty.");
     }
     if (!isValidId(appId)) {
-        throw "Invalid App ID.";
+        throw new Error("Invalid App ID.");
     }
 };
 
@@ -206,7 +207,7 @@ const logRecords = (records) => {
  * kintone REST API にレコード取得の GET リクエストを送信する
  * @param {String} apiUri  API の URI
  * @param {String} apiToken  API トークン
- * @param {String} basic  Basic 認証設定
+ * @param {AuthSettingWrapper} basic  Basic 認証設定
  * @param {Object} params API リクエストのパラメータに使用する情報が格納されたオブジェクト
  * @param {string} params.appId アプリ ID
  * @param {string} params.datetimeField 日時データのフィールドコード
@@ -253,7 +254,7 @@ const getRecords = (apiUri, apiToken, basic, {
     if (status >= 300) {
         const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
         engine.log(accessLog);
-        throw `Failed to get records. status: ${status}`;
+        throw new Error(`Failed to get records. status: ${status}`);
     }
     const json = JSON.parse(responseJson);
 
@@ -304,12 +305,32 @@ const getRecords = (apiUri, apiToken, basic, {
  * @param domain
  */
 const prepareConfigs = (domain, guestSpaceId, appId, datetimeField, query) => {
-    configs.put('conf_auth', 'Kintone');
+    const auth = httpClient.createAuthSettingToken('kintone API Key', 'kintone-api-key-12345');
+    configs.putObject('conf_auth', auth);
     configs.put('conf_domain', domain);
     configs.put('conf_guestSpaceId', guestSpaceId);
     configs.put('conf_appId', appId);
     configs.put('conf_datetimeField', datetimeField);
     configs.put('conf_query', query);
+};
+
+/**
+ * 異常系のテスト
+ * @param limit
+ * @param timestampLowerLimit
+ * @param errorMsg
+ */
+const assertError = (limit, timestampLowerLimit, errorMsg) => {
+    let failed = false;
+    try {
+        list(limit, timestampLowerLimit);
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
 };
 
 /**
@@ -320,17 +341,12 @@ test('Fail - invalid domain', () => {
     prepareConfigs('invalidDomain.com', '', '1', '作成日時', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 3;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
 
-    try {
-        list(limit, timestampLowerLimit);
-        fail();
-    } catch (e) {
-        expect(e.toString()).toEqual('Invalid Kintone domain.');
-    }
+    assertError(limit, timestampLowerLimit, 'Invalid Kintone domain.');
+
 });
 
 /**
@@ -341,17 +357,12 @@ test('Fail - invalid guest space ID', () => {
     prepareConfigs('xxxxx.kintone.com', '1a', '1', '作成日時', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 3;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
 
-    try {
-        list(limit, timestampLowerLimit);
-        fail();
-    } catch (e) {
-        expect(e.toString()).toEqual('Invalid Guest Space ID.');
-    }
+    assertError(limit, timestampLowerLimit, 'Invalid Guest Space ID.');
+
 });
 
 /**
@@ -362,17 +373,12 @@ test('Fail - invalid App ID', () => {
     prepareConfigs('xxxxx.kintone.com', '', '2b', '作成日時', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 3;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
 
-    try {
-        list(limit, timestampLowerLimit);
-        fail();
-    } catch (e) {
-        expect(e.toString()).toEqual('Invalid App ID.');
-    }
+    assertError(limit, timestampLowerLimit, 'Invalid App ID.');
+
 });
 
 const DATETIME_FORMAT = 'yyyy-MM-dd\'T\'HH:mm:ssX';
@@ -470,7 +476,6 @@ test('Success', () => {
     prepareConfigs('xxxxx.kintone.com', '', '1', '作成日時', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 3;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
@@ -531,7 +536,6 @@ test('Success - with guest space ID', () => {
     prepareConfigs('xxxxx.cybozu.com', '9', '19', 'Updated datetime', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 2;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
@@ -590,7 +594,6 @@ test('Success - with search query', () => {
     prepareConfigs('xxxxx.cybozu.com', '', '55', '日時型データ項目', query);
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 2;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
@@ -622,7 +625,6 @@ test('Fail - 403 error in GET request', () => {
     prepareConfigs('xxxxx.cybozu.com', '', '103', '日時型データ項目', '');
 
     // <script> のスクリプトを実行
-    execute();
 
     const limit = 3;
     const timestampLowerLimit = new com.questetra.bpms.util.AddableTimestamp().addDays(-1);
@@ -632,12 +634,8 @@ test('Fail - 403 error in GET request', () => {
         return httpClient.createHttpResponse(403, 'application/json', JSON.stringify({}));
     });
 
-    try {
-        list(limit, timestampLowerLimit);
-        fail();
-    } catch (e) {
-        expect(e.toString()).toEqual('Failed to get records. status: 403');
-    }
+    assertError(limit, timestampLowerLimit, 'Failed to get records. status: 403');
+
 });
 
 ]]></test>
