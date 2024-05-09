@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2023-07-13</last-modified>
+    <last-modified>2024-05-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Add or Update Contact</label>
     <label locale="ja">Twilio SendGrid: 宛先追加/更新</label>
@@ -72,7 +72,7 @@ const MAX_FIELD_VALUE_LENGTH = 1000;
 
 function main(){
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
     const listIds = retrieveListIds();
     const contact = retrieveContact();
 
@@ -88,12 +88,12 @@ function main(){
 
 function proceed() {
     //// == Config Retrieving / 工程コンフィグの参照 ==
-    const auth = configs.get('conf_Auth');
+    const auth = configs.getObject('conf_Auth');
 
     //// == Restoring Temporary Data / 一時データの読み出し ==
     const jobId = engine.restoreTemporaryData();
     if (jobId === null) {
-        throw 'Temporary data has not been saved.';
+        throw new Error('Temporary data has not been saved.');
     }
 
     //// == 演算 / Calculating ==
@@ -206,12 +206,12 @@ function retrieveConfig(confName, required, maxLength, label) {
     const value = engine.findData(dataDef);
     if (value === null) {
         if (required) {
-            throw `${label} is blank.`;
+            throw new Error(`${label} is blank.`);
         }
         return '';
     }
     if (value.length > maxLength) {
-        throw `${label} must be within ${maxLength} characters.`;
+        throw new Error(`${label} must be within ${maxLength} characters.`);
     }
     return value;
 }
@@ -234,18 +234,18 @@ function retrieveAlternateEmails() {
     const alternateEmails = alternateEmailsStr.split('\n')
         .filter(email => email !== '');
     if (alternateEmails.length > MAX_ALTERNATE_EMAIL_NUM) {
-        throw `The maximum number of alternate emails is ${MAX_ALTERNATE_EMAIL_NUM}.`;
+        throw new Error(`The maximum number of alternate emails is ${MAX_ALTERNATE_EMAIL_NUM}.`);
     }
     // API ドキュメントに上限文字数の記載はないが、メインのメールアドレスと同様にチェック
     if (alternateEmails.some(email => email.length > MAX_EMAIL_LENGTH)) {
-        throw `Each alternate email must be within ${MAX_EMAIL_LENGTH} characters.`;
+        throw new Error(`Each alternate email must be within ${MAX_EMAIL_LENGTH} characters.`);
     }
     return alternateEmails;
 }
 
 /**
   * 宛先を追加/更新する
-  * @param {String} auth 認証設定名
+  * @param {AuthSettingWrapper} auth 認証設定
   * @param {Array<String>} listIds 宛先を追加するリスト ID の一覧
   * @param {Object} contact 宛先情報
   * @return {String} jobId
@@ -264,14 +264,14 @@ function upsertContact(auth, listIds, contact) {
     const responseStr = response.getResponseAsString();
     if (status !== 202) {
         engine.log(responseStr);
-        throw `Failed to upsert contact. status: ${status}`;
+        throw new Error(`Failed to upsert contact. status: ${status}`);
     }
     return JSON.parse(responseStr).job_id;
 }
 
 /**
   * ジョブの処理状況を確認する
-  * @param {String} auth 認証設定名
+  * @param {AuthSettingWrapper} auth 認証設定
   * @param {String} jobId ジョブ ID
   * @return {boolean} true: 完了, false: 未完了
   */
@@ -284,7 +284,7 @@ function checkStatus(auth, jobId) {
     const responseStr = response.getResponseAsString();
     if (status !== 200) {
         engine.log(responseStr);
-        throw `Failed to get upsert status. status: ${status}`;
+        throw new Error(`Failed to get upsert status. status: ${status}`);
     }
     const jobStatus = JSON.parse(responseStr).status;
     switch (jobStatus) {
@@ -294,7 +294,7 @@ function checkStatus(auth, jobId) {
             return true;
         default: // errored or failed
             engine.log(responseStr);
-            throw 'Failed to complete upserting the contact.';
+            throw new Error('Failed to complete upserting the contact.');
     }
 }
 
@@ -337,7 +337,9 @@ function checkStatus(auth, jobId) {
   */
 const prepareConfigs = (email, listIds, alternateEmails, lastName, firstName, country, 
                         postalCode, region, city, address1, address2) => {
-    configs.put('conf_Auth', 'SendGrid');
+    // 認証設定を準備
+    const auth = httpClient.createAuthSettingToken('SendGrid API Key', 'sendgrid-1234567');
+    configs.putObject('conf_Auth', auth);
     setDataItem('Email', 1, 'STRING_TEXTFIELD', email);
     setDataItem('ListIds', 2, 'STRING_TEXTAREA', listIds);
     setDataItem('AlternateEmails', 3, 'STRING_TEXTAREA', alternateEmails);
@@ -364,19 +366,26 @@ const setDataItem = (name, index, type, value) => {
     configs.putObject(`conf_${name}`, dataDef);
 };
 
+
 /**
-  * 異常系のテスト
-  * @param func
-  * @param errorMsg
-  */
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
 const assertError = (func, errorMsg) => {
+    let failed = false;
     try {
         func();
-        fail();
     } catch (e) {
-        expect(e.toString()).toEqual(errorMsg);
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
+
+
 
 /**
   * 指定個数のデータを改行区切りにした文字列を生成する
