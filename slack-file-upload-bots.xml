@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-04-18</last-modified>
+<!--
+<last-modified>2024-05-20</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -29,37 +31,96 @@ function main() {
   const oauth2 = configs.getObject("conf_OAuth2");
   const channel = configs.get("ChannelName");
   const filesDef = configs.getObject("File");
-//check whether files exist or not
-
 
   const files = engine.findData( filesDef );
+  //check whether files exist or not
   if (files === null){
     engine.log ("No File to upload");
     return;
   }
   //check whether number of files is under the limit
   const numOfFiles = files.length;
+  //TODO 要修正
   if (numOfFiles > httpClient.getRequestingLimit()){
     throw "Number of Files is over the limit.";
   }
-  for (let i = 0; i < numOfFiles; i++){
-    upload(oauth2,files[i],channel);
-  }
-}
-/**
-  * Upload File
-  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
-  * @param {String} token 
-  * @param {QfileView} file
-  * @param {String} channel
-  */  
-function upload (oauth2,file,channel){ 
 
-  const url = 'https://slack.com/api/files.upload';
+  const fileIds = [];
+  for (let i = 0; i < numOfFiles; i++){
+    const {uploadUrl, fileId} = getUploadUrl(oauth2, files[i]);
+    upload(uploadUrl, files[i]);
+    fileIds.push(fileId);
+  }
+
+  completeUpload(auth2, fileIds, channel);
+}
+
+/**
+  * Get Upload Url
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {QfileView} file
+  * @returns {Object} {uploadUrl: String, fileId: String}
+  */
+function getUploadUrl(oauth2, file){
+  const url = 'https://slack.com/api/files.getUploadURLExternal';
   const response = httpClient.begin()
     .authSetting(oauth2)
-    .multipart('file',file)
-    .multipart('channels',channel)
+    .queryParam('filename', file.getName())
+    .queryParam('length', file.getLength().toString())
+    .get(url);
+  const status = response.getStatusCode();
+  const responseTxt = response.getResponseAsString();
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseTxt);
+  } catch(e) {
+    engine.log("failed to parse as json");
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw `Failed to get upload URL. status: ${status}`;
+  }
+  if (responseJson.ok !== true) {
+    const filename = file.getName();
+    const error = `Failed to get upload URL\n filename: ${filename} error: ${responseJson.error}`;
+    engine.log(`status: ${status}`);
+    engine.log(responseTxt);
+    throw error;
+  }
+  return {uploadUrl: responseJson.upload_url, fileId: responseJson.file_id};
+}
+
+/**
+  * Upload File
+  * @param {String} uploadUrl
+  * @param {QfileView} file
+  */  
+function upload(uploadUrl, file){
+  const response = httpClient.begin()
+    .multipart('file', file)
+    .post(uploadUrl);
+  const status = response.getStatusCode();
+  if (status !== 200) {
+    engine.log(response.getResponseAsString());
+    throw `Failed to upload. status: ${status} filename: ${file.getName()}`;
+  }
+}
+
+/**
+  * Complete File Uploads
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {Array<String>} fileIds
+  * @param {String} channel
+  */
+function completeUpload(oauth2, fileIds, channel){
+  const url = 'https://slack.com/api/files.completeUploadExternal';
+  const payload = {
+    channel_id: channel,
+    files: fileIds.map(fileId => ({id: fileId}))
+  };
+  const response = httpClient.begin()
+    .authSetting(oauth2)
+    .body(JSON.stringify(payload), 'application/json')
     .post(url);
   const status = response.getStatusCode();
   const responseTxt = response.getResponseAsString();
@@ -71,11 +132,10 @@ function upload (oauth2,file,channel){
     engine.log("failed to parse as json");
     engine.log(`status: ${status}`);
     engine.log(responseTxt);
-    throw `Failed to upload. status: ${status}`;
+    throw `Failed to complete upload. status: ${status}`;
   }
   if (responseJson.ok !== true) {
-    const filename = file.getName();
-    const error = `Failed to upload\n filename: ${filename} error: ${responseJson.error}`;
+    const error = `Failed to complete upload\n error: ${responseJson.error}`;
     engine.log(`status: ${status}`);
     engine.log(responseTxt);
     throw error;
