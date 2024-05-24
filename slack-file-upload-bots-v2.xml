@@ -9,7 +9,8 @@
     <summary>This item uploads files to Slack with Bots.</summary>
     <summary locale="ja">この工程は、Bots 機能を使って Slack にファイルをアップロードします。</summary>
     <configs>
-        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://slack.com/oauth2/chat:write,files:write">
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://slack.com/oauth2/chat:write,files:write">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
@@ -266,14 +267,16 @@ const generateQueryString = (key, value) => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param file
  */
-const assertGetUploadUrlRequest = ({url, method}, file) => {
+const assertGetUploadUrlRequest = ({url, method, headers}, file) => {
     const expectedUrl = 'https://slack.com/api/files.getUploadURLExternal'
         + `?${generateQueryString('filename', file.getName())}`
         + `&${generateQueryString('length', file.getLength().toString())}`;
     expect(url).toEqual(expectedUrl);
     expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
 };
 
 /**
@@ -282,7 +285,7 @@ const assertGetUploadUrlRequest = ({url, method}, file) => {
  */
 test('Get Upload URL Request Failed - failed to parse', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile('file2.txt', 1));
+    files.add(createQfile('テキストファイル.txt', 1));
     prepareConfigs('channel2', files);
 
     httpClient.setRequestHandler((request) => {
@@ -315,15 +318,228 @@ const createErrorResponse = (status, errorMsg) => {
  */
 test('Get Upload URL Request Failed - result is not ok', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile('file2.txt', 1));
+    files.add(createQfile('サイズが0のファイル.txt', 0));
     prepareConfigs('channel2', files);
 
     httpClient.setRequestHandler((request) => {
         assertGetUploadUrlRequest(request, files.get(0));
+        return createErrorResponse(200, 'missing_argument');
+    });
+
+    assertError('Failed to get upload URL\n filename: サイズが0のファイル.txt error: missing_argument');
+});
+
+/**
+ * アップロード URL 取得の成功レスポンスを作成
+ * @param status
+ * @param errorMsg
+ */
+const createUploadUrlResponse = (uploadUrl, fileId) => {
+    return httpClient.createHttpResponse(
+        200, 
+        'application/json',
+        JSON.stringify({
+            ok: true,
+            upload_url: uploadUrl,
+            file_id: fileId
+        })
+    );
+};
+
+/**
+ * ファイルアップロードの POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param uploadUrl
+ * @param uploadFile
+ */
+const assertUploadRequest = ({url, method, contentType, body}, uploadUrl, uploadFile) => {
+    expect(url).toEqual(uploadUrl);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('multipart/form-data');
+    expect(body.size()).toEqual(1);
+    const file = body.get('file').get(0);
+    expect(file.getName()).toEqual(uploadFile.getName());
+    expect(file.getContentType()).toEqual(uploadFile.getContentType());
+    expect(file.getLength()).toEqual(uploadFile.getLength());
+};
+
+/**
+ * ファイルアップロードの POST リクエストでエラーになる場合
+ * レスポンスのステータスが 200 でない
+ */
+test('File Upload Request Failed - status is not 200', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        assertUploadRequest(request, uploadUrl, files.get(0));
+        return httpClient.createHttpResponse(400, 'text/plain', '');
+    });
+
+    assertError('Failed to upload. status: 400 filename: テキストファイル.txt');
+});
+
+/**
+ * アップロード完了の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.body
+ * @param fileIds
+ * @param channelId
+ */
+const assertCompleteRequest = ({url, method, headers, body}, fileIds, channelId) => {
+    expect(url).toEqual('https://slack.com/api/files.completeUploadExternal');
+    expect(method).toEqual('POST');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    const json = JSON.parse(body);
+    expect(json.channel_id).toEqual(channelId);
+    fileIds.forEach((fileId, i) => {
+        expect(json.files[i].id).toEqual(fileId);
+    });
+};
+
+/**
+ * アップロード完了の POST リクエストでエラーになる場合
+ * レスポンスが JSON でない
+ */
+test('Complete Request Failed - failed to parse', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
+        return httpClient.createHttpResponse(400, 'text/plain', 'error');
+    });
+
+    assertError('Failed to complete upload. status: 400');
+});
+
+/**
+ * アップロード完了の POST リクエストでエラーになる場合
+ * レスポンスが ok でない
+ */
+test('Complete Request Failed - result is not ok', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
         return createErrorResponse(200, 'access_denied');
     });
 
-    assertError('Failed to get upload URL\n filename: file2.txt error: access_denied');
+    assertError('Failed to complete upload\n error: access_denied');
+});
+
+/**
+ * 成功 - ファイルが 1 つの場合
+ */
+test('Succeed - upload one file', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"ok":true}');
+    });
+
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - ファイルを上限個数アップロード
+ */
+test('Succeed - upload maximum number of files', () => {
+    const files = new java.util.ArrayList();
+    const fileMaxNum = httpClient.getRequestingLimit() / 2 - 1;
+    for (let i = 0; i < fileMaxNum; i++) {
+        files.add(createQfile(`ファイル${i+1}.txt`, 1));
+    }
+    prepareConfigs('channel2', files);
+
+    let reqCount = 0;
+    let fileIndex = 0;
+    const uploadUrls = [];
+    const fileIds = [];
+    for (let i = 0; i < fileMaxNum; i++) {
+        uploadUrls.push(`https://example.com/upload${i+1}`);
+        fileIds.push(`file_id_${i+1}`);
+    }
+    httpClient.setRequestHandler((request) => {
+        if (reqCount % 2 === 0 && reqCount < files.size() * 2) {
+            assertGetUploadUrlRequest(request, files.get(fileIndex));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrls[fileIndex], fileIds[fileIndex]);
+        }
+        if (reqCount % 2 === 1) {
+            assertUploadRequest(request, uploadUrls[fileIndex], files.get(fileIndex));
+            reqCount++;
+            fileIndex++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, fileIds, 'channel2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"ok":true}');
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(files.size() * 2); // complete のリクエストではカウントアップしていない
+    expect(fileIndex).toEqual(files.size());
 });
 
 ]]></test>
