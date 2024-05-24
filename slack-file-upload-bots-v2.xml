@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-    <!--
-<last-modified>2024-05-22</last-modified>
--->
+    <last-modified>2024-05-24</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -171,11 +169,10 @@ const completeUpload = (oauth2, fileIds, channelId) => {
 
 /**
  * 設定の準備
- * @param configs
- * @param ChannelName
- * @param File
+ * @param channelId
+ * @param files
  */
-const prepareConfigs = (configs, channelName, file) => {
+const prepareConfigs = (channelId, files) => {
     const auth = httpClient.createAuthSettingOAuth2(
         'Slack',
         'https://slack.com/oauth/v2/authorize',
@@ -185,16 +182,13 @@ const prepareConfigs = (configs, channelName, file) => {
         'consumer_secret',
         'access_token'
     );
-
     configs.putObject('conf_OAuth2', auth);
-    configs.put('ChannelName', channelName);
+    configs.put('conf_ChannelId', channelId);
 
     const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
-    configs.putObject('File', fileDef);
-    engine.setData(fileDef, file);
+    configs.putObject('conf_Files', fileDef);
+    engine.setData(fileDef, files);
 };
-
-
 
 /**
  * 指定サイズのテキストファイルを作成
@@ -210,23 +204,23 @@ const createQfile = (name, size) => {
             text += 'a';
         }
     }
-    return engine.createQfile(name, 'text/plain; charset=US-ASCII', text);
+    return engine.createQfile(name, 'text/plain; charset=UTF-8', text);
 };
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
     let failed = false;
     try {
         main();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -234,188 +228,102 @@ const assertError = (func, errorMsg) => {
  * ファイルが添付されていない場合（正常終了）
  */
 test('No File to upload', () => {
-    prepareConfigs(configs, 'channel1', null);
-
-    main();
+    prepareConfigs('channel1', null);
+    expect(main()).toEqual(undefined);
 });
-
-
 
 /**
  * ファイル数が HTTP リクエスト数制限を超えてエラーになる場合
  */
-test('Number of Files is over the limit.', () => {
+test('The number of files exceeds the limit', () => {
     const files = new java.util.ArrayList();
-    for (let i = 0; i < httpClient.getRequestingLimit() + 1; i++) {
-        files.add(createQfile(`ファイル${i}.txt`, 1 ));
+    for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
+        files.add(createQfile(`ファイル${i}.txt`, 1));
     }
-    prepareConfigs(configs, 'channel1', files);
+    prepareConfigs('channel1', files);
 
-    assertError(main, 'Number of Files is over the limit.');
+    assertError('The number of files exceeds the limit.');
 });
 
-
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#formParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
 
 /**
- * POSTリクエストのテスト（ファイルアップロード）
+ * アップロード URL 取得の GET リクエストのテスト
  * @param {Object} request
  * @param request.url
  * @param request.method
- * @param email
+ * @param file
  */
-const assertPostRequest = ({url, method, contentType, body}, channels, filename, filesize) => {
-    expect(url).toEqual(`https://slack.com/api/files.upload`);
-    expect(method).toEqual('POST');
-    expect(body.size()).toEqual(2);
-
-    const channel = body.get('channels').get(0);
-    const file = body.get('file').get(0);
-    expect(channel).toEqual(channels);
-    expect(file.getName()).toEqual(filename);
-    expect(file.getContentType()).startsWith('text/plain');
-    expect(file.getLength()).toEqual(filesize);
+const assertGetUploadUrlRequest = ({url, method}, file) => {
+    const expectedUrl = 'https://slack.com/api/files.getUploadURLExternal'
+        + `?${generateQueryString('filename', file.getName())}`
+        + `&${generateQueryString('length', file.getLength().toString())}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
 };
 
-
-
 /**
- * POST API リクエストでエラーになる場合
+ * アップロード URL 取得の GET リクエストでエラーになる場合
+ * レスポンスが JSON でない
  */
-test('POST Failed', () => {
+test('Get Upload URL Request Failed - failed to parse', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile(`file2.txt`, 1));
-    prepareConfigs(configs, 'channel2', files);
+    files.add(createQfile('file2.txt', 1));
+    prepareConfigs('channel2', files);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel2', "file2.txt", 1 );
-      return httpClient.createHttpResponse(400, 'application/json', '{}');
+        assertGetUploadUrlRequest(request, files.get(0));
+        return httpClient.createHttpResponse(400, 'text/plain', 'error');
     });
 
-    assertError(main, 'Failed to upload\n filename: file2.txt');
+    assertError('Failed to get upload URL. status: 400');
 });
 
-
+/**
+ * エラーレスポンスを作成
+ * @param status
+ * @param errorMsg
+ */
+const createErrorResponse = (status, errorMsg) => {
+    return httpClient.createHttpResponse(
+        status, 
+        'application/json',
+        JSON.stringify({
+            ok: false,
+            error: errorMsg
+        })
+    );
+};
 
 /**
- * アップロード成功の場合
- * 1 ファイル　 2 つのチャンネル
+ * アップロード URL 取得の GET リクエストでエラーになる場合
+ * レスポンスが ok でない
  */
-test('Success - 1 file　2 channels', () => {
+test('Get Upload URL Request Failed - result is not ok', () => {
     const files = new java.util.ArrayList();
-    files.add(createQfile(`file3.txt`, 1));
-    prepareConfigs(configs, 'channel3, channel4', files);
-
-    httpClient.setRequestHandler((request) => {    
-      filename = [];
-      filename.push("file3.txt");
-      assertPostRequest(request,  'channel3, channel4', `file3.txt`, 1 );
-      const responseObj = {
-        "ok" : true
-      }
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    // <script> のスクリプトを実行
-    main();
-});
-
-
-
-/**
- * アップロード成功の場合
- * ファイル数が HTTP リクエスト数制限と同じ
- */
-test('Success - fileRequestingLimit', () => {
-    const files = new java.util.ArrayList();
-    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
-        files.add(createQfile(`file${i}.txt`, 1));
-    }
-    prepareConfigs(configs, 'channel4', files);
-
-    let requestCount = 0;
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel4', `file${requestCount}.txt` ,1 );
-      const responseObj = {
-        "ok" : true
-      }
-      requestCount++
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    // <script> のスクリプトを実行
-    main();
-
-    // リクエスト数をチェック
-    expect(requestCount).toEqual(httpClient.getRequestingLimit());
-});
-
-
-
-/**
- * アップロード失敗の場合
- * いずれかのチャンネル が存在ない
- */
-test('Failed - One of the channels does not exist', () => {
-    const file = new java.util.ArrayList();
-    file.add(createQfile(`file9.txt`, 1));
-    prepareConfigs(configs, 'channel9, channel10', file);
+    files.add(createQfile('file2.txt', 1));
+    prepareConfigs('channel2', files);
 
     httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel9, channel10', "file9.txt", 1 );
-      const responseObj = {
-        "ok": false,
-        "error": "channel_not_found"
-      };
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        assertGetUploadUrlRequest(request, files.get(0));
+        return createErrorResponse(200, 'access_denied');
     });
 
-    assertError(main, 'Failed to upload\n filename: file9.txt error: channel_not_found');
-});
-
-
-
-/**
- * アップロード失敗の場合
- * いずれかのチャンネルに join していない
- */
-test('Failed - Not joined to any channel', () => {
-    const file = new java.util.ArrayList();
-    file.add(createQfile(`file10.txt`, 1));
-    prepareConfigs(configs, 'channel9, channel11', file);
-
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel9, channel11', "file10.txt", 1 );
-      const responseObj = {
-        "ok": false,
-        "error": "not_in_channel"
-      };
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    assertError(main, 'Failed to upload\n filename: file10.txt error: not_in_channel');
-});
-
-
-
-/**
- * アップロード失敗の場合
- * 空ファイル
- */
-test('Failed - no data file', () => {
-    const file = new java.util.ArrayList();
-    file.add(createQfile(`kara.txt`, 0));
-    prepareConfigs(configs, 'channel12', file);
-
-    httpClient.setRequestHandler((request) => {
-      assertPostRequest(request, 'channel12', "kara.txt", 0  );
-      const responseObj = {
-        "ok": false,
-        "error": "no_file_data"
-      };
-      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
-    });
-
-    assertError(main, 'Failed to upload\n filename: kara.txt error: no_file_data');
+    assertError('Failed to get upload URL\n filename: file2.txt error: access_denied');
 });
 
 ]]></test>
