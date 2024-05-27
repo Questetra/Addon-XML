@@ -1,0 +1,546 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <last-modified>2024-05-27</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Slack: Upload File (Bots)</label>
+    <label locale="ja">Slack: ファイルアップロード (Bots)</label>
+    <summary>This item uploads files to Slack with Bots.</summary>
+    <summary locale="ja">この工程は、Bots 機能を使って Slack にファイルをアップロードします。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://slack.com/oauth2/chat:write,files:write">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_ChannelId" required="true">
+            <label>C2: Slack Channel ID</label>
+            <label locale="ja">C2: Slack チャンネル ID</label>
+        </config>
+        <config name="conf_Files" form-type="SELECT" select-data-type="FILE" required="true">
+            <label>C3: Data item whose attached files will be uploaded</label>
+            <label locale="ja">C3: アップロードするファイルが保存されているデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-slack-file-upload-bots-v2</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-slack-file-upload-bots-v2</help-page-url>
+    <script><![CDATA[
+
+const main = () => {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const channelId = configs.get('conf_ChannelId');
+    const files = engine.findData(configs.getObject('conf_Files'));
+
+    ////// == 演算 / Calculating ==
+    if (files === null) { // ファイル添付なしの場合、何もせず正常終了
+        engine.log('No File to upload');
+        return;
+    }
+    // ファイル毎に 2 回、最後に 1 回の HTTP リクエストを行う
+    const requiredHttpRequestNum = files.length * 2 + 1;
+    if (requiredHttpRequestNum > httpClient.getRequestingLimit()){
+        throw new Error('The number of files exceeds the limit.');
+    }
+
+    // ファイルをアップロード
+    const fileIds = [];
+    files.forEach((file) => {
+        const {uploadUrl, fileId} = getUploadUrl(oauth2, file);
+        upload(uploadUrl, file);
+        fileIds.push(fileId);
+    });
+    completeUpload(oauth2, fileIds, channelId);
+};
+
+/**
+  * Get Upload Url
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {QfileView} file
+  * @returns {Object} {uploadUrl: String, fileId: String}
+  */
+const getUploadUrl = (oauth2, file) => {
+    const url = 'https://slack.com/api/files.getUploadURLExternal';
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .queryParam('filename', file.getName())
+        .queryParam('length', file.getLength().toString())
+        .get(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString();
+
+    let responseJson;
+    try {
+        responseJson = JSON.parse(responseTxt);
+    } catch(e) {
+        engine.log('failed to parse as json');
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(`Failed to get upload URL. status: ${status}`);
+    }
+    if (responseJson.ok !== true) {
+        const error = `Failed to get upload URL\n filename: ${file.getName()} error: ${responseJson.error}`;
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(error);
+    }
+    return {uploadUrl: responseJson.upload_url, fileId: responseJson.file_id};
+};
+
+/**
+  * Upload File
+  * @param {String} uploadUrl
+  * @param {QfileView} file
+  */  
+const upload = (uploadUrl, file) => {
+    const response = httpClient.begin()
+        .multipart('file', file)
+        .post(uploadUrl);
+    const status = response.getStatusCode();
+    if (status !== 200) {
+        engine.log(response.getResponseAsString());
+        throw new Error(`Failed to upload. status: ${status} filename: ${file.getName()}`);
+    }
+};
+
+/**
+  * Complete File Uploads
+  * @param {AuthSettingWrapper} oauth2  OAuth2 認証設定
+  * @param {Array<String>} fileIds
+  * @param {String} channelId
+  */
+const completeUpload = (oauth2, fileIds, channelId) => {
+    const url = 'https://slack.com/api/files.completeUploadExternal';
+    const payload = {
+        channel_id: channelId,
+        files: fileIds.map(fileId => ({id: fileId}))
+    };
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString();
+
+    let responseJson;
+    try {
+        responseJson = JSON.parse(responseTxt);
+    } catch(e) {
+        engine.log('failed to parse as json');
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(`Failed to complete upload. status: ${status}`);
+    }
+    if (responseJson.ok !== true) {
+        const error = `Failed to complete upload\n error: ${responseJson.error}`;
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(error);
+    }
+};
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABFBJREFUWEfN
+        l39ME2cYx79vofwSEljXirCwLWOSYJRotjgnJDPZWNKjg4BYpDgnCCuYKCxmxLUu7pcJZupitmqY
+        XTfFLRnaqeXqYibbXExIdNQ/tj+WLMvCEjPoGGABxULf5b3Sy7W9a0+zhd0f/aP3Ps/zeZ/fR7DE
+        D1Fr31RgygrNh2pBsYmCrAXoYwDyFuUnAPI7AfWB4FtNqsbtueWZVaM7KYBRb8wnIN0UsALIUKMU
+        wF0CnKCgPV6/989EMgkBjIYqKyh9H8AylYZjj82AkL3esYETSvKKANzDnIMStD+g4SgxQnGc/4vv
+        kNMlC2A0cJ+DYuu/YVzUQfCFd4xvjNUZB6Dm5kUlRRj5ZUTUlZOXA41Gg6nxqYTMcp6IAliM+XEl
+        LcyQa9iFzGUZmJ6cxrbVL6PhNTO2dG4BIQS8i4ejW1E8rJaQdmlOiAAs2wHya6KEaznQjNqOWpHv
+        1MFTgvGMrHBxzAfnUV1YkyxyMwAtjlSHCMDpuaMU6EwkXVZRhoPn3hOPeD+7hBctlUhJTRH/4wxV
+        yQBAgA94P98lOIT9sCazEAyNq6lzBtHR0460jDSc+9CNtndb7xuA9YkUrUbHmpUAwBm4JkpxOha9
+        4PEVaHmrBfmP5ke9unc3CM9JDwb7B3Hx1oU4gFXrS9HU3YShr4dwofeirEcIwTZ+jO8LA+g5JwWa
+        Y0/2/XQaeYZIt43Xs+eFThy5dDgKwLyyAWd+7kOqNlUQ6GnrwdXzP8QJE+AT3s+3CABGfdUwQNfG
+        nhoY9QjZrfSwJDR3mZGemS4cCd4Lwv2RW/gv8jAvHd51REYF8Xn9A+sWAbi/JYNFPGz71IZnjRtk
+        7c/dmYOl1ILttu0w7TQJZxyvO6B/RI/63fViVbRteBWjI6NyOia8fv6hCABVumVxWTHWbFyNhfkF
+        TI3fDt90LohrA9dEEZYrLFSjf4xBl6/DqmdKMTt9B5fPXEZoIaToQa+fD/vXqOdkAXbsfwV1u+pA
+        NERwr/nJBnw81AvdCp1wq53rW4XbN7+5Q4y51NqkfxLW8nYEJgKyEFIA2RBIM1wuvr32XjTubUR2
+        brbiLRN0R2kI5JPw7G/9yMzOFJT7vvdh5vYsyk0bRWOsEZWVr0HhE4WKAM4DTrgdXyVOQqUyfPr5
+        p9D6TisCkwHYN9vReawrDsD1tgs21xsoWVcSZYTlzPB3PhyyHgINxUc4qgyVGlEs9j7nvjiAXH0u
+        snKy8OOVGwo3lXdOVCNS24rlAKSz4ObVm7BttiuGQ/IiuhWzF2qG0Z6ju1FpqRT19B/rR421Bto0
+        rfAfc/tLBdVJAeKGUbgUk4/j5UXL4bx+UuiOLK6NpRZhMFVUV4iJaq/fnwxAfhwLEOElNOFGwUpu
+        U91zuPLlIGYD4c2bTci0dC2uf3MjmXHlhSQiqWYlS25FIfFkltP/31L6X3jivtfyCMSSfpiIEEv5
+        aSZNpSX7OH3QjFcr9w829dcwn81r2gAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param channelId
+ * @param files
+ */
+const prepareConfigs = (channelId, files) => {
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Slack',
+        'https://slack.com/oauth/v2/authorize',
+        'https://slack.com/api/oauth.v2.access',
+        'files:write',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', auth);
+    configs.put('conf_ChannelId', channelId);
+
+    const fileDef = engine.createDataDefinition('ファイル', 1, 'q_files', 'FILE');
+    configs.putObject('conf_Files', fileDef);
+    engine.setData(fileDef, files);
+};
+
+/**
+ * 指定サイズのテキストファイルを作成
+ * @param name
+ * @param size
+ */
+const createQfile = (name, size) => {
+    let text = '';
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 < size) {
+            text += text;
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, 'text/plain; charset=UTF-8', text);
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * ファイルが添付されていない場合（正常終了）
+ */
+test('No File to upload', () => {
+    prepareConfigs('channel1', null);
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * ファイル数が HTTP リクエスト数制限を超えてエラーになる場合
+ */
+test('The number of files exceeds the limit', () => {
+    const files = new java.util.ArrayList();
+    for (let i = 0; i < httpClient.getRequestingLimit() / 2; i++) {
+        files.add(createQfile(`ファイル${i}.txt`, 1));
+    }
+    prepareConfigs('channel1', files);
+
+    assertError('The number of files exceeds the limit.');
+});
+
+/**
+ * クエリパラメータのテスト用の文字列を生成する
+ * @param key
+ * @param value
+ * @returns {String}
+ */
+const generateQueryString = (key, value) => {
+    const encodedKey = encodeURIComponent(key);
+    const encodedValue = encodeURIComponent(value)
+        .replace(/%20/g, '+') // HttpRequestWrapper#formParam() はスペースを + に置き換える
+        .replace(/'/g, '%27') // encodeURIComponent() でエンコードされない文字をエンコード
+        .replace(/\(/g, '%28')
+        .replace(/\)/g, '%29');
+    return `${encodedKey}=${encodedValue}`;
+};
+
+/**
+ * アップロード URL 取得の GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param file
+ */
+const assertGetUploadUrlRequest = ({url, method, headers}, file) => {
+    const expectedUrl = 'https://slack.com/api/files.getUploadURLExternal'
+        + `?${generateQueryString('filename', file.getName())}`
+        + `&${generateQueryString('length', file.getLength().toString())}`;
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+};
+
+/**
+ * アップロード URL 取得の GET リクエストでエラーになる場合
+ * レスポンスが JSON でない
+ */
+test('Get Upload URL Request Failed - failed to parse', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel2', files);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetUploadUrlRequest(request, files.get(0));
+        return httpClient.createHttpResponse(400, 'text/plain', 'error');
+    });
+
+    assertError('Failed to get upload URL. status: 400');
+});
+
+/**
+ * エラーレスポンスを作成
+ * @param status
+ * @param errorMsg
+ */
+const createErrorResponse = (status, errorMsg) => {
+    return httpClient.createHttpResponse(
+        status, 
+        'application/json',
+        JSON.stringify({
+            ok: false,
+            error: errorMsg
+        })
+    );
+};
+
+/**
+ * アップロード URL 取得の GET リクエストでエラーになる場合
+ * レスポンスが ok でない
+ */
+test('Get Upload URL Request Failed - result is not ok', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('サイズが0のファイル.txt', 0));
+    prepareConfigs('channel2', files);
+
+    httpClient.setRequestHandler((request) => {
+        assertGetUploadUrlRequest(request, files.get(0));
+        return createErrorResponse(200, 'missing_argument');
+    });
+
+    assertError('Failed to get upload URL\n filename: サイズが0のファイル.txt error: missing_argument');
+});
+
+/**
+ * アップロード URL 取得の成功レスポンスを作成
+ * @param status
+ * @param errorMsg
+ */
+const createUploadUrlResponse = (uploadUrl, fileId) => {
+    return httpClient.createHttpResponse(
+        200, 
+        'application/json',
+        JSON.stringify({
+            ok: true,
+            upload_url: uploadUrl,
+            file_id: fileId
+        })
+    );
+};
+
+/**
+ * ファイルアップロードの POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param uploadUrl
+ * @param uploadFile
+ */
+const assertUploadRequest = ({url, method, contentType, body}, uploadUrl, uploadFile) => {
+    expect(url).toEqual(uploadUrl);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('multipart/form-data');
+    expect(body.size()).toEqual(1);
+    const file = body.get('file').get(0);
+    expect(file.getName()).toEqual(uploadFile.getName());
+    expect(file.getContentType()).toEqual(uploadFile.getContentType());
+    expect(file.getLength()).toEqual(uploadFile.getLength());
+};
+
+/**
+ * ファイルアップロードの POST リクエストでエラーになる場合
+ * レスポンスのステータスが 200 でない
+ */
+test('File Upload Request Failed - status is not 200', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        assertUploadRequest(request, uploadUrl, files.get(0));
+        return httpClient.createHttpResponse(400, 'text/plain', '');
+    });
+
+    assertError('Failed to upload. status: 400 filename: テキストファイル.txt');
+});
+
+/**
+ * アップロード完了の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.body
+ * @param fileIds
+ * @param channelId
+ */
+const assertCompleteRequest = ({url, method, headers, body}, fileIds, channelId) => {
+    expect(url).toEqual('https://slack.com/api/files.completeUploadExternal');
+    expect(method).toEqual('POST');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    const json = JSON.parse(body);
+    expect(json.channel_id).toEqual(channelId);
+    fileIds.forEach((fileId, i) => {
+        expect(json.files[i].id).toEqual(fileId);
+    });
+};
+
+/**
+ * アップロード完了の POST リクエストでエラーになる場合
+ * レスポンスが JSON でない
+ */
+test('Complete Request Failed - failed to parse', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
+        return httpClient.createHttpResponse(400, 'text/plain', 'error');
+    });
+
+    assertError('Failed to complete upload. status: 400');
+});
+
+/**
+ * アップロード完了の POST リクエストでエラーになる場合
+ * レスポンスが ok でない
+ */
+test('Complete Request Failed - result is not ok', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
+        return createErrorResponse(200, 'access_denied');
+    });
+
+    assertError('Failed to complete upload\n error: access_denied');
+});
+
+/**
+ * 成功 - ファイルが 1 つの場合
+ */
+test('Succeed - upload one file', () => {
+    const files = new java.util.ArrayList();
+    files.add(createQfile('テキストファイル.txt', 1));
+    prepareConfigs('channel1', files);
+
+    let reqCount = 0;
+    const uploadUrl = 'https://example.com/upload1';
+    const fileId = 'file_id_1';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetUploadUrlRequest(request, files.get(0));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrl, fileId);
+        }
+        if (reqCount === 1) {
+            assertUploadRequest(request, uploadUrl, files.get(0));
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, [fileId], 'channel1');
+        return httpClient.createHttpResponse(200, 'application/json', '{"ok":true}');
+    });
+
+    expect(main()).toEqual(undefined);
+});
+
+/**
+ * 成功 - ファイルを上限個数アップロード
+ */
+test('Succeed - upload maximum number of files', () => {
+    const files = new java.util.ArrayList();
+    const fileMaxNum = httpClient.getRequestingLimit() / 2 - 1;
+    for (let i = 0; i < fileMaxNum; i++) {
+        files.add(createQfile(`ファイル${i+1}.txt`, 1));
+    }
+    prepareConfigs('channel2', files);
+
+    let reqCount = 0;
+    let fileIndex = 0;
+    const uploadUrls = [];
+    const fileIds = [];
+    for (let i = 0; i < fileMaxNum; i++) {
+        uploadUrls.push(`https://example.com/upload${i+1}`);
+        fileIds.push(`file_id_${i+1}`);
+    }
+    httpClient.setRequestHandler((request) => {
+        if (reqCount % 2 === 0 && reqCount < files.size() * 2) {
+            assertGetUploadUrlRequest(request, files.get(fileIndex));
+            reqCount++;
+            return createUploadUrlResponse(uploadUrls[fileIndex], fileIds[fileIndex]);
+        }
+        if (reqCount % 2 === 1) {
+            assertUploadRequest(request, uploadUrls[fileIndex], files.get(fileIndex));
+            reqCount++;
+            fileIndex++;
+            return httpClient.createHttpResponse(200, 'text/plain', '');
+        }
+        assertCompleteRequest(request, fileIds, 'channel2');
+        return httpClient.createHttpResponse(200, 'application/json', '{"ok":true}');
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(files.size() * 2); // complete のリクエストではカウントアップしていない
+    expect(fileIndex).toEqual(files.size());
+});
+
+]]></test>
+</service-task-definition>
