@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Google Sheets: Update &amp; Get Cells</label>
     <label locale="ja">Google スプレッドシート: セル更新＆取得</label>
-    <last-modified>2024-01-26</last-modified>
+    <last-modified>2024-05-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -18,11 +18,11 @@
                     <label>C1: OAuth2 Setting</label>
                     <label locale="ja">C1: OAuth2 設定</label>
                 </config>
-                <config name="conf_SheetId" required="true" form-type="TEXTFIELD">
+                <config name="conf_SheetId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
                     <label>C2: Spreadsheet ID</label>
                     <label locale="ja">C2: スプレッドシート ID</label>
                 </config>
-                <config name="conf_SheetTitle" required="true" form-type="TEXTFIELD">
+                <config name="conf_SheetTitle" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
                     <label>C3: Sheet Title</label>
                     <label locale="ja">C3: シートタイトル</label>
                 </config>
@@ -137,8 +137,8 @@ const VALUE_MAX_LENGTH = 50000; // セルの値の最大文字数
 const main = () => {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const oauth2 = configs.getObject('conf_OAuth2');
-    const sheetId = configs.get('conf_SheetId');
-    const sheetTitle = configs.get('conf_SheetTitle');
+    const sheetId = retrieveStringData( "conf_SheetId", "Spreadsheet ID" );
+    const sheetTitle = retrieveStringData( "conf_SheetTitle", "Spreadsheet Title" );
 
     let valueInputOption = configs.get('conf_ValueInputOption');
     if (valueInputOption === '') {
@@ -161,6 +161,24 @@ const main = () => {
         });
     }
 };
+
+/**
+ * 文字列データを config から読み出す。空であればエラー。
+ * @param  {String} confName config 名
+ * @param  {String} label エラーメッセージ用のラベル
+ * @return {String} string 文字列データ
+ */
+function retrieveStringData( confName, label ){
+    let string = configs.get( confName );
+    const dataDef = configs.getObject( confName );
+    if (dataDef !== null) {
+        string = engine.findData(dataDef);
+    }
+    if (string === null || string === "") {
+        throw `${label} is empty.`;
+    }
+    return string;
+}
 
 /**
   * セル指定のバリデーション
@@ -356,8 +374,17 @@ const prepareConfigs = (sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cell
         'access_token'
     );
     configs.putObject('conf_OAuth2', oauth2);
-    configs.put('conf_SheetId', sheetId);
-    configs.put('conf_SheetTitle', sheetTitle);
+
+    // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+    const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
+    engine.setData(spreadSheetIdDef, sheetId);
+    configs.putObject('conf_SheetId', spreadSheetIdDef);
+
+    // シートのタイトルを設定した文字型データ項目（単一行）を準備
+    const sheetTitleDef = engine.createDataDefinition('シートのタイトル', 2, 'q_SheetTitle', 'STRING_TEXTFIELD');
+    engine.setData(sheetTitleDef, sheetTitle);
+    configs.putObject('conf_SheetTitle', sheetTitleDef);
+
     configs.put('conf_ValueInputOption', ''); // テスト時に値が null にならないように空文字を設定
     const valueDefs = [];
     for (let i = 0; i < CELL_NUM; i++) {
@@ -383,11 +410,15 @@ const prepareConfigs = (sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cell
  * @param errorMsg
  */
 const assertError = (errorMsg) => {
+    let failed = false;
     try {
         main();
-        fail();
     } catch (e) {
+        failed = true;
         expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
     }
 };
 
@@ -696,6 +727,84 @@ test('Succeed - get some cells', () => {
     expect(engine.findData(valueDefs[1])).toEqual('');
     expect(engine.findData(valueDefs[2])).toEqual('文字列');
     expect(valueDefs[3]).toEqual(null);
+});
+
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID とシートのタイトルは直接指定
+ * @param {String} sheetId
+ * @param {String} sheetTitle
+ * @param {Array<String>} cellsToUpdate
+ * @param {Array<String>} valuesToUpdate
+ * @param {Array<String>} cellsToGet
+ * @param {Array<String>} valueDefTypes
+ * @return {Array<DataDefinitionView>} valueDefs
+ */
+const prepareConfigsWithFixedValue = (sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cellsToGet, valueDefTypes) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Google Sheets',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'https://www.googleapis.com/auth/spreadsheets',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_SheetId', sheetId);
+    configs.put('conf_SheetTitle', sheetTitle);
+
+    configs.put('conf_ValueInputOption', ''); // テスト時に値が null にならないように空文字を設定
+    const valueDefs = [];
+    for (let i = 0; i < CELL_NUM; i++) {
+        configs.put(`conf_CellToUpdate${i + 1}`, cellsToUpdate[i]);
+        configs.put(`conf_ValueToUpdate${i + 1}`, valuesToUpdate[i]);
+        configs.put(`conf_CellToGet${i + 1}`, cellsToGet[i]);
+        const valueDefType = valueDefTypes[i];
+        if (valueDefType === '') {
+            valueDefs.push(null);
+            continue;
+        } else {
+            const valueDef = engine.createDataDefinition(`Value of Cell ${i + 1}`, i + 1, `q_value${i + 1}`, `STRING_${valueDefType}`);
+            engine.setData(valueDef, '事前文字列');
+            configs.putObject(`conf_ValueDef${i + 1}`, valueDef);
+            valueDefs.push(valueDef);
+        }
+    }
+    return valueDefs;
+};
+
+/**
+ * 成功 - すべてのセルを指定。valueInputOption 指定なし
+ * スプレッドシートの ID とシートのタイトルは固定値で指定
+ */
+test('Succeed - Set the Spreadsheet ID and Title as a fixed value, all cells specified, valueInputOption not specified', () => {
+    const sheetId = '12345abcde';
+    const sheetTitle = 'シート 1';
+    const cellsToUpdate = ['A1', 'B1', 'C1', 'D1'];
+    const valuesToUpdate = ['新しい値1', '新しい値2', '新しい値3', '新しい値4'];
+    const cellsToGet = ['AA100', 'BB200', 'CC300', 'XD400'];
+    const valueDefTypes = ['TEXTFIELD', 'TEXTAREA', 'TEXTFIELD', 'TEXTAREA'];
+    const valueDefs = prepareConfigsWithFixedValue(sheetId, sheetTitle, cellsToUpdate, valuesToUpdate, cellsToGet, valueDefTypes);
+
+    let reqCount = 0;
+    const cellValues = ['文字列', '改行を含む\n文字列', 123.56, true];
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertPostRequest(request, sheetId, sheetTitle, cellsToUpdate, valuesToUpdate);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertGetRequest(request, sheetId, sheetTitle, cellsToGet);
+        return httpClient
+            .createHttpResponse(200, 'application/json', prepareGetResponse(sheetTitle, cellsToGet, cellValues));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(valueDefs[0])).toEqual('文字列');
+    expect(engine.findData(valueDefs[1])).toEqual('改行を含む\n文字列');
+    expect(engine.findData(valueDefs[2])).toEqual('123.56');
+    expect(engine.findData(valueDefs[3])).toEqual('true');
 });
 
 ]]></test>
