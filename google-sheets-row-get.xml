@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-02-06</last-modified>
+<last-modified>2024-05-30</last-modified>
 <license>(C) Questetra, In. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -16,11 +16,11 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_SheetId" required="true" form-type="TEXTFIELD">
+  <config name="conf_SheetId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Source Spreadsheet ID</label>
     <label locale="ja">C2: スプレッドシート ID</label>
   </config>
-  <config name="conf_SheetTitle" required="true" form-type="TEXTFIELD">
+  <config name="conf_SheetTitle" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Source Sheet Title</label>
     <label locale="ja">C3: シートタイトル</label>
   </config>
@@ -88,8 +88,8 @@ const COLUMN_NUM = 10;
 function main(){
   //// == 工程コンフィグの参照 / Config Retrieving ==
   const oauth = configs.getObject("conf_OAuth2");
-  const sheetId = configs.get( "conf_SheetId" );
-  const sheetTitle = configs.get( "conf_SheetTitle" );
+  const sheetId = retrieveStringData( "conf_SheetId", "Spreadsheet ID" );
+  const sheetTitle = retrieveStringData( "conf_SheetTitle", "Spreadsheet Title" );
   const rowNo = retrieveRowNo();
   const range = configs.get( "conf_Range" );
 
@@ -105,6 +105,25 @@ function main(){
   setDataByLists( columnDefList, dataStringList );
 }
 
+/**
+ * 文字列データを config から読み出す。空であればエラー。
+ * @param  {String} confName config 名
+ * @param  {String} label エラーメッセージ用のラベル
+ * @return {String} string 文字列データ
+ */
+function retrieveStringData( confName, label ){
+  const dataDef = configs.getObject( confName );
+  let string;
+  if (dataDef !== null) {
+    string = engine.findData(dataDef);
+  } else {
+    string = configs.get(confName);
+  }
+  if (string === null || string === "") {
+    throw new Error(`${label} is empty.`);
+  }
+  return string;
+}
 
 /**
   * config から行番号 を読み出す
@@ -128,13 +147,13 @@ function retrieveRowNo() {
   */
 function checkRowNoAndRange( rowNo, range ) {
   if ( rowNo === "" || rowNo === null ) {
-    throw "Row number is empty.";
+    throw new Error("Row number is empty.");
   }
   if ( !isValidNo(rowNo) ) {
-    throw "Invalid Row number.";
+    throw new Error("Invalid Row number.");
   }
   if ( !isValidRange(range) ) {
-    throw "Invalid Range.";
+    throw new Error("Invalid Range.");
   }
 }
 
@@ -176,13 +195,13 @@ function retrieveValueConfigs( columnDefList ) {
     if ( columnValueDef !== null ) {
       const dataItemNum = configs.get( columnConfigName ); // データ項目の重複確認用
       if ( dataItemNumList.indexOf( dataItemNum ) !== -1 ) { // 既に指定されているデータ項目
-        throw "The same data item is set multiple times.";
+        throw new Error("The same data item is set multiple times.");
       }
       dataItemNumList.push( dataItemNum ); // データ項目の重複確認用
     }
   }
   if ( columnDefList.filter( v => v !== null ).length === 0 ) { // 列の値を格納するデータ項目が一つも設定されていない
-    throw "No Data Item is set.";
+    throw new Error("No Data Item is set.");
   }
 }
 
@@ -216,11 +235,11 @@ function getRowData( oauth, sheetId, sheetTitle, rowNo, range ) {
   if (status !== 200) {
     const accessLog = `---GET request--- ${status}\n${responseStr}`;
     engine.log( accessLog );
-    throw `Failed to get. status:${status}`;
+    throw new Error(`Failed to get. status:${status}`);
   }
   const jsonObj = JSON.parse( responseStr );
   if (jsonObj.values === undefined ) {
-    throw `No Data in range.`;
+    throw new Error(`No Data in range.`);
   }
 
   const dataStringList = jsonObj.values[0]
@@ -297,7 +316,7 @@ function setDataByLists( valueDefList, dataStringList ) {
           break;
         }
       } catch (e) { // 変換できない値の場合はエラー
-        throw `Returned value "${dataString}" cannot be saved to ${dataTypeLabel} type data item.`;
+        throw new Error(`Returned value "${dataString}" cannot be saved to ${dataTypeLabel} type data item.`);
       }
     }
     engine.setData( dataDef, convertedData );
@@ -330,6 +349,7 @@ AEwJzTC2ALrNAAAAAElFTkSuQmCC
 
 /**
  * 設定の準備
+ * スプレッドシートの ID とシートのタイトルはデータ項目で指定
  * @param configs
  * @param sheetId
  * @param sheetTitle
@@ -350,8 +370,17 @@ const prepareConfigs = (configs, sheetId, sheetTitle, rowNo, range, ...types) =>
     );
 
     configs.putObject('conf_OAuth2', auth);
-    configs.put('conf_SheetId', sheetId);
-    configs.put('conf_SheetTitle', sheetTitle);
+
+    // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+    const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
+    engine.setData(spreadSheetIdDef, sheetId);
+    configs.putObject('conf_SheetId', spreadSheetIdDef);
+
+    // シートのタイトルを設定した文字型データ項目（単一行）を準備
+    const sheetTitleDef = engine.createDataDefinition('シートのタイトル', 2, 'q_SheetTitle', 'STRING_TEXTFIELD');
+    engine.setData(sheetTitleDef, sheetTitle);
+    configs.putObject('conf_SheetTitle', sheetTitleDef);
+
     configs.put('conf_Range', range);
 
     // 行番号を設定したデータ項目を作成し、C4 に設定
@@ -381,12 +410,13 @@ const prepareConfigs = (configs, sheetId, sheetTitle, rowNo, range, ...types) =>
 const assertError = (func, errorMsg) => {
     let failed = false;
     try {
-        main();
+        func();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -590,6 +620,68 @@ test('Validation Error - Unable to save multi-line string to STRING_TEXTFIELD', 
     expect(main()).toEqual(undefined); // QBPMS のバリデーションに任せているので、スクリプトは処理成功
 });
 
+/**
+ * 設定の準備
+ * スプレッドシートの ID とシートのタイトルは固定値で指定
+ * @param configs
+ * @param sheetId
+ * @param sheetTitle
+ * @param rowNo
+ * @param range
+ * @param types
+ * @return {Object}
+ */
+const prepareConfigsWithFixedValue = (configs, sheetId, sheetTitle, rowNo, range, ...types) => {
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
 
+    configs.putObject('conf_OAuth2', auth);
+    configs.put('conf_SheetId', sheetId);
+    configs.put('conf_SheetTitle', sheetTitle);
+    configs.put('conf_Range', range);
+
+    // 行番号を設定したデータ項目を作成し、C4 に設定
+    const rowNoDef = engine.createDataDefinition('行番号', 1, 'q_rowNo', 'STRING_TEXTFIELD');
+    engine.setData(rowNoDef, rowNo);
+    configs.putObject('conf_RowNo', rowNoDef);
+
+    const columnDefList = [];
+    types.forEach((type, i) => {
+      // 指定したタイプのデータ項目を作成し、C6 以降に順に設定
+      if (type !== null){
+        const columnDef = engine.createDataDefinition(`データ${i+1}`, i+2, `q_data${i+1}`, type);
+        engine.setData(columnDef, '事前文字列');
+        configs.putObject(`conf_Column${i+1}`, columnDef);
+        columnDefList.push(columnDef);
+      }
+    });
+
+    return columnDefList;
+};
+
+test('Succeed to get - 10 columns,Set the Spreadsheet ID and Title as a fixed value', () => {
+    //保存先データ項目がすべて設定されている場合
+    const types = new Array(10).fill('STRING_TEXTFIELD');
+    const columnDefList = prepareConfigsWithFixedValue(configs, 'id', 'シート 2!', '70', 'XA:XJ', ...types);
+
+    const rowData = Array.from({length: 10}, (_, i) => `値${i+1}`);
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'id', 'シート 2!', 'XA70:XJ70');
+        const ret = JSON.stringify({"values":[rowData]});
+        return httpClient.createHttpResponse(200, 'application/json', ret);
+    });
+
+    main();
+    columnDefList.forEach((def, i) => {
+        expect(engine.findData(def)).toEqual(`値${i+1}`);
+    });
+});
 ]]></test>
 </service-task-definition>

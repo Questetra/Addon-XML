@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-04-16</last-modified>
+<last-modified>2024-05-30</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -16,11 +16,11 @@
     <label>C1: OAuth2 Setting</label>
     <label locale="ja">C1: OAuth2 設定</label>
   </config>
-  <config name="conf_DataIdB" required="true" form-type="TEXTFIELD">
+  <config name="conf_DataIdB" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C2: Source Spreadsheet ID</label>
     <label locale="ja">C2: ダウンロード元のスプレッドシートの ID</label>
   </config>
-  <config name="conf_DataIdC" required="true" form-type="TEXTFIELD">
+  <config name="conf_DataIdC" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
     <label>C3: Source Sheet Title</label>
     <label locale="ja">C3: ダウンロード元のシートのタイトル</label>
   </config>
@@ -53,8 +53,8 @@
 function main() {
     //// == 工程コンフィグの参照 / Config Retrieving ==
     const oauth = configs.getObject("conf_OAuth2");
-    const docId = configs.get("conf_DataIdB");
-    const sheet = configs.get("conf_DataIdC");
+    const docId = retrieveStringData( "conf_DataIdB", "Spreadsheet ID" );
+    const sheet = retrieveStringData( "conf_DataIdC", "Spreadsheet Title" );
     const rangeI = configs.get("conf_DataIdD");
     const rangeL = configs.get("conf_DataIdE");
     const idDataDef = configs.getObject("conf_DataIdF");
@@ -66,6 +66,26 @@ function main() {
     //// == ワークフローデータへの代入 / Data Updating ==
     engine.setData(idDataDef, idList.join("\n"));
     engine.setData(labelDataDef, labelList.join("\n"));
+}
+
+/**
+ * 文字列データを config から読み出す。空であればエラー。
+ * @param  {String} confName config 名
+ * @param  {String} label エラーメッセージ用のラベル
+ * @return {String} string 文字列データ
+ */
+function retrieveStringData( confName, label ){
+    const dataDef = configs.getObject( confName );
+    let string;
+    if (dataDef !== null) {
+        string = engine.findData(dataDef);
+    } else {
+        string = configs.get(confName);
+    }
+    if (string === null || string === "") {
+        throw new Error(`${label} is empty.`);
+    }
+    return string;
 }
 
 /**
@@ -95,7 +115,7 @@ function getChoice(oauth, docId, sheet, rangeI, rangeL) {
     if (status !== 200) {
         const accessLog = `---GET request--- ${status}\n${responseStr}`;
         engine.log(accessLog);
-        throw `Failed to get. status:${status}`;
+        throw new Error(`Failed to get. status:${status}`);
     }
     const jsonObj = JSON.parse(responseStr);
 
@@ -111,10 +131,10 @@ function getChoice(oauth, docId, sheet, rangeI, rangeL) {
     const labelList = labelCols[0];
     // error for different number of cells
     if (idList.length !== labelList.length) {
-        throw "Number of cells in two ranges is different.";
+        throw new Error("Number of cells in two ranges is different.");
     }
     if (idList.length > 150000) {
-        throw "Number of Choice Data is over 150,000.";
+        throw new Error("Number of Choice Data is over 150,000.");
     }
     // error for an empty cells, over 1000 characters
     checkData(idList, I_LABEL);
@@ -122,7 +142,7 @@ function getChoice(oauth, docId, sheet, rangeI, rangeL) {
     // error for same ids
     const idSet = new Set(idList); // idList の重複確認用の Set
     if (idSet.size !== idList.length) {
-        throw `Same ${I_LABEL}s are in range.`;
+        throw new Error(`Same ${I_LABEL}s are in range.`);
     }
 
     return { idList, labelList };
@@ -135,10 +155,10 @@ function getChoice(oauth, docId, sheet, rangeI, rangeL) {
  */
 function checkCols(cols, label) {
     if (cols === undefined) {
-        throw `No Data in ${label}s range.`;
+        throw new Error(`No Data in ${label}s range.`);
     }
     if (cols.length > 1) {
-        throw `Multiple Columns in ${label}s range.`;
+        throw new Error(`Multiple Columns in ${label}s range.`);
     }
 }
 
@@ -150,10 +170,10 @@ function checkCols(cols, label) {
 function checkData(list, label) {
     list.forEach(str => {
         if (str === "") {
-            throw `Empty Cell is in ${label}s range.`;
+            throw new Error(`Empty Cell is in ${label}s range.`);
         }
         if (str.length > 1000) {
-            throw `Over 1000-character ${label} is in range.`;
+            throw new Error(`Over 1000-character ${label} is in range.`);
         }
     });
 }
@@ -186,7 +206,7 @@ AEwJzTC2ALrNAAAAAElFTkSuQmCC
 
 /**
  * 設定の準備
- * スプレッドシートの ID はデータ項目で指定
+ * スプレッドシートの ID とシートのタイトルはデータ項目で指定
  * @param configs
  * @param sheetId
  * @param sheetTitle
@@ -208,8 +228,17 @@ const prepareConfigs = (configs, sheetId, sheetTitle, rangeI, rangeL) => {
     );
 
     configs.putObject('conf_OAuth2', auth);
-    configs.put('conf_DataIdB', sheetId);
-    configs.put('conf_DataIdC', sheetTitle);
+
+    // スプレッドシートの ID を設定した文字型データ項目（単一行）を準備
+    const spreadSheetIdDef = engine.createDataDefinition('スプレッドシートの ID', 1, 'q_SpreadSheetId', 'STRING_TEXTFIELD');
+    engine.setData(spreadSheetIdDef, sheetId);
+    configs.putObject('conf_DataIdB', spreadSheetIdDef);
+
+    // シートのタイトルを設定した文字型データ項目（単一行）を準備
+    const sheetTitleDef = engine.createDataDefinition('シートのタイトル', 2, 'q_SheetTitle', 'STRING_TEXTFIELD');
+    engine.setData(sheetTitleDef, sheetTitle);
+    configs.putObject('conf_DataIdC', sheetTitleDef);
+
     configs.put('conf_DataIdD', rangeI);
     configs.put('conf_DataIdE', rangeL);
 
@@ -264,12 +293,13 @@ const assertGetRequest = ({ url, method, contentType, body }, sheetId, sheetTitl
 const assertError = (func, errorMsg) => {
     let failed = false;
     try {
-        main();
+        func();
     } catch (e) {
         failed = true;
+        expect(e.message).toEqual(errorMsg);
     }
     if (!failed) {
-        fail();
+        fail('No error was thrown.');
     }
 };
 
@@ -759,6 +789,111 @@ test('error for multiple columns', () => {
 
     // <script> のスクリプトを実行し、エラーがスローされることを確認
     assertError(main, 'Multiple Columns in Labels range.');
+});
+
+/**
+ * 設定の準備
+ * スプレッドシートの ID とシートのタイトルは直接指定
+ * @param configs
+ * @param sheetId
+ * @param sheetTitle
+ * @param conf_DataIdT
+ * @return {
+ *     idDataDef: {Object},
+ *     labelDataDef: {Object}
+ * }
+ */
+const prepareConfigsWithFixedValue = (configs, sheetId, sheetTitle, rangeI, rangeL) => {
+    const auth = httpClient.createAuthSettingOAuth2(
+        'Google',
+        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
+        'https://accounts.google.com/o/oauth2/token',
+        'spreadsheets',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+
+    configs.putObject('conf_OAuth2', auth);
+    configs.put('conf_DataIdB', sheetId);
+    configs.put('conf_DataIdC', sheetTitle);
+
+    configs.put('conf_DataIdD', rangeI);
+    configs.put('conf_DataIdE', rangeL);
+
+    // 文字型データ項目を準備して、config に指定
+    const idDataDef = engine.createDataDefinition('選択肢 ID の一覧', 1, 'q_Id', 'STRING_TEXTFIELD');
+    configs.putObject('conf_DataIdF', idDataDef);
+    // 文字型データ項目の値（スプレッドシートの ID）を指定
+    engine.setData(idDataDef, '事前文字列');
+
+    // 文字型データ項目を準備して、config に指定
+    const labelDataDef = engine.createDataDefinition('選択肢ラベルの一覧', 2, 'q_Label', 'STRING_TEXTFIELD');
+    configs.putObject('conf_DataIdG', labelDataDef);
+    // 文字型データ項目の値（スプレッドシートのタイトル）を指定
+    engine.setData(labelDataDef, '事前文字列');
+
+    return {
+        idDataDef,
+        labelDataDef
+    };
+};
+
+/**
+ * データの一括取得成功の場合
+ * スプレッドシートの ID とシートのタイトルは固定値で指定
+ * 行範囲も指定
+ */
+test('Success - Set the Spreadsheet ID and Title as a fixed value', () => {
+    const {
+        idDataDef,
+        labelDataDef
+    } = prepareConfigsWithFixedValue(configs, '12345abcde', 'sheet1', 'A1:A5', 'B1:B5');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, '12345abcde', 'sheet1', 'A1:A5', 'B1:B5');
+
+
+        const responseObj = {
+            "spreadsheetId": "12345abcde",
+            "valueRanges": [
+                {
+                    "range": "'sheet1'!A1:A5",
+                    "majorDimension": "COLUMNS",
+                    "values": [
+                        [
+                            "1",
+                            "2",
+                            "3",
+                            "4",
+                            "5"
+                        ]
+                    ]
+                },
+                {
+                    "range": "'sheet1'!B1:B5",
+                    "majorDimension": "COLUMNS",
+                    "values": [
+                        [
+                            "a",
+                            "2023-02-07",
+                            "c",
+                            "d",
+                            "2021年7月2日金曜日 11時00分00秒"
+                        ]
+                    ]
+                }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    // <script> のスクリプトを実行
+    main();
+
+    // 文字型データ項目の値をチェック
+    expect(engine.findData(idDataDef)).toEqual('1\n2\n3\n4\n5');
+    expect(engine.findData(labelDataDef)).toEqual('a\n2023-02-07\nc\nd\n2021年7月2日金曜日 11時00分00秒');
 });
 ]]></test>
 </service-task-definition>
