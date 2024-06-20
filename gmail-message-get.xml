@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<!--
 <last-modified>2024-06-20</last-modified>
--->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -123,7 +121,7 @@ function retrieveDefs() {
     if ( dataItemDef !== null ) { // データ項目が設定されている場合は重複を確認する
       const dataItemNum = dataItemDef.getNumber();
       if ( dataItemNumSet.has( dataItemNum ) ) { // データ項目番号が重複していればエラー
-        throw "The same data item is set multiple times.";
+        throw new Error("The same data item is set multiple times.");
       }
       dataItemNumSet.add( dataItemNum ); // データ項目の重複確認用
     }
@@ -140,7 +138,7 @@ function retrieveDefs() {
   */
 function determineApiUri( messageId ) {
   if ( messageId === "" || messageId === null ) {
-    throw "Message ID is empty.";
+    throw new Error("Message ID is empty.");
   }
   const apiUri = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURI(messageId)}`;
   return apiUri;
@@ -164,7 +162,7 @@ function getMessage( apiUri, auth ) {
     engine.log(`API URI: ${apiUri}`);
     const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
     engine.log( accessLog );
-    throw `Failed to get message. status: ${status}`;
+    throw new Error(`Failed to get message. status: ${status}`);
   }
 
   // when successful, parse the message content
@@ -423,7 +421,9 @@ function getAttachments( apiUri, auth, attachments ) {
   attachments.forEach( attachment => {
     if ( attachment.body.data !== undefined ) { return; } // data があれば何もしない
     httpCount++;
-    if ( httpCount > httpLimit ) { throw "Number of HTTP requests is over the limit."; }
+    if ( httpCount > httpLimit ) {
+      throw new Error("Number of HTTP requests is over the limit.");
+    }
     const response = httpClient.begin()
       .authSetting( auth )
       .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
@@ -433,7 +433,7 @@ function getAttachments( apiUri, auth, attachments ) {
       engine.log(`API URI: ${apiUri}/attachments/${attachment.body.attachmentId}`);
       const accessLog = `---GET request--- ${status}\n${responseJson}\n`;
       engine.log( accessLog );
-      throw `Failed to get attachment. status: ${status}`;
+      throw new Error(`Failed to get attachment. status: ${status}`);
     }
     // when successful, parse the message content
     const json = JSON.parse(responseJson);
@@ -515,13 +515,15 @@ const prepareConfigs = (messageId) => {
   configs.putObject('conf_messageId', messageIdDef);
 
   // 保存用データ項目を準備
-  const items = ['fromAddress', 'fromName', 'recipientAddresses', 'recipientNames', 'sentDatetime', 'subject', 'body', 'attachments'];
+  const items = ['fromAddress', 'fromName', 'replyToAddresses', 'replyToNames', 'recipientAddresses', 'recipientNames', 'sentDatetime', 'subject', 'body', 'attachments'];
   const dataDefs = {};
 
   items.forEach((item, i) => {
     let dataType = 'STRING_TEXTFIELD';
     let preValue = '事前文字列';
     switch(item) {
+      case 'replyToAddresses':
+      case 'replyToNames':
       case 'recipientAddresses':
       case 'recipientNames':
       case 'body':
@@ -549,15 +551,15 @@ const prepareConfigs = (messageId) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
   let failed = false;
   try {
     main();
   } catch (e) {
     failed = true;
+    expect(e.message).toEqual(errorMsg);
   }
   if (!failed) {
     fail();
@@ -571,7 +573,7 @@ test('Message ID is empty', () => {
   prepareConfigs(null);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'Message ID is empty.');
+  assertError('Message ID is empty.');
 });
 
 /**
@@ -586,7 +588,7 @@ test('Data items not set', () => {
   configs.putObject('conf_messageId', messageIdDef);
 
   // スクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 });
 
 /**
@@ -598,7 +600,19 @@ test('The same data item is set multiple times - fromAddress and subject', () =>
   configs.putObject('conf_subject', dataDefs.fromAddress);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'The same data item is set multiple times.');
+  assertError('The same data item is set multiple times.');
+});
+
+/**
+ * 保存先データ項目が重複していればエラー
+ * replyToAddresses と recipientAddresses が重複
+ */
+test('The same data item is set multiple times - replyToAddresses and recipientAddresses', () => {
+  const dataDefs = prepareConfigs('messageId');
+  configs.putObject('conf_replyToAddresses', dataDefs.recipientAddresses);
+
+  // <script> のスクリプトを実行し、エラーがスローされることを確認
+  assertError('The same data item is set multiple times.');
 });
 
 /**
@@ -610,7 +624,7 @@ test('The same data item is set multiple times - recipientNames and body', () =>
   configs.putObject('conf_recipientNames', dataDefs.body);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'The same data item is set multiple times.');
+  assertError('The same data item is set multiple times.');
 });
 
 /**
@@ -618,13 +632,15 @@ test('The same data item is set multiple times - recipientNames and body', () =>
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param messageId
  */
-const assertGetMessageRequest = ({url, method}, messageId) => {
+const assertGetMessageRequest = ({url, method, headers}, messageId) => {
   expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
       messageId
     )}`);
   expect(method).toEqual('GET');
+  expect(headers.Authorization).toEqual('Bearer access_token');
 };
 
 /**
@@ -632,14 +648,16 @@ const assertGetMessageRequest = ({url, method}, messageId) => {
  * @param {Object} request
  * @param request.url
  * @param request.method
+ * @param request.headers
  * @param messageId
  * @param attachmentId
  */
-const assertGetAttachmentRequest = ({url, method}, messageId, attachmentId) => {
+const assertGetAttachmentRequest = ({url, method, headers}, messageId, attachmentId) => {
   expect(url).toEqual(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
       messageId
     )}/attachments/${attachmentId}`);
   expect(method).toEqual('GET');
+  expect(headers.Authorization).toEqual('Bearer access_token');
 };
 
 /**
@@ -654,7 +672,7 @@ test('Fail in 1st GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  assertError(main, 'Failed to get message. status: 400');
+  assertError('Failed to get message. status: 400');
 });
 
 /**
@@ -681,6 +699,10 @@ const SAMPLE_MESSAGE_1 = {
       {
         "name": "From",
         "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "Reply-To",
+        "value": "\"Reply-To 表示名\" \u003cReply-To@example.com\u003e"
       },
       {
         "name": "To",
@@ -807,11 +829,13 @@ test('200 Success - Multipart message with one attachment', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
   expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名');
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual('Reply-To@example.com');
+  expect(engine.findData(dataDefs.replyToNames)).toEqual('Reply-To 表示名');
 
   const recipientAddresses = 'To@example.com\n'
     + 'Cc@example.com\n'
@@ -853,7 +877,7 @@ test('Fail in 2nd GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  assertError(main, 'Failed to get attachment. status: 400');
+  assertError('Failed to get attachment. status: 400');
 });
 
 /**
@@ -880,6 +904,10 @@ const SAMPLE_MESSAGE_2 = {
       {
         "name": "From",
         "value": "\"From 表示名2\" \u003cFrom2@example.com\u003e"
+      },
+      {
+        "name": "Reply-To",
+        "value": "\"Reply-To 表示名\" \u003cReply-To@example.com\u003e, \"Reply-To 表示名2\" \u003cReply-To2@example.com\u003e"
       },
       {
         "name": "Bcc",
@@ -1021,11 +1049,13 @@ test('200 Success - Multipart message with two attachments', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From2@example.com');
   expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名2');
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual('Reply-To@example.com\nReply-To2@example.com');
+  expect(engine.findData(dataDefs.replyToNames)).toEqual('Reply-To 表示名\nReply-To 表示名2');
 
   const recipientAddresses = 'To@example.com\nTo2@example.com\n'
     + 'Cc@example.com\nCc2@example.com\n'
@@ -1123,11 +1153,13 @@ test('200 Success - Single-part message with text/plain body encoded in Shift_JI
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
   expect(engine.findData(dataDefs.fromName)).toEqual(null); // From に表示名なし
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual(''); // Reply-To なし
+  expect(engine.findData(dataDefs.replyToNames)).toEqual('');
 
   const recipientAddresses = 'To@example.com\nTo2@example.com\n'
     + 'Cc@example.com\nCc2@example.com\n'
@@ -1173,6 +1205,10 @@ const SAMPLE_MESSAGE_4 = {
       {
         "name": "From",
         "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "Reply-To",
+        "value": "\u003cReply-To@example.com\u003e, \"Reply-To 表示名2\" \u003cReply-To2@example.com\u003e"
       },
       {
         "name": "To",
@@ -1234,11 +1270,13 @@ test('200 Success - Single-part message with text/html body', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
   expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名');
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual('Reply-To@example.com\nReply-To2@example.com');
+  expect(engine.findData(dataDefs.replyToNames)).toEqual('\nReply-To 表示名2'); // Reply-To 1 つめの表示名はなし
 
   const recipientAddresses = 'To@example.com\nTo2@example.com\n'
     + 'Cc@example.com\nCc2@example.com\n'
@@ -1309,11 +1347,13 @@ test('200 Success - Single-part message with no Content-Type/To/Cc/Bcc/Subject h
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   expect(engine.findData(dataDefs.fromAddress)).toEqual('From@example.com');
   expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名');
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual(''); // 空
+  expect(engine.findData(dataDefs.replyToNames)).toEqual(''); // 空
 
   expect(engine.findData(dataDefs.recipientAddresses)).toEqual(''); // 空
   expect(engine.findData(dataDefs.recipientNames)).toEqual(''); // 空
@@ -1378,7 +1418,7 @@ test('Number of HTTP requests is over the limit', () => {
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
   });
 
-  assertError(main, 'Number of HTTP requests is over the limit.');
+  assertError('Number of HTTP requests is over the limit.');
 });
 
 /**
@@ -1410,7 +1450,7 @@ test('200 Success - Number of HTTP requests is within the limit', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存されているファイルの個数をチェック。事前ファイルは削除されるので、合計 httpRequestLimit - 1 個のはず
   const files = engine.findData(dataDefs.attachments);
@@ -1443,7 +1483,7 @@ test('200 Success - Attachment has no name', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1479,7 +1519,7 @@ test('200 Success - Attachment has no Content-Type', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1516,7 +1556,7 @@ test('200 Success - Attachment has no Content-Disposition', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック
   const files = engine.findData(dataDefs.attachments);
@@ -1541,7 +1581,7 @@ test('200 Success - Attachments not saved', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // データ項目の値をチェック。事前ファイルは残ったまま
   const files = engine.findData(dataDefs.attachments);
@@ -1558,7 +1598,7 @@ test('200 Success - No files were pre-set', () => {
   prepareConfigs(messageId);
 
   // 新たな dataDef を作って、configs.putObject()
-  const fileDataDef = engine.createDataDefinition('新しいファイル型データ項目', 10, 'q_newFile', 'FILE');
+  const fileDataDef = engine.createDataDefinition('新しいファイル型データ項目', 20, 'q_newFile', 'FILE');
   configs.putObject('conf_attachments', fileDataDef);
 
   let reqCount = 0;
@@ -1574,7 +1614,7 @@ test('200 Success - No files were pre-set', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック。ファイルが追加されている
   const files = engine.findData(fileDataDef);
@@ -1592,8 +1632,10 @@ test('200 Success - Some data items are not set', () => {
   const messageId = 'messageId-1';
   const dataDefs = prepareConfigs(messageId);
 
-  // C3, C6, C9 を空にする
+  // 一部のデータ項目を空にする
   configs.put('conf_fromAddress', '');
+  configs.put('conf_replyToAddresses', '');
+  configs.put('conf_replyToNames', '');
   configs.put('conf_recipientNames', '');
   configs.put('conf_body', '');
 
@@ -1610,11 +1652,13 @@ test('200 Success - Some data items are not set', () => {
   });
 
   // <script> のスクリプトを実行
-  main();
+  expect(main()).toEqual(undefined);
 
   // 保存先データ項目の値をチェック。設定されたデータ項目にのみ値が保存される
   expect(engine.findData(dataDefs.fromAddress)).toEqual('事前文字列');
   expect(engine.findData(dataDefs.fromName)).toEqual('From 表示名');
+  expect(engine.findData(dataDefs.replyToAddresses)).toEqual('事前\n文字列');
+  expect(engine.findData(dataDefs.replyToNames)).toEqual('事前\n文字列');
 
   const recipientAddresses = 'To@example.com\n'
     + 'Cc@example.com\n'
