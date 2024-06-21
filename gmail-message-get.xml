@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
+<!--
 <last-modified>2024-04-16</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -233,9 +235,10 @@ function extractFromPayload( payload ) {
   const mimeType = payload.mimeType;
   if ( mimeType === "text/plain" || mimeType === "text/html" ) { // 本文のみのメール
     message.body = parseTextPart( payload );
-  }
-  if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
-    message.body = parseMultiPart( payload, message.attachments );
+  } else if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
+    message.body = parseMultiPart( payload, message.attachments, true );
+  } else {
+    throw `Unsupported MIME type. ${mimeType}`;
   }
 
   return message;
@@ -255,9 +258,10 @@ function parseTextPart( part ) {
   * 添付ファイルのパートがあればその情報を配列に格納したうえで、本文として保存する文字列の候補を返す
   * @param {Object} part  MIME メールのパート（multipart/*）
   * @param attachments {Array<Object>} attachments  添付ファイルの情報（オブジェクト）を格納する配列
+  * @param isFirstCall {Boolean} isFirstCall  再帰呼び出しの最初の呼び出しかどうか
   * @return {String} body  メール本文として保存する文字列の候補
   */
-function parseMultiPart( part, attachments ) {
+function parseMultiPart( part, attachments, isFirstCall = false) {
   // 本文の候補
   let textPart = null; // 第一候補のパート
   let htmlPart = null; // 第二候補のパート
@@ -271,10 +275,13 @@ function parseMultiPart( part, attachments ) {
     }
 
     // 添付ファイルの場合
-    const file = attachment( part, index );
-    if ( file !== null ) {
-      attachments.push( file );
-      return;
+    const isFirstPart = isFirstCall && index === 0; // マルチパートメールの先頭パートは添付ファイルとみなさない
+    if (!isFirstPart) {
+      const file = attachment( part, index );
+      if ( file !== null ) {
+        attachments.push( file );
+        return;
+      }
     }
 
     // マルチパートでも添付ファイルでも無い場合は、本文パートの可能性がある
@@ -290,6 +297,9 @@ function parseMultiPart( part, attachments ) {
       }
       return;
     }
+
+    // どのパートにも該当しない場合は無視
+    engine.log(`Part ${index} was ignored. ${part.mimeType} `);
   });
 
   if ( textPart !== null ) {
@@ -310,11 +320,6 @@ function parseMultiPart( part, attachments ) {
   * @return {Object} file  添付ファイルの情報（添付ファイルのパートでない場合は null）
   */
 function attachment( part, index ) {
-  // マルチパート内の先頭パートは添付ファイルとみなさない
-  if ( index === 0 ) {
-    return null;
-  }
-
   const disposition = getDisposition( part );
   const contentType = getContentType( part );
   if ( disposition === "attachment" || part.body.attachmentId !== undefined ) { // ファイル名がなくても添付ファイルとみなす
@@ -328,18 +333,19 @@ function attachment( part, index ) {
       "body": part.body
     }
     return file;
-  } else { // ファイル名 があれば添付ファイルとみなす
-    const filename = part.filename;
-    if ( filename === undefined || filename === null || filename === "" ) {
-      return null;
-    }
-    const file = {
-      "filename": filename,
-      "contentType": contentType,
-      "body": part.body
-    }
-    return file;
   }
+  // ファイル名 があれば添付ファイルとみなす
+  const filename = part.filename;
+  if ( filename === undefined || filename === null || filename === "" ) {
+    engine.log(`Part ${index} is not an attachment. ${disposition}, ${contentType}`);
+    return null;
+  }
+  const file = {
+    "filename": filename,
+    "contentType": contentType,
+    "body": part.body
+  }
+  return file;
 }
 
 /**
