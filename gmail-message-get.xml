@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2024-06-21</last-modified>
+<last-modified>2024-06-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -259,6 +259,7 @@ function parseTextPart( part ) {
   * @return {String} body  メール本文として保存する文字列の候補
   */
 function parseMultiPart( part, attachments ) {
+  engine.log('Multipart found.');
   // 本文の候補
   let textPart = null; // 第一候補のパート
   let htmlPart = null; // 第二候補のパート
@@ -1982,6 +1983,100 @@ test('200 Success - Multipart message with a nested multipart which has email bo
   expect(files[1].getName()).toEqual('添付ファイル2.txt');
   expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_2.size);
   expect(files[1].getContentType()).toEqual('text/plain');
+});
+
+/**
+ * 無視されるパートがあるメール
+ */
+const SAMPLE_MESSAGE_8 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      { // Content-Disposition / filename / attachmentId がすべてない、text/plain と text/html 以外のパートは無視される
+        "partId": "0",
+        "mimeType": "application/octet-stream",
+        "body": {
+          "data": base64.encodeToUrlSafeString('<h1>テストメール8です。</h1>\n<p>これはテストメール8です。</p>')
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('テストメール8です。\nこれはテストメール8です。')
+        }
+      },
+    ]
+  }
+};
+
+/**
+ * 無視されるパートがある場合
+ */
+test('200 Success - A part ignored', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_8));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメール8です。\nこれはテストメール8です。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(0); // 添付ファイルなし
 });
 
 ]]></test>
