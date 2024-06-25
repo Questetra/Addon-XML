@@ -1,21 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
 
-    <label>Converter (Excel-CSV FILE to Table type data)</label>
-    <label locale="ja">コンバータ (Excel-CSV ファイル to テーブル型データ)</label>
+    <label>Converter (TSV File to Table type data)</label>
+    <label locale="ja">コンバータ (TSV ファイル to テーブル型データ)</label>
 
-    <last-modified>2024-05-14</last-modified>
+    <last-modified>2024-06-25</last-modified>
     <help-page-url>https://support.questetra.com/bpmn-icons/converter-excelcsv-to-table/
     </help-page-url>
     <help-page-url locale="ja">
         https://support.questetra.com/ja/bpmn-icons/converter-excelcsv-to-table/
     </help-page-url>
 
-    <summary>This item overwrites the value of a Table type data item with a contents of an Excel
-        compatible CSV file(TSV UTF-16 LE with BOM) stored in a File type data item.
+    <summary>This item overwrites the value of a Table type data item with a contents of a TSV file stored in a File type data item. It also supports Excel compatible CSV files (TSV in UTF-16 LE with BOM) with character encoding UTF-16.
     </summary>
-    <summary locale="ja">この工程は、テーブル型データ項目の値を、ファイル型データ項目に格納されている Excel 対応 CSV ファイル(TSV
-        UTF-16 LE BOM あり)の内容で、上書きします。
+    <summary locale="ja">この工程は、テーブル型データ項目の値を、ファイル型データ項目に格納されている TSV ファイルの内容で、上書きします。Excel-CSV ファイル（UTF-16-LE BOM ありの TSV）にも、文字コード UTF-16 で対応しています。
     </summary>
 
     <license>(C) Questetra, Inc. (MIT License)</license>
@@ -23,12 +21,34 @@
 
     <configs>
         <config name="File_DataId" required="true" form-type="SELECT" select-data-type="FILE">
-            <label>A: File type data item that stores target Excel-CSV file</label>
-            <label locale="ja">A: 対象の Excel-CSV が格納されているファイル型データ項目</label>
+            <label>A: File type data item that stores target TSV file</label>
+            <label locale="ja">A: 対象の TSV ファイルが格納されているファイル型データ項目</label>
+        </config>
+        <config name="conf_ReadFileCharset" form-type="TOGGLE">
+            <label>B: If charset is specified in Content-Type, give priority to it</label>
+            <label locale="ja">B: Content-Type で charset が指定されていれば、その文字コードを優先させる</label>
+        </config>
+        <config name="conf_CharacterEncoding" form-type="SELECT_ITEM">
+            <label>C: Encoding when reading (UTF-16 if not selected)</label>
+            <label locale="ja">C: 読み込む際の文字コード（未設定の場合、UTF-16）</label>
+            <item value="UTF-16">
+                <label>UTF-16</label>
+            </item>
+            <item value="UTF-16LE">
+                <label>UTF-16LE without BOM</label>
+                <label locale="ja">UTF-16-LE BOM なし</label>
+            </item>
+            <item value="UTF-16BE">
+                <label>UTF-16BE without BOM</label>
+                <label locale="ja">UTF-16-BE BOM なし</label>
+            </item>
+            <item value="UTF-8">
+                <label>UTF-8</label>
+            </item>
         </config>
         <config name="Table_DataId" required="true" form-type="SELECT" select-data-type="LIST">
-            <label>B: Table type data item to save Excel-CSV data</label>
-            <label locale="ja">B: Excel-CSV を保存するテーブル型データ項目</label>
+            <label>D: Table type data item whose values ​​are overwritten as TSV</label>
+            <label locale="ja">D: TSV で値が上書きされるテーブル型データ項目</label>
         </config>
     </configs>
 
@@ -40,18 +60,28 @@ function main() {
   //// == 自動工程コンフィグの参照 / Config Retrieving ==
   const myFilesDef = configs.getObject("File_DataId"); // (returns ProcessDataDefinitionView)
   const tableDataDef = configs.getObject("Table_DataId"); // (returns ProcessDataDefinitionView)
+
+  const readFileCharset = configs.getObject("conf_ReadFileCharset");
+  const characterEncoding = configs.get("conf_CharacterEncoding");
+
   const myFiles = engine.findData(myFilesDef);
 
   // ファイル型データに複数添付されている場合、エラー
   if (myFiles !== null && myFiles.size() > 1) {
     throw new Error("Attachment of multiple files can not be supported.");
   }
+
+  // ファイル型データ項目にファイルが1つ添付されている場合
+  //// == Determine Charset / charset を決める ==
+  const charset = determineCharset(myFiles.get(0), readFileCharset, characterEncoding);
+
+
   // テーブル型データ項目のために ListArray を作成する
   const myTable = tableDataDef.createListArray();
   // ファイル型データにファイルが1つ添付されている場合
   if (myFiles !== null) {
     // ファイル型を1行ずつ読み込んで、テーブル型にセット
-    fileRepository.readFile(myFiles.get(0), "x-UTF-16LE-BOM", function (line) {
+    fileRepository.readFile(myFiles.get(0), charset, function (line) {
       // タブで列分割
       const cellsArray = line.split("\t");
       // ListArray に行を追加する
@@ -72,6 +102,25 @@ function main() {
   // ファイル型データ項目にファイルが1つ添付されている場合はその値、1つも添付されていない場合は空をセット
   engine.setData(tableDataDef, myTable);
 }
+
+/**
+ * 文字コードを決定する
+ * @param {QfileView} myFile ファイル型データ項目
+ * @param {boolean} readFileCharset Content-Type の charset で読み込むか
+ * @param {String} characterEncoding 読み込む際の文字コード
+ * @return {String} charset 文字コード
+ */
+function determineCharset(myFile, readFileCharset, characterEncoding) {
+  const charset = myFile.getCharset();
+  if (readFileCharset === true && charset !== null) {
+    return charset;
+  }
+  if (characterEncoding === null || characterEncoding === "") {
+    return 'UTF-16';
+  }
+  return characterEncoding;
+}
+
 ]]></script>
 
     <test><![CDATA[
@@ -117,18 +166,24 @@ const prepareTableDefMultiColumn = () => {
 
 /**
  * 1行1列の正常系
- * content-type に charset あり。UTF-16。
+ * content-type に charset あり。x-UTF-16LE-BOM。
+ * B: ファイルで指定されている charset を優先させるか：true
+ * C: 読み込む際の文字コード：設定無 x-UTF-16LE-BOM で読み込む
+ * Content-Type: text/tab-separated-values; charset=UTF-16
+ * ファイルのエンコーディング: x-UTF-16LE-BOM
  */
 test("success-1row-1column", () => {
     // ファイル型データ項目を準備して、config に指定
     const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
     configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', true);
+    configs.put('conf_CharacterEncoding', '');
 
     // ArrayList を作成
     let files = new java.util.ArrayList();
     const file = engine.createQfile(
         "テスト.csv",
-        "text/tab-separated-values; charset=UTF-16",
+        "text/tab-separated-values; charset=x-UTF-16LE-BOM",
         "x-UTF-16LE-BOM",
         "hogehoge"
     );
@@ -162,18 +217,24 @@ test("success-1row-1column", () => {
 /**
  * 2行1列の正常系
  * content-type に charset の指定なし
+ * B: ファイルで指定されている charset を優先させるか：false
+ * C: 読み込む際の文字コード：UTF-16
+ * Content-Type: text/tab-separated-values; charset=UTF-16
+ * ファイルのエンコーディング: UTF-16
  */
 test("success-2row-1column", () => {
     // ファイル型データ項目を準備して、config に指定
     const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
     configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', false);
+    configs.put('conf_CharacterEncoding', 'UTF-16');
 
     // ArrayList を作成
     let files = new java.util.ArrayList();
     const file = engine.createQfile(
         "テスト.csv",
         "text/tab-separated-values",
-        "x-UTF-16LE-BOM",
+        "UTF-16",
         "hogehoge\npiyopiyo"
     );
     // ArrayList に CSV ファイルを追加
@@ -209,19 +270,25 @@ test("success-2row-1column", () => {
 /**
  * 2行1列の正常系
  * テーブル型データ項目の値を上書き
- * content-type に charset あり。UTF-16。
+ * content-type に charset あり。UTF-8。
+ * B: ファイルで指定されている charset を優先させるか：false
+ * C: 読み込む際の文字コード：UTF-8
+ * Content-Type: text/tab-separated-values; charset=UTF-8
+ * ファイルのエンコーディング: UTF-8
  */
 test("overwrite-2row-1column", () => {
     // ファイル型データ項目を準備して、config に指定
     const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
     configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', false);
+    configs.put('conf_CharacterEncoding', 'UTF-8');
 
     // ArrayList を作成
     let files = new java.util.ArrayList();
     const file = engine.createQfile(
         "テスト.csv",
-        "text/tab-separated-values; charset=UTF-16",
-        "x-UTF-16LE-BOM",
+        "text/tab-separated-values; charset=UTF-8",
+        "UTF-8",
         "hogehoge\npiyopiyo"
     );
     // ArrayList に CSV ファイルを追加
@@ -261,18 +328,24 @@ test("overwrite-2row-1column", () => {
 /**
  * 1行複数列の正常系
  * content-type に charset の指定なし
+ * B: ファイルで指定されている charset を優先させるか：true
+ * C: 読み込む際の文字コード：設定無 UTF-16LE  で読み込む
+ * Content-Type: text/tab-separated-values; charset=UTF-16LE 
+ * ファイルのエンコーディング: UTF-16LE
  */
 test("success-1row-multicolumns", () => {
     // ファイル型データ項目を準備して、config に指定
     const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
     configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', true);
+    configs.put('conf_CharacterEncoding', '');
 
     // ArrayList を作成
     let files = new java.util.ArrayList();
     const file = engine.createQfile(
         "テスト.csv",
         "text/tab-separated-values",
-        "x-UTF-16LE-BOM",
+        "UTF-16LE",
         "hogehoge\t123.45\t2021-10-21\tfalse\n"
     );
     // ArrayList に CSV ファイルを追加
@@ -308,18 +381,84 @@ test("success-1row-multicolumns", () => {
 
 /**
  * 複数行複数列の正常系
- * content-type に charset あり。UTF-16。
+ * content-type に charset あり。UTF-16BE。
+ * B: ファイルで指定されている charset を優先させるか：false
+ * C: 読み込む際の文字コード：UTF-16BE
+ * Content-Type: text/tab-separated-values; charset=UTF-16BE
+ * ファイルのエンコーディング: UTF-16BE
  */
 test("success-multirows-multicolumns", () => {
     // ファイル型データ項目を準備して、config に指定
     const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
     configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', false);
+    configs.put('conf_CharacterEncoding', 'UTF-16BE');
 
     // ArrayList を作成
     let files = new java.util.ArrayList();
     const file = engine.createQfile(
         "テスト.csv",
-        "text/tab-separated-values; charset=UTF-16",
+        "text/tab-separated-values; charset=UTF-16BE",
+        "UTF-16BE",
+        "hogehoge\t123.45\t2021-10-21\tfalse\npiyopiyo\t42.195\t2022-10-21\ttrue\n"
+    );
+    // ArrayList に CSV ファイルを追加
+    files.add(file);
+    // ファイル型データ項目をセットする
+    engine.setData(fileDef, files);
+
+    // テーブル型データ項目を定義する
+    const tableDef = prepareTableDefMultiColumn();
+    // テーブル型データ項目を指定する
+    configs.putObject("Table_DataId", tableDef);
+
+    // テーブル型データ項目に null を指定
+    engine.setData(tableDef, null);
+    // main() を実行
+    main();
+
+    // テーブル型データ項目の値を参照する
+    const myTable = engine.findData(tableDef);
+
+    // テーブル型データ項目の値の行数
+    const numOfRows = myTable.size(); // 行（Tableの高さ）
+    expect(numOfRows).toEqual(2);
+    // テーブル型データ項目の値の列数
+    const numOfCols0 = myTable.getRow(0).size(); // 列（Tableの幅）
+    const numOfCols1 = myTable.getRow(1).size();
+    expect(numOfCols0).toEqual(4);
+    expect(numOfCols1).toEqual(4);
+    // テーブル型データ項目の各カラムの値
+    expect(myTable.get(0, 0)).toEqual("hogehoge");
+    expect(myTable.get(0, 1)).toEqual("123.450");
+    expect(myTable.get(0, 2)).toEqual("2021-10-21");
+    expect(myTable.get(0, 3)).toEqual("false");
+    expect(myTable.get(1, 0)).toEqual("piyopiyo");
+    expect(myTable.get(1, 1)).toEqual("42.195");
+    expect(myTable.get(1, 2)).toEqual("2022-10-21");
+    expect(myTable.get(1, 3)).toEqual("true");
+});
+
+/**
+ * 複数行複数列の正常系 x-UTF-16LE-BOM のファイルを UTF-16 で読み込む
+ * content-type に charset あり。x-UTF-16LE-BOM。
+ * B: ファイルで指定されている charset を優先させるか：false
+ * C: 読み込む際の文字コード：設定無 UTF-16 で読み込む
+ * Content-Type: text/tab-separated-values; charset=UTF-16BE
+ * ファイルのエンコーディング: x-UTF-16LE-BOM
+ */
+test("success-multirows-multicolumns-x-UTF-16LE-BOM to UTF-16", () => {
+    // ファイル型データ項目を準備して、config に指定
+    const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
+    configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', false);
+    configs.put('conf_CharacterEncoding', '');
+
+    // ArrayList を作成
+    let files = new java.util.ArrayList();
+    const file = engine.createQfile(
+        "テスト.csv",
+        "text/tab-separated-values; charset=x-UTF-16LE-BOM",
         "x-UTF-16LE-BOM",
         "hogehoge\t123.45\t2021-10-21\tfalse\npiyopiyo\t42.195\t2022-10-21\ttrue\n"
     );
@@ -469,6 +608,46 @@ test("multiple files", () => {
     engine.setData(fileDef, files);
 
     assertError(main, 'Attachment of multiple files can not be supported.');
+
+});
+
+/**
+ * 複数行複数列の異常系 ファイルの文字コードと読み込む際の文字コードが異なる
+ * content-type に charset あり。UTF-8。
+ * B: ファイルで指定されている charset を優先させるか：false
+ * C: 読み込む際の文字コード：UTF-16
+ * Content-Type: text/tab-separated-values; charset=UTF-8
+ * ファイルのエンコーディング: UTF-8
+ */
+test("The character code of the file is different from the character code when it is read", () => {
+    // ファイル型データ項目を準備して、config に指定
+    const fileDef = engine.createDataDefinition("ファイル", 5, "q_file", "FILE");
+    configs.putObject("File_DataId", fileDef);
+    configs.putObject('conf_ReadFileCharset', false);
+    configs.put('conf_CharacterEncoding', 'UTF-16');
+
+    // ArrayList を作成
+    let files = new java.util.ArrayList();
+    const file = engine.createQfile(
+        "テスト.csv",
+        "text/tab-separated-values; charset=UTF-8",
+        "UTF-8",
+        "hogehoge\t123.45\t2021-10-21\tfalse\npiyopiyo\t42.195\t2022-10-21\ttrue\n"
+    );
+    // ArrayList に CSV ファイルを追加
+    files.add(file);
+    // ファイル型データ項目をセットする
+    engine.setData(fileDef, files);
+
+    // テーブル型データ項目を定義する
+    const tableDef = prepareTableDefMultiColumn();
+    // テーブル型データ項目を指定する
+    configs.putObject("Table_DataId", tableDef);
+
+    // テーブル型データ項目に null を指定
+    engine.setData(tableDef, null);
+
+    assertError(main, "Incorrect number of rows at line 1");
 
 });
 ]]></test>
