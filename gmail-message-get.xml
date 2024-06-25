@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2024-06-24</last-modified>
+<!--
+<last-modified>2024-06-25</last-modified>
+-->
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -280,21 +282,32 @@ function parseMultiPart( part, attachments ) {
     }
 
     // マルチパートでも添付ファイルでも無い場合は、本文パートの可能性がある
-    if ( part.mimeType === "text/plain" ) {
-      if ( textPart === null ) { // １つ目の "text/plain" パートを本文パートの第一候補とする
-        textPart = part;
-      }
+    if ( part.mimeType === "text/plain" && textPart === null ) {
+      // １つ目の "text/plain" パートを本文パートの第一候補とする
+      textPart = part;
       return;
     }
-    if ( part.mimeType === "text/html" ) {
-      if ( htmlPart === null ) { // １つ目の "text/html" パートを本文パートの第二候補とする
-        htmlPart = part;
-      }
+    if ( part.mimeType === "text/html" && htmlPart === null ) {
+      // １つ目の "text/html" パートを本文パートの第二候補とする
+      htmlPart = part;
       return;
     }
 
-    // どのパートにも該当しない場合は無視
-    engine.log(`Part ${index} was ignored. ${part.mimeType} `);
+    // 以上の条件に合致せず、body が空でない場合は添付ファイルとして扱う
+    // 下記の条件をすべてみたすパートが該当する
+    // - Content-Type が attachment でない
+    // - ファイル名がない
+    // - Gmail API が attachmentId を返さない
+    // - そのマルチパート内で、本文パートの候補でない
+    if ( part.body !== undefined && part.body !== null ) {
+      const file = {
+        "filename": "noname", // Default
+        "contentType": getContentType( part ),
+        "body": part.body
+      }
+      attachments.push( file );
+      return;
+    }
   });
 
   if ( textPart !== null ) {
@@ -1986,7 +1999,7 @@ test('200 Success - Multipart message with a nested multipart which has email bo
 });
 
 /**
- * 無視されるパートがあるメール
+ * 例外的だが添付ファイルとして扱われるパート、無視されるパートがあるメール
  */
 const SAMPLE_MESSAGE_8 = {
   "id": "messageId-1",
@@ -2027,21 +2040,60 @@ const SAMPLE_MESSAGE_8 = {
     },
     "parts": [
       {
-        // Content-Disposition / filename / attachmentId がすべてない、text/plain と text/html 以外のパートは無視される
-        // Content-Type が設定されていない場合や、Content-Type が text/* の場合など、実際の Gmail API でもこのデータが返ることがありうる
-        // Gmail の UI 上では noname という添付ファイルとして表示されるが、このアイテムでは無視される
+        // Content-Disposition / filename / attachmentId がいずれもないパートは、
+        // いったんは添付ファイルでないとみなされるが、
+        // 本文パートの候補にもならなかった場合は、添付ファイルとして扱われる
         "partId": "0",
         "mimeType": "text/csv",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/csv"
+          }
+        ],
         "body": {
           "data": base64.encodeToUrlSafeString('1, テスト1\n2, テスト2')
         }
       },
       {
-        // Content-Disposition が attachment でなく、filename / attachmentId がいずれもない場合も無視される
-        // 実際の Gmail API では、Content-Type が画像ファイル等の場合、attachmentId がセットされる
-        // attachmentId があれば、このアイテムでも添付ファイルとして処理される
+        // 本文パートの候補（テキスト本文）
         "partId": "1",
-        "mimeType": "image/png",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('テストメール8です。\nこれはテストメール8です。')
+        }
+      },
+      {
+        // 本文パートの候補（テキスト本文）はすでにあるので、添付ファイルとして扱われる
+        "partId": "2",
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline"
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('パート 2 の body')
+        }
+      },
+      {
+        // Content-Type がない場合、mimeType には text/plain が入る
+        // 本文パートの候補（テキスト本文）はすでにあるので、添付ファイルとして扱われる
+        // Content-Type がない場合、application/octet-stream として保存される
+        "partId": "3",
+        "mimeType": "text/plain", // Content-Type がない場合、mimeType には text/plain が入る
         "headers": [
           {
             "name": "Content-Disposition",
@@ -2051,23 +2103,23 @@ const SAMPLE_MESSAGE_8 = {
         "body": {...SAMPLE_ATTACHMENT_1}
       },
       {
-        "partId": "2",
-        "mimeType": "text/plain",
-        "filename": "",
+        // 本文パートの候補（HTML 本文）になるが、テキスト本文のパートがあるので、このパートは無視される
+        "partId": "4",
+        "mimeType": "text/html",
         "headers": [
           {
             "name": "Content-Type",
-            "value": "text/plain; charset=\"UTF-8\""
+            "value": "text/html; charset=\"UTF-8\""
           },
           {
-            "name": "Content-Transfer-Encoding",
-            "value": "base64"
+            "name": "Content-Disposition",
+            "value": "inline"
           }
         ],
         "body": {
-          "data": base64.encodeToUrlSafeString('テストメール8です。\nこれはテストメール8です。')
+          "data": base64.encodeToUrlSafeString('<p>テストメール8です。</p><p>これはテストメール8です。</p>')
         }
-      },
+      }
     ]
   }
 };
@@ -2093,7 +2145,14 @@ test('200 Success - Some parts ignored', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名');
   expect(engine.findData(dataDefs.body)).toEqual('テストメール8です。\nこれはテストメール8です。');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(0); // 添付ファイルなし
+  expect(files.length).toEqual(3);
+  expect(files[0].getName()).toEqual('noname');
+  expect(files[0].getContentType()).toEqual('text/csv');
+  expect(files[1].getName()).toEqual('noname');
+  expect(files[1].getContentType()).toEqual('text/plain; charset=UTF-8');
+  expect(files[2].getName()).toEqual('noname');
+  expect(files[2].getContentType()).toEqual('application/octet-stream');
+  // text/html のパートは無視される
 });
 
 ]]></test>
