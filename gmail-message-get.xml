@@ -251,9 +251,12 @@ function extractFromPayload( payload ) {
 /**
   * MIME タイプが text/plain, text/html のパートのデータをデコードして文字列として返す
   * @param {Object} part  MIME メールのパート（text/plain または text/html）
-  * @return {String} body  パートのデータ（メール本文として保存する文字列の候補）
+  * @return {String} body  パートのデータ（メール本文として保存する文字列）
   */
 function parseTextPart( part ) {
+  if ( part.body.data === undefined ) {
+    return "";
+  }
   return base64.decodeFromUrlSafeString( part.body.data ); // UTF-8 としてデコード
 }
 
@@ -290,24 +293,20 @@ function parseMultiPart( part, attachments ) {
       }
     }
 
-    // 以上の条件に合致せず、body が空でないパートを添付ファイルとして扱う
-    if ( part.body !== undefined && part.body !== null ) {
-      let filename = part.filename;
-      if (isFileNameBlank( part )) {
-        filename = "noname"; // Default
-      }
-      const file = {
-        "filename": filename,
-        "contentType": getContentType( part ),
-        "body": part.body
-      }
-      attachments.push( file );
-      return;
+    // 以上の条件に合致しないパートを添付ファイルとして扱う
+    let filename = part.filename;
+    if (isFileNameBlank( part )) {
+      filename = "noname"; // Default
     }
+    const file = {
+      "filename": filename,
+      "contentType": getContentType( part ),
+      "body": part.body
+    }
+    attachments.push( file );
   });
 
   // textPart, htmlPart, nestedBodyPart の順に、null でないものを保存する本文パートとして採用
-  // 採用しなかったものについては、プロセスログに出力
   const bodyPartCandidates = [textPart, htmlPart, nestedBodyPart];
   let selectedBodyPart = null;
   bodyPartCandidates.forEach( part => {
@@ -318,7 +317,15 @@ function parseMultiPart( part, attachments ) {
       selectedBodyPart = part;
       return;
     }
-    engine.log(JSON.stringify(part));
+    // 保存する本文として採用しなかったものについて、プロセスログに出力
+    const partInfo = JSON.parse(JSON.stringify(part)); // ディープコピー
+    const originalData = part.body.data ?? '';
+    let extractedData = originalData.substring(0, 20); // ログ出力用に先頭 20 文字を抜粋
+    if (originalData.length > 20) {
+      extractedData += '...';
+    }
+    partInfo.body.data = extractedData;
+    engine.log(JSON.stringify(partInfo));
     engine.log('The part above was ignored.');
   });
   if ( selectedBodyPart === null ) {
@@ -412,9 +419,17 @@ function getAttachments( apiUri, auth, attachments ) {
   const httpLimit = httpClient.getRequestingLimit();
   let httpCount = 1; // HTTP リクエストの上限超えチェック用のカウンタ（メール取得のリクエスト後なので初期値は1）
   attachments.forEach( attachment => {
-    if ( attachment.body.data !== undefined ) { return; } // data があれば何もしない
+    if ( attachment.body.data !== undefined ) { // data があれば何もしない
+      return;
+    }
+    if ( attachment.body.attachmentId === undefined ) {
+      attachment.body["data"] = ""; // data も attachmentId も無い場合は空文字列をセット
+      return;
+    }
     httpCount++;
-    if ( httpCount > httpLimit ) { throw "Number of HTTP requests is over the limit."; }
+    if ( httpCount > httpLimit ) {
+      throw "Number of HTTP requests is over the limit.";
+    }
     const response = httpClient.begin()
       .authSetting( auth )
       .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
