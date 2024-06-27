@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<!--
-<last-modified>2024-06-25</last-modified>
--->
+<last-modified>2024-06-27</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -236,7 +234,13 @@ function extractFromPayload( payload ) {
   if ( mimeType === "text/plain" || mimeType === "text/html" ) { // 本文のみのメール
     message.body = parseTextPart( payload );
   } else if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
-    message.body = parseMultiPart( payload, message.attachments );
+    const bodyPart = parseMultiPart( payload, message.attachments );
+    if ( bodyPart === null ) {
+      engine.log("No body part was found.");
+      message.body = "";
+    } else {
+      message.body = parseTextPart( bodyPart );
+    }
   } else {
     throw `Unsupported MIME type. ${mimeType}`;
   }
@@ -258,19 +262,19 @@ function parseTextPart( part ) {
   * 添付ファイルのパートがあればその情報を配列に格納したうえで、本文として保存する文字列の候補を返す
   * @param {Object} part  MIME メールのパート（multipart/*）
   * @param attachments {Array<Object>} attachments  添付ファイルの情報（オブジェクト）を格納する配列
-  * @return {String} body  メール本文として保存する文字列の候補
+  * @return {Object} bodyPart  メール本文として保存するパートの候補（text/plain または text/html）
   */
 function parseMultiPart( part, attachments ) {
-  engine.log('Multipart found.');
+  engine.log(`Multipart found. partId: ${part.partId}, mimeType: ${part.mimeType}`);
   // 本文の候補
   let textPart = null; // 第一候補のパート
   let htmlPart = null; // 第二候補のパート
-  let nestedBody = ""; // 第三候補の文字列（下の階層から取得した本文候補、または空文字列）
+  let nestedBodyPart = null; // 第三候補のパート（下の階層から取得した本文パートの候補）
 
   part.parts.forEach( ( part, index ) => {
     // マルチパートの場合
     if ( part.mimeType.startsWith("multipart/") ) {
-      nestedBody = parseMultiPart( part, attachments );
+      nestedBodyPart = parseMultiPart( part, attachments );
       return;
     }
 
@@ -293,12 +297,8 @@ function parseMultiPart( part, attachments ) {
       return;
     }
 
-    // 以上の条件に合致せず、body が空でない場合は添付ファイルとして扱う
-    // 下記の条件をすべてみたすパートが該当する
-    // - Content-Type が attachment でない
-    // - ファイル名がない
-    // - Gmail API が attachmentId を返さない
-    // - そのマルチパート内で、本文パートの候補でない
+    // 以上の条件に合致せず、body が空でないパートは添付ファイルとして扱う
+    // 本文パートの候補にならなかったテキストパート等が該当する
     if ( part.body !== undefined && part.body !== null ) {
       const file = {
         "filename": "noname", // Default
@@ -310,24 +310,34 @@ function parseMultiPart( part, attachments ) {
     }
   });
 
-  if ( textPart !== null ) {
-    return parseTextPart( textPart );
+  // textPart, htmlPart, nestedBodyPart の順に、null でないものを保存する本文パートとして採用
+  // 採用しなかったものについては、プロセスログに出力
+  const bodyPartCandidates = [textPart, htmlPart, nestedBodyPart];
+  let selectedBodyPart = null;
+  bodyPartCandidates.forEach( part => {
+    if ( part === null ) { // null の候補は無視
+      return;
+    }
+    if ( selectedBodyPart === null ) {
+      selectedBodyPart = part;
+      return;
+    }
+    engine.log(JSON.stringify(part));
+    engine.log('The part above was ignored.');
+  });
+  if ( selectedBodyPart === null ) {
+    engine.log(`No body part was found in this multipart. partId: ${part.partId}`);
   }
-  if ( htmlPart !== null ) {
-    return parseTextPart( htmlPart );
-  }
-  // "text/plain" パートも "text/html" パートも無い場合は、下の階層から取得した本文、または空文字列
-  return nestedBody;
+  return selectedBodyPart;
 }
 
 /**
   * MIME メールのマルチパート内のパートが添付ファイルかどうかを調べ、添付ファイルであれば
   * その情報をオブジェクトとして返す
   * @param {Object} part  マルチパート内のパート
-  * @param index {Number} index  マルチパート内で何番目のパートか
   * @return {Object} file  添付ファイルの情報（添付ファイルのパートでない場合は null）
   */
-function attachment( part, index ) {
+function attachment( part ) {
   const disposition = getDisposition( part );
   const contentType = getContentType( part );
   if ( disposition === "attachment" || part.body.attachmentId !== undefined ) { // ファイル名がなくても添付ファイルとみなす
@@ -345,7 +355,7 @@ function attachment( part, index ) {
   // ファイル名 があれば添付ファイルとみなす
   const filename = part.filename;
   if ( filename === undefined || filename === null || filename === "" ) {
-    engine.log(`Part ${index} is not an attachment. Content-Disposition: ${disposition}, Content-Type: ${contentType}`);
+    engine.log(`Part ${part.partId} may be a body part. Content-Disposition: ${disposition}, Content-Type: ${contentType}`);
     return null;
   }
   const file = {
