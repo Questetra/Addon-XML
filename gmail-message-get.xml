@@ -278,30 +278,26 @@ function parseMultiPart( part, attachments ) {
       return;
     }
 
-    // 添付ファイルの場合
-    const file = attachment( part, index );
-    if ( file !== null ) {
-      attachments.push( file );
-      return;
+    // 本文パートの候補になる場合
+    if ( isBodyPartCandidate( part ) ) {
+      if ( part.mimeType === "text/plain" && textPart === null ) {
+        textPart = part;
+        return;
+      }
+      if ( part.mimeType === "text/html" && htmlPart === null ) {
+        htmlPart = part;
+        return;
+      }
     }
 
-    // マルチパートでも添付ファイルでも無い場合は、本文パートの可能性がある
-    if ( part.mimeType === "text/plain" && textPart === null ) {
-      // １つ目の "text/plain" パートを本文パートの第一候補とする
-      textPart = part;
-      return;
-    }
-    if ( part.mimeType === "text/html" && htmlPart === null ) {
-      // １つ目の "text/html" パートを本文パートの第二候補とする
-      htmlPart = part;
-      return;
-    }
-
-    // 以上の条件に合致せず、body が空でないパートは添付ファイルとして扱う
-    // 本文パートの候補にならなかったテキストパート等が該当する
+    // 以上の条件に合致せず、body が空でないパートを添付ファイルとして扱う
     if ( part.body !== undefined && part.body !== null ) {
+      let filename = part.filename;
+      if (isFileNameBlank( part )) {
+        filename = "noname"; // Default
+      }
       const file = {
-        "filename": "noname", // Default
+        "filename": filename,
         "contentType": getContentType( part ),
         "body": part.body
       }
@@ -332,29 +328,34 @@ function parseMultiPart( part, attachments ) {
 }
 
 /**
-  * MIME メールのマルチパート内のパートが添付ファイルかどうかを調べ、添付ファイルであれば
-  * その情報をオブジェクトとして返す
-  * @param {Object} part  マルチパート内のパート
-  * @return {Object} file  添付ファイルの情報（添付ファイルのパートでない場合は null）
+  * パートが本文パートの候補かどうかを判定する
+  * 本文パートの候補の条件：
+  * - MIME タイプが text/plain または text/html
+  * - Content-Disposition ヘッダが "attachment" でない
+  * - body.attachmentId が無い
+  * - ファイル名が設定されていない
+  * @param {Object} part  MIME メールのパート
+  * @return {Boolean}  本文パートの候補かどうか
   */
-function attachment( part ) {
-  const disposition = getDisposition( part );
-  const contentType = getContentType( part );
-  let filename = part.filename;
-  if ( disposition === "attachment" || part.body.attachmentId !== undefined // ファイル名がなくても添付ファイルとみなす
-      || ( filename !== undefined && filename !== null && filename !== "" ) ) {
-    if ( filename === undefined || filename === null || filename === "" ) {
-      filename = "noname"; // Default
-    }
-    const file = {
-      "filename": filename,
-      "contentType": contentType,
-      "body": part.body
-    }
-    return file;
+function isBodyPartCandidate(part) {
+  if (part.mimeType !== "text/plain" && part.mimeType !== "text/html") {
+    return false;
   }
-  engine.log(`Part ${part.partId} may be a body part. Content-Disposition: ${disposition}, Content-Type: ${contentType}`);
-  return null;
+  const disposition = getDisposition(part);
+  if (disposition === "attachment" || part.body.attachmentId !== undefined || !isFileNameBlank(part)) {
+    return false;
+  }
+  engine.log(`Part ${part.partId} may be a body part. Content-Disposition: ${disposition}, Content-Type: ${part.mimeType}`);
+  return true;
+}
+
+/**
+  * パートのファイル名が空かどうかを判定する
+  * @param {Object} part  MIME メールのパート
+  * @return {Boolean}  ファイル名が空かどうか
+  */
+function isFileNameBlank(part) {
+  return part.filename === undefined || part.filename === null || part.filename === "";
 }
 
 /**
