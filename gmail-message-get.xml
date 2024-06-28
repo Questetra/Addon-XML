@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2024-06-27</last-modified>
+<last-modified>2024-06-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -284,15 +284,23 @@ function parseMultiPart( part, attachments ) {
     }
 
     // 本文パートの候補になる場合
-    if ( isBodyPartCandidate( part ) ) {
-      if ( part.mimeType === "text/plain" && textPart === null ) {
+    if (!isObviouslyAttachment(part) && part.mimeType === 'text/plain') {
+      if (textPart === null ) {
         textPart = part;
         return;
       }
-      if ( part.mimeType === "text/html" && htmlPart === null ) {
+      // 2つ目以降の text/plain パートは無視
+      outputLogIgnoredPart(part);
+      return;
+    }
+    if (!isObviouslyAttachment(part) && part.mimeType === 'text/html') {
+      if (htmlPart === null ) {
         htmlPart = part;
         return;
       }
+      // 2つ目以降の text/html パートは無視
+      outputLogIgnoredPart(part);
+      return;
     }
 
     // 以上の条件に合致しないパートを添付ファイルとして扱う
@@ -320,15 +328,7 @@ function parseMultiPart( part, attachments ) {
       return;
     }
     // 保存する本文として採用しなかったものについて、プロセスログに出力
-    const partInfo = JSON.parse(JSON.stringify(part)); // ディープコピー
-    const originalData = part.body.data ?? '';
-    let extractedData = originalData.substring(0, 20); // ログ出力用に先頭 20 文字を抜粋
-    if (originalData.length > 20) {
-      extractedData += '...';
-    }
-    partInfo.body.data = extractedData;
-    engine.log(`Part ${part.partId} was ignored.`);
-    engine.log(JSON.stringify(partInfo));
+    outputLogIgnoredPart(part);
   });
   if ( selectedBodyPart === null ) {
     engine.log(`No body part was found in this multipart. partId: ${part.partId}`);
@@ -337,25 +337,21 @@ function parseMultiPart( part, attachments ) {
 }
 
 /**
-  * パートが本文パートの候補かどうかを判定する
-  * 本文パートの候補の条件：
-  * - MIME タイプが text/plain または text/html
-  * - Content-Disposition ヘッダが "attachment" でない
-  * - body.attachmentId が無い
-  * - ファイル名が設定されていない
+  * パートが明らかに添付ファイルかどうかを判定する
+  * 以下のいずれかに該当すれば true を返す
+  * - Content-Disposition ヘッダが "attachment"
+  * - body.attachmentId がある
+  * - ファイル名が設定されている
   * @param {Object} part  MIME メールのパート
-  * @return {Boolean}  本文パートの候補かどうか
+  * @return {Boolean}  パートが明らかに添付ファイルかどうか
   */
-function isBodyPartCandidate(part) {
-  if (part.mimeType !== "text/plain" && part.mimeType !== "text/html") {
-    return false;
-  }
+function isObviouslyAttachment(part) {
   const disposition = getDisposition(part);
   if (disposition === "attachment" || part.body.attachmentId !== undefined || !isFileNameBlank(part)) {
-    return false;
+    return true;
   }
   engine.log(`Part ${part.partId} may be a body part. Content-Disposition: ${disposition}, Content-Type: ${part.mimeType}`);
-  return true;
+  return false;
 }
 
 /**
@@ -381,6 +377,22 @@ function getDisposition( part ) {
     return null;
   }
   return dispositionHeader.value.split(";")[0].toLowerCase();
+}
+
+/**
+  * 保存しないパートの情報をプロセスログに出力する
+  * @param {Object} part  MIME メールのパート
+  */
+function outputLogIgnoredPart(part) {
+  const partInfo = JSON.parse(JSON.stringify(part)); // ディープコピー
+  const originalData = part.body.data ?? '';
+  let extractedData = originalData.substring(0, 20); // ログ出力用に先頭 20 文字を抜粋
+  if (originalData.length > 20) {
+    extractedData += '...';
+  }
+  partInfo.body.data = extractedData;
+  engine.log(`Part ${part.partId} was ignored.`);
+  engine.log(JSON.stringify(partInfo));
 }
 
 /**
@@ -2061,7 +2073,7 @@ const SAMPLE_MESSAGE_8 = {
       {
         // Content-Disposition / filename / attachmentId がいずれもないパートは、
         // いったんは添付ファイルでないとみなされるが、
-        // 本文パートの候補にもならなかった場合は、添付ファイルとして扱われる
+        // 本文パートの候補にならない mimeType の場合は、添付ファイルとして扱われる
         "partId": "0",
         "mimeType": "text/csv",
         "headers": [
@@ -2070,8 +2082,8 @@ const SAMPLE_MESSAGE_8 = {
             "value": "text/csv"
           }
         ],
-        "body": {
-          "data": base64.encodeToUrlSafeString('1, テスト1\n2, テスト2')
+        "body": { // 空
+          "size": 0
         }
       },
       {
@@ -2090,7 +2102,7 @@ const SAMPLE_MESSAGE_8 = {
         }
       },
       {
-        // 本文パートの候補（テキスト本文）はすでにあるので、添付ファイルとして扱われる
+        // 本文パートの候補（テキスト本文）はすでにあるので、無視される
         "partId": "2",
         "mimeType": "text/plain",
         "headers": [
@@ -2109,8 +2121,7 @@ const SAMPLE_MESSAGE_8 = {
       },
       {
         // Content-Type がない場合、mimeType には text/plain が入る
-        // 本文パートの候補（テキスト本文）はすでにあるので、添付ファイルとして扱われる
-        // Content-Type がない場合、application/octet-stream として保存される
+        // 本文パートの候補（テキスト本文）はすでにあるので、このパートは無視される
         "partId": "3",
         "mimeType": "text/plain", // Content-Type がない場合、mimeType には text/plain が入る
         "headers": [
@@ -2164,15 +2175,10 @@ test('200 Success - Some parts ignored', () => {
   expect(engine.findData(dataDefs.subject)).toEqual('件名');
   expect(engine.findData(dataDefs.body)).toEqual('テストメール8です。\nこれはテストメール8です。');
   const files = engine.findData(dataDefs.attachments);
-  expect(files.length).toEqual(3);
+  expect(files.length).toEqual(1);
   expect(files[0].getName()).toEqual('noname');
   expect(files[0].getContentType()).toEqual('text/csv');
-  expect(files[1].getName()).toEqual('noname');
-  expect(files[1].getContentType()).toEqual('text/plain; charset=UTF-8');
-  expect(files[1].getLength()).toEqual(0);
-  expect(files[2].getName()).toEqual('noname');
-  expect(files[2].getContentType()).toEqual('application/octet-stream');
-  // text/html のパートは無視される
+  // 本文として採用されなかった text/plain と text/html のパートは無視される
 });
 
 /**
