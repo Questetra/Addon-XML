@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2024-04-16</last-modified>
+<last-modified>2024-06-28</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -233,9 +233,16 @@ function extractFromPayload( payload ) {
   const mimeType = payload.mimeType;
   if ( mimeType === "text/plain" || mimeType === "text/html" ) { // 本文のみのメール
     message.body = parseTextPart( payload );
-  }
-  if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
-    message.body = parseMultiPart( payload, message.attachments );
+  } else if ( mimeType.startsWith("multipart/") ) { // マルチパートのメール
+    const bodyPart = parseMultiPart( payload, message.attachments );
+    if ( bodyPart === null ) {
+      engine.log("No body part was found.");
+      message.body = "";
+    } else {
+      message.body = parseTextPart( bodyPart );
+    }
+  } else {
+    throw `Unsupported MIME type. ${mimeType}`;
   }
 
   return message;
@@ -244,10 +251,11 @@ function extractFromPayload( payload ) {
 /**
   * MIME タイプが text/plain, text/html のパートのデータをデコードして文字列として返す
   * @param {Object} part  MIME メールのパート（text/plain または text/html）
-  * @return {String} body  パートのデータ（メール本文として保存する文字列の候補）
+  * @return {String} body  パートのデータ（メール本文として保存する文字列）
   */
 function parseTextPart( part ) {
-  return base64.decodeFromUrlSafeString( part.body.data ); // UTF-8 としてデコード
+  const bodyData = part.body.data ?? '';
+  return base64.decodeFromUrlSafeString( bodyData ); // UTF-8 としてデコード
 }
 
 /**
@@ -255,91 +263,130 @@ function parseTextPart( part ) {
   * 添付ファイルのパートがあればその情報を配列に格納したうえで、本文として保存する文字列の候補を返す
   * @param {Object} part  MIME メールのパート（multipart/*）
   * @param attachments {Array<Object>} attachments  添付ファイルの情報（オブジェクト）を格納する配列
-  * @return {String} body  メール本文として保存する文字列の候補
+  * @return {Object} bodyPart  メール本文として保存するパートの候補（text/plain または text/html）
   */
 function parseMultiPart( part, attachments ) {
+  engine.log(`Multipart found. partId: ${part.partId}, mimeType: ${part.mimeType}`);
+  if (part.parts === undefined || part.parts.length === 0) {
+    engine.log(`No inner-part was found in this multipart. partId: ${part.partId}`);
+    return null;
+  }
   // 本文の候補
   let textPart = null; // 第一候補のパート
   let htmlPart = null; // 第二候補のパート
-  let nestedBody = ""; // 第三候補の文字列（下の階層から取得した本文候補、または空文字列）
+  let nestedBodyPart = null; // 第三候補のパート（下の階層から取得した本文パートの候補）
 
   part.parts.forEach( ( part, index ) => {
     // マルチパートの場合
     if ( part.mimeType.startsWith("multipart/") ) {
-      nestedBody = parseMultiPart( part, attachments );
+      nestedBodyPart = parseMultiPart( part, attachments );
       return;
     }
 
-    // 添付ファイルの場合
-    const file = attachment( part, index );
-    if ( file !== null ) {
-      attachments.push( file );
-      return;
-    }
-
-    // マルチパートでも添付ファイルでも無い場合は、本文パートの可能性がある
-    if ( part.mimeType === "text/plain" ) {
-      if ( textPart === null ) { // １つ目の "text/plain" パートを本文パートの第一候補とする
+    // 本文パートの候補になる場合
+    if (!isObviouslyAttachment(part) && part.mimeType === 'text/plain') {
+      if (textPart === null ) {
+        outputLogBodyCandidatePart(part);
         textPart = part;
+        return;
       }
+      // 2つ目以降の text/plain パートは無視
+      outputLogIgnoredPart(part);
       return;
     }
-    if ( part.mimeType === "text/html" ) {
-      if ( htmlPart === null ) { // １つ目の "text/html" パートを本文パートの第二候補とする
+    if (!isObviouslyAttachment(part) && part.mimeType === 'text/html') {
+      if (htmlPart === null ) {
+        outputLogBodyCandidatePart(part);
         htmlPart = part;
+        return;
       }
+      // 2つ目以降の text/html パートは無視
+      outputLogIgnoredPart(part);
       return;
     }
-  });
 
-  if ( textPart !== null ) {
-    return parseTextPart( textPart );
-  }
-  if ( htmlPart !== null ) {
-    return parseTextPart( htmlPart );
-  }
-  // "text/plain" パートも "text/html" パートも無い場合は、下の階層から取得した本文、または空文字列
-  return nestedBody;
-}
-
-/**
-  * MIME メールのマルチパート内のパートが添付ファイルかどうかを調べ、添付ファイルであれば
-  * その情報をオブジェクトとして返す
-  * @param {Object} part  マルチパート内のパート
-  * @param index {Number} index  マルチパート内で何番目のパートか
-  * @return {Object} file  添付ファイルの情報（添付ファイルのパートでない場合は null）
-  */
-function attachment( part, index ) {
-  // マルチパート内の先頭パートは添付ファイルとみなさない
-  if ( index === 0 ) {
-    return null;
-  }
-
-  const disposition = getDisposition( part );
-  const contentType = getContentType( part );
-  if ( disposition === "attachment" || part.body.attachmentId !== undefined ) { // ファイル名がなくても添付ファイルとみなす
+    // 以上の条件に合致しないパートを添付ファイルとして扱う
     let filename = part.filename;
-    if ( filename === undefined || filename === null || filename === "" ) {
+    if (isFileNameBlank( part )) {
       filename = "noname"; // Default
     }
     const file = {
       "filename": filename,
-      "contentType": contentType,
+      "contentType": getContentType( part ),
       "body": part.body
     }
-    return file;
-  } else { // ファイル名 があれば添付ファイルとみなす
-    const filename = part.filename;
-    if ( filename === undefined || filename === null || filename === "" ) {
-      return null;
+    attachments.push( file );
+  });
+
+  // textPart, htmlPart, nestedBodyPart の順に、null でないものを保存する本文パートとして採用
+  const bodyPartCandidates = [textPart, htmlPart, nestedBodyPart];
+  let selectedBodyPart = null;
+  bodyPartCandidates.forEach( part => {
+    if ( part === null ) { // null の候補は無視
+      return;
     }
-    const file = {
-      "filename": filename,
-      "contentType": contentType,
-      "body": part.body
+    if ( selectedBodyPart === null ) {
+      selectedBodyPart = part;
+      return;
     }
-    return file;
+    // 保存する本文として採用しなかったものについて、プロセスログに出力
+    outputLogIgnoredPart(part);
+  });
+  if ( selectedBodyPart === null ) {
+    engine.log(`No body part was found in this multipart. partId: ${part.partId}`);
   }
+  return selectedBodyPart;
+}
+
+/**
+  * 本文候補のパートの情報をプロセスログに出力する
+  * @param {Object} part  MIME メールのパート
+  */
+function outputLogBodyCandidatePart(part) {
+  const disposition = getDisposition(part);
+  engine.log(`Part ${part.partId} may be a body part. Content-Disposition: ${disposition}, mimeType: ${part.mimeType}`);
+}
+
+/**
+  * 保存しないパートの情報をプロセスログに出力する
+  * @param {Object} part  MIME メールのパート
+  */
+function outputLogIgnoredPart(part) {
+  const partInfo = JSON.parse(JSON.stringify(part)); // ディープコピー
+  const originalData = part.body.data ?? '';
+  let extractedData = originalData.substring(0, 20); // ログ出力用に先頭 20 文字を抜粋
+  if (originalData.length > 20) {
+    extractedData += '...';
+  }
+  partInfo.body.data = extractedData;
+  engine.log(`Part ${part.partId} was ignored.`);
+  engine.log(JSON.stringify(partInfo));
+}
+
+/**
+  * パートが明らかに添付ファイルかどうかを判定する
+  * 以下のいずれかに該当すれば true を返す
+  * - Content-Disposition ヘッダが "attachment"
+  * - body.attachmentId がある
+  * - ファイル名が設定されている
+  * @param {Object} part  MIME メールのパート
+  * @return {Boolean}  パートが明らかに添付ファイルかどうか
+  */
+function isObviouslyAttachment(part) {
+  const disposition = getDisposition(part);
+  if (disposition === "attachment" || part.body.attachmentId !== undefined || !isFileNameBlank(part)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+  * パートのファイル名が空かどうかを判定する
+  * @param {Object} part  MIME メールのパート
+  * @return {Boolean}  ファイル名が空かどうか
+  */
+function isFileNameBlank(part) {
+  return part.filename === undefined || part.filename === null || part.filename === "";
 }
 
 /**
@@ -396,9 +443,17 @@ function getAttachments( apiUri, auth, attachments ) {
   const httpLimit = httpClient.getRequestingLimit();
   let httpCount = 1; // HTTP リクエストの上限超えチェック用のカウンタ（メール取得のリクエスト後なので初期値は1）
   attachments.forEach( attachment => {
-    if ( attachment.body.data !== undefined ) { return; } // data があれば何もしない
+    if ( attachment.body.data !== undefined ) { // data があれば何もしない
+      return;
+    }
+    if ( attachment.body.attachmentId === undefined ) {
+      attachment.body["data"] = ""; // data も attachmentId も無い場合は空文字列をセット
+      return;
+    }
     httpCount++;
-    if ( httpCount > httpLimit ) { throw "Number of HTTP requests is over the limit."; }
+    if ( httpCount > httpLimit ) {
+      throw "Number of HTTP requests is over the limit.";
+    }
     const response = httpClient.begin()
       .authSetting( auth )
       .get( `${apiUri}/attachments/${attachment.body.attachmentId}` );
@@ -524,15 +579,15 @@ const prepareConfigs = (messageId) => {
 
 /**
  * 異常系のテスト
- * @param func
  * @param errorMsg
  */
-const assertError = (func, errorMsg) => {
+const assertError = (errorMsg) => {
   let failed = false;
   try {
     main();
   } catch (e) {
     failed = true;
+    expect(e.toString()).toEqual(errorMsg);
   }
   if (!failed) {
     fail();
@@ -546,7 +601,7 @@ test('Message ID is empty', () => {
   prepareConfigs(null);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'Message ID is empty.');
+  assertError('Message ID is empty.');
 });
 
 /**
@@ -573,7 +628,7 @@ test('The same data item is set multiple times - fromAddress and subject', () =>
   configs.putObject('conf_subject', dataDefs.fromAddress);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'The same data item is set multiple times.');
+  assertError('The same data item is set multiple times.');
 });
 
 /**
@@ -585,7 +640,7 @@ test('The same data item is set multiple times - recipientNames and body', () =>
   configs.putObject('conf_recipientNames', dataDefs.body);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'The same data item is set multiple times.');
+  assertError('The same data item is set multiple times.');
 });
 
 /**
@@ -629,7 +684,52 @@ test('Fail in 1st GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  assertError(main, 'Failed to get message. status: 400');
+  assertError('Failed to get message. status: 400');
+});
+
+/**
+ * サポートされていない MIME タイプ
+ * multipart/* でも text/plain でも text/html でもないメール（通常、ありえない）
+ */
+const UNSUPPORTED_MESSAGE = {
+  "id": "messageId-1",
+  "payload": {
+    "partId": "",
+    "mimeType": "application/octet-stream",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      }
+    ],
+    "body": {
+      "data": base64.encodeToUrlSafeString('テストメールです。\nこれはテストメールです。')
+    }
+  }
+};
+
+/**
+ * サポートされていない MIME タイプのメール（通常、ありえない）
+ */
+test('Unsupported MIME type', () => {
+  const messageId = 'messageId';
+  prepareConfigs(messageId);
+
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(UNSUPPORTED_MESSAGE));
+  });
+
+  assertError('Unsupported MIME type. application/octet-stream');
 });
 
 /**
@@ -828,7 +928,7 @@ test('Fail in 2nd GET Request', () => {
     return httpClient.createHttpResponse(400, 'application/json', `{}`);
   });
 
-  assertError(main, 'Failed to get attachment. status: 400');
+  assertError('Failed to get attachment. status: 400');
 });
 
 /**
@@ -1332,7 +1432,7 @@ test('Number of HTTP requests is over the limit', () => {
   const messageId = 'messageId-1';
   prepareConfigs(messageId);
 
-  const message = {...SAMPLE_MESSAGE_1};
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1)); // ディープコピー
   const httpRequestLimit = httpClient.getRequestingLimit();
   
   // もともと SAMPLE_MESSAGE_1 には添付ファイルが 1 つある
@@ -1353,7 +1453,7 @@ test('Number of HTTP requests is over the limit', () => {
     return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
   });
 
-  assertError(main, 'Number of HTTP requests is over the limit.');
+  assertError('Number of HTTP requests is over the limit.');
 });
 
 /**
@@ -1363,7 +1463,7 @@ test('200 Success - Number of HTTP requests is within the limit', () => {
   const messageId = 'messageId-1';
   const dataDefs = prepareConfigs(messageId);
 
-  const message = {...SAMPLE_MESSAGE_1};
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1)); // ディープコピー
   const httpRequestLimit = httpClient.getRequestingLimit();
 
   // もともと SAMPLE_MESSAGE_1 には添付ファイルが 1 つある
@@ -1400,9 +1500,9 @@ test('200 Success - Attachment has no name', () => {
   const messageId = 'messageId-1';
   const dataDefs = prepareConfigs(messageId);
 
-  const attachmentPart = {...ATTACHMENT_PART};
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
   delete attachmentPart.filename; // ファイル名を削除
-  const message = {...SAMPLE_MESSAGE_1};
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1)); // ディープコピー
   message.payload.parts[0].parts[1] = attachmentPart; // 添付ファイルを置き換え
 
   let reqCount = 0;
@@ -1436,9 +1536,9 @@ test('200 Success - Attachment has no Content-Type', () => {
   const messageId = 'messageId-1';
   const dataDefs = prepareConfigs(messageId);
 
-  const attachmentPart = {...ATTACHMENT_PART};
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
   attachmentPart.headers = attachmentPart.headers.filter(header => header.name !== 'Content-Type');
-  const message = {...SAMPLE_MESSAGE_1};
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1)); // ディープコピー
   message.payload.parts[0].parts[1] = attachmentPart; // 添付ファイルを置き換え
 
   let reqCount = 0;
@@ -1473,9 +1573,9 @@ test('200 Success - Attachment has no Content-Disposition', () => {
   const messageId = 'messageId-1';
   const dataDefs = prepareConfigs(messageId);
 
-  const attachmentPart = {...ATTACHMENT_PART};
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
   attachmentPart.headers = attachmentPart.headers.filter(header => header.name !== 'Content-Disposition');
-  const message = {...SAMPLE_MESSAGE_1};
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1)); // ディープコピー
   message.payload.parts[0].parts[1] = attachmentPart; // 添付ファイルを置き換え
 
   let reqCount = 0;
@@ -1607,6 +1707,710 @@ test('200 Success - Some data items are not set', () => {
   expect(files[0].getName()).toEqual('添付ファイル1.png');
   expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
   expect(files[0].getContentType()).toEqual('image/png');
+});
+
+/**
+ * マルチパートが入れ子になったメール
+ * ネストされたマルチパートに添付ファイルがある
+ */
+const SAMPLE_MESSAGE_6 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('テストメール6です。\nこれはテストメール6です。')
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "multipart/mixed",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/ms-tnef; name=\"winmail.dat\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"winmail.dat\""
+          }
+        ],
+        "body": {
+          "attachmentId": "1234567890"
+        },
+        "parts": [
+          {
+            "partId": "1.0",
+            "mimeType": "application/octet-stream",
+            "filename": "添付ファイル1.png",
+            "body": {
+              "attachmentId": "attachmentId-1"
+            }
+          },
+          {
+            "partId": "1.1",
+            "mimeType": "application/octet-stream",
+            "filename": "添付ファイル2.txt",
+            "body": {
+              "attachmentId": "attachmentId-2"
+            }
+          }
+        ]
+      }
+    ]
+  }
+};
+
+/**
+ * メール取得成功
+ * マルチパートが入れ子になっていて、その中に添付ファイルがある場合
+ */
+test('200 Success - Multipart message with a nested multipart which has attachments', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_6));
+    }
+    // 添付ファイル取得の GET リクエスト
+    if (reqCount === 1) {
+      assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+    }
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-2');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_2));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメール6です。\nこれはテストメール6です。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(2); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル1.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png');
+  expect(files[1].getName()).toEqual('添付ファイル2.txt');
+  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_2.size);
+  expect(files[1].getContentType()).toEqual('text/plain');
+});
+
+/**
+ * マルチパートが入れ子になったメール
+ * ネストされたマルチパートに本文パートがある
+ */
+const SAMPLE_MESSAGE_7 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/related",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/related; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"0000000000004d692405b70481e6\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0.0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "base64"
+              }
+            ],
+            "body": {
+              "data": base64.encodeToUrlSafeString('テストメール7です。\nこれはテストメール7です。')
+            }
+          },
+          {
+            "partId": "0.1",
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "quoted-printable"
+              }
+            ],
+            "body": {
+              "data": base64.encodeToUrlSafeString('<h1>テストメールです。</h1>\n<p>これはテストメールです。</p>')
+            }
+          }
+        ]
+      },
+      {
+        "partId": "1",
+        "mimeType": "image/png",
+        "filename": "添付ファイル1.png",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "image/png; name=\"添付ファイル1.png\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"添付ファイル1.png\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          }
+        ],
+        "body": {
+          "attachmentId": "attachmentId-1"
+        }
+      },
+      {
+        "partId": "2",
+        "mimeType": "text/plain",
+        "filename": "添付ファイル2.txt",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; name=\"添付ファイル2.txt\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"添付ファイル2.txt\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          }
+        ],
+        "body": {
+          "attachmentId": "attachmentId-2"
+        }
+      }
+    ]
+  }
+};
+
+/**
+ * メール取得成功
+ * マルチパートが入れ子になっていて、その中に本文パートがある場合
+ */
+test('200 Success - Multipart message with a nested multipart which has email body', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_7));
+    }
+    // 添付ファイル取得の GET リクエスト
+    if (reqCount === 1) {
+      assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+    }
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-2');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_2));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメール7です。\nこれはテストメール7です。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(2); // 事前ファイルは削除される
+  expect(files[0].getName()).toEqual('添付ファイル1.png');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png');
+  expect(files[1].getName()).toEqual('添付ファイル2.txt');
+  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_2.size);
+  expect(files[1].getContentType()).toEqual('text/plain');
+});
+
+/**
+ * 例外的だが添付ファイルとして扱われるパート、無視されるパートがあるメール
+ */
+const SAMPLE_MESSAGE_8 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        // Content-Disposition / filename / attachmentId がいずれもないパートは、
+        // いったんは添付ファイルでないとみなされるが、
+        // 本文パートの候補にならない mimeType の場合は、添付ファイルとして扱われる
+        "partId": "0",
+        "mimeType": "text/csv",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/csv"
+          }
+        ],
+        "body": { // 空
+          "size": 0
+        }
+      },
+      {
+        // 本文パートの候補（テキスト本文）
+        "partId": "1",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('テストメール8です。\nこれはテストメール8です。')
+        }
+      },
+      {
+        // 本文パートの候補（テキスト本文）はすでにあるので、無視される
+        "partId": "2",
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline"
+          }
+        ],
+        "body": { // 空
+          "size": 0
+        }
+      },
+      {
+        // Content-Type がない場合、mimeType には text/plain が入る
+        // 本文パートの候補（テキスト本文）はすでにあるので、このパートは無視される
+        "partId": "3",
+        "mimeType": "text/plain", // Content-Type がない場合、mimeType には text/plain が入る
+        "headers": [
+          {
+            "name": "Content-Disposition",
+            "value": "inline"
+          }
+        ],
+        "body": JSON.parse(JSON.stringify(SAMPLE_ATTACHMENT_1)) // ディープコピー
+      },
+      {
+        // 本文パートの候補（HTML 本文）になるが、テキスト本文のパートがあるので、このパートは無視される
+        "partId": "4",
+        "mimeType": "text/html",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/html; charset=\"UTF-8\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline"
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('<p>テストメール8です。</p><p>これはテストメール8です。</p>')
+        }
+      }
+    ]
+  }
+};
+
+/**
+ * 無視されるパートがある場合
+ */
+test('200 Success - Some parts ignored', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_8));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメール8です。\nこれはテストメール8です。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1);
+  expect(files[0].getName()).toEqual('noname');
+  expect(files[0].getContentType()).toEqual('text/csv');
+  // 本文として採用されなかった text/plain と text/html のパートは無視される
+});
+
+/**
+ * 本文パートが見つからないメール
+ */
+const SAMPLE_MESSAGE_9 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [ // 添付ファイルのパートのみ
+      {
+        "partId": "0",
+        "mimeType": "text/csv",
+        "filename": "添付ファイル.csv",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/csv"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"添付ファイル.csv\""
+          }
+        ],
+        "body": {
+          "data": base64.encodeToUrlSafeString('1, テスト1\n2, テスト2')
+        }
+      }
+    ]
+  }
+};
+
+/**
+ * 本文パートが見つからない場合
+ */
+test('200 Success - No body part found', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_9));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual(''); // 本文として空文字列が保存される
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1);
+  expect(files[0].getName()).toEqual('添付ファイル.csv');
+  expect(files[0].getContentType()).toEqual('text/csv');
+});
+
+/**
+ * 子パートがないマルチパートメール
+ */
+const SAMPLE_MESSAGE_10 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "テストメールです。",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\"From 表示名\" \u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\"To 表示名\" \u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名10"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"00000000000068de8505b666c3b9\""
+      }
+    ],
+    "body": {
+      "size": 0
+    }
+  }
+};
+
+/**
+ * マルチパートメールに子パートがない場合
+ */
+test('200 Success - No inner-part', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_10));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名10');
+  expect(engine.findData(dataDefs.body)).toEqual(''); // 本文として空文字列が保存される
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(0);
+});
+
+/**
+ * 本文が空のメール
+ */
+const SAMPLE_MESSAGE_11 = {
+  "id": "messageId-1",
+  "threadId": "threadId",
+  "labelIds": [
+    "UNREAD",
+    "INBOX"
+  ],
+  "snippet": "",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/plain",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "Mon, 7 Mar 2022 10:00:00 +0900 (GMT+09:00)"
+      },
+      {
+        "name": "From",
+        "value": "\u003cFrom@example.com\u003e"
+      },
+      {
+        "name": "To",
+        "value": "\u003cTo@example.com\u003e"
+      },
+      {
+        "name": "Subject",
+        "value": "件名11"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=\"UTF-8\""
+      }
+    ],
+    "body": { // 空
+      "size": 0
+    }
+  }
+};
+
+/**
+ * 本文が空の場合
+ */
+test('200 Success - Body is blank', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    assertGetMessageRequest(request, messageId);
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_11));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  // 宛先等の確認は省略
+  expect(engine.findData(dataDefs.subject)).toEqual('件名11');
+  expect(engine.findData(dataDefs.body)).toEqual(''); // 本文として空文字列が保存される
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(0);
 });
 
 ]]></test>
