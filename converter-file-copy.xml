@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+
+    <label>Converter (Copy File)</label>
+    <label locale="ja">コンバータ（ファイルコピー）</label>
+
+    <last-modified>2024-07-02</last-modified>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-converter-file-copy/
+    </help-page-url>
+    <help-page-url locale="ja">
+        https://support.questetra.com/ja/bpmn-icons/service-task-converter-file-copy/
+    </help-page-url>
+
+    <summary>This item copies the attachment file of the File type data item to the specified File type data item. If there is only one target file, the file name can also be changed.
+    </summary>
+    <summary locale="ja">この工程は、ファイル型データ項目の添付ファイルを、指定したファイル型データ項目に複製します。対象ファイルが１つなら、ファイル名を変更することも可能です。
+    </summary>
+
+    <license>(C) Questetra, Inc. (MIT License)</license>
+
+
+    <configs>
+        <config name="conf_SourceFileDataId" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C1: Source File type data item</label>
+            <label locale="ja">C1: コピー元ファイル型データ項目</label>
+        </config>
+        <config name="conf_CopyToFileDataId" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C2: File type data item to copy to</label>
+            <label locale="ja">C2: コピー先ファイル型データ項目</label>
+        </config>
+        <config name="conf_DeleteOtherFiles" form-type="TOGGLE">
+            <label>C3: Delete other files when saving</label>
+            <label locale="ja">C3: 保存時に他のファイルを削除する</label>
+        </config>>
+        <config name="conf_FileName" form-type="TEXTFIELD" required="false" el-enabled="true">
+            <label>C4: File name (named with the source file if blank)</label>
+            <label locale="ja">C4: 保存ファイル名 (空白の場合、コピー元のファイル名で保存されます。)</label>
+        </config>
+    </configs>
+
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+
+    <script><![CDATA[
+function main() {
+    //// == 自動工程コンフィグの参照 / Config Retrieving ==
+    const sourceFileDef = configs.getObject("conf_SourceFileDataId"); // (returns ProcessDataDefinitionView)
+    const copyToFileDef = configs.getObject("conf_CopyToFileDataId"); // (returns ProcessDataDefinitionView)
+
+    const deleteOtherFiles = configs.getObject("conf_DeleteOtherFiles");
+    const sourceFile = engine.findData(sourceFileDef);
+    const copyToFile = engine.findData(copyToFileDef);
+
+    // コピー元のファイル型データに複数添付されている場合、エラー
+    if (sourceFile !== null && sourceFile.size() > 1) {
+        throw new Error("Attachment of multiple files can not be supported.");
+    }
+    // コピー元のファイルがない場合
+    if (sourceFile === null) {
+        throw new Error('Source file is empty.');
+    }
+
+    let fileName = configs.get("conf_FileName");
+    if (fileName === "" || fileName === null) {
+        // コピー元ファイルの名前を取得する
+        fileName = sourceFile.get(0).getName();
+    }
+
+    // コピー元のファイル型データ項目にファイルが1つ添付されている場合
+    copyFile = copyFile(sourceFile, deleteOtherFiles, fileName);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    engine.setData(copyToFileDef, copyFile);
+}
+
+/**
+  * ファイルをコピーする
+  * @param {Qfile} sourceFile コピー元ファイル
+  * @param {boolean} deleteOtherFiles 保存時に他のファイルを削除するかどうか
+  * @param {String} filename 保存ファイル名
+  */
+function copyFile(sourceFile, deleteOtherFiles, fileName) {
+    let myFiles;
+    if (deleteOtherFiles === true) {
+        myFiles = new java.util.ArrayList();
+    } else {
+        // ワークフローデータからファイル型データの配列を取得
+        myFiles = engine.findData(configs.getObject("conf_CopyToFileDataId"));
+        if (myFiles === null) {
+            myFiles = new java.util.ArrayList();
+        }
+    }
+
+    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(fileName, sourceFile.get(0).getContentType(), sourceFile.get(0)) //ファイルデータをそのまま複製保存する
+    myFiles.add(qfile);
+
+    return myFiles;
+}
+
+]]></script>
+
+    <test><![CDATA[
+/**
+ * 設定の準備
+ * @param sourceFile コピー元ファイル
+ * @param deleteOtherFiles
+ * @param fileName
+ * @param copyToFile コピー先ファイル
+ * @return fileDef: {Object}
+ */
+const prepareConfigs = (sourceFile, deleteOtherFiles, fileName, copyToFile) => {
+    // ファイル型データ項目を準備して、config に指定
+    const sourceFileDef = engine.createDataDefinition('コピー元ファイル', 1, 'q_file', 'FILE');
+    configs.putObject('conf_SourceFileDataId', sourceFileDef);
+    engine.setData(sourceFileDef, sourceFile);
+
+    const copyToFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
+    configs.putObject('conf_CopyToFileDataId', copyToFileDef);
+    engine.setData(copyToFileDef, copyToFile);
+
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // ファイル名を config に指定
+    configs.put('conf_FileName', fileName);
+
+    return {
+        sourceFileDef,
+        copyToFileDef
+    };
+};
+
+
+/**
+ * 設定の準備
+ * コピー元ファイル、コピー先ファイルのデータ項目が同一
+ * @param sourceFile コピー元ファイル
+ * @param deleteOtherFiles
+ * @param fileName
+ * @param copyToFile コピー先ファイル
+ * @return fileDef: {Object}
+ */
+const prepareSameConfigs = (sourceFile, deleteOtherFiles, fileName, copyToFile) => {
+    // ファイル型データ項目を準備して、config に指定
+    const sourceFileDef = engine.createDataDefinition('コピー元ファイル', 1, 'q_file', 'FILE');
+    configs.putObject('conf_SourceFileDataId', sourceFileDef);
+    engine.setData(sourceFileDef, sourceFile);
+
+    const copyToFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
+    configs.putObject('conf_CopyToFileDataId', copyToFileDef);
+    engine.setData(copyToFileDef, sourceFile);
+
+    configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
+
+    // ファイル名を config に指定
+    configs.put('conf_FileName', fileName);
+
+    return {
+        sourceFileDef,
+        copyToFileDef
+    };
+};
+
+
+/**
+ * 異常系のテスト
+ * @param func
+ * @param errorMsg
+ */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail();
+    }
+};
+
+/**
+ * コピー元ファイルが添付されていない場合
+ */
+test('Source file is empty', () => {
+    prepareConfigs(null, true, '', null);
+
+    assertError(main, 'Source file is empty.');
+});
+
+
+/**
+ * コピー元にファイルが複数添付されている場合
+ */
+test('Attachment of multiple files can not be supported', () => {
+    let sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    sourceFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+
+    const {
+        sourceFileDef,
+        copyToFileDef
+    } = prepareConfigs(sourceFiles, true, '', null);
+
+    assertError(main, 'Attachment of multiple files can not be supported.');
+});
+
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param contentType
+ */
+const assertFile = (file, name, contentType) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(contentType);
+};
+
+
+/**
+ * コピー成功
+ * コピー元のファイル型データには 1 ファイル添付
+ * 他のファイルを削除する
+ * ファイル名指定無し
+ * コピー先のファイル型データには 2 ファイル添付
+ */
+test('success - deleteOtherFiles - 2 attachments ', () => {
+    let sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('test.pdf', 'application/pdf', 'test'));
+
+    let copyToFiles = new java.util.ArrayList();
+    copyToFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    copyToFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+
+    const {
+        sourceFileDef,
+        copyToFileDef
+    } = prepareConfigs(sourceFiles, true, '', copyToFiles);
+
+    main();   
+
+    const files = engine.findData(copyToFileDef);
+    expect(files.size()).toEqual(1);
+    const file = files.get(0);
+    assertFile(file, 'test.pdf','application/pdf');
+});
+
+
+/**
+ * コピー成功
+ * コピー元のファイル型データには 1 ファイル添付
+ * 他のファイルを削除しない
+ * ファイル名を指定
+ * コピー先のファイル型データには 2 ファイル添付
+ */
+test('success - 2 attachments - with name', () => {
+    let sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('test.txt', 'text/plain; charset=UTF-8', 'test\n'));
+
+    let copyToFiles = new java.util.ArrayList();
+    copyToFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    copyToFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+
+    const {
+        sourceFileDef,
+        copyToFileDef
+    } = prepareConfigs(sourceFiles, false, 'testqqq.txt', copyToFiles);
+
+    main();   
+
+    const files = engine.findData(copyToFileDef);
+    expect(files.size()).toEqual(3);
+    let file = files.get(0);
+    assertFile(file, '事前ファイル.txt','text/plain; charset=UTF-8');
+    file = files.get(1);
+    assertFile(file, 'test.html','text/html; charset=UTF-8');
+    file = files.get(2);
+    assertFile(file, 'testqqq.txt','text/plain; charset=UTF-8');
+});
+
+
+/**
+ * コピー成功
+ * コピー元のファイル型データ項目とコピー先のファイル型データ項目が同一
+ * コピー元のファイル型データには 1 ファイル添付
+ * 他のファイルを削除しない
+ * ファイル名を指定しない
+ */
+test('success - Same File type data ', () => {
+    let sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('test.png', 'image/png', 'test\n'));
+
+    const {
+        sourceFileDef,
+        copyToFileDef
+    } = prepareSameConfigs(sourceFiles, false, 'qqq.png', sourceFiles);
+
+    main();   
+
+    const files = engine.findData(sourceFileDef);
+    expect(files.size()).toEqual(2);
+    let file = files.get(0);
+    assertFile(file, 'test.png','image/png');
+    file = files.get(1);
+    assertFile(file, 'qqq.png','image/png');
+});
+
+/**
+ * コピー成功
+ * コピー元のファイル型データ項目とコピー先のファイル型データ項目が同一
+ * コピー元のファイル型データには 1 ファイル添付
+ * 他のファイルを削除する
+ * ファイル名を指定
+ */
+test('success - Same File type data - deleteOtherFiles - with name', () => {
+    let sourceFiles = new java.util.ArrayList();
+    sourceFiles.add(engine.createQfile('test.txt', 'text/plain; charset=UTF-8', 'test\n'));
+
+    const {
+        sourceFileDef,
+        copyToFileDef
+    } = prepareSameConfigs(sourceFiles, true, 'qqq.txt', sourceFiles);
+
+    main();   
+
+    const files = engine.findData(sourceFileDef);
+    expect(files.size()).toEqual(1);
+    const file = files.get(0);
+    assertFile(file, 'qqq.txt', 'text/plain; charset=UTF-8');
+});
+
+
+
+]]></test>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAACx0lEQVRYR8WXz0sUYRjHP5O0CLX+
+        uHTIQ7sHIby0BdIh0EU6hwmd20Vx9mb9AUvlQQSRVhBq0WW3gxcFKzx4000kBKO2QNgSssgS6uDu
+        oQQJJt4ZZ3ecH+s4O+kLyy7s+z7fz/PM87zPMxKnvKRj6afpBbpRiCDRAkQOzhdQKCEhvvMkeOnW
+        7tEAWVrYZwi4B6qom1UCUgSYII747bhqAzwhxhkeH0PYLCTE48i8cCJwBnhKCkn13I+VQua+nSF7
+        gDQ54K4fyhUbCjkSxM02rQD+en5YT2GChJpLlXUYQHvmWV89txq7bcyJKoCW7Vt1JJxb7hIBwnp1
+        VAHSPAQeuLVSa99U1xTzW/Msflt02vYIWdXDCCBKptkPgI07GzQFmhhcGXSCKCHTWgXQbrjnRvGe
+        iz20nWvzxJO8lqS9uZ3t39u1INRc0CJgk/nCi47WDk8AxkOOEAcVoQGkyat3vGH5BbD3d4/RwijD
+        b4fNzrxCJqoDfAEuGXdMd03TeaHTUwRC50NqDgjx8Q/jJN8k7ewUkLmqAyielBwOieiFg+Fa4tpJ
+        GelIgODZIJnuDDt/dhh67a41rN5aZfnHspPnVWwDgOURiF1CPBvN0hvqJfcxx8DKgH+BUnhPgohj
+        EhrFG6QG1n6usVne9ASw9H2J3CfR3w4tQxLalOHszVn6wn0I8XpXppixRs9UhpaLaPLGJP2X+2ls
+        aKxXH1sAMFxE2l1guYqNEHOf51j4uuAJplgqsv5r3Xi2jKyNd0c2Ix1iZnPGzyS0aUZaOxbVYGlI
+        Y9fH2N3fZeTdiKcImA6VCRCytmOx61QHEh3zf45kUAm9LndyQyk8QyZmfoYnNZZbPK8dAf1fbVAR
+        V5jXSakMxLy9mOgQWnWIUVp83IIIYfFqlqrv1cz8wEREFKJIRFBoQeKKukU0FokSCgUk8rU8dp8D
+        flS8Cxv/AFp57iGwqv7bAAAAAElFTkSuQmCC
+    </icon>
+
+</service-task-definition>
