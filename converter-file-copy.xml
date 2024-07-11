@@ -4,7 +4,7 @@
     <label>Converter (Copy File)</label>
     <label locale="ja">コンバータ（ファイルコピー）</label>
 
-    <last-modified>2024-07-09</last-modified>
+    <last-modified>2024-07-11</last-modified>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-converter-file-copy/
     </help-page-url>
     <help-page-url locale="ja">
@@ -24,7 +24,7 @@
             <label>C1: Source File type data item</label>
             <label locale="ja">C1: コピー元ファイル型データ項目</label>
         </config>
-        <config name="conf_CopyToFileDataId" required="true" form-type="SELECT" select-data-type="FILE">
+        <config name="conf_DestinationFileDataId" required="true" form-type="SELECT" select-data-type="FILE">
             <label>C2: File type data item to copy to</label>
             <label locale="ja">C2: コピー先ファイル型データ項目</label>
         </config>
@@ -45,11 +45,12 @@
 function main() {
     //// == 自動工程コンフィグの参照 / Config Retrieving ==
     const sourceFileDef = configs.getObject("conf_SourceFileDataId"); // (returns ProcessDataDefinitionView)
-    const copyToFileDef = configs.getObject("conf_CopyToFileDataId"); // (returns ProcessDataDefinitionView)
+    const destinationFileDef = configs.getObject("conf_DestinationFileDataId"); // (returns ProcessDataDefinitionView)
 
     const deleteOtherFiles = configs.getObject("conf_DeleteOtherFiles");
+    // ワークフローデータからファイル型データの配列を取得。
     const sourceFiles = engine.findData(sourceFileDef);
-    const copyToFiles = engine.findData(copyToFileDef);
+    const destinationFiles = engine.findData(destinationFileDef);
 
     // コピー元のファイルがない場合
     if (sourceFiles === null) {
@@ -59,38 +60,37 @@ function main() {
     let fileName = configs.get("conf_FileName");
     if (fileName !== "" && fileName !== null) {
         if (sourceFiles.size() > 1) {
-    // ファイル名が指定されていて、コピー元のファイル型データに複数添付されている場合、エラー
+            // ファイル名が指定されていて、コピー元のファイル型データに複数添付されている場合、エラー
             throw new Error("Attachment of multiple files can not be named.");
         }
     }
 
-    copyFiles = copyFile(sourceFiles, deleteOtherFiles, fileName, copyToFiles);
+    let myFiles = new java.util.ArrayList();
+    if (deleteOtherFiles === false) {
+        if (destinationFiles !== null) {
+            myFiles.addAll(destinationFiles);
+        }
+    }
+
+    const newFiles = copyFile(sourceFiles, fileName, myFiles);
 
     //// == ワークフローデータへの代入 / Data Updating ==
-    engine.setData(copyToFileDef, copyFiles);
+    engine.setData(destinationFileDef, newFiles);
 }
 
 /**
   * ファイルをコピーする
   * @param {Qfile} sourceFiles コピー元ファイル
-  * @param {boolean} deleteOtherFiles 保存時に他のファイルを削除するかどうか
   * @param {String} filename 保存ファイル名
-  * @param {Qfile} copyToFile コピー先ファイル
+  * @param {java.util.ArrayList<QfileView>} myFiles （ワークフローデータから取得した）ファイル型データの配列
+  * @return {java.util.ArrayList<QfileView>} myFiles コピーファイルを追加した配列
   */
-function copyFile(sourceFiles, deleteOtherFiles, fileName, copyToFiles) {
-
-    let myFiles = new java.util.ArrayList();
-    if (deleteOtherFiles === false) {
-        // ワークフローデータからファイル型データの配列を取得。
-        if (copyToFiles !== null) {
-            myFiles.addAll(copyToFiles);
-        }
-    }
+function copyFile(sourceFiles, fileName, myFiles) {
 
     let qfile;
-    for(let i = 0; i < sourceFiles.size(); i ++){
+    for (let i = 0; i < sourceFiles.size(); i++) {
         let sourceFilesInfo = sourceFiles.get(i);
-        if(fileName !== "" && fileName !== null) {
+        if (fileName !== "" && fileName !== null) {
             qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(fileName, sourceFilesInfo.getContentType(), sourceFilesInfo);
         } else {
             qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(sourceFilesInfo.getName(), sourceFilesInfo.getContentType(), sourceFilesInfo); //ファイルデータをそのまま複製保存する
@@ -125,18 +125,18 @@ function copyFile(sourceFiles, deleteOtherFiles, fileName, copyToFiles) {
  * @param sourceFiles コピー元ファイル
  * @param deleteOtherFiles
  * @param fileName
- * @param copyToFiles コピー先ファイル
+ * @param destinationFiles コピー先ファイル
  * @return fileDef: {Object}
  */
-const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName, copyToFiles) => {
+const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName, destinationFiles) => {
     // ファイル型データ項目を準備して、config に指定
     const sourceFileDef = engine.createDataDefinition('コピー元ファイル', 1, 'q_file', 'FILE');
     configs.putObject('conf_SourceFileDataId', sourceFileDef);
     engine.setData(sourceFileDef, sourceFiles);
 
-    const copyToFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
-    configs.putObject('conf_CopyToFileDataId', copyToFileDef);
-    engine.setData(copyToFileDef, copyToFiles);
+    const destinationFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
+    configs.putObject('conf_DestinationFileDataId', destinationFileDef);
+    engine.setData(destinationFileDef, destinationFiles);
 
     configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
 
@@ -145,7 +145,7 @@ const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName, copyToFiles) =>
 
     return {
         sourceFileDef,
-        copyToFileDef
+        destinationFileDef
     };
 };
 
@@ -156,18 +156,18 @@ const prepareConfigs = (sourceFiles, deleteOtherFiles, fileName, copyToFiles) =>
  * @param sourceFiles コピー元ファイル
  * @param deleteOtherFiles
  * @param fileName
- * @param copyToFiles コピー先ファイル
+ * @param destinationFiles コピー先ファイル
  * @return fileDef: {Object}
  */
-const prepareSameConfigs = (sourceFiles, deleteOtherFiles, fileName, copyToFiles) => {
+const prepareSameConfigs = (sourceFiles, deleteOtherFiles, fileName, destinationFiles) => {
     // ファイル型データ項目を準備して、config に指定
     const sourceFileDef = engine.createDataDefinition('コピー元ファイル', 1, 'q_file', 'FILE');
     configs.putObject('conf_SourceFileDataId', sourceFileDef);
     engine.setData(sourceFileDef, sourceFiles);
 
-    const copyToFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
-    configs.putObject('conf_CopyToFileDataId', copyToFileDef);
-    engine.setData(copyToFileDef, sourceFiles);
+    const destinationFileDef = engine.createDataDefinition('コピー先ファイル', 2, 'q_file2', 'FILE');
+    configs.putObject('conf_DestinationFileDataId', destinationFileDef);
+    engine.setData(destinationFileDef, sourceFiles);
 
     configs.putObject('conf_DeleteOtherFiles', deleteOtherFiles);
 
@@ -176,7 +176,7 @@ const prepareSameConfigs = (sourceFiles, deleteOtherFiles, fileName, copyToFiles
 
     return {
         sourceFileDef,
-        copyToFileDef
+        destinationFileDef
     };
 };
 
@@ -220,7 +220,7 @@ test('Attachment of multiple files can not be nameed', () => {
 
     const {
         sourceFileDef,
-        copyToFileDef
+        destinationFileDef
     } = prepareConfigs(sourceFiles, true, 'test.txt', null);
 
     assertError(main, 'Attachment of multiple files can not be named.');
@@ -250,18 +250,18 @@ test('success - 1file - deleteOtherFiles - 2 attachments ', () => {
     let sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('test.pdf', 'application/pdf', 'test'));
 
-    let copyToFiles = new java.util.ArrayList();
-    copyToFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
-    copyToFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+    let destinationFiles = new java.util.ArrayList();
+    destinationFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    destinationFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
 
     const {
         sourceFileDef,
-        copyToFileDef
-    } = prepareConfigs(sourceFiles, true, '', copyToFiles);
+        destinationFileDef
+    } = prepareConfigs(sourceFiles, true, '', destinationFiles);
 
     main();   
 
-    const files = engine.findData(copyToFileDef);
+    const files = engine.findData(destinationFileDef);
     expect(files.size()).toEqual(1);
     const file = files.get(0);
     assertFile(file, 'test.pdf','application/pdf');
@@ -279,18 +279,18 @@ test('success - 1file - 2 attachments - with name', () => {
     let sourceFiles = new java.util.ArrayList();
     sourceFiles.add(engine.createQfile('test.txt', 'text/plain; charset=UTF-8', 'test\n'));
 
-    let copyToFiles = new java.util.ArrayList();
-    copyToFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
-    copyToFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
+    let destinationFiles = new java.util.ArrayList();
+    destinationFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    destinationFiles.add(engine.createQfile('test.html', 'text/html; charset=UTF-8', '<html lang="ja"></html>'));
 
     const {
         sourceFileDef,
-        copyToFileDef
-    } = prepareConfigs(sourceFiles, false, 'testqqq.txt', copyToFiles);
+        destinationFileDef
+    } = prepareConfigs(sourceFiles, false, 'testqqq.txt', destinationFiles);
 
     main();   
 
-    const files = engine.findData(copyToFileDef);
+    const files = engine.findData(destinationFileDef);
     expect(files.size()).toEqual(3);
     let file = files.get(0);
     assertFile(file, '事前ファイル.txt','text/plain; charset=UTF-8');
@@ -313,17 +313,17 @@ test('success - 2files - 1 attachment - with name', () => {
     sourceFiles.add(engine.createQfile('test.txt', 'text/plain; charset=UTF-8', 'test\n'));
     sourceFiles.add(engine.createQfile('test.png', 'image/png', 'test\n'));
 
-    let copyToFiles = new java.util.ArrayList();
-    copyToFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
+    let destinationFiles = new java.util.ArrayList();
+    destinationFiles.add(engine.createQfile('事前ファイル.txt', 'text/plain; charset=UTF-8', '事前ファイル\n'));
 
     const {
         sourceFileDef,
-        copyToFileDef
-    } = prepareConfigs(sourceFiles, false, '', copyToFiles);
+        destinationFileDef
+    } = prepareConfigs(sourceFiles, false, '', destinationFiles);
 
     main();   
 
-    const files = engine.findData(copyToFileDef);
+    const files = engine.findData(destinationFileDef);
     expect(files.size()).toEqual(3);
     let file = files.get(0);
     assertFile(file, '事前ファイル.txt','text/plain; charset=UTF-8');
@@ -348,12 +348,12 @@ test('success - 2files - Same File type data ', () => {
 
     const {
         sourceFileDef,
-        copyToFileDef
+        destinationFileDef
     } = prepareSameConfigs(sourceFiles, false, '', sourceFiles);
 
     main();   
 
-    const files = engine.findData(copyToFileDef);
+    const files = engine.findData(destinationFileDef);
     expect(files.size()).toEqual(4);
     let file = files.get(0);
     assertFile(file, 'test.png','image/png');
@@ -379,12 +379,12 @@ test('success - 1file - Same File type data - deleteOtherFiles - with name', () 
 
     const {
         sourceFileDef,
-        copyToFileDef
+        destinationFileDef
     } = prepareSameConfigs(sourceFiles, true, 'qqq.txt', sourceFiles);
 
     main();   
 
-    const files = engine.findData(copyToFileDef);
+    const files = engine.findData(destinationFileDef);
     expect(files.size()).toEqual(1);
     const file = files.get(0);
     assertFile(file, 'qqq.txt', 'text/plain; charset=UTF-8');
