@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2024-03-18</last-modified>
+    <last-modified>2024-07-22</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -35,6 +35,12 @@
             <item value="gemini-1.0-pro-vision">
                 <label>Gemini 1.0 Pro Vision</label>
             </item>
+            <item value="gemini-1.5-pro">
+                <label>Gemini 1.5 Pro</label>
+            </item>
+            <item value="gemini-1.5-flash">
+                <label>Gemini 1.5 Flash</label>
+            </item>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C5: Maximum number of tokens to consume (model default if blank)</label>
@@ -55,8 +61,8 @@
         </config>
         <config name="conf_Images1" required="false" form-type="SELECT"
                 select-data-type="FILE">
-            <label>I1: Images / videos to attach to user message</label>
-            <label locale="ja">I1: ユーザメッセージに添付する画像／動画</label>
+            <label>I1: Images / videos / audios to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像／動画／音声</label>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTAREA">
@@ -67,9 +73,7 @@
 
     <script><![CDATA[
 
-const MAX_IMAGE_NUM = 16; // Gemini の制限。1 プロンプトにつき添付画像 16 個まで
-
-const MAX_IMAGE_SIZE = 20971520; // Gemini の制限。1 ファイルにつき 20 MB まで
+const MAX_IMAGE_SIZE = 20971520; // Gemini のインラインファイルの制限。1 ファイルにつき 20 MB まで
 
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
@@ -191,17 +195,14 @@ const retrieveImages = () => {
     if (images === null) {
         return [];
     }
-    if (images.size() > MAX_IMAGE_NUM) {
-        throw new Error(`Too many attached files. The maximum number is ${MAX_IMAGE_NUM}.`);
-    }
     const inlineImages = [];
     images.forEach(image => {
         if (image.getLength() > MAX_IMAGE_SIZE) {
             throw new Error(`Attached file "${image.getName()}" is too large. Each file must be less than ${MAX_IMAGE_SIZE} bytes.`);
         }
         const contentType = image.getContentType();
-        if (!contentType.startsWith('image/') && !contentType.startsWith('video/')){
-            throw new Error(`Attached file "${image.getName()}" is neither an image nor a video.`);
+        if (!contentType.startsWith('image/') && !contentType.startsWith('video/') && !contentType.startsWith('audio/')){
+            throw new Error(`Attached file "${image.getName()}" is neither an image, video nor audio.`);
         }
         const inlineImage = {
             mimeType: image.getContentType(),
@@ -734,28 +735,6 @@ const attachImages = (images) => {
 };
 
 /**
- * 添付ファイルの数が多すぎる
- */
-test('Too many attached files', () => {
-    const privateKeyId = 'key-12345';
-    const serviceAccount = 'service@example.com';
-    const region = 'asia-northeast1';
-    const projectId = 'project-67890';
-    const model = 'gemini-1.0-pro-vision';
-    const message = 'Please describe each image attached.';
-    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', '', '', message);
-
-    // 添付ファイルを指定
-    const images = [];
-    for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
-        images.push(createQfile(`画像${i}.png`, 'image/png', 100));
-    }
-    attachImages(images);
-
-    assertError(`Too many attached files. The maximum number is ${MAX_IMAGE_NUM}.`);
-});
-
-/**
  * 添付ファイルのサイズが大きすぎる
  */
 test('Attached file is too large', () => {
@@ -776,9 +755,9 @@ test('Attached file is too large', () => {
 });
 
 /**
- * 添付ファイルに画像でも動画でもないファイルを含む
+ * 添付ファイルに画像/動画/音声でないファイルを含む
  */
-test('Attached file is neither an image nor a video', () => {
+test('Attached file is neither an image, video nor audio', () => {
     const privateKeyId = 'key-12345';
     const serviceAccount = 'service@example.com';
     const region = 'asia-northeast1';
@@ -792,7 +771,7 @@ test('Attached file is neither an image nor a video', () => {
     const text = createQfile('テキストファイル', 'text/plain', 100);
     attachImages([video, text]);
 
-    assertError('Attached file "テキストファイル" is neither an image nor a video.');
+    assertError('Attached file "テキストファイル" is neither an image, video nor audio.');
 });
 
 /**
@@ -1007,9 +986,9 @@ test('Success - withmax tokens, empty attached files', () => {
  * gemini-1.0-pro-vision
  * 必須スコープ以外も指定
  * 最大トークン数、温度、停止シーケンスを指定しない
- * 画像ファイルを最大個数添付
+ * 画像ファイルを複数添付
  */
-test('Success - with default tokens, with max number of attached images', () => {
+test('Success - with default tokens, with a number of attached images', () => {
     const scope = `${ANOTHER_SCOPE} ${SCOPE}`;
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
@@ -1021,7 +1000,7 @@ test('Success - with default tokens, with max number of attached images', () => 
     
     // 添付ファイルを指定
     const images = [];
-    for (let i = 0; i < MAX_IMAGE_NUM; i++) {
+    for (let i = 0; i < 10; i++) {
         images.push(createQfile(`画像${i}.png`, 'image/png', 100));
     }
     attachImages(images);
@@ -1080,6 +1059,50 @@ test('Success - with default tokens, with an attached video', () => {
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('The video shows a sleeping cat.');
+});
+
+/**
+ * 成功
+ * gemini-1.5-pro
+ * 必須スコープのみ
+ * 最大トークン数、停止シーケンスを指定しない
+ * 温度を指定
+ * 動画ファイル、音声ファイルを添付
+ */
+test('Success - with default tokens, with a video and an audio', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-1.5-pro';
+    const temperature = '1.00';
+    const message = 'Please describe the video attached.';
+    const answerDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', temperature, '', message);
+    
+    // 添付ファイルを指定
+    const video = createQfile('動画.mov', 'video/mov', 500);
+    const audio = createQfile('音声.mp3', 'audio/mp3', 500);
+    attachImages([video, audio]);
+
+    const token = 'token-98765';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, null, 1, [], message, [video]);
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('The video shows a sleeping cat and the audio sounds like a cheering voice.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('The video shows a sleeping cat and the audio sounds like a cheering voice.');
 });
 
 ]]></test>
