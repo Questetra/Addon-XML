@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2024-07-23</last-modified>
+    <last-modified>2024-07-24</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -76,6 +76,16 @@
             <label>I1: Images to attach to user message</label>
             <label locale="ja">I1: ユーザメッセージに添付する画像</label>
         </config>
+        <config name="conf_Images1Detail" required="false" form-type="SELECT_ITEM">
+            <label>I1-D: Fidelity of image understanding (auto if not selected)</label>
+            <label locale="ja">I1-D: 画像解析の精密度（未設定の場合、auto）</label>
+            <item value="high">
+                <label>high</label>
+            </item>
+            <item value="low">
+                <label>low</label>
+            </item>
+        </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTAREA">
             <label>A1: Data item to save response from ChatGPT</label>
@@ -108,9 +118,10 @@ function main() {
         throw new Error('User Message is empty.');
     }
     const imageUrls1 = retrieveImageUrls('conf_Images1');
+    const imageDetail1 = configs.get('conf_Images1Detail');
 
     ////// == 演算 / Calculating ==
-    const answer1 = createChat(auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1);
+    const answer1 = createChat(auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer1 ?? '');
@@ -209,9 +220,10 @@ const retrieveImageUrls = (configName) => {
  * @param gptRole
  * @param message1
  * @param imageUrls1
+ * @param imageDetail1
  * @returns {String} answer1
  */
-const createChat = (auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1) => {
+const createChat = (auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1) => {
     //// OpenAI API > Documentation > API REFERENCE > CHAT
     //// https://platform.openai.com/docs/api-reference/chat
 
@@ -239,12 +251,16 @@ const createChat = (auth, organizationId, model, maxTokens, temperature, stopSeq
         text: message1
     });
     imageUrls1.forEach(imageUrl => {
-        message1Content.push({
+        const imageObj = {
             type: 'image_url',
             image_url: {
                 url: imageUrl
             }
-        });
+        };
+        if (imageDetail1 !== '') {
+            imageObj.image_url.detail = imageDetail1;
+        }
+        message1Content.push(imageObj);
     });
     requestJson.messages.push({
         role: 'user',
@@ -492,6 +508,7 @@ test('Content-Type of image file is not supported', () => {
  * @param {String} gptRole
  * @param {String} message
  * @param {Array<String>} imageContentTypes
+ * @param {String} imageDetail
  */
 const assertRequest = ({
                            url,
@@ -499,7 +516,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message, imageContentTypes) => {
+                       }, authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message, imageContentTypes, imageDetail = '') => {
     expect(url).toEqual('https://api.openai.com/v1/chat/completions');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -534,7 +551,7 @@ const assertRequest = ({
         text: message
     });
     imageContentTypes.forEach((contentType, index) => {
-        assertAttachment(userMessage, index, contentType);
+        assertAttachment(userMessage, index, contentType, imageDetail);
     });
 };
 
@@ -544,13 +561,19 @@ const assertRequest = ({
  * @param index
  * @param fileName
  * @param contentType
+ * @param imageDetail
  */
-const assertAttachment = (userMessage, index, contentType) => {
+const assertAttachment = (userMessage, index, contentType, imageDetail) => {
     const imageObj = userMessage.content[index + 1]; // 0 番目は text なので、1 加算
     expect(imageObj.type).toEqual('image_url');
     const url = imageObj.image_url.url;
     expect(url.split(',')[0]).toEqual(`data:${contentType};base64`);
     // ファイルのバイナリデータが base64 エンコードされた部分の確認は省略
+    if (imageDetail === '') {
+        expect(imageObj.image_url.detail).toEqual(undefined);
+    } else {
+        expect(imageObj.image_url.detail).toEqual(imageDetail);
+    }
 };
 
 /**
@@ -685,9 +708,9 @@ test('Success to request - with stop', () => {
 });
 
 /**
- * 成功 - 画像を添付
+ * 成功 - 画像を添付。detail 指定なし
  */
-test('Success to request - with attached images', () => {
+test('Success to request - with attached images, no detail param', () => {
     const answerDef = prepareConfigs('key5', '', 'gpt-4o', '', '', '', '', 'Describe the images attached.');
 
     // 添付画像を指定
@@ -702,6 +725,31 @@ test('Success to request - with attached images', () => {
     const imageContentTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
     httpClient.setRequestHandler(request => {
         assertRequest(request, 'key5', '', 'gpt-4o', MAX_TOKENS_DEFAULT, 1, [], '', 'Describe the images attached.', imageContentTypes);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
+    });
+    main();
+
+    // データ項目の値をチェック
+    expect(engine.findData(answerDef)).toEqual("The first one is a blue circle and the second one is a red square.");
+});
+
+/**
+ * 成功 - 画像を添付。detail を指定
+ */
+test('Success to request - with attached images, detail param set', () => {
+    const answerDef = prepareConfigs('key5', '', 'gpt-4o-mini', '', '', '', '', 'Describe the images attached.');
+    configs.put('conf_Images1Detail', 'low');
+
+    // 添付画像を指定
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE);
+    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
+    engine.setData(imagesDef, [image1, image2]);
+    configs.putObject('conf_Images1', imagesDef);
+
+    const imageContentTypes = ['image/png', 'image/jpeg'];
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key5', '', 'gpt-4o-mini', MAX_TOKENS_DEFAULT, 1, [], '', 'Describe the images attached.', imageContentTypes, 'low');
         return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
     });
     main();
