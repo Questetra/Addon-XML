@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Drive: Download File as PDF</label>
+    <label locale="ja">Google ドライブ: ファイルを PDF でダウンロード</label>
+    <!--
+    <last-modified>2024-07-29</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item downloads the specified files on Google Drive in PDF format. You can download multiple files at once.
+        When you download multiple files, you should write one File ID per line.
+    </summary>
+    <summary locale="ja">
+        この工程は、Google ドライブ内の指定ファイルを PDF 形式でダウンロードします。一度に複数のダウンロードが可能です。複数ダウンロードする場合、データ項目では
+        1 行につき 1 つずつファイル ID を書くようにしてください。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-google-drive-file-export/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-google-drive-file-export/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+            <label>C1: Service Account Setting</label>
+            <label locale="ja">C1: サービスアカウント設定</label>
+        </config>
+        <config name="conf_FileIds" required="true" form-type="SELECT" select-data-type="STRING_TEXTAREA" editable="true">
+            <label>C2: File IDs to download (Write one per line)</label>
+            <label locale="ja">C2: ダウンロードするファイルの ID（1 行に 1 つ）</label>
+        </config>
+        <config name="conf_FileData" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C3: Data item to add the downloaded files</label>
+            <label locale="ja">C3: ダウンロードファイルを追加保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const REQUEST_NUM_PER_FILE = 4; // ファイル 1 つにつき 4 回リクエストを行う
+const CONTENT_TYPE = 'application/pdf';
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const fileIds = retrieveFileIds();
+
+    const fileDef = configs.getObject('conf_FileData');
+    let files = engine.findData( fileDef );
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+
+    ////// == 演算 / Calculating ==
+    if (fileIds.length * REQUEST_NUM_PER_FILE > httpClient.getRequestingLimit()) {
+        throw new Error('Number of File IDs exceeds the limit.');
+    }
+    fileIds.forEach(fileId => {
+        const originalFileName = getFileMetadata(auth, fileId);
+        const saveAs = `${originalFileName}.pdf`;
+        const content = exportFile(auth, fileId);
+        const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+            saveAs, CONTENT_TYPE, content
+        );
+        files.add(qfile);
+    });
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    engine.setData(fileDef, files);
+}
+
+/**
+ * config からファイル ID を読み出す
+ * ファイル ID が設定されていない場合はエラー
+ * @returns {Array<String>} ファイル ID の配列
+ */
+const retrieveFileIds = () => {
+    let fileIdsStr = configs.get('conf_FileIds');
+    const fileIdsDef = configs.getObject('conf_FileIds');
+    if (fileIdsDef !== null) {
+        fileIdsStr = engine.findData(fileIdsDef);
+    }
+    if (fileIdsStr === null) {
+        throw new Error('No File IDs.');
+    }
+    const fileIds =  fileIdsStr.split('\n').filter(key => key.length !== 0);
+    if (fileIds.length === 0) {
+        throw new Error('No File IDs.');
+    }
+    return fileIds;
+};
+
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+/**
+ * @param auth HTTP 認証設定
+ * @returns {any} アクセストークンを含むオブジェクト
+ */
+const getAccessToken = (auth) => {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (!scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+    const header = {
+        "alg": "RS256",
+        "typ": "at+jwt",
+        "kid": privateKeyId
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": serviceAccount,
+        "aud": URL_TOKEN_REQUEST,
+        "sub": '',
+        "iat": now,
+        "exp": now + 3600,
+        /**
+         * https://developers.google.com/identity/protocols/oauth2/service-account#jwt-auth
+         * "without OAuth" の話だが、OAuth でも 1 hour になるようだ。
+         * 1 hour より長ければエラー。短ければ、1 hour のトークンが返ってくる。
+         */
+        scope
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(response.getResponseAsString());
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. access token not found.`);
+    }
+    return result;
+};
+
+/**
+ * ファイルメタデータ取得
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ * @returns {String} ファイル名
+ */
+const getFileMetadata = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("supportsAllDrives", "true")
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to get metadata of file. status: ${status}`);
+    }
+    const respJson = JSON.parse(respTxt);
+    return respJson.name;
+};
+
+/**
+ * ファイルエクスポート
+ * @param auth HTTP 認証設定
+ * @param fileId ファイルID
+ * @returns {ByteArrayWrapper} ファイルのバイナリデータ
+ */
+const exportFile = (auth, fileId) => {
+    const URL = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export`;
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam("mimeType", CONTENT_TYPE)
+        .get(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to export file. status: ${status}`);
+    }
+    return response.getResponse();
+};
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADLUlEQVRYR2NkYGBgZBhAALJ81AFE
+        hUBmYabNj19/dglzM7ERirGerpkshNTA5ImOgvTClGu/fjEq5AfeYdeX+YrT0cv2S3y69kjgVGv7
+        IjdiHEGUAzKK0nKf8X9peyz5ntv5jty/7qTzTPgML51n+O/rbyaH6f3TjxByBFEOSMxO/XZB/wnH
+        d6k/DGpnRb82WT/nwhcKF59w/5++VfnmzP45WhQ7IL0wdfZzga8Rt4xfc4MM43zGwkBMKICi4vBt
+        idoZfbMm43ME3hAAJbx/DL9nHXR+qAEzBOQA2eeCBEMBpD5psv6P+VNnc5HtgOrKuF2XOf5YwnyP
+        7oiN4XfAoYILEJMgcYYAyPdPBT5uR7ccFg2gUAgX+/I3yvEFHyUJEqcDQNnulOZTDVDCQwegaAAB
+        g4syPwhlS1CCXL1Xdi+ubInVAbBsh833yNEAcgAb2/8HM9IvwdMIttDAlyAxHIAt4WEzFJQdJT9w
+        rwDJ2am9DMUXFfiyJYYD0LMdNstBUQDyPSyFg8qJebkXOQglyEO3xFfP7J+diqwOxQGk+F7qI08V
+        LI+DosxW9UUzoQQJypYcbCxuyCUkigPwJTzkuDe7Ln0DvZQD6c30vqtOqIRET5BwBxCT8ECOsN8r
+        f4OJgTUNvZyHhR6pCRLuAOTyHldcwhIeejzC1IPSDyhBBuvu42MXwV4NoGdLsAOISXj4fA9zACwU
+        JgavwJktQQ4DZUtYgoQ6AHehAzMc5HvhV9zM/xkl/uFL7SA5xv8vmAg1XD7//nsLlI7ADiAm/i23
+        K/y48ywQnNXY9S0ZePlx1zGfP37D60aZN33fONheVoJyETwN4MsBIN+/vxADrngIWU4odDjeH/vP
+        93kpvK0AdwCszXfc8wFKgQKyXOi1MuPdp5ZclFoOchz/3ZZvnKxvPGC5CK0cwGx8gEo8UNBTw3KI
+        75fNQ85FGEUxLDvCajtqWQ5KF8ofSzEKMAwHwBIkyAGgoH8iUsSFL8ERinOYPCjoYQkPZ12AKFBS
+        rj0X+Cb77f9UbmpYjp7wCDoAlCC//xbZQazviFGHnPAIOoAYA6mlhqh+AbUsw2bOgDsAAHEO2FDM
+        6/Q2AAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+
+
+]]></test>
+</service-task-definition>
