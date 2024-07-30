@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2024-07-23</last-modified>
+    <last-modified>2024-07-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -331,7 +331,11 @@ const invokeModel = (auth, region, projectId, model, maxTokens, temperature, sto
     const json = JSON.parse(respTxt);
     let answers = [];
     for (const {candidates, usageMetadata} of json) {
-        answers.push(candidates[0].content.parts[0].text);
+        if (candidates[0].content === undefined) {
+            engine.log('No content in the candidate.');
+        } else {
+            answers.push(candidates[0].content.parts[0].text);
+        }
         const finishReason = candidates[0].finishReason;
         if (finishReason !== undefined) {
             engine.log(`Finish Reason: ${finishReason}`);
@@ -1100,6 +1104,54 @@ test('Success - with default tokens, with a video and an audio', () => {
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('The video shows a sleeping cat and the audio sounds like a cheering voice.');
+});
+
+/**
+ * 成功
+ * gemini-1.5-pro
+ * レスポンスに content プロパティが空の候補を含む
+ */
+test('Success - includes candidate without content', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-1.5-pro';
+    const temperature = '';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', temperature, '', message);
+
+    const token = 'token-98765';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, null, null, [], message);
+        const responseObj = ['Hi. ', 'dummy', 'I am fine. ', 'Thank you.'].map(answer => ({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {
+                            "text": answer
+                        }
+                    ]
+                }
+            }]
+        }));
+        responseObj[1].candidates[0].content = undefined; // content プロパティを空に
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            JSON.stringify(responseObj)
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Hi. I am fine. Thank you.');
 });
 
 ]]></test>
