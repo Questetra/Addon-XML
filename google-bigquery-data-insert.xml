@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Google BigQuery: Insert New Data</label>
     <label locale="ja">Google BigQuery: データ追加</label>
-    <last-modified>2024-03-21</last-modified>
+    <last-modified>2024-07-29</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -127,7 +127,7 @@ function main(){
 function isValidProjectId( projectId ) {
   const reg = new RegExp( '^[a-zA-Z][0-9a-zA-Z-]{4,28}[0-9a-zA-Z]$' );
   if ( !reg.test(projectId) ) {
-    throw "Invalid Project ID.";
+    throw new Error("Invalid Project ID.");
   }
 }
 
@@ -138,7 +138,7 @@ function isValidProjectId( projectId ) {
 function isValidDatasetId( datasetId ) {
   const reg = new RegExp( '^\\w{1,1024}$' );
   if ( !reg.test(datasetId) ) {
-    throw "Invalid Dataset ID.";
+    throw new Error("Invalid Dataset ID.");
   }
 }
 
@@ -148,22 +148,11 @@ function isValidDatasetId( datasetId ) {
   */
 function isValidTableId( tableId ) {
   if( encodeURIComponent(tableId).replace(/%../g,"x").length > 1024 ) {
-    throw "Invalid Table ID and/or Template Suffix. Too long.";
+    throw new Error("Invalid Table ID and/or Template Suffix. Too long.");
   }
   const reg = new RegExp( '^[\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+$' , 'u');
   if ( !reg.test(tableId) ) {
-    throw "Invalid Table ID and/or Template Suffix. Includes an invalid character.";
-  }
-}
-
-/**
-  * フィールドが不正な文字列であればエラー
-  * @param {String} field  フィールド
-  */
-function isValidField( field ) {
-  const reg = new RegExp( '^(?!_TABLE_|_FILE_|_PARTITION)[a-zA-Z_]\\w{0,299}$' );
-  if ( !reg.test(field) ) {
-    throw `Invalid Field Name: ${field}.`;
+    throw new Error("Invalid Table ID and/or Template Suffix. Includes an invalid character.");
   }
 }
 
@@ -179,9 +168,11 @@ function retrieveDataObj() {
     if ( field === "" || field === null ) { // フィールドが空
       continue;
     }
-    isValidField( field );
+    if (field.length > 300) { // フィールド名が長すぎる
+      throw new Error(`Invalid Field Name: ${field}. Too long.`);
+    }
     if ( dataObj[field] !== undefined ) { // フィールドコードの指定が重複
-      throw `The same field ${field} is set multiple times.`;
+      throw new Error(`The same field ${field} is set multiple times.`);
     }
     if ( value === "" || value === null ) { // 値が空
       value = null;
@@ -219,12 +210,12 @@ function insertData( oauth2, projectId, datasetId, tableId, templateSuffix, data
   const responseStr = response.getResponseAsString();
   if ( status >= 300 ) { // when error thrown
     engine.log(responseStr);
-    throw `Failed to insert data. status: ${status}`;
+    throw new Error(`Failed to insert data. status: ${status}`);
   }
   const errors = JSON.parse(responseStr)["insertErrors"];
   if ( errors !== undefined ) {
     engine.log(JSON.stringify(errors));
-    throw "Failed to insert data.";
+    throw new Error("Failed to insert data.");
   }
 }
 
@@ -306,9 +297,10 @@ const assertError = (func, errorMsg) => {
     main();
   } catch (e) {
     failed=true;
+    expect(e.message).toEqual(errorMsg);
   }
   if (!failed) {
-    fail();
+    fail('No error was thrown.');
   }
 };
 
@@ -448,42 +440,6 @@ test('Invalid Template Suffix - Too long', () => {
 
 /**
  * フィールド名が不正な文字列でエラーになる場合
- * 英字、数字、アンダースコア以外の文字を含む
- */
-test('Invalid Field Name - Includes an invalid character', () => {
-  prepareConfigs('project-1', 'Dataset_1', 'テーブル 1', '');
-  configs.put('conf_field3', 'Field-3');
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'Invalid Field Name: Field-3.');
-});
-
-/**
- * フィールド名が不正な文字列でエラーになる場合
- * 最初の文字が数字
- */
-test('Invalid Field Name - Starts with a number', () => {
-  prepareConfigs('project-1', 'Dataset_1', 'テーブル 1', '');
-  configs.put('conf_field1', '111111');
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'Invalid Field Name: 111111.');
-});
-
-/**
- * フィールド名が不正な文字列でエラーになる場合
- * 予約語で始まる
- */
-test('Invalid Field Name - Invalid Prefix', () => {
-  prepareConfigs('project-1', 'Dataset_1', 'テーブル 1', '');
-  configs.put('conf_field4', '_FILE_4');
-
-  // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, 'Invalid Field Name: _FILE_4.');
-});
-
-/**
- * フィールド名が不正な文字列でエラーになる場合
  * 301 文字以上
  */
 test('Invalid Field Name - Too long', () => {
@@ -492,7 +448,7 @@ test('Invalid Field Name - Too long', () => {
   configs.put('conf_field5', fieldName);
 
   // <script> のスクリプトを実行し、エラーがスローされることを確認
-  assertError(main, `Invalid Field Name: ${fieldName}.`);
+  assertError(main, `Invalid Field Name: ${fieldName}. Too long.`);
 });
 
 /**
