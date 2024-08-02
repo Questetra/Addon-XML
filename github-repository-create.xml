@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>GitHub: Create Repository</label>
+    <label locale="ja">GitHub: リポジトリ作成</label>
+    <!--
+    <last-modified>2024-07-30</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item creates a repository in the specified organization on GitHub.
+    </summary>
+    <summary locale="ja">
+        この工程は、GitHub の指定組織にリポジトリを作成します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-repository-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-repository-create/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
+            <label>C1: GitHub App Setting</label>
+            <label locale="ja">C1: GitHub アプリ設定</label>
+        </config>
+        <config name="conf_Org" required="true" form-type="TEXTFIELD">
+            <label>C2: Organization Name</label>
+            <label locale="ja">C2: 組織名</label>
+        </config>
+        <config name="conf_Name" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: Repository Name</label>
+            <label locale="ja">C3: リポジトリの名前</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const API_VERSION = '2022-11-28';
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const org = configs.get('conf_Org');
+    const name = configs.get('conf_Name');
+
+    ////// == 演算 / Calculating ==
+    const jwt = generateJwt(auth);
+    const installationId = getOrganizationInstallation(jwt, org);
+    const accessToken = getAccessToken(jwt, installationId);
+    createRepositoryForOrganization(accessToken, org, name);
+}
+
+const generateJwt = (auth) => {
+    const clientId = auth.getClientId();
+    const privateKey = auth.getPrivateKey();
+    if (clientId === '') {
+        throw new Error('Client ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    const header = {
+        "alg": "RS256"
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        "iss": clientId,
+        "iat": now,
+        "exp": now + 600 // 10 分以内
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    return jwt.build(header, payload, keyB);
+};
+
+const getOrganizationInstallation = (jwt, org) => {
+    const URL_ORG_INSTALLATION = `https://api.github.com/orgs/${encodeURIComponent(org)}/installation`;
+
+    const response = httpClient.begin()
+        .header('X-GitHub-Api-Version', API_VERSION)
+        .bearer(jwt)
+        .get(URL_ORG_INSTALLATION);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get organization installation. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(responseText);
+    return result.id;
+};
+
+const getAccessToken = (jwt, installationId) => {
+    const URL_TOKEN_REQUEST = `https://api.github.com/app/installations/${installationId}/access_tokens`;
+
+    const response = httpClient.begin()
+        .header('X-GitHub-Api-Version', API_VERSION)
+        .bearer(jwt)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 201) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(responseText);
+    return result.token;
+};
+
+const createRepositoryForOrganization = (accessToken, org, name) => {
+    const URL = `https://api.github.com/orgs/${encodeURIComponent(org)}/repos`;
+
+    const payload = {name};
+    const response = httpClient.begin()
+        .header('X-GitHub-Api-Version', API_VERSION)
+        .bearer(accessToken)
+        //.oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 201) {
+        engine.log(respTxt);
+        throw new Error(`Failed to create a repository for the organization. status: ${status}`);
+    }
+    engine.log(respTxt); // テスト用
+};
+
+]]></script>
+
+<!--
+    <icon>
+
+    </icon>
+-->
+
+    <test><![CDATA[
+
+
+
+]]></test>
+</service-task-definition>
