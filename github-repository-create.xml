@@ -5,7 +5,7 @@
     <label>GitHub: Create Repository</label>
     <label locale="ja">GitHub: リポジトリ作成</label>
     <!--
-    <last-modified>2024-08-08</last-modified>
+    <last-modified>2024-08-15</last-modified>
     -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
@@ -51,6 +51,10 @@
             <label>C6: Website</label>
             <label locale="ja">C6: ウェブサイト</label>
         </config>
+        <config name="conf_Topics" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C7: Topics (write one per line)</label>
+            <label locale="ja">C7: トピック（文字型データ項目の場合、1 行に 1 つ）</label>
+        </config>
         <config name="conf_FullName" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
             <label>C7: Data item to save the repository's Full Name</label>
             <label locale="ja">C7: リポジトリのフルネームを保存するデータ項目</label>
@@ -66,6 +70,9 @@
 const API_VERSION = '2022-11-28';
 const API_VERSION_HEADER = 'X-GitHub-Api-Version';
 
+const MAX_TOPIC_NUM = 20;
+const MAX_TOPIC_LENGTH = 50;
+
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
@@ -80,6 +87,7 @@ function main() {
     }
     const description = configs.get('conf_Description');
     const homepage = configs.get('conf_Homepage');
+    const topics = retrieveTopics();
 
     ////// == 演算 / Calculating ==
     let repo;
@@ -88,11 +96,54 @@ function main() {
     } else {
         repo = createRepositoryForOrganization(auth, org, name, visibility, description, homepage);
     }
+    if (topics.length > 0) {
+        setTopics(auth, repo.full_name, topics);
+    }
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_FullName', repo.full_name);
     saveData('conf_Url', repo.html_url);
 }
+
+/**
+ * config に設定されたトピックを読み出す
+ * @returns {Array<String>} トピックの配列
+ */
+const retrieveTopics = () => {
+    const dataDef = configs.getObject('conf_Topics');
+    if (dataDef === null) {
+        return [];
+    }
+    let topics = [];
+    if (dataDef.matchDataType('STRING')) { // 文字型データ項目の場合
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        topics = dataObj.split('\n')
+            .filter(name => name !== '');
+    } else { // 選択型データ項目の場合
+        const selects = engine.findData(dataDef);
+        if (selects === null || selects.size() === 0) {
+            return [];
+        }
+        selects.forEach(item => {
+            topics.push(item.getValue());
+        });
+    }
+    // バリデーション
+    if (topics.length > MAX_TOPIC_NUM) {
+        throw new Error(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+    }
+    if (topics.some(topic => topic.length > MAX_TOPIC_LENGTH)) {
+        throw new Error(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+    }
+    const reg = new RegExp(`^[a-z0-9-]+$`);
+    if (!topics.every(topic => reg.test(topic))) {
+        throw new Error('Each topic must consist of lowercase letters, numbers, and hyphens.');
+    }
+    return topics;
+};
 
 /**
  * ユーザのリポジトリを作成
@@ -108,6 +159,9 @@ const createRepositoryForUser = (auth, name, visibility, description, homepage) 
 
     const private = visibility === 'private';
     const payload = {name, private, description, homepage};
+    payload.gitignore_template = 'Node'; // テスト用
+    payload.license_template = 'MIT'; // テスト用
+    payload.topics = ['test']; // テスト用
     const response = httpClient.begin()
         .header(API_VERSION_HEADER, API_VERSION)
         .authSetting(auth)
@@ -152,6 +206,29 @@ const createRepositoryForOrganization = (auth, org, name, visibility, descriptio
     }
     engine.log(respTxt); // テスト用
     return JSON.parse(respTxt);
+};
+
+/**
+ * リポジトリのトピックを設定
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} fullName リポジトリのパス
+ * @param {Array<String>} topics トピック
+ */
+const setTopics = (auth, fullName, topics) => {
+    const url = `https://api.github.com/repos/${fullName}/topics`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .body(JSON.stringify({names: topics}), 'application/json')
+        .put(url);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to set topics. status: ${status}`);
+    }
 };
 
 /**
