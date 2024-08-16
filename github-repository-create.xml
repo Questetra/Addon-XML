@@ -4,9 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Create Repository</label>
     <label locale="ja">GitHub: リポジトリ作成</label>
-    <!--
     <last-modified>2024-08-16</last-modified>
-    -->
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item creates a repository on GitHub.
@@ -159,7 +157,7 @@ const retrieveTopics = () => {
     }
     const reg = new RegExp(`^[a-z0-9-]+$`);
     if (!topics.every(topic => reg.test(topic))) {
-        throw new Error('Each topic must consist of lowercase letters, numbers, and hyphens.');
+        throw new Error('Topics can only include lowercase letters, numbers, and hyphens.');
     }
     return topics;
 };
@@ -186,7 +184,6 @@ const createRepositoryForUser = (auth, name, visibility, license, gitIgnore, des
     if (gitIgnore !== '') {
         payload.gitignore_template = gitIgnore;
     }
-    payload.topics = ['test']; // テスト用
     const response = httpClient.begin()
         .header(API_VERSION_HEADER, API_VERSION)
         .authSetting(auth)
@@ -199,7 +196,6 @@ const createRepositoryForUser = (auth, name, visibility, license, gitIgnore, des
         engine.log(respTxt);
         throw new Error(`Failed to create a repository for the user. status: ${status}`);
     }
-    engine.log(respTxt); // テスト用
     return JSON.parse(respTxt);
 };
 
@@ -237,7 +233,6 @@ const createRepositoryForOrganization = (auth, org, name, visibility, license, g
         engine.log(respTxt);
         throw new Error(`Failed to create a repository for the organization. status: ${status}`);
     }
-    engine.log(respTxt); // テスト用
     return JSON.parse(respTxt);
 };
 
@@ -307,7 +302,147 @@ const saveData = (configName, data) => {
 
     <test><![CDATA[
 
+/**
+ * 設定の準備
+ * トピックを文字型データ項目で指定
+ * @param org
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ * @param topics
+ * @return returnObj
+ * @return returnObj.fullNameDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (org, name, visibility, license, gitIgnore, description, homepage, topics) => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_auth', auth);
 
+    configs.put('conf_Org', org);
+    configs.put('conf_Name', name);
+    configs.put('conf_Visibility', visibility);
+    configs.put('conf_License', license);
+    configs.put('conf_GitIgnore', gitIgnore);
+    configs.put('conf_Description', description);
+    configs.put('conf_Homepage', homepage);
+
+    const topicsDef = engine.createDataDefinition('トピック（文字型）', 1, 'q_topics_string', 'STRING_TEXTAREA');
+    engine.setData(topicsDef, topics);
+    configs.putObject('conf_Topics', topicsDef);
+
+    const fullNameDef = engine.createDataDefinition('フルネーム', 10, 'q_fullName', 'STRING_TEXTFIELD');
+    engine.setData(fullNameDef, '事前文字列');
+    configs.putObject('conf_FullName', fullNameDef);
+
+    const urlDef = engine.createDataDefinition('URL', 11, 'q_url', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_Url', urlDef);
+
+    return {fullNameDef, urlDef};
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * リポジトリの名前が空でエラー
+ */
+test('Repository Name is blank', () => {
+    prepareConfigs('', '', 'public', '', '', '', '', '');
+    assertError('Repository Name is blank.');
+});
+
+/**
+ * トピックを文字型データ項目で指定し、数が多すぎる
+ */
+test('Too many topics - STRING', () => {
+    let topics = '';
+    for (let i = 0; i < MAX_TOPIC_NUM + 1; i++) {
+        topics += `topic${i+1}\n`;
+    }
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+});
+
+/**
+ * トピックを文字型データ項目で指定し、長すぎる文字列を含む
+ */
+test('Topic name too long - STRING', () => {
+    const topics = 'a'.repeat(MAX_TOPIC_LENGTH + 1);
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+});
+
+/**
+ * トピックを文字型データ項目で指定し、不正な文字を含む
+ */
+test('Invalid topic name - STRING', () => {
+    const topics = 'topic1\nTopic2'; // 大文字を含めることはできない
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError('Topics can only include lowercase letters, numbers, and hyphens.');
+});
+
+/**
+ * トピックを選択型データ項目で指定
+ * @param prefix
+ * @param num
+ */
+const prepareTopicsWithSelect = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const id = `${prefix}-${i+1}`;
+        const item = engine.createItem(id, `${id} を選択`);
+        selects.add(item);
+    }
+    const topicsDef = engine.createDataDefinition('トピック（選択型）', 2, 'q_topics_select', 'SELECT_CHECKBOX');
+    engine.setData(topicsDef, selects);
+    configs.putObject('conf_Topics', topicsDef);
+};
+
+/**
+ * トピックを選択型データ項目で指定し、数が多すぎる
+ */
+test('Too many topics - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    prepareTopicsWithSelect('topic', MAX_TOPIC_NUM + 1);
+    assertError(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+});
+
+/**
+ * トピックを選択型データ項目で指定し、長すぎる文字列を含む
+ */
+test('Topic name too long - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    const prefix = 'a'.repeat(MAX_TOPIC_LENGTH);
+    prepareTopicsWithSelect(prefix, 1);
+    assertError(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+});
+
+/**
+ * トピックを選択型データ項目で指定し、不正な文字を含む
+ */
+test('Invalid topic name - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    prepareTopicsWithSelect('topic#', 1); // ハイフン以外の記号を含めることはできない
+    assertError('Topics can only include lowercase letters, numbers, and hyphens.');
+});
 
 ]]></test>
 </service-task-definition>
