@@ -319,7 +319,7 @@ const saveData = (configName, data) => {
  */
 const prepareConfigs = (org, name, visibility, license, gitIgnore, description, homepage, topics) => {
     const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
-    configs.putObject('conf_auth', auth);
+    configs.putObject('conf_Auth', auth);
 
     configs.put('conf_Org', org);
     configs.put('conf_Name', name);
@@ -367,6 +367,14 @@ const assertError = (errorMsg) => {
 test('Repository Name is blank', () => {
     prepareConfigs('', '', 'public', '', '', '', '', '');
     assertError('Repository Name is blank.');
+});
+
+/**
+ * ユーザのリポジトリ作成で、公開範囲に internal が指定されていてエラー
+ */
+test('Visibility is set internal while the repo is for the user', () => {
+    prepareConfigs('', 'Test-Repository', 'internal', '', '', '', '', '');
+    assertError('Internal visibility is unavailable when creating a repository for users.');
 });
 
 /**
@@ -442,6 +450,180 @@ test('Invalid topic name - SELECT', () => {
     prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
     prepareTopicsWithSelect('topic#', 1); // ハイフン以外の記号を含めることはできない
     assertError('Topics can only include lowercase letters, numbers, and hyphens.');
+});
+
+/**
+ * ユーザのリポジトリ作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ */
+const assertCreateRepoForUserRequest = ({ url, method, headers, contentType, body }, name, private, license, gitIgnore, description, homepage) => {
+    expect(url).toEqual('https://api.github.com/user/repos');
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.private).toEqual(private);
+    expect(bodyObj.license_template).toEqual(license);
+    expect(bodyObj.gitignore_template).toEqual(gitIgnore);
+    expect(bodyObj.description).toEqual(description);
+    expect(bodyObj.homepage).toEqual(homepage);
+};
+
+/**
+ * ユーザのリポジトリ作成の POST リクエストでエラー
+ */
+test('Fail in creating a repo for the user', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForUserRequest(request, 'Test-Repository', false, undefined, undefined, '', '');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to create a repository for the user. status: 400');
+});
+
+/**
+ * 組織のリポジトリ作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param org
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ */
+const assertCreateRepoForOrgRequest = ({ url, method, headers, contentType, body }, org, name, visibility, license, gitIgnore, description, homepage) => {
+    expect(url).toEqual(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos`);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.visibility).toEqual(visibility);
+    expect(bodyObj.license_template).toEqual(license);
+    expect(bodyObj.gitignore_template).toEqual(gitIgnore);
+    expect(bodyObj.description).toEqual(description);
+    expect(bodyObj.homepage).toEqual(homepage);
+};
+
+/**
+ * 組織のリポジトリ作成の POST リクエストでエラー
+ */
+test('Fail in creating a repo for the organization', () => {
+    prepareConfigs('Test-Org', 'Test-Repository', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForOrgRequest(request, 'Test-Org', 'Test-Repository', 'public', undefined, undefined, '', '');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+    assertError('Failed to create a repository for the organization. status: 404');
+});
+
+/**
+ * リポジトリ作成の API レスポンスを作成
+ * @param owner
+ * @param name
+ */
+const createResponse = (owner, name) => {
+    return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({
+        "full_name": `${owner}/${name}`,
+        "html_url": `https://github.com/${owner}/${name}`
+    }));
+};
+
+/**
+ * ユーザのリポジトリ作成成功 - 公開、トピック指定なし
+ */
+test('Succeed in creating a repo for the user - public, without topics', () => {
+    const {fullNameDef, urlDef} = prepareConfigs('', 'Test-Repository-1', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForUserRequest(request, 'Test-Repository-1', false, undefined, undefined, '', '');
+        return createResponse('Test-User-1', 'Test-Repository-1');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(fullNameDef)).toEqual('Test-User-1/Test-Repository-1');
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-User-1/Test-Repository-1');
+});
+
+/**
+ * トピック設定の PUT リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param fullName
+ * @param topics
+ */
+const assertSetTopicsRequest = ({ url, method, headers, contentType, body }, fullName, topics) => {
+    expect(url).toEqual(`https://api.github.com/repos/${fullName}/topics`);
+    expect(method).toEqual('PUT');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.names).toEqual(topics);
+};
+
+/**
+ * トピック設定の PUT リクエストでエラー
+ */
+test('Fail in setting topics', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'topic-1');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRepoForUserRequest(request, 'Test-Repository', false, undefined, undefined, '', '');
+            reqCount++;
+            return createResponse('Test-User', 'Test-Repository');
+        }
+        assertSetTopicsRequest(request, 'Test-User/Test-Repository', ['topic-1']);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to set topics. status: 400');
+});
+
+/**
+ * ユーザのリポジトリ作成成功 - 非公開、トピック指定あり
+ */
+test('Succeed in creating a repo for the user - private, with topics', () => {
+    const license = 'Apache-2.0';
+    const gitIgnore = 'Node';
+    const description = 'This is a test repository.';
+    const homepage = 'https://example.com/test-repo-2';
+    const topics = 'topic-1\ntopic-2\n\ntopic-3\n';
+    const {fullNameDef, urlDef} = prepareConfigs('', 'Test-Repository-2', 'private', license, gitIgnore, description, homepage, topics);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRepoForUserRequest(request, 'Test-Repository-2', true, license, gitIgnore, description, homepage);
+            reqCount++;
+            return createResponse('Test-User-1', 'Test-Repository-2');
+        }
+        assertSetTopicsRequest(request, 'Test-User-1/Test-Repository-2', ['topic-1', 'topic-2', 'topic-3']);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(fullNameDef)).toEqual('Test-User-1/Test-Repository-2');
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-User-1/Test-Repository-2');
 });
 
 ]]></test>
