@@ -2,12 +2,13 @@
 <service-task-definition>
     <label>Trello: Move Card</label>
     <label locale="ja">Trello: カードを移動</label>
-    <last-modified>2024-08-13</last-modified>
+    <last-modified>2024-08-16</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <summary>This item moves cards on Trello.</summary>
-    <summary locale="ja">この工程は、Trello のカードを移動します。</summary>
+    <summary>This item moves cards to a specified list on Trello.</summary>
+	
+    <summary locale="ja">この工程は、Trello のカードを指定したリストに移動します。</summary>
     <configs>
         <config name="conf_ApiKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Authorization Setting in which API Key is set</label>
@@ -44,6 +45,7 @@ function main() {
     //// == Calculating / 演算 ==
     const numOfLines = cardIdsArray.length;
     for (let i = 0; i < numOfLines; i++) {
+        checkCard(apiKey, apiToken, cardIdsArray[i]);
         moveCard(apiKey, apiToken, cardIdsArray[i], listId);
     }
 }
@@ -68,7 +70,7 @@ function retrieveCardIds() {
     }
 
     const numOfLines = linesArray.length;
-    if (numOfLines > httpClient.getRequestingLimit()) {
+    if (numOfLines * 2  > httpClient.getRequestingLimit()) {
         throw new Error("Number of Card IDs is over the limit.");
     }
     return linesArray;
@@ -86,8 +88,8 @@ function retrieveListId() {
     // 文字型データ項目の場合
     if (listIdDef.matchDataType('STRING_TEXTFIELD')) {
         const listId = engine.findData(listIdDef);
-        if (listId === null|| listId === "") {
-            throw new Error('List ID is not set.');
+        if (listId === null) {
+            throw new Error('List ID is blank.');
         }
         return listId;
     }
@@ -97,6 +99,32 @@ function retrieveListId() {
         throw new Error('List ID is not selected.');
     }
     return selects.get(0).getValue();
+}
+
+/**
+  * カードの状態を確認する
+  * アーカイブ済のカードであればエラー
+  * @param {String} auth.apiKey
+  * @param {String} auth.apiToken
+  * @param {String} cardId
+  */
+function checkCard(apiKey, apiToken, cardId) {
+
+    const url = `https://api.trello.com/1/cards/${encodeURIComponent(cardId)}`;
+    const response = httpClient.begin()
+        .queryParam("key", `${apiKey}`)
+        .queryParam("token", `${apiToken}`)
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get card information. status: ${status}`);
+    }
+    const jsonRes = JSON.parse(responseStr);
+    if (jsonRes.closed === true) {
+        throw new Error(`cardID: ${jsonRes.id} is archived.`);
+    }
 }
 
 /**
@@ -113,7 +141,6 @@ function moveCard(apiKey, apiToken, cardId, listId) {
         .queryParam("key", `${apiKey}`)
         .queryParam("token", `${apiToken}`)
         .queryParam("idList", `${listId}`)
-        .queryParam("closed", "false")
         .put(url);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -172,8 +199,6 @@ const prepareConfigs = (cardIds, listId) => {
     const listIdDef = engine.createDataDefinition('リスト ID', 4, 'q_ListId', 'STRING_TEXTFIELD');
     configs.putObject('conf_ListId', listIdDef);
     engine.setData(listIdDef, listId);
-
-
 };
 
 /**
@@ -204,7 +229,6 @@ const prepareSingleLineAndSelectConfigs = (cardId, listId) => {
     select.add(item);
     configs.putObject('conf_ListId', listIdDef);
     engine.setData(listIdDef, select);
-
 };
 
 /**
@@ -251,8 +275,8 @@ test("Failed - Card ID is Empty line", () => {
  * リスト ID 文字型を指定
  */
 test("Failed - List ID is not set", () => {
-    prepareConfigs('C123ABC', '');
-    assertError(main, "List ID is not set.");
+    prepareConfigs('C123ABC', null);
+    assertError(main, "List ID is blank.");
 
 });
 
@@ -272,29 +296,101 @@ test("Failed - List ID is not selected", () => {
 });
 
 /**
+ * GET リクエスト のテスト
+ * @param url
+ * @param method
+ * @param cardId
+ * @param listId
+ */
+const assertGetRequest = ({ url, method }, cardId) => {
+    expect(url).toEqual(`https://api.trello.com/1/cards/${cardId}?key=TrelloApiKey&token=TrelloApiToken`);
+    expect(method).toEqual('GET');
+};
+
+/**
  * PUT リクエスト のテスト
  * @param url
  * @param method
  * @param cardId
  * @param listId
  */
-const assertRequest = ({ url, method }, cardId, listId) => {
-    expect(url).toEqual(`https://api.trello.com/1/cards/${cardId}?key=TrelloApiKey&token=TrelloApiToken&idList=${listId}&closed=false`);
+const assertPutRequest = ({ url, method }, cardId, listId) => {
+    expect(url).toEqual(`https://api.trello.com/1/cards/${cardId}?key=TrelloApiKey&token=TrelloApiToken&idList=${listId}`);
     expect(method).toEqual('PUT');
 };
 
 /**
- * PUT リクエストで失敗 存在しないカード ID 、権限のないカード ID など
+ * Get リクエスト のレスポンスを準備
+ * @param cardID
+ * @param boolean
+
+ */
+const prepareGetResponse = (id, boolean) => {
+    const responseGetObj = {
+        "id": `${id}`,
+        "closed": boolean,
+        "idLabels": [
+            {
+                "id": `id${id}`,
+                "idBoard": `idBoard${id}`,
+                "name": "Overdue",
+                "color": "yellow"
+            }
+        ],
+        "idList": `idList${id}`,
+        "idMembers": [
+            `idMembers${id}`
+        ],
+    };
+    return responseGetObj;
+};
+
+/**
+ * GET リクエストで失敗 存在しないカード ID 、権限のないカード ID など
+ */
+test("GET Failed", () => {
+    prepareConfigs('Cqqqqq', 'LQQQQQ');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'Cqqqqq');
+        return httpClient.createHttpResponse(404, "application/json", "{}");
+    });
+    assertError(main, 'Failed to get card information. status: 404');
+});
+
+/**
+ * アーカイブ済のカード ID 
+ */
+test("Failed - Archived - CardID", () => {
+    prepareConfigs('Caaaaa', 'LQQQQQ');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'Caaaaa');
+        return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('Caaaaa', true)));
+    });
+    assertError(main, 'cardID: Caaaaa is archived.');
+});
+
+
+/**
+ * PUT リクエストで失敗 
  */
 test("PUT Failed", () => {
     prepareConfigs('Cqqqqq', 'LQQQQQ');
 
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'Cqqqqq', 'LQQQQQ');
-        return httpClient.createHttpResponse(404, "application/json", "{}");
+        if (reqCount === 0) {
+            assertGetRequest(request, 'Cqqqqq');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('Cqqqqq', false)));
+        }
+        assertPutRequest(request, 'Cqqqqq', 'LQQQQQ');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-    assertError(main, 'Failed to move. status: 404');
+        assertError(main, 'Failed to move. status: 404');
 });
+
 
 /**
  * 成功 -　1 つのカード ID
@@ -303,8 +399,15 @@ test("PUT Failed", () => {
  */
 test("Success - 1 cardID - singleline", () => {
     prepareSingleLineAndSelectConfigs('C123ABC', 'L123ABC');
+
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'C123ABC', 'L123ABC');
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C123ABC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C123ABC', false)));
+        }
+        assertPutRequest(request, 'C123ABC', 'L123ABC');
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
     main();
@@ -317,8 +420,14 @@ test("Success - 1 cardID - singleline", () => {
  */
 test("Success - 1 cardID", () => {
     prepareConfigs('C456ABC', 'L456ABC');
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'C456ABC', 'L456ABC');
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C456ABC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C456ABC', false)));
+        }
+        assertPutRequest(request, 'C456ABC', 'L456ABC');
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
     main();
@@ -332,8 +441,14 @@ test('Success - ListId specified with fixed value ' , () => {
     prepareConfigs('C123DEF', 'Ltemp');
     //conf_ListId の設定値を固定値で上書き
     configs.put('conf_ListId', 'L12345');
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'C123DEF', 'L12345');
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C123DEF');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C123DEF', false)));
+        }
+        assertPutRequest(request, 'C123DEF', 'L12345');
         return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
     main();
@@ -345,16 +460,27 @@ test('Success - ListId specified with fixed value ' , () => {
  * リスト ID 文字型を指定
  */
 test("Success - Empty lines are set", () => {
-    prepareConfigs('\n123450\n\n123451\n\n\n\n', 'L456ABC');
+    prepareConfigs('\n123450\n\n123452\n\n\n\n', 'L456ABC');
 
-    let requestCount = 0;
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-      assertRequest(request, `12345${requestCount++}`, 'L456ABC');
-      return httpClient.createHttpResponse(200, 'application/json', '{}');
+        if (reqCount === 0) {
+            assertGetRequest(request, `12345${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`12345${reqCount++}`, false)));
+        }
+        if (reqCount%2 === 0) {
+            assertGetRequest(request, `12345${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`12345${reqCount++}`, false)));
+        }
+        if (reqCount%2 !== 0) {
+            assertPutRequest(request, `12345${reqCount-1}`, 'L456ABC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
     });
 
     main();
-    expect(requestCount).toEqual(2);
+    expect(reqCount).toEqual(4);
 });
 
 /**
@@ -364,19 +490,30 @@ test("Success - Empty lines are set", () => {
  */
 test('Succeed to multiple IDs', () => {
     let ids = '';
-    for (let i = 0; i < httpClient.getRequestingLimit(); i++) {
-        ids += `ID${i}\n`;
+    for (let i = 0; i < httpClient.getRequestingLimit()/2; i++) {
+        ids += `ID${i*2}\n`;
     }
     prepareConfigs(ids, 'L456DEF');
 
-    let requestCount = 0;
+    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, `ID${requestCount++}`, 'L456DEF');
-        return httpClient.createHttpResponse(200, 'application/json', '{}');
+        if (reqCount === 0) {
+            assertGetRequest(request, `ID${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`ID${reqCount++}`, false)));
+        }
+        if (reqCount%2 === 0) {
+            assertGetRequest(request, `ID${reqCount}`);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`ID${reqCount++}`, false)));
+        }
+        if (reqCount%2 !== 0) {
+            assertPutRequest(request, `ID${reqCount-1}`, 'L456DEF');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
     });
 
     main();
-    expect(requestCount).toEqual(httpClient.getRequestingLimit());
+    expect(reqCount).toEqual(httpClient.getRequestingLimit());
 });
 
 /**
@@ -386,7 +523,7 @@ test('Succeed to multiple IDs', () => {
  */
 test('Failed - Number of Card IDs is over the limit', () => {
     let ids = '';
-    for (let i = 0; i <= httpClient.getRequestingLimit(); i++) {
+    for (let i = 0; i <= httpClient.getRequestingLimit()/2; i++) {
         ids += `ID${i}\n`;
     }
     prepareConfigs(ids, 'L123ABC');
