@@ -1,0 +1,669 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>GitHub: Create Repository</label>
+    <label locale="ja">GitHub: リポジトリ作成</label>
+    <last-modified>2024-08-20</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item creates a repository on GitHub.
+    </summary>
+    <summary locale="ja">
+        この工程は、GitHub にリポジトリを作成します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-repository-create/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-repository-create/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Personal Access Token (fine-grained)</label>
+            <label locale="ja">C1: 個人用アクセストークン（fine-grained）</label>
+        </config>
+        <config name="conf_Org" form-type="TEXTFIELD">
+            <label>C2: Organization Name (if blank, create the user's repository)</label>
+            <label locale="ja">C2: 組織名（空の場合、ユーザのリポジトリを作成）</label>
+        </config>
+        <config name="conf_Name" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: Repository Name</label>
+            <label locale="ja">C3: リポジトリの名前</label>
+        </config>
+        <config name="conf_Visibility" required="true" form-type="SELECT_ITEM">
+            <label>C4: Visibility</label>
+            <label locale="ja">C4: 公開設定</label>
+            <item value="public">
+                <label>Public</label>
+            </item>
+            <item value="private">
+                <label>Private</label>
+            </item>
+        </config>
+        <config name="conf_License" form-type="SELECT_ITEM" editable="true">
+            <label>C5: License</label>
+            <label locale="ja">C5: ライセンス</label>
+            <item value="Apache-2.0">
+                <label>Apache-2.0</label>
+            </item>
+            <item value="GPL-3.0">
+                <label>GPL-3.0</label>
+            </item>
+            <item value="MIT">
+                <label>MIT</label>
+            </item>
+        </config>
+        <config name="conf_GitIgnore" form-type="TEXTFIELD">
+            <label>C6: .gitignore Template (input the name without the extension)</label>
+            <label locale="ja">C6: .gitignore テンプレート名（.gitignore を含めずに入力）</label>
+        </config>
+        <config name="conf_Description" form-type="TEXTFIELD" el-enabled="true">
+            <label>C7: Description</label>
+            <label locale="ja">C7: 説明</label>
+        </config>
+        <config name="conf_Homepage" form-type="TEXTFIELD" el-enabled="true">
+            <label>C8: Website</label>
+            <label locale="ja">C8: ウェブサイト</label>
+        </config>
+        <config name="conf_Topics" form-type="SELECT" select-data-type="STRING|SELECT">
+            <label>C9: Topics (write one per line)</label>
+            <label locale="ja">C9: トピック（文字型データ項目の場合、1 行に 1 つ）</label>
+        </config>
+        <config name="conf_Url" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C10: Data item to save the repository's URL</label>
+            <label locale="ja">C10: リポジトリの URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const API_VERSION = '2022-11-28';
+const API_VERSION_HEADER = 'X-GitHub-Api-Version';
+
+const MAX_TOPIC_NUM = 20;
+const MAX_TOPIC_LENGTH = 50;
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const org = configs.get('conf_Org');
+    const name = configs.get('conf_Name');
+    if (name === '') {
+        throw new Error('Repository Name is blank.');
+    }
+    const visibility = configs.get('conf_Visibility');
+    const license = configs.get('conf_License');
+    const gitIgnore = configs.get('conf_GitIgnore');
+    const description = configs.get('conf_Description');
+    const homepage = configs.get('conf_Homepage');
+    const topics = retrieveTopics();
+
+    ////// == 演算 / Calculating ==
+    let repo;
+    if (org === '') {
+        repo = createRepositoryForUser(auth, name, visibility, license, gitIgnore, description, homepage);
+    } else {
+        repo = createRepositoryForOrganization(auth, org, name, visibility, license, gitIgnore, description, homepage);
+    }
+    if (topics.length > 0) {
+        setTopics(auth, repo.full_name, topics);
+    }
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Url', repo.html_url);
+}
+
+/**
+ * config に設定されたトピックを読み出す
+ * @returns {Array<String>} トピックの配列
+ */
+const retrieveTopics = () => {
+    const dataDef = configs.getObject('conf_Topics');
+    if (dataDef === null) {
+        return [];
+    }
+    let topics = [];
+    if (dataDef.matchDataType('STRING')) { // 文字型データ項目の場合
+        const dataObj = engine.findData(dataDef);
+        if (dataObj === null) {
+            return [];
+        }
+        topics = dataObj.split('\n')
+            .filter(name => name !== '');
+    } else { // 選択型データ項目の場合
+        const selects = engine.findData(dataDef);
+        if (selects === null || selects.size() === 0) {
+            return [];
+        }
+        selects.forEach(item => {
+            topics.push(item.getValue());
+        });
+    }
+    // バリデーション
+    if (topics.length > MAX_TOPIC_NUM) {
+        throw new Error(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+    }
+    if (topics.some(topic => topic.length > MAX_TOPIC_LENGTH)) {
+        throw new Error(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+    }
+    const reg = new RegExp(`^[a-z0-9-]+$`);
+    if (!topics.every(topic => reg.test(topic))) {
+        throw new Error('Topics can only include lowercase letters, numbers, and hyphens.');
+    }
+    return topics;
+};
+
+/**
+ * ユーザのリポジトリを作成
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} name リポジトリ名
+ * @param {String} visibility 公開設定
+ * @param {String} license ライセンス
+ * @param {String} gitIgnore .gitignore テンプレート
+ * @param {String} description 説明
+ * @param {String} homepage ウェブサイト
+ * @returns {Object} レポジトリ情報
+ */
+const createRepositoryForUser = (auth, name, visibility, license, gitIgnore, description, homepage) => {
+    const url = 'https://api.github.com/user/repos';
+
+    const private = visibility === 'private';
+    const payload = {name, private, description, homepage};
+    if (license !== '') {
+        payload.license_template = license;
+    }
+    if (gitIgnore !== '') {
+        payload.gitignore_template = gitIgnore;
+    }
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(url);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 201) {
+        engine.log(respTxt);
+        throw new Error(`Failed to create a repository for the user. status: ${status}`);
+    }
+    return JSON.parse(respTxt);
+};
+
+/**
+ * 組織のリポジトリを作成
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} org 組織名
+ * @param {String} name リポジトリ名
+ * @param {String} visibility 公開設定
+ * @param {String} license ライセンス
+ * @param {String} gitIgnore .gitignore テンプレート
+ * @param {String} description 説明
+ * @param {String} homepage ウェブサイト
+ * @returns {Object} レポジトリ情報
+ */
+const createRepositoryForOrganization = (auth, org, name, visibility, license, gitIgnore, description, homepage) => {
+    const url = `https://api.github.com/orgs/${encodeURIComponent(org)}/repos`;
+
+    const payload = {name, visibility, description, homepage};
+    if (license !== '') {
+        payload.license_template = license;
+    }
+    if (gitIgnore !== '') {
+        payload.gitignore_template = gitIgnore;
+    }
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(url);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 201) {
+        engine.log(respTxt);
+        throw new Error(`Failed to create a repository for the organization. status: ${status}`);
+    }
+    return JSON.parse(respTxt);
+};
+
+/**
+ * リポジトリのトピックを設定
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} fullName リポジトリのパス
+ * @param {Array<String>} topics トピック
+ */
+const setTopics = (auth, fullName, topics) => {
+    const url = `https://api.github.com/repos/${fullName}/topics`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .body(JSON.stringify({names: topics}), 'application/json')
+        .put(url);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to set topics. status: ${status}`);
+    }
+};
+
+/**
+ * データ項目への保存
+ * @param {String} configName 設定名
+ * @param {Object} data 保存するデータ
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABM9JREFUWEfF
+        V2tQlFUYfs4ugiKgePkTiE3gCIssGWRhg1EwaE2OUZNjVDIFEwyJM12MSZKgokkNUdZNMhwCCg0p
+        Bi8UxGVRblkgLHFJ12ZipImBLiAOg7h7mvfT/dz99lt2sR+8v3bPe3vOez0fw/+gqKgoF1LX6XQ3
+        79YMc1bxvuBgP2ZSRjHGH4SJqcCwGsCi2/pj4PgVCt7HOfuJK4y633p7B52x7RBAgCo0GCYeD4bn
+        AKxyxiiAy+A4CQUrM/R1986kYxdAWFjYvH8nb6YoOE/igNpJx1ZiDNCbGCtcvMCloKOjY1rOhiyA
+        ALXal93gb3PG0u7GsVSHca7hrmyfQa+/asOTHpBzTCMLQKIj5wqFAiaTyZGYmX8M85AlBWEVAQr7
+        +PUbufZu7uvrg+SkV3B/aAj8VqyAu7u7AGB09C8MXLqEH+oacKK8wi4gioTXQtc3LdNhBcBfFZrG
+        OM+Xs7AjNRlpqSmgW89Evw8OIiExGUNDf8iKccZ2Xunr1piZIgCqdsZ5mbTgvL0Xo7ysFPeu9HM2
+        1EJU9uXm4VhRiY0OFSZnLN7cHXcABKpzwLBbqlH1zddQBQU67dxScGv8dlzs6rbV5fjIMKDPIIYA
+        gIaMwqSsk/b5i/Hb8N677wgGJicnsSfrA6S9loKVfn7CLaempqBUKuHq6gqj0Sjkf8H8+Xgmboug
+        MzY2hnWPRMkV6mWTwhhDw0oA4B+k3s6AYkuoi7y80N7cCBcXYdqCchuzabPwe/nyZRgZGRXFyanS
+        RYmJieuIeGgdSoo+F3nfVlYhPSPTJgocSLjSry8RAASoQjTgbIelVPy2rcjOFKIk0MjoKNZviHaY
+        Crr93pz3Rbmx8XGEPxxpq8f4YUNfT9otAIHqejA8bil1+GAuNsbGiEd0C7qNI6IuudDaBIqgmQJD
+        1sJolMwLjgbDgD76FoAgNU0oH0vjjbXVoL4nonyvXrPWkW+Rn5+3H09sjBX/U1u2trVL9YcM/Xpf
+        Riv16vDf/wDwsJT45eIFuLm5CUdUYIEhDzgN4OOcbDwb97Qor9EWIF97RKo/YejXe9oF0Ha+AcuW
+        LhWV1j8abVV4M6GpPHkca4JVoshb6btRdfqsPAB7Kag48SVC1SGiErUYtaEjWrLEGy26OrF7SD7y
+        sVj8OTwsnwJ7RUgdQJ1gSY4KkSJGwH187hHV7KbPqghl2pBGcPv5RmH2U89T7xNRO3Z2diEjMxvU
+        YkQ0sOK2bBbCLt0V39XUYufru2wDZ9mGcoOINPI+2YunntyE6elpYcq99MLzgiGacOERG0SjSS8n
+        IH3XGzZOqHvCIyJx7dqEDc9qENkbxR4eC9FUXwMvT090detxvLwCqwL8cfpMNfr6B0SjFJ3Wpnob
+        J3n5WnxacFSubKxH8e06kF1GVFS11aeEwUKjVt/TA925ZhQVl4qG6V3Q/XOblSPtkaM4qNHK16x0
+        GQkA7Kxj4lE9fFH4mbgVzzW3IPHVVNG4p6cHOn9sEf7Tgtp/4BCKS7+SdW53HZP0TA8S4lNbfpi9
+        B1WnzqKw6M7uooX1/ZlK1NTW4cAhje3YtYBi90FCMo6eZPLxdP7U4ZNMSMUsHqXOuxYkHT9KzQbn
+        9FluBjGnHyaWoZ2zTzNpfufs43SWhTZr8f8AaTovPzYDLOEAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * トピックを文字型データ項目で指定
+ * @param org
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ * @param topics
+ * @return returnObj
+ * @return returnObj.fullNameDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (org, name, visibility, license, gitIgnore, description, homepage, topics) => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    configs.put('conf_Org', org);
+    configs.put('conf_Name', name);
+    configs.put('conf_Visibility', visibility);
+    configs.put('conf_License', license);
+    configs.put('conf_GitIgnore', gitIgnore);
+    configs.put('conf_Description', description);
+    configs.put('conf_Homepage', homepage);
+
+    const topicsDef = engine.createDataDefinition('トピック（文字型）', 1, 'q_topics_string', 'STRING_TEXTAREA');
+    engine.setData(topicsDef, topics);
+    configs.putObject('conf_Topics', topicsDef);
+
+    const urlDef = engine.createDataDefinition('URL', 11, 'q_url', 'STRING_TEXTFIELD');
+    engine.setData(urlDef, '事前文字列');
+    configs.putObject('conf_Url', urlDef);
+
+    return urlDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * リポジトリの名前が空でエラー
+ */
+test('Repository Name is blank', () => {
+    prepareConfigs('', '', 'public', '', '', '', '', '');
+    assertError('Repository Name is blank.');
+});
+
+/**
+ * トピックを文字型データ項目で指定し、数が多すぎる
+ */
+test('Too many topics - STRING', () => {
+    let topics = '';
+    for (let i = 0; i < MAX_TOPIC_NUM + 1; i++) {
+        topics += `topic${i+1}\n`;
+    }
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+});
+
+/**
+ * トピックを文字型データ項目で指定し、長すぎる文字列を含む
+ */
+test('Topic name too long - STRING', () => {
+    const topics = 'a'.repeat(MAX_TOPIC_LENGTH + 1);
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+});
+
+/**
+ * トピックを文字型データ項目で指定し、不正な文字を含む
+ */
+test('Invalid topic name - STRING', () => {
+    const topics = 'topic1\nTopic2'; // 大文字を含めることはできない
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', topics);
+    assertError('Topics can only include lowercase letters, numbers, and hyphens.');
+});
+
+/**
+ * トピックを選択型データ項目で指定
+ * @param prefix
+ * @param num
+ */
+const prepareTopicsWithSelect = (prefix, num) => {
+    const selects = new java.util.ArrayList();
+    for (let i = 0; i < num; i++) {
+        const id = `${prefix}-${i+1}`;
+        const item = engine.createItem(id, `${id} を選択`);
+        selects.add(item);
+    }
+    const topicsDef = engine.createDataDefinition('トピック（選択型）', 2, 'q_topics_select', 'SELECT_CHECKBOX');
+    engine.setData(topicsDef, selects);
+    configs.putObject('conf_Topics', topicsDef);
+};
+
+/**
+ * トピックを選択型データ項目で指定し、数が多すぎる
+ */
+test('Too many topics - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    prepareTopicsWithSelect('topic', MAX_TOPIC_NUM + 1);
+    assertError(`The maximum number of topics is ${MAX_TOPIC_NUM}.`);
+});
+
+/**
+ * トピックを選択型データ項目で指定し、長すぎる文字列を含む
+ */
+test('Topic name too long - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    const prefix = 'a'.repeat(MAX_TOPIC_LENGTH);
+    prepareTopicsWithSelect(prefix, 1);
+    assertError(`Each topic must be within ${MAX_TOPIC_LENGTH} characters.`);
+});
+
+/**
+ * トピックを選択型データ項目で指定し、不正な文字を含む
+ */
+test('Invalid topic name - SELECT', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'dummy');
+    prepareTopicsWithSelect('topic#', 1); // ハイフン以外の記号を含めることはできない
+    assertError('Topics can only include lowercase letters, numbers, and hyphens.');
+});
+
+/**
+ * ユーザのリポジトリ作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ */
+const assertCreateRepoForUserRequest = ({ url, method, headers, contentType, body }, name, private, license, gitIgnore, description, homepage) => {
+    expect(url).toEqual('https://api.github.com/user/repos');
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.private).toEqual(private);
+    expect(bodyObj.license_template).toEqual(license);
+    expect(bodyObj.gitignore_template).toEqual(gitIgnore);
+    expect(bodyObj.description).toEqual(description);
+    expect(bodyObj.homepage).toEqual(homepage);
+};
+
+/**
+ * ユーザのリポジトリ作成の POST リクエストでエラー
+ */
+test('Fail in creating a repo for the user', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForUserRequest(request, 'Test-Repository', false, undefined, undefined, '', '');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to create a repository for the user. status: 400');
+});
+
+/**
+ * 組織のリポジトリ作成の POST リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param org
+ * @param name
+ * @param visibility
+ * @param license
+ * @param gitIgnore
+ * @param description
+ * @param homepage
+ */
+const assertCreateRepoForOrgRequest = ({ url, method, headers, contentType, body }, org, name, visibility, license, gitIgnore, description, homepage) => {
+    expect(url).toEqual(`https://api.github.com/orgs/${encodeURIComponent(org)}/repos`);
+    expect(method).toEqual('POST');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.name).toEqual(name);
+    expect(bodyObj.visibility).toEqual(visibility);
+    expect(bodyObj.license_template).toEqual(license);
+    expect(bodyObj.gitignore_template).toEqual(gitIgnore);
+    expect(bodyObj.description).toEqual(description);
+    expect(bodyObj.homepage).toEqual(homepage);
+};
+
+/**
+ * 組織のリポジトリ作成の POST リクエストでエラー
+ */
+test('Fail in creating a repo for the organization', () => {
+    prepareConfigs('Test-Org', 'Test-Repository', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForOrgRequest(request, 'Test-Org', 'Test-Repository', 'public', undefined, undefined, '', '');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+    assertError('Failed to create a repository for the organization. status: 404');
+});
+
+/**
+ * リポジトリ作成の API レスポンスを作成
+ * @param owner
+ * @param name
+ */
+const createResponse = (owner, name) => {
+    return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({
+        "full_name": `${owner}/${name}`,
+        "html_url": `https://github.com/${owner}/${name}`
+    }));
+};
+
+/**
+ * ユーザのリポジトリ作成成功 - 公開、トピック指定なし
+ */
+test('Succeed in creating a repo for the user - public, without topics', () => {
+    const urlDef = prepareConfigs('', 'Test-Repository-1', 'public', '', '', '', '', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForUserRequest(request, 'Test-Repository-1', false, undefined, undefined, '', '');
+        return createResponse('Test-User-1', 'Test-Repository-1');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-User-1/Test-Repository-1');
+});
+
+/**
+ * トピック設定の PUT リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param request.contentType
+ * @param request.body
+ * @param fullName
+ * @param topics
+ */
+const assertSetTopicsRequest = ({ url, method, headers, contentType, body }, fullName, topics) => {
+    expect(url).toEqual(`https://api.github.com/repos/${fullName}/topics`);
+    expect(method).toEqual('PUT');
+    expect(headers['Authorization']).toEqual('Bearer github-token-12345');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.names).toEqual(topics);
+};
+
+/**
+ * トピック設定の PUT リクエストでエラー
+ */
+test('Fail in setting topics', () => {
+    prepareConfigs('', 'Test-Repository', 'public', '', '', '', '', 'topic-1');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRepoForUserRequest(request, 'Test-Repository', false, undefined, undefined, '', '');
+            reqCount++;
+            return createResponse('Test-User', 'Test-Repository');
+        }
+        assertSetTopicsRequest(request, 'Test-User/Test-Repository', ['topic-1']);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to set topics. status: 400');
+});
+
+/**
+ * ユーザのリポジトリ作成成功 - 非公開、トピック指定あり
+ */
+test('Succeed in creating a repo for the user - private, with topics', () => {
+    const license = 'Apache-2.0';
+    const gitIgnore = 'Node';
+    const description = 'This is a test repository.';
+    const homepage = 'https://example.com/test-repo-2';
+    const topics = 'topic-1\ntopic-2\n\ntopic-3\n';
+    const urlDef = prepareConfigs('', 'Test-Repository-2', 'private', license, gitIgnore, description, homepage, topics);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRepoForUserRequest(request, 'Test-Repository-2', true, license, gitIgnore, description, homepage);
+            reqCount++;
+            return createResponse('Test-User-1', 'Test-Repository-2');
+        }
+        assertSetTopicsRequest(request, 'Test-User-1/Test-Repository-2', ['topic-1', 'topic-2', 'topic-3']);
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-User-1/Test-Repository-2');
+});
+
+/**
+ * 組織のリポジトリ作成成功 - 公開、トピックを選択型データ項目で指定
+ */
+test('Succeed in creating a repo for the organization - public, with topics', () => {
+    const license = 'GPL-3.0';
+    const gitIgnore = 'C++';
+    const description = 'This is a test repository created in the organization.';
+    const homepage = 'https://example.com/test-repo-3';
+    const urlDef = prepareConfigs('Test-Org-1', 'Test-Repository-3', 'public', license, gitIgnore, description, homepage, 'dummy-topic');
+    prepareTopicsWithSelect('topic', MAX_TOPIC_NUM);
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertCreateRepoForOrgRequest(request, 'Test-Org-1', 'Test-Repository-3', 'public', license, gitIgnore, description, homepage);
+            reqCount++;
+            return createResponse('Test-Org-1', 'Test-Repository-3');
+        }
+        assertSetTopicsRequest(
+            request,
+            'Test-Org-1/Test-Repository-3',
+            [
+                'topic-1', 'topic-2', 'topic-3', 'topic-4', 'topic-5', 'topic-6', 'topic-7', 'topic-8', 'topic-9', 'topic-10',
+                'topic-11', 'topic-12', 'topic-13', 'topic-14', 'topic-15', 'topic-16', 'topic-17', 'topic-18', 'topic-19', 'topic-20'
+            ]
+        );
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-Org-1/Test-Repository-3');
+});
+
+/**
+ * 組織のリポジトリ作成成功 - 非公開、トピックを選択型データ項目で指定し、未選択
+ */
+test('Succeed in creating a repo for the organization - private, without topics', () => {
+    const urlDef = prepareConfigs('Test-Org-2', 'Test-Repository-4', 'private', '', '', '', '', 'dummy-topic');
+    prepareTopicsWithSelect('topic', 0);
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForOrgRequest(request, 'Test-Org-2', 'Test-Repository-4', 'private', undefined, undefined, '', '');
+        return createResponse('Test-Org-2', 'Test-Repository-4');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(urlDef)).toEqual('https://github.com/Test-Org-2/Test-Repository-4');
+});
+
+/**
+ * 組織のリポジトリ作成成功 - 非公開、トピックのデータ項目、URL 保存先データ項目の指定なし
+ */
+test('Succeed in creating a repo for the organization - private, no data item selected', () => {
+    const license = 'MIT';
+    const description = 'This is a test repository created in the organization.';
+    const urlDef = prepareConfigs('Test-Org-2', 'Test-Repository-5', 'private', license, '', description, '', 'dummy-topic');
+    configs.put('conf_Topics', '');
+    configs.put('conf_Url', '');
+    httpClient.setRequestHandler((request) => {
+        assertCreateRepoForOrgRequest(request, 'Test-Org-2', 'Test-Repository-5', 'private', 'MIT', undefined, description, '');
+        return createResponse('Test-Org-2', 'Test-Repository-5');
+    });
+    expect(main()).toEqual(undefined);
+
+    expect(engine.findData(urlDef)).toEqual('事前文字列');
+});
+
+]]></test>
+</service-task-definition>
