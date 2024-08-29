@@ -1,0 +1,531 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Trello: Move Card</label>
+    <label locale="ja">Trello: カードを移動</label>
+    <last-modified>2024-08-29</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item moves cards to a specified list on Trello.</summary>
+	
+    <summary locale="ja">この工程は、Trello のカードを指定したリストに移動します。</summary>
+    <configs>
+        <config name="conf_ApiKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Authorization Setting in which API Key is set</label>
+            <label locale="ja">C1: API キーを設定した認証設定</label>
+        </config>
+        <config name="conf_ApiToken" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Authorization Setting in which API Token is set</label>
+            <label locale="ja">C2: API トークンを設定した認証設定</label>
+        </config>
+        <config name="conf_CardIds" required="true" form-type="SELECT" select-data-type="STRING">
+            <label>C3: Card IDs (write one per line)</label>
+            <label locale="ja">C3: カード ID（1 行に 1 つ）</label>
+        </config>
+        <config name="conf_ListId" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD|SELECT_SINGLE" editable="true">
+            <label>C4: List ID to move the cards to</label>
+            <label locale="ja">C4: カードを移動するリストの ID</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-trello-card-move/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-trello-card-move/</help-page-url>
+
+    <script><![CDATA[
+
+function main() {
+    //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const authKey = configs.getObject("conf_ApiKey");
+    const authToken = configs.getObject("conf_ApiToken");
+    const apiKey = authKey.getToken();
+    const apiToken = authToken.getToken();
+
+    const cardIdsArray = retrieveCardIds();
+    const listId = retrieveListId();
+
+    //// == Calculating / 演算 ==
+    const numOfLines = cardIdsArray.length;
+    for (let i = 0; i < numOfLines; i++) {
+        checkCard(apiKey, apiToken, cardIdsArray[i]);
+        moveCard(apiKey, apiToken, cardIdsArray[i], listId);
+    }
+}
+
+/**
+  * config からカード ID を読み出す
+  * @return {String} cardIds
+  * @return {Array<String>} linesArray  カード ID の配列
+  */
+function retrieveCardIds() {
+    const cardIdsDef = configs.getObject('conf_CardIds');
+    const cardIds = engine.findData(cardIdsDef);
+
+    if (cardIds === null || cardIds === "") {
+        throw new Error("Card IDs aren't set.");
+    }
+
+    let linesArray = cardIds.split("\n");
+    linesArray = linesArray.filter(lines => lines !== ""); // 空文字列を削除
+    if (linesArray.length === 0) {
+        throw new Error("Card IDs aren't set.");
+    }
+
+    const numOfLines = linesArray.length;
+    if (numOfLines * 2  > httpClient.getRequestingLimit()) {
+        throw new Error("Number of Card IDs is over the limit.");
+    }
+    return linesArray;
+}
+
+/**
+  * config からリスト ID を読み出す
+  * @return {String} listId
+  */
+function retrieveListId() {
+    const listIdDef = configs.getObject('conf_ListId');
+    if (listIdDef === null) { // 固定値で指定
+        return configs.get('conf_ListId');
+    }
+    // 文字型データ項目の場合
+    if (listIdDef.matchDataType('STRING_TEXTFIELD')) {
+        const listId = engine.findData(listIdDef);
+        if (listId === null) {
+            throw new Error('List ID is blank.');
+        }
+        return listId;
+    }
+    // 選択型データ項目の場合
+    const selects = engine.findData(listIdDef);
+    if (selects === null || selects.size() === 0) {
+        throw new Error('List ID is not selected.');
+    }
+    return selects.get(0).getValue();
+}
+
+/**
+  * カードの状態を確認する
+  * アーカイブ済のカードであればエラー
+  * @param {String} auth.apiKey
+  * @param {String} auth.apiToken
+  * @param {String} cardId
+  */
+function checkCard(apiKey, apiToken, cardId) {
+
+    const url = `https://api.trello.com/1/cards/${encodeURIComponent(cardId)}`;
+    const response = httpClient.begin()
+        .queryParam("key", `${apiKey}`)
+        .queryParam("token", `${apiToken}`)
+        .get(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get card information. Card ID: ${cardId}, status: ${status}`);
+    }
+    const jsonRes = JSON.parse(responseStr);
+    if (jsonRes.closed === true) {
+        throw new Error(`Card ID: ${jsonRes.id} is archived.`);
+    }
+}
+
+/**
+  * カードを移動する
+  * @param {String} auth.apiKey
+  * @param {String} auth.apiToken
+  * @param {String} cardId
+  * @param {String} listId
+  */
+function moveCard(apiKey, apiToken, cardId, listId) {
+
+    const url = `https://api.trello.com/1/cards/${encodeURIComponent(cardId)}`;
+    const response = httpClient.begin()
+        .queryParam("key", `${apiKey}`)
+        .queryParam("token", `${apiToken}`)
+        .queryParam("idList", `${listId}`)
+        .put(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to move. Card ID: ${cardId}, status: ${status}`);
+    } else {
+        engine.log(`Succeeded to move. Card ID: ${cardId}`);
+    }
+}
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAzBJREFUWEfF
+        l11IFFEUx/93xnH9iPzow0jBaIOsSNJWI+glX6KHJLcvkiKwF7WXolJ76iWiSLBeUortoSSLcDfp
+        pZfwJXrQVV8MIsNEjFbwI5T1e/bGndnZnRlnZ8ZZau/b3HvuOb97zrnnniFI8SC27Z8KZoGPeMHz
+        x0FpGSh2gSBP2k8xC4IxEDIEUeyFyPnxwbNgR7c1wLm+HRBJM0DqAWTYUQpgCaAd4OlDvKsMme0x
+        B6gJ1oOgFUC2TcN6sTAobiHg6Ui0PzGAN/gUQINDw/pt7fB7Go10GQPU9L8GIRfZhgyBQ3qadaSM
+        lM8tivFpSrsQqKjVy63XHD15aXEmAs1u7C5wOXbCyhqF79MUGp+NKzrWeUILIMe8nUl/uV+Co3ud
+        hl7L7G4cxujksjxJ0aDOiTiAlO3cDyXhlt6UwyU4c73eZQ8CIdzp/KVMh8FH9ii3I27B298GkOuK
+        1PLbck3s5xdF/AnLMXUJHLbnpMXsrIoUodlV6ZvjCHbmCSAq9taeSdx+OaHioo/hr7jBJmQxVmQE
+        TKvvuRogQgH+7IDmYCFfKQpyBWmutu0nuj7PxNZ914pRV7U19r0eAEtYxRZWrGSA032XwHGv1BbU
+        ACyZXBcGNQBjHQdRvC1dmjt5bwQfh+biBq8U4WZ1gRkAEIlcxvvKThngzIAPlNb9VwBCXqD78FUZ
+        wBtkxyv7rwDAEPyechmgJjgTe1iiFP88BOwBC3jyFQ9QTYABbASAZThLNGX0tLhRXZFrngNs1e+J
+        XhZvMCkApovdFDbYidRXkM0Z3AJZOAaQZAj03tN/GwLoQpBUEjoC0CShxTVcEymE89o6MPG8FIX5
+        ciGyGoYe0FxDi0LEDIxPrWB6fk2ylZnOoaTQbnOUIAc0hciiFFud0GrduhRLxcj8MbIyYrb+qGcS
+        TaaPEdute46/PjmA/UX23WwGcKTlG/pGwopIgueYLasakhOHNqO7yY1sF5fM4dE7PI+qu9/jOhI2
+        JIqIrhk9tm8TcrJ4RxCDowv4He0TogosWjLFjKopdWTZaJPtpjSBJ5IE2WBbHvNEKn9MFIiU/pqp
+        /Z6yn9Mkg2+1/S+COKkwjkUALAAAAABJRU5ErkJggg==
+    </icon>
+
+    <test><![CDATA[
+
+/**
+  * 設定の準備 C3: カード ID は複数行を指定
+  * リスト ID は文字型データ項目で指定
+  * @param cardIds
+  * @param listId
+  */
+const prepareConfigs = (cardIds, listId) => {
+    const authKey = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiKey',
+    );
+    configs.putObject('conf_ApiKey', authKey);
+
+    const authToken = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiToken',
+    );
+    configs.putObject('conf_ApiToken', authToken);
+
+    const cardIdsDef = engine.createDataDefinition('カード IDs', 3, 'q_CardIds', 'STRING_TEXTAREA');
+    configs.putObject('conf_CardIds', cardIdsDef);
+    engine.setData(cardIdsDef, cardIds);
+
+    const listIdDef = engine.createDataDefinition('リスト ID', 4, 'q_ListId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_ListId', listIdDef);
+    engine.setData(listIdDef, listId);
+};
+
+/**
+  * 設定の準備 C3: カード ID は単一行を指定
+  * リスト ID は選択型データ項目で指定
+  * @param cardId
+  */
+const prepareSingleLineAndSelectConfigs = (cardId, listId) => {
+    const authKey = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiKey',
+    );
+    configs.putObject('conf_ApiKey', authKey);
+
+    const authToken = httpClient.createAuthSettingToken(
+        'Trello',
+        'TrelloApiToken',
+    );
+    configs.putObject('conf_ApiToken', authToken);
+
+    const cardIdsDef = engine.createDataDefinition('カード ID', 3, 'q_CardId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_CardIds', cardIdsDef);
+    engine.setData(cardIdsDef, cardId);
+
+    const listIdDef = engine.createDataDefinition('リスト ID', 4, 'q_ListId', 'SELECT_SINGLE');
+    const select = new java.util.ArrayList();
+    const item = engine.createItem(listId, `${listId} を選択`);
+    select.add(item);
+    configs.putObject('conf_ListId', listIdDef);
+    engine.setData(listIdDef, select);
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        func();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * カード ID が改行のみ
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test("Failed - Card ID is Empty lines only", () => {
+    prepareConfigs('\n\n\n', 'L123ABC');
+    assertError(main, "Card IDs aren't set.");
+});
+
+/**
+ * カード ID が空
+ * カード ID 単一行を指定
+ * リスト ID 選択型を指定
+ */
+test("Failed - Card ID is Empty line", () => {
+    prepareSingleLineAndSelectConfigs('', 'L456ABC');
+    assertError(main, "Card IDs aren't set.");
+});
+
+/**
+ * リスト ID が空
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test("Failed - List ID is not set", () => {
+    prepareConfigs('C123ABC', null);
+    assertError(main, "List ID is blank.");
+
+});
+
+/**
+ * リスト ID が未選択
+ * カード ID 単一行を指定
+ * リスト ID 選択型を指定
+ */
+test("Failed - List ID is not selected", () => {
+    prepareConfigs('C456ABC', 'Ltemp');
+
+    // 選択型データ項目を準備し、未選択のまま設定
+    const idDef = engine.createDataDefinition('リスト ID', 4, 'q_ListId', 'SELECT_SINGLE');
+    configs.putObject('conf_ListId', idDef);
+
+    assertError(main, "List ID is not selected.");
+});
+
+/**
+ * GET リクエスト のテスト
+ * @param url
+ * @param method
+ * @param cardId
+ * @param listId
+ */
+const assertGetRequest = ({ url, method }, cardId) => {
+    expect(url).toEqual(`https://api.trello.com/1/cards/${cardId}?key=TrelloApiKey&token=TrelloApiToken`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * PUT リクエスト のテスト
+ * @param url
+ * @param method
+ * @param cardId
+ * @param listId
+ */
+const assertPutRequest = ({ url, method }, cardId, listId) => {
+    expect(url).toEqual(`https://api.trello.com/1/cards/${cardId}?key=TrelloApiKey&token=TrelloApiToken&idList=${listId}`);
+    expect(method).toEqual('PUT');
+};
+
+/**
+ * Get リクエスト のレスポンスを準備
+ * @param cardID
+ * @param boolean
+
+ */
+const prepareGetResponse = (id, boolean) => {
+    const responseGetObj = {
+        "id": `${id}`,
+        "closed": boolean,
+        "idLabels": [
+            {
+                "id": `id${id}`,
+                "idBoard": `idBoard${id}`,
+                "name": "Overdue",
+                "color": "yellow"
+            }
+        ],
+        "idList": `idList${id}`,
+        "idMembers": [
+            `idMembers${id}`
+        ],
+    };
+    return responseGetObj;
+};
+
+/**
+ * GET リクエストで失敗 存在しないカード ID 、権限のないカード ID など
+ */
+test("GET Failed", () => {
+    prepareConfigs('Cqqqqq', 'LQQQQQ');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'Cqqqqq');
+        return httpClient.createHttpResponse(404, "application/json", "{}");
+    });
+    assertError(main, 'Failed to get card information. Card ID: Cqqqqq, status: 404');
+});
+
+/**
+ * アーカイブ済のカード ID 
+ */
+test("Failed - Archived - CardID", () => {
+    prepareConfigs('Caaaaa', 'LQQQQQ');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'Caaaaa');
+        return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('Caaaaa', true)));
+    });
+    assertError(main, 'Card ID: Caaaaa is archived.');
+});
+
+
+/**
+ * PUT リクエストで失敗 
+ */
+test("PUT Failed", () => {
+    prepareConfigs('Cqqqqq', 'LQQQQQ');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'Cqqqqq');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('Cqqqqq', false)));
+        }
+        assertPutRequest(request, 'Cqqqqq', 'LQQQQQ');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+        assertError(main, 'Failed to move. Card ID: Cqqqqq, status: 404');
+});
+
+
+/**
+ * 成功 -　1 つのカード ID
+ * カード ID 単一行を指定
+ * リスト ID 選択型を指定
+ */
+test("Success - 1 cardID - singleline", () => {
+    prepareSingleLineAndSelectConfigs('C123ABC', 'L123ABC');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C123ABC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C123ABC', false)));
+        }
+        assertPutRequest(request, 'C123ABC', 'L123ABC');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * 成功 -　1 つのカード ID 
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test("Success - 1 cardID", () => {
+    prepareConfigs('C456ABC', 'L456ABC');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C456ABC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C456ABC', false)));
+        }
+        assertPutRequest(request, 'C456ABC', 'L456ABC');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * 成功 -　リスト ID に固定値を指定
+ * カード ID 複数行を指定
+ */
+test('Success - ListId specified with fixed value ' , () => {
+    prepareConfigs('C123DEF', 'Ltemp');
+    //conf_ListId の設定値を固定値で上書き
+    configs.put('conf_ListId', 'L12345');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetRequest(request, 'C123DEF');
+            reqCount++;
+            return httpClient.createHttpResponse(200, "application/json", JSON.stringify(prepareGetResponse('C123DEF', false)));
+        }
+        assertPutRequest(request, 'C123DEF', 'L12345');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * 成功 -　カード ID 先頭や、途中に空行がある 末尾に2行以上の改行がある
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test("Success - Empty lines are set", () => {
+    prepareConfigs('\n123450\n\n123451\n\n\n\n', 'L456ABC');
+
+    let reqCount = 0;
+    let cardIndex = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount%2 === 0) {
+            assertGetRequest(request, `12345${cardIndex}`);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`12345${cardIndex}`, false)));
+        }
+        assertPutRequest(request, `12345${cardIndex}`, 'L456ABC');
+        reqCount++;
+        cardIndex++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    main();
+    expect(reqCount).toEqual(4);
+});
+
+/**
+ * 成功 -　複数のカード ID HTTP リクエスト数の上限
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test('Succeed to multiple IDs', () => {
+    let ids = '';
+    for (let i = 0; i < httpClient.getRequestingLimit()/2; i++) {
+        ids += `ID${i}\n`;
+    }
+    prepareConfigs(ids, 'L456DEF');
+
+    let reqCount = 0;
+    let cardIndex = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount%2 === 0) {
+            assertGetRequest(request, `ID${cardIndex}`);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetResponse(`ID${cardIndex}`, false)));
+        }
+        assertPutRequest(request, `ID${cardIndex}`, 'L456DEF');
+        reqCount++;
+        cardIndex++;
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    main();
+    expect(reqCount).toEqual(httpClient.getRequestingLimit());
+});
+
+/**
+ * 複数のカード ID HTTP リクエスト数の上限を超える
+ * カード ID 複数行を指定
+ * リスト ID 文字型を指定
+ */
+test('Failed - Number of Card IDs is over the limit', () => {
+    let ids = '';
+    for (let i = 0; i <= httpClient.getRequestingLimit()/2; i++) {
+        ids += `ID${i}\n`;
+    }
+    prepareConfigs(ids, 'L123ABC');
+    assertError(main, 'Number of Card IDs is over the limit.');
+});
+
+    ]]></test>
+
+</service-task-definition>
