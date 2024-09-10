@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Add Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター追加</label>
-    <last-modified>2024-09-09</last-modified>
+    <last-modified>2024-09-10</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item adds a collaborator to a specified repository on GitHub.
@@ -124,7 +124,7 @@ function checkInvitee(auth, ownerAndRepo, handle) {
     }
     const invitations = JSON.parse(responseStr);
     if (invitations.some(invitation => invitation.invitee.login === handle)) {
-        throw new Error(`${handle} already invited.`);
+        throw new Error(`${handle} is already invited.`);
     }
 };
 
@@ -144,12 +144,15 @@ function checkCollaborator(auth, ownerAndRepo, handle) {
 
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
-    if (status === 204) {
-        engine.log(responseStr);
-        throw new Error(`${handle} already collaborator. status: ${status}`);
-    } else if (status !== 404) {
-        throw new Error(`Failed to get a ${handle} information. status: ${status}`);
+    if (status === 404) {
+        // success: user is not a collaborator yet
+        return;
     }
+    if (status === 204) {
+        throw new Error(`${handle} is already a collaborator.`);
+    }
+    engine.log(responseStr);
+    throw new Error(`Failed to get a ${handle} information. status: ${status}`);
 };
 
 /**
@@ -316,69 +319,59 @@ test('GETinvitee Failed', () => {
 
 /**
  * GETinvitee リクエスト のレスポンスを準備
- * @param permission
- * @param name
- * @param boolean
  */
-const prepareGetInviteeResponse = (permission, name, boolean) => {
-    if (boolean === "false") {
-        name = "dummy";
-    }
-
-    const responseGetInviteeObj = [
+const getInviteeResponse =  [
         {
             "id": 1,
             "repository": {
                 "full_name": "octocat/Hello-World",
                 "owner": {
-                    "login": `${name}1`,
-                    "url": `https://api.github.com/users/${name}1`,
+                    "login": "userA",
+                    "url": `https://api.github.com/users/userA`,
                     "type": "User"
                 }
             },
             "invitee": {
-                "login": `${name}2`,
+                "login": "userB",
                 "id": 1,
-                "url": `https://api.github.com/users/${name}`,
-                "html_url": "https://github.com/`${name}1`",
+                "url": `https://api.github.com/users/userB`,
+                "html_url": "https://github.com/userB",
                 "type": "User"
             },
             "inviter": {
-                "login": `${name}3`,
+                "login": "userC",
                 "id": 1,
-                "url": `https://api.github.com/users/${name}1`,
+                "url": `https://api.github.com/users/userC`,
                 "type": "User"
             },
-            "permissions": `${permission}`
+            "permissions": "read"
         },
         {
             "id": 2,
             "repository": {
                 "full_name": "octocat/Hello-World",
                 "owner": {
-                    "login": `${name}4`,
-                    "url": `https://api.github.com/users/${name}`,
+                    "login": "user2",
+                    "url": `https://api.github.com/users/user2`,
                     "type": "User"
                 }
             },
             "invitee": {
-                "login": `${name}`,
+                "login": "user3",
                 "id": 1,
-                "url": `https://api.github.com/users/${name}`,
-                "html_url": "https://github.com/`${name}`",
+                "url": `https://api.github.com/users/user3`,
+                "html_url": "https://github.com/user3",
                 "type": "User"
             },
             "inviter": {
-                "login": `${name}5`,
+                "login": "user4",
                 "id": 1,
-                "url": `https://api.github.com/users/${name}`,
+                "url": `https://api.github.com/users/user4`,
                 "type": "User"
             },
-            "permissions": `${permission}`
+            "permissions": "write"
         }
     ];
-    return responseGetInviteeObj;
-};
 
 /**
  * ユーザーがリポジトリ招待中でエラー 
@@ -388,10 +381,10 @@ test('user already invited', () => {
 
     httpClient.setRequestHandler((request) => {
         assertGetInviteeRequest(request, 'user1Org/user1Org456', 'user3');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('read', 'user3', 'true')));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
     });
 
-    assertError(main, 'user3 already invited.');
+    assertError(main, 'user3 is already invited.');
 });
 
 /**
@@ -418,7 +411,7 @@ test('GETCollaboration Failed', () => {
         if (reqCount === 0) {
             assertGetInviteeRequest(request, 'user1/user1repo', 'user1');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('push', 'user1', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         assertGetCollaborationRequest(request, 'user1/user1repo', 'user1');
         return httpClient.createHttpResponse(403, 'application/json', '{}');
@@ -437,12 +430,12 @@ test('user already collaborator', () => {
         if (reqCount === 0) {
             assertGetInviteeRequest(request, 'user2/user2repo', 'user2');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('', 'user2', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         assertGetCollaborationRequest(request, 'user2/user2repo', 'user2');
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
-    assertError(main, 'user2 already collaborator. status: 204');
+    assertError(main, 'user2 is already a collaborator.');
 });
 
 /**
@@ -466,21 +459,21 @@ const assertPutCollaborationRequest = ({ url, method, body }, ownerAndRepo, name
  * ユーザーをリポジトリにコラボレーション追加する API でエラー 
  */
 test('PUTCollaboration Failed', () => {
-    prepareConfigs("https://github.com/user3/user3repo", 'user3', '');
+    prepareConfigs("https://github.com/user7/user7repo", 'user7', '');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user3/user3repo', 'user3');
+            assertGetInviteeRequest(request, 'user7/user7repo', 'user7');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('', 'user3', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         if (reqCount === 1) {
-            assertGetCollaborationRequest(request, 'user3/user3repo', 'user3');
+            assertGetCollaborationRequest(request, 'user7/user7repo', 'user7');
             reqCount++;
             return httpClient.createHttpResponse(404, 'application/json', '{}');
         }
-        assertPutCollaborationRequest(request, 'user3/user3repo', 'user3');
+        assertPutCollaborationRequest(request, 'user7/user7repo', 'user7');
         return httpClient.createHttpResponse(403, 'application/json', '{}');
     });
     assertError(main, 'Failed to add a collaborator. status: 403');
@@ -525,7 +518,7 @@ test('Succeed - push', () => {
         if (reqCount === 0) {
             assertGetInviteeRequest(request, 'user4/user4repo', 'user4');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('push', 'user4', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         if (reqCount === 1) {
             assertGetCollaborationRequest(request, 'user4/user4repo', 'user4');
@@ -552,14 +545,14 @@ test('Succeed - empty', () => {
         if (reqCount === 0) {
             assertGetInviteeRequest(request, 'user5/user5repo', 'user5');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('', 'user5', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         if (reqCount === 1) {
             assertGetCollaborationRequest(request, 'user5/user5repo', 'user5');
             reqCount++;
             return httpClient.createHttpResponse(404, 'application/json', '{}');
         }
-        assertPutCollaborationRequest(request, 'user5/user5repo', 'user5', null);
+        assertPutCollaborationRequest(request, 'user5/user5repo', 'user5', undefined);
         return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('', 'user5', 'user5/user5repo')));
     });
     main();
@@ -579,7 +572,7 @@ test('Succeed - pull', () => {
         if (reqCount === 0) {
             assertGetInviteeRequest(request, 'user6/user6repo', 'user6');
             reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetInviteeResponse('pull', 'user6', 'false')));
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(getInviteeResponse));
         }
         if (reqCount === 1) {
             assertGetCollaborationRequest(request, 'user6/user6repo', 'user6');
