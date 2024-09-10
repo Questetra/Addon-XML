@@ -57,6 +57,11 @@
             <label>A1: Data item to save response from Assistant</label>
             <label locale="ja">A1: Assistant の回答を保存するデータ項目</label>
         </config>
+        <config name="conf_AnswerFiles" required="false" form-type="SELECT"
+                select-data-type="FILE">
+            <label>A2: Data item to save attachments</label>
+            <label locale="ja">I1: 回答に添付されているファイルを保存するデータ項目</label>
+        </config>
     </configs>
 
     <script><![CDATA[
@@ -92,9 +97,7 @@ const main = () => {
 
         return false;
     }
-    const answer = listMessages(auth, threadId);
-    ////// == ワークフローデータへの代入 / Data Updating ==
-    saveData('conf_Answer', answer ?? '');
+    getAnswer(auth, threadId);
 }
 
 const proceed = () => {
@@ -108,9 +111,7 @@ const proceed = () => {
     if (!completed) {
         return false;
     }
-    const answer = listMessages(auth, threadId);
-    ////// == ワークフローデータへの代入 / Data Updating ==
-    saveData('conf_Answer', answer ?? '');
+    getAnswer(auth, threadId);
 };
 
 /**
@@ -184,7 +185,7 @@ const createThread = (auth) => {
     return responseJson.id;
 };
 
-const createRun= (auth, assistantId, threadId, message, imageUrls, fileIds) => {
+const createRun = (auth, assistantId, threadId, message, imageUrls, fileIds) => {
     /// prepare json
     const requestJson = {
         assistant_id: assistantId,
@@ -252,6 +253,18 @@ const retrieveRun = (auth, threadId, runId) => {
     return completed;
 };
 
+const getAnswer = (auth, threadId) => {
+    const {
+        text,
+        fileIds
+    } = listMessages(auth, threadId);
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer', text ?? '');
+
+    const files = fileIds.map(fileId => getFile(auth, fileId));
+    saveData('conf_AnswerFiles', files);
+};
+
 const listMessages = (auth, threadId) => {
     const response = httpClient.begin().authSetting(auth)
         .header('OpenAI-Beta', 'assistants=v2')
@@ -263,14 +276,51 @@ const listMessages = (auth, threadId) => {
         throw new Error(`Failed to request. status: ${responseCode}`);
     }
     const responseJson = JSON.parse(responseBody);
-    const text = responseJson.data[0].content[0].text;
-    let answer = text.value;
-    if (text.annotations??[].length > 0) {
-        text.annotations.forEach(annotation => {
-            answer += `\n${JSON.stringify(annotation)}`;
-        });
+    return parseMessage(responseJson.data[0].content[0].text);
+};
+
+const parseMessage = (message) => {
+    let {
+        value: text,
+        annotations
+    } = message;
+    const fileIds = (annotations ?? []).map(annotation => {
+        if (annotation.type === 'file_citation') {
+            return annotation.file_citation.file_id;
+        } else {
+            return annotation.file_path.file_id;
+        }
+    });
+    return {
+        text,
+        fileIds
+    };
+};
+
+const getFile = (auth, fileId) => {
+    let response = httpClient
+        .begin()
+        .authSetting(auth)
+        .get(`https://api.openai.com/v1/files/${fileId}`);
+    let responseCode = response.getStatusCode();
+    const responseBody = response.getResponseAsString();
+    if (responseCode !== 200) {
+        engine.log(responseBody);
+        throw new Error(`Failed to request. status: ${responseCode}`);
     }
-    return answer;
+    const {filename} = JSON.parse(responseBody);
+
+    response = httpClient
+        .begin()
+        .authSetting(auth)
+        .get(`https://api.openai.com/v1/files/${fileId}/content`);
+    responseCode = response.getStatusCode();
+    if (responseCode !== 200) {
+        throw new Error(`Failed to request. status: ${responseCode}`);
+    }
+
+    return new com.questetra.bpms.core.event.scripttask.NewQfile(filename, 'application/octet-stream',
+        response.getResponse());
 };
 
 /**
@@ -286,7 +336,6 @@ const saveData = (configName, data) => {
     engine.setData(def, data);
 };
 ]]></script>
-
 
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABclJREFUWEfN
