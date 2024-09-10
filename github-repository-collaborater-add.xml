@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>GitHub: Add Repository Collaborator</label>
+    <label locale="ja">GitHub: リポジトリコラボレーター追加</label>
+    <last-modified>2024-09-10</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item adds a collaborator to a specified repository on GitHub.
+    </summary>
+    <summary locale="ja">
+        この工程は、GitHub の指定したリポジトリにコラボレーターを追加します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-repository-collaborator-add/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-repository-collaborator-add/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Personal Access Token (fine-grained)</label>
+            <label locale="ja">C1: 個人用アクセストークン（fine-grained）</label>
+        </config>
+        <config name="conf_RepositoryUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C2: Repository's URL (https://github.com/{owner}/{repository})</label>
+            <label locale="ja">C2: リポジトリの URL (https://github.com/{owner}/{repository})</label>
+        </config>
+        <config name="conf_UserName" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C3: Handle of the GitHub user to invite</label>
+            <label locale="ja">C3: 招待する GitHub ユーザのハンドル名</label>
+        </config>
+        <config name="conf_Permission" form-type="SELECT_ITEM">
+            <label>C4: Permission (valid only for an organization's repository)</label>
+            <label locale="ja">C4: 付与する権限（組織のリポジトリでのみ有効）</label>
+                <item value="pull">
+                    <label>pull</label>
+                </item>
+                <item value="push">
+                    <label>push (default)</label>
+                    <label locale="ja">push（デフォルト）</label>
+                </item>
+        </config>		
+    </configs>
+
+    <script><![CDATA[
+
+const API_VERSION = '2022-11-28';
+const API_VERSION_HEADER = 'X-GitHub-Api-Version';
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const ownerAndRepo = retrieveOwnerAndRepo();
+    const handle = retrieveHandle();
+    const permission = configs.get("conf_Permission");
+
+    ////// == 演算 / Calculating ==
+    checkInvitee(auth, ownerAndRepo, handle);
+    checkCollaborator(auth, ownerAndRepo, handle);
+    addCollaborator(auth, ownerAndRepo, handle, permission);
+}
+
+/**
+  * config からリポジトリの URL を読み出し、API に必要な文字列を取り出す
+  * @return {String} ownerAndRepo
+  */
+function retrieveOwnerAndRepo() {
+    const repositoryUrlDef = configs.getObject('conf_RepositoryUrl');
+    let repositoryUrl;
+    if (repositoryUrlDef === null) { // 固定値で指定
+        repositoryUrl = configs.get('conf_RepositoryUrl');
+    } else {
+        repositoryUrl = engine.findData(repositoryUrlDef);
+    }
+    if (repositoryUrl === null) {
+        throw new Error("Repository's URL is blank.");
+    }
+
+    const regExp = /^https:\/\/github\.com\/([a-zA-Z0-9-_]+\/[a-zA-Z0-9-_]+)$/;
+    const found = repositoryUrl.match(regExp);
+    if (found === null) {
+        throw new Error("Invalid repository URL.");
+    }
+    const ownerAndRepo = found[1];
+    return ownerAndRepo;
+}
+
+/**
+  * config から招待する GitHub ユーザのハンドル名 を読み出す
+  * @return {String} handle
+  */
+function retrieveHandle() {
+    const handleDef = configs.getObject('conf_UserName');
+    let handle;
+    if (handleDef === null) { // 固定値で指定
+        handle = configs.get('conf_UserName');
+    } else {
+        handle = engine.findData(handleDef);
+    }
+    if (handle === null) {
+        throw new Error("handle is blank.");
+    }
+    return handle;
+}
+
+/**
+ * ユーザーがリポジトリ招待中であるかどうかを確認する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} handle 招待する GitHub ユーザのハンドル名
+ */
+function checkInvitee(auth, ownerAndRepo, handle) {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/invitations`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .get(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get invitee information. status: ${status}`);
+    }
+    const invitations = JSON.parse(responseStr);
+    if (invitations.some(invitation => invitation.invitee.login === handle)) {
+        throw new Error(`${handle} is already invited.`);
+    }
+};
+
+/**
+ * ユーザーがリポジトリコラボレータであるかどうかを確認する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} handle 招待する GitHub ユーザのハンドル名
+ */
+function checkCollaborator(auth, ownerAndRepo, handle) {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(handle)}`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .get(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status === 404) {
+        // success: user is not a collaborator yet
+        return;
+    }
+    if (status === 204) {
+        throw new Error(`${handle} is already a collaborator.`);
+    }
+    engine.log(responseStr);
+    throw new Error(`Failed to get a ${handle} information. status: ${status}`);
+};
+
+/**
+ * リポジトリにコラボレータを追加
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} handle 招待する GitHub ユーザのハンドル名
+ * @param {String} permission 付与する権限
+ */
+function addCollaborator(auth, ownerAndRepo, handle, permission) {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(handle)}`;
+
+    const jsonReq = {};
+    if (permission !== "") {
+        jsonReq["permission"] = permission;
+    }
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+        .put(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status !== 201) {
+        // including 204: already a collaborator etc. (permission might have been updated)
+        engine.log(responseStr);
+        throw new Error(`Failed to add a collaborator. status: ${status}`);
+    }
+    const jsonRes = JSON.parse(responseStr);
+    engine.log(`Succeeded to add a collaborator.`);
+    engine.log(`repository.full_name: ${jsonRes.repository.full_name}`);
+    engine.log(`invitee.login: ${jsonRes.invitee.login}`);
+    engine.log(`permissions: ${jsonRes.permissions}`);
+};
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABM9JREFUWEfF
+        V2tQlFUYfs4ugiKgePkTiE3gCIssGWRhg1EwaE2OUZNjVDIFEwyJM12MSZKgokkNUdZNMhwCCg0p
+        Bi8UxGVRblkgLHFJ12ZipImBLiAOg7h7mvfT/dz99lt2sR+8v3bPe3vOez0fw/+gqKgoF1LX6XQ3
+        79YMc1bxvuBgP2ZSRjHGH4SJqcCwGsCi2/pj4PgVCt7HOfuJK4y633p7B52x7RBAgCo0GCYeD4bn
+        AKxyxiiAy+A4CQUrM/R1986kYxdAWFjYvH8nb6YoOE/igNpJx1ZiDNCbGCtcvMCloKOjY1rOhiyA
+        ALXal93gb3PG0u7GsVSHca7hrmyfQa+/asOTHpBzTCMLQKIj5wqFAiaTyZGYmX8M85AlBWEVAQr7
+        +PUbufZu7uvrg+SkV3B/aAj8VqyAu7u7AGB09C8MXLqEH+oacKK8wi4gioTXQtc3LdNhBcBfFZrG
+        OM+Xs7AjNRlpqSmgW89Evw8OIiExGUNDf8iKccZ2Xunr1piZIgCqdsZ5mbTgvL0Xo7ysFPeu9HM2
+        1EJU9uXm4VhRiY0OFSZnLN7cHXcABKpzwLBbqlH1zddQBQU67dxScGv8dlzs6rbV5fjIMKDPIIYA
+        gIaMwqSsk/b5i/Hb8N677wgGJicnsSfrA6S9loKVfn7CLaempqBUKuHq6gqj0Sjkf8H8+Xgmboug
+        MzY2hnWPRMkV6mWTwhhDw0oA4B+k3s6AYkuoi7y80N7cCBcXYdqCchuzabPwe/nyZRgZGRXFyanS
+        RYmJieuIeGgdSoo+F3nfVlYhPSPTJgocSLjSry8RAASoQjTgbIelVPy2rcjOFKIk0MjoKNZviHaY
+        Crr93pz3Rbmx8XGEPxxpq8f4YUNfT9otAIHqejA8bil1+GAuNsbGiEd0C7qNI6IuudDaBIqgmQJD
+        1sJolMwLjgbDgD76FoAgNU0oH0vjjbXVoL4nonyvXrPWkW+Rn5+3H09sjBX/U1u2trVL9YcM/Xpf
+        Riv16vDf/wDwsJT45eIFuLm5CUdUYIEhDzgN4OOcbDwb97Qor9EWIF97RKo/YejXe9oF0Ha+AcuW
+        LhWV1j8abVV4M6GpPHkca4JVoshb6btRdfqsPAB7Kag48SVC1SGiErUYtaEjWrLEGy26OrF7SD7y
+        sVj8OTwsnwJ7RUgdQJ1gSY4KkSJGwH187hHV7KbPqghl2pBGcPv5RmH2U89T7xNRO3Z2diEjMxvU
+        YkQ0sOK2bBbCLt0V39XUYufru2wDZ9mGcoOINPI+2YunntyE6elpYcq99MLzgiGacOERG0SjSS8n
+        IH3XGzZOqHvCIyJx7dqEDc9qENkbxR4eC9FUXwMvT090detxvLwCqwL8cfpMNfr6B0SjFJ3Wpnob
+        J3n5WnxacFSubKxH8e06kF1GVFS11aeEwUKjVt/TA925ZhQVl4qG6V3Q/XOblSPtkaM4qNHK16x0
+        GQkA7Kxj4lE9fFH4mbgVzzW3IPHVVNG4p6cHOn9sEf7Tgtp/4BCKS7+SdW53HZP0TA8S4lNbfpi9
+        B1WnzqKw6M7uooX1/ZlK1NTW4cAhje3YtYBi90FCMo6eZPLxdP7U4ZNMSMUsHqXOuxYkHT9KzQbn
+        9FluBjGnHyaWoZ2zTzNpfufs43SWhTZr8f8AaTovPzYDLOEAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param repositoryUrl
+ * @param name
+ * @param permission
+ * @return returnObj
+ * @return returnObj.fullNameDef
+ * @return returnObj.urlDef
+ */
+const prepareConfigs = (repositoryUrl, name, permission) => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    // 文字型データ項目を準備して、config に指定
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    // 文字型データ項目の値（リポジトリURL）を指定
+    engine.setData(repositoryUrlDef, repositoryUrl);
+
+    // 文字型データ項目を準備して、config に指定
+    const nameDef = engine.createDataDefinition('ハンドル名', 3, 'q_Handle', 'STRING_TEXTFIELD');
+    configs.putObject('conf_UserName', nameDef);
+    // 文字型データ項目の値（ハンドル名）を指定
+    engine.setData(nameDef, name);
+
+    configs.put('conf_Permission', permission);
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (func, errorMsg) => {
+    let failed = false;
+    try {
+        func();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * conf_RepositoryUrl にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test("Repository's URL is blank - Repository's URL specified by String Data", () => {
+    prepareConfigs(null, 'user1', 'pull');
+    assertError(main, "Repository's URL is blank.");
+});
+
+/**
+ * conf_UserName にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test("handle is blank - handle specified by String Data", () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", null, 'push');
+    assertError(main, "handle is blank.");
+});
+
+/**
+ * リポジトリURLが不正
+ */
+test("Invalid repository URL - handle specified by String Data", () => {
+    prepareConfigs("https://invalid.com/user1Org/user1Org123", 'user1', '');
+    assertError(main, "Invalid repository URL.");
+});
+
+/**
+ * リクエストのテスト（ユーザーがリポジトリ招待中であるかどうかを確認する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ */
+const assertGetInviteeRequest = ({ url, method }, ownerAndRepo) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ユーザーがリポジトリ招待中であるかどうかを確認する API リクエストでエラー 
+ */
+test('GETinvitee Failed', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'user2', 'push');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInviteeRequest(request, 'user1Org/user1Org123', 'user2');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+
+    assertError(main, 'Failed to get invitee information. status: 404');
+});
+
+/**
+ * GETinvitee リクエスト のレスポンス
+ */
+const INVITEE_RESPONSE =  [
+        {
+            "id": 1,
+            "repository": {
+                "full_name": "octocat/Hello-World",
+                "owner": {
+                    "login": "userA",
+                    "url": `https://api.github.com/users/userA`,
+                    "type": "User"
+                }
+            },
+            "invitee": {
+                "login": "userB",
+                "id": 1,
+                "url": `https://api.github.com/users/userB`,
+                "html_url": "https://github.com/userB",
+                "type": "User"
+            },
+            "inviter": {
+                "login": "userC",
+                "id": 1,
+                "url": `https://api.github.com/users/userC`,
+                "type": "User"
+            },
+            "permissions": "read"
+        },
+        {
+            "id": 2,
+            "repository": {
+                "full_name": "octocat/Hello-World",
+                "owner": {
+                    "login": "user2",
+                    "url": `https://api.github.com/users/user2`,
+                    "type": "User"
+                }
+            },
+            "invitee": {
+                "login": "user3",
+                "id": 1,
+                "url": `https://api.github.com/users/user3`,
+                "html_url": "https://github.com/user3",
+                "type": "User"
+            },
+            "inviter": {
+                "login": "user4",
+                "id": 1,
+                "url": `https://api.github.com/users/user4`,
+                "type": "User"
+            },
+            "permissions": "write"
+        }
+    ];
+
+/**
+ * ユーザーがリポジトリ招待中でエラー 
+ */
+test('user already invited', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3', 'pull');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInviteeRequest(request, 'user1Org/user1Org456', 'user3');
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+    });
+
+    assertError(main, 'user3 is already invited.');
+});
+
+/**
+ * リクエストのテスト（ユーザーがリポジトリコラボレータであるかどうかを確認する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ * @param name
+ */
+const assertGetCollaborationRequest = ({ url, method }, ownerAndRepo, name) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(name)}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ユーザーがリポジトリコラボレータであるかどうかを確認する API リクエストでエラー 
+ */
+test('GETCollaboration Failed', () => {
+    prepareConfigs("https://github.com/user1/user1repo", 'user1', 'push');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user1/user1repo', 'user1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertGetCollaborationRequest(request, 'user1/user1repo', 'user1');
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to get a user1 information. status: 403');
+});
+
+/**
+ * ユーザーがすでにリポジトリコラボレータでエラー 
+ */
+test('user already collaborator', () => {
+    prepareConfigs("https://github.com/user2/user2repo", 'user2', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user2/user2repo', 'user2');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertGetCollaborationRequest(request, 'user2/user2repo', 'user2');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    assertError(main, 'user2 is already a collaborator.');
+});
+
+/**
+ * リクエストのテスト（ユーザーをリポジトリコラボレータに追加する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.body
+ * @param ownerAndRepo
+ * @param name
+ * @param permission
+ */
+const assertPutCollaborationRequest = ({ url, method, body }, ownerAndRepo, name, permission) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(name)}`);
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.permission).toEqual(permission);
+    expect(method).toEqual('PUT');
+};
+
+/**
+ * ユーザーをリポジトリにコラボレーション追加する API でエラー 
+ */
+test('PUTCollaboration Failed', () => {
+    prepareConfigs("https://github.com/user7/user7repo", 'user7', '');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user7/user7repo', 'user7');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertGetCollaborationRequest(request, 'user7/user7repo', 'user7');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertPutCollaborationRequest(request, 'user7/user7repo', 'user7');
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to add a collaborator. status: 403');
+});
+
+/**
+ * PutCollaboration リクエスト のレスポンスを準備
+ * @param role
+ * @param name
+ * @param ownerAndRepo
+ */
+const preparePutCollaborationResponse = (role, name, ownerAndRepo) => {
+    let permission = "write";
+    if (role === "pull") {
+        permission = "read";
+    }
+    const responsePutCollaborationObj = {
+        "id": 1,
+        "repository": {
+            "full_name": `${ownerAndRepo}`
+        },
+        "invitee": {
+            "login": `${name}`
+        },
+        "inviter": {
+            "login": "inviter"
+        },
+        "permissions": `${permission}`
+    };
+    return responsePutCollaborationObj;
+};
+
+/**
+ * コラボレーション成功 push
+ * URL 、ユーザ名をデータ項目で指定
+ */
+test('Succeed - push', () => {
+    prepareConfigs("https://github.com/user4/user4repo", 'user4', 'push');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user4/user4repo', 'user4');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertGetCollaborationRequest(request, 'user4/user4repo', 'user4');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertPutCollaborationRequest(request, 'user4/user4repo', 'user4', 'push');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('push', 'user4', 'user4/user4repo')));
+    });
+    main();
+});
+
+/**
+ * コラボレーション成功 権限を空で設定（push）
+ * URL を固定値で指定
+ * ユーザ名をデータ項目で指定 
+ */
+test('Succeed - empty', () => {
+    prepareConfigs(null, 'user5', '');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo', 'user5');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertGetCollaborationRequest(request, 'user5/user5repo', 'user5');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertPutCollaborationRequest(request, 'user5/user5repo', 'user5', undefined);
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('', 'user5', 'user5/user5repo')));
+    });
+    main();
+});
+
+/**
+ * コラボレーション成功 権限を空で設定（pull） 
+ * URL をデータ項目で指定 
+ * ユーザ名を固定値で指定 
+ */
+test('Succeed - pull', () => {
+    prepareConfigs("https://github.com/user6/user6repo", null, 'pull');
+    configs.put('conf_UserName', 'user6');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user6/user6repo', 'user6');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertGetCollaborationRequest(request, 'user6/user6repo', 'user6');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertPutCollaborationRequest(request, 'user6/user6repo', 'user6', 'pull');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('pull', 'user6', 'user6/user6repo')));
+    });
+    main();
+});
+
+]]></test>
+</service-task-definition>
