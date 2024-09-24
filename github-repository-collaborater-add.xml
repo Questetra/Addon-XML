@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Add Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター追加</label>
-    <last-modified>2024-09-10</last-modified>
+    <last-modified>2024-09-24</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item adds a collaborator to a specified repository on GitHub.
@@ -45,7 +45,7 @@
 const API_VERSION = '2022-11-28';
 const API_VERSION_HEADER = 'X-GitHub-Api-Version';
 
-function main() {
+const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
     const ownerAndRepo = retrieveOwnerAndRepo();
@@ -62,7 +62,7 @@ function main() {
   * config からリポジトリの URL を読み出し、API に必要な文字列を取り出す
   * @return {String} ownerAndRepo
   */
-function retrieveOwnerAndRepo() {
+const retrieveOwnerAndRepo = () => {
     const repositoryUrlDef = configs.getObject('conf_RepositoryUrl');
     let repositoryUrl;
     if (repositoryUrlDef === null) { // 固定値で指定
@@ -87,7 +87,7 @@ function retrieveOwnerAndRepo() {
   * config から招待する GitHub ユーザのハンドル名 を読み出す
   * @return {String} handle
   */
-function retrieveHandle() {
+const retrieveHandle = () => {
     const handleDef = configs.getObject('conf_UserName');
     let handle;
     if (handleDef === null) { // 固定値で指定
@@ -107,12 +107,14 @@ function retrieveHandle() {
  * @param {String} ownerAndRepo {owner}/{repo}
  * @param {String} handle 招待する GitHub ユーザのハンドル名
  */
-function checkInvitee(auth, ownerAndRepo, handle) {
+const checkInvitee = (auth, ownerAndRepo, handle) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/invitations`;
 
+    const MAX_PER_PAGE = 100;
     const response = httpClient.begin()
         .header(API_VERSION_HEADER, API_VERSION)
         .authSetting(auth)
+        .queryParam("per_page", MAX_PER_PAGE.toString())
         .get(url);
 
     const status = response.getStatusCode();
@@ -122,7 +124,13 @@ function checkInvitee(auth, ownerAndRepo, handle) {
         engine.log(responseStr);
         throw new Error(`Failed to get invitee information. status: ${status}`);
     }
+
     const invitations = JSON.parse(responseStr);
+
+    if (invitations.length === MAX_PER_PAGE) {
+       throw new Error("Too many invitations found.");
+    }
+
     if (invitations.some(invitation => invitation.invitee.login === handle)) {
         throw new Error(`${handle} is already invited.`);
     }
@@ -134,7 +142,7 @@ function checkInvitee(auth, ownerAndRepo, handle) {
  * @param {String} ownerAndRepo {owner}/{repo}
  * @param {String} handle 招待する GitHub ユーザのハンドル名
  */
-function checkCollaborator(auth, ownerAndRepo, handle) {
+const checkCollaborator = (auth, ownerAndRepo, handle) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(handle)}`;
 
     const response = httpClient.begin()
@@ -162,7 +170,7 @@ function checkCollaborator(auth, ownerAndRepo, handle) {
  * @param {String} handle 招待する GitHub ユーザのハンドル名
  * @param {String} permission 付与する権限
  */
-function addCollaborator(auth, ownerAndRepo, handle, permission) {
+const addCollaborator = (auth, ownerAndRepo, handle, permission) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(handle)}`;
 
     const jsonReq = {};
@@ -299,7 +307,7 @@ test("Invalid repository URL - handle specified by String Data", () => {
  * @param ownerAndRepo
  */
 const assertGetInviteeRequest = ({ url, method }, ownerAndRepo) => {
-    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations`);
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations?per_page=100`);
     expect(method).toEqual('GET');
 };
 
@@ -385,6 +393,48 @@ test('user already invited', () => {
     });
 
     assertError(main, 'user3 is already invited.');
+});
+
+/**
+ * レスポンスに含まれる招待数が最大値 100 のためエラー  
+ */
+test('Too many invitations found', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org100", 'user100', 'pull');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInviteeRequest(request, 'user1Org/user1Org100', 'user100');
+        const invitee_ResponseObj =  [];
+        for (let i = 0; i < 100; i++) {
+            invitee_ResponseObj.push({
+                "id": `${i}`,
+                "repository": {
+                    "full_name": "octocat/Hello-World",
+                    "owner": {
+                        "login": `UserA${i}`,
+                        "url": `https://api.github.com/users/userA${i}`,
+                        "type": "User"
+                    }
+                },
+                "invitee": {
+                    "login": `UserB${i}`,
+                    "id": `${i}`,
+                    "url": `https://api.github.com/users/userB${i}`,
+                    "html_url": `https://github.com/userB${i}`,
+                    "type": "User"
+                },
+                "inviter": {
+                    "login": `UserC${i}`,
+                    "id": `${i}`,
+                    "url": `https://api.github.com/users/userC${i}`,
+                    "type": "User"
+                },
+                "permissions": "read"                
+                });    
+        }
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(invitee_ResponseObj));
+    });
+
+    assertError(main, 'Too many invitations found.');
 });
 
 /**
