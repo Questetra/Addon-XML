@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Remove Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター削除</label>
-    <last-modified>2024-09-13</last-modified>
+    <last-modified>2024-09-24</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item removes a collaborator from a specified repository on GitHub.
@@ -12,8 +12,8 @@
     <summary locale="ja">
         この工程は、GitHub の指定したリポジトリのコラボレーターを削除します。
     </summary>
-    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-repository-collaborator-remove//</help-page-url>
-    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-repository-collaborator-remove//</help-page-url>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-repository-collaborator-remove/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-repository-collaborator-remove/</help-page-url>
     <configs>
         <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
             <label>C1: Personal Access Token (fine-grained)</label>
@@ -34,7 +34,7 @@
 const API_VERSION = '2022-11-28';
 const API_VERSION_HEADER = 'X-GitHub-Api-Version';
 
-function main() {
+const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
     const ownerAndRepo = retrieveOwnerAndRepo();
@@ -98,9 +98,11 @@ const retrieveHandle = () => {
 const checkInvitee = (auth, ownerAndRepo, handle) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/invitations`;
 
+    const MAX_PER_PAGE = 100;
     const response = httpClient.begin()
         .header(API_VERSION_HEADER, API_VERSION)
         .authSetting(auth)
+        .queryParam("per_page", MAX_PER_PAGE.toString())
         .get(url);
 
     const status = response.getStatusCode();
@@ -111,8 +113,13 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
         throw new Error(`Failed to get invitee information. status: ${status}`);
     }
     const invitations = JSON.parse(responseStr);
+
+    if (invitations.length === MAX_PER_PAGE) {
+       throw new Error("Too many invitations found.");
+    }
+	
     if (invitations.some(invitation => invitation.invitee.login === handle)) {
-        throw new Error(`${handle} is a user pending for an invitation cannot be removed.`);
+        throw new Error(`${handle} is a user pending for an invitation and unable to remove.`);
     }
 };
 
@@ -132,10 +139,15 @@ const checkCollaborator = (auth, ownerAndRepo, handle) => {
 
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
-    if (status !== 204) {
-        engine.log(responseStr);
+    if (status === 204) {
+        // success: the user is a collaborator
+        return;
+    }
+    if (status === 404) {
         throw new Error(`${handle} is not a collaborator. status: ${status}`);
     }
+    engine.log(responseStr);
+    throw new Error(`Failed to get a ${handle} information. status: ${status}`);
 };
 
 /**
@@ -264,7 +276,7 @@ test("Invalid repository URL - handle specified by String Data", () => {
  * @param ownerAndRepo
  */
 const assertGetInviteeRequest = ({ url, method }, ownerAndRepo) => {
-    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations`);
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations?per_page=100`);
     expect(method).toEqual('GET');
 };
 
@@ -349,7 +361,49 @@ test('user already invited', () => {
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
     });
 
-    assertError(main, 'user3 is a user pending for an invitation cannot be removed.');
+    assertError(main, 'user3 is a user pending for an invitation and unable to remove.');
+});
+
+/**
+ * レスポンスに含まれる招待数が最大値 100 のためエラー  
+ */
+test('Too many invitations found', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org100", 'user100', 'pull');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetInviteeRequest(request, 'user1Org/user1Org100', 'user100');
+        const invitee_ResponseObj =  [];
+        for (let i = 0; i < 100; i++) {
+            invitee_ResponseObj.push({
+                "id": `${i}`,
+                "repository": {
+                    "full_name": "octocat/Hello-World",
+                    "owner": {
+                        "login": `UserA${i}`,
+                        "url": `https://api.github.com/users/userA${i}`,
+                        "type": "User"
+                    }
+                },
+                "invitee": {
+                    "login": `UserB${i}`,
+                    "id": `${i}`,
+                    "url": `https://api.github.com/users/userB${i}`,
+                    "html_url": `https://github.com/userB${i}`,
+                    "type": "User"
+                },
+                "inviter": {
+                    "login": `UserC${i}`,
+                    "id": `${i}`,
+                    "url": `https://api.github.com/users/userC${i}`,
+                    "type": "User"
+                },
+                "permissions": "read"                
+                });    
+        }
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(invitee_ResponseObj));
+    });
+
+    assertError(main, 'Too many invitations found.');
 });
 
 /**
@@ -379,9 +433,9 @@ test('GETCollaboration Failed', () => {
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
         }
         assertGetCollaborationRequest(request, 'user1/user1repo', 'user1');
-        return httpClient.createHttpResponse(403, 'application/json', '{}');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
-    assertError(main, 'user1 is not a collaborator. status: 403');
+    assertError(main, 'user1 is not a collaborator. status: 404');
 });
 
 
@@ -390,13 +444,11 @@ test('GETCollaboration Failed', () => {
  * @param {Object} request
  * @param request.url
  * @param request.method
- * @param request.body
  * @param ownerAndRepo
  * @param name
  */
-const assertDeleteCollaborationRequest = ({ url, method, body }, ownerAndRepo, name) => {
+const assertRemoveCollaborationRequest = ({ url, method,}, ownerAndRepo, name) => {
     expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(name)}`);
-    const bodyObj = JSON.parse(body);
     expect(method).toEqual('DELETE');
 };
 
@@ -418,7 +470,7 @@ test('DELETECollaboration Failed', () => {
             reqCount++;
             return httpClient.createHttpResponse(204, 'application/json', '{}');
         }
-        assertDeleteCollaborationRequest(request, 'user7/user7repo', 'user7');
+        assertRemoveCollaborationRequest(request, 'user7/user7repo', 'user7');
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
     assertError(main, 'Failed to remove a collaborator. status: 404');
@@ -443,7 +495,7 @@ test('Succeed', () => {
             reqCount++;
             return httpClient.createHttpResponse(204, 'application/json', '{}');
         }
-        assertDeleteCollaborationRequest(request, 'user4/user4repo', 'user4');
+        assertRemoveCollaborationRequest(request, 'user4/user4repo', 'user4');
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     main();
@@ -470,7 +522,7 @@ test('Succeed - fixed value', () => {
             reqCount++;
             return httpClient.createHttpResponse(204, 'application/json', '{}');
         }
-        assertDeleteCollaborationRequest(request, 'user5/user5repo', 'user5');
+        assertRemoveCollaborationRequest(request, 'user5/user5repo', 'user5');
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     main();
