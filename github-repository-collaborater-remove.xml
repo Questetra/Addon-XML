@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Remove Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター削除</label>
-    <last-modified>2024-09-26</last-modified>
+    <last-modified>2024-09-27</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item removes a collaborator from a specified repository on GitHub.
@@ -41,9 +41,16 @@ const main = () => {
     const handle = retrieveHandle();
 
     ////// == 演算 / Calculating ==
-    checkInvitee(auth, ownerAndRepo, handle);
-    checkCollaborator(auth, ownerAndRepo, handle);
-    removeCollaborator(auth, ownerAndRepo, handle);
+
+    let invitationId ;    
+    invitationId = checkInvitee(auth, ownerAndRepo, handle);
+
+    if (invitationId === undefined){
+        checkCollaborator(auth, ownerAndRepo, handle);
+        removeCollaborator(auth, ownerAndRepo, handle);
+    } else {
+        removeInvitee(auth, ownerAndRepo, handle, invitationId);
+    }
 }
 
 /**
@@ -90,11 +97,12 @@ const retrieveHandle = () => {
 }
 
 /**
- * ユーザーがリポジトリ招待中であるかどうかを確認する
- * @param {AuthSettingWrapper} auth HTTP 認証設定
- * @param {String} ownerAndRepo {owner}/{repo}
- * @param {String} handle 削除する GitHub ユーザのハンドル名
- */
+  * ユーザーがリポジトリ招待中であるかどうかを確認する
+  * @param {AuthSettingWrapper} auth HTTP 認証設定
+  * @param {String} ownerAndRepo {owner}/{repo}
+  * @param {String} handle 削除する GitHub ユーザのハンドル名
+  * @return {String} invitationsId 招待 ID
+  */
 const checkInvitee = (auth, ownerAndRepo, handle) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/invitations`;
 
@@ -117,10 +125,38 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
     if (invitations.length === MAX_PER_PAGE) {
        throw new Error("Too many invitations found.");
     }
-	
-    if (invitations.some(invitation => invitation.invitee.login === handle)) {
-        throw new Error(`${handle} is a user pending for an invitation and unable to remove.`);
+
+    for(let i = 0; i < invitations.length; i++){
+        if(invitations[i].invitee.login === handle){
+            return invitations[i].id;
+        }
     }
+};
+
+/**
+ * リポジトリ招待中のユーザについて招待を削除（キャンセル）する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} handle 削除する GitHub ユーザのハンドル名
+ * @param {String} invitationId  GitHub ユーザの招待 ID
+ */
+const removeInvitee = (auth, ownerAndRepo, handle, invitationId) => {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/invitations/${invitationId}`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .delete(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status !== 204) {
+        engine.log(responseStr);
+        throw new Error(`Failed to remove a invitation. status: ${status}`);
+    }   
+    engine.log(`Succeeded to remove a invitation(${handle}).`);
+
 };
 
 /**
