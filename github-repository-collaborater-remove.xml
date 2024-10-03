@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Remove Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター削除</label>
-    <last-modified>2024-09-27</last-modified>
+    <last-modified>2024-10-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item removes a collaborator from a specified repository on GitHub.
@@ -45,12 +45,12 @@ const main = () => {
     let invitationId ;    
     invitationId = checkInvitee(auth, ownerAndRepo, handle);
 
-    if (invitationId === undefined){
-        checkCollaborator(auth, ownerAndRepo, handle);
-        removeCollaborator(auth, ownerAndRepo, handle);
-    } else {
-        removeInvitee(auth, ownerAndRepo, handle, invitationId);
+    if (invitationId !== undefined){
+       removeInvitee(auth, ownerAndRepo, handle, invitationId);
+       return;
     }
+    checkCollaborator(auth, ownerAndRepo, handle);
+    removeCollaborator(auth, ownerAndRepo, handle);
 }
 
 /**
@@ -126,11 +126,13 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
        throw new Error("Too many invitations found.");
     }
 
-    for(let i = 0; i < invitations.length; i++){
-        if(invitations[i].invitee.login === handle){
-            return invitations[i].id;
-        }
+    const invitation = invitations.find((element) => element.invitee.login === handle);
+    if (invitation !== undefined){
+        return invitation.id;
+    } else {
+        return undefined;
     }
+
 };
 
 /**
@@ -153,9 +155,9 @@ const removeInvitee = (auth, ownerAndRepo, handle, invitationId) => {
 
     if (status !== 204) {
         engine.log(responseStr);
-        throw new Error(`Failed to remove a invitation. status: ${status}`);
+        throw new Error(`Failed to remove the invitation. status: ${status}`);
     }   
-    engine.log(`Succeeded to remove a invitation(${handle}).`);
+    engine.log(`Succeeded to remove the invitation(${handle}).`);
 
 };
 
@@ -387,20 +389,6 @@ const INVITEE_RESPONSE =  [
     ];
 
 /**
- * ユーザーがリポジトリ招待中でエラー 
- */
-test('user already invited', () => {
-    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3');
-
-    httpClient.setRequestHandler((request) => {
-        assertGetInviteeRequest(request, 'user1Org/user1Org456');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-    });
-
-    assertError(main, 'user3 is a user pending for an invitation and unable to remove.');
-});
-
-/**
  * レスポンスに含まれる招待数が最大値 100 のためエラー  
  */
 test('Too many invitations found', () => {
@@ -440,6 +428,61 @@ test('Too many invitations found', () => {
     });
 
     assertError(main, 'Too many invitations found.');
+});
+
+/**
+ * リクエストのテスト（リポジトリ招待を削除する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ * @param invitationId
+ */
+const assertRemoveInvitationRequest = ({ url, method }, ownerAndRepo, invitationId) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations/${invitationId}`);
+    expect(method).toEqual('DELETE');
+};
+
+/**
+ * 招待削除成功
+ * URL 、ユーザ名をデータ項目で指定 
+ */
+test('Succeed - invitation', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user1Org/user1Org456');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertRemoveInvitationRequest(request, 'user1Org/user1Org456', '2');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * 招待削除成功
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('Succeed - invitation - fixed value', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+    configs.put('conf_UserName', 'userB');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    main();
 });
 
 /**
