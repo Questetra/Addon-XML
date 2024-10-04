@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Remove Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター削除</label>
-    <last-modified>2024-10-03</last-modified>
+    <last-modified>2024-10-04</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item removes a collaborator from a specified repository on GitHub.
@@ -46,8 +46,10 @@ const main = () => {
     invitationId = checkInvitee(auth, ownerAndRepo, handle);
 
     if (invitationId !== undefined){
-       removeInvitee(auth, ownerAndRepo, handle, invitationId);
-       return;
+        const isInvitationRemoved = removeInvitation(auth, ownerAndRepo, handle, invitationId);
+        if (isInvitationRemoved) {
+            return;
+        }
     }
     checkCollaborator(auth, ownerAndRepo, handle);
     removeCollaborator(auth, ownerAndRepo, handle);
@@ -128,11 +130,11 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
 
     const invitation = invitations.find((element) => element.invitee.login === handle);
     if (invitation !== undefined){
+        engine.log('Invitation found.');
         return invitation.id;
     } else {
         return undefined;
     }
-
 };
 
 /**
@@ -142,7 +144,7 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
  * @param {String} handle 削除する GitHub ユーザのハンドル名
  * @param {String} invitationId  GitHub ユーザの招待 ID
  */
-const removeInvitee = (auth, ownerAndRepo, handle, invitationId) => {
+const removeInvitation = (auth, ownerAndRepo, handle, invitationId) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/invitations/${invitationId}`;
 
     const response = httpClient.begin()
@@ -153,12 +155,16 @@ const removeInvitee = (auth, ownerAndRepo, handle, invitationId) => {
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
 
-    if (status !== 204) {
-        engine.log(responseStr);
-        throw new Error(`Failed to remove the invitation. status: ${status}`);
-    }   
-    engine.log(`Succeeded to remove the invitation(${handle}).`);
-
+    if (status === 204) { // 招待のキャンセル成功
+        engine.log(`Succeeded to remove the invitation(${handle}).`);
+        return true;
+    }
+    if (status === 404) { // 招待が承認済み or キャンセル済み
+        engine.log(`Failed to remove invitation as it is already approved or removed.`);
+        return false;
+    }
+    engine.log(responseStr);
+    throw new Error(`Failed to remove the invitation. status: ${status}`);
 };
 
 /**
@@ -464,25 +470,26 @@ test('Succeed - invitation', () => {
 });
 
 /**
- * 招待削除成功
+ * 招待削除失敗
+ * 招待が承認済み、キャンセル済み以外のエラー 
  * URL 、ユーザ名をを固定値で指定 
  */
-test('Succeed - invitation - fixed value', () => {
+test('Failed - invitation - 403', () => {
     prepareConfigs('null', 'null');
-    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
-    configs.put('conf_UserName', 'userB');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user1Org/user1Org456');
+    configs.put('conf_UserName', 'user3');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
         if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user5/user5repo');
+            assertGetInviteeRequest(request, 'user1Org/user1Org456');
             reqCount++;
             return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
         }
-        assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
-        return httpClient.createHttpResponse(204, 'application/json', '{}');
+        assertRemoveInvitationRequest(request, 'user1Org/user1Org456', '2');
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
     });
-    main();
+    assertError(main, 'Failed to remove the invitation. status: 403');
 });
 
 /**
@@ -534,6 +541,34 @@ test('user1 is not a collaborator', () => {
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
     assertError(main, 'user1 is not a collaborator. status: 404');
+});
+
+/**
+ * ユーザーがリポジトリコラボレータでないのでエラー
+ * 招待確認直後に招待削除される
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('userB is not a collaborator - fixed value', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+    configs.put('conf_UserName', 'userB');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertGetCollaborationRequest(request, 'user5/user5repo', 'userB');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+    assertError(main, 'userB is not a collaborator. status: 404');
 });
 
 
@@ -621,6 +656,39 @@ test('Succeed - fixed value', () => {
             return httpClient.createHttpResponse(204, 'application/json', '{}');
         }
         assertRemoveCollaborationRequest(request, 'user5/user5repo', 'user5');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * コラボレータ削除成功
+ * 招待確認直後にコラボレーションされ招待削除失敗 404
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('Succeed - invitationFailed - fixed value', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+    configs.put('conf_UserName', 'userB');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertGetCollaborationRequest(request, 'user5/user5repo', 'userB');
+            reqCount++;
+            return httpClient.createHttpResponse(204, 'application/json', '{}');
+        }
+        assertRemoveCollaborationRequest(request, 'user5/user5repo', 'userB');
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     main();
