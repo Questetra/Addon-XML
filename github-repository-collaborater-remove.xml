@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Remove Repository Collaborator</label>
     <label locale="ja">GitHub: リポジトリコラボレーター削除</label>
-    <last-modified>2024-09-26</last-modified>
+    <last-modified>2024-10-08</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item removes a collaborator from a specified repository on GitHub.
@@ -41,7 +41,20 @@ const main = () => {
     const handle = retrieveHandle();
 
     ////// == 演算 / Calculating ==
-    checkInvitee(auth, ownerAndRepo, handle);
+
+    const invitationId = checkInvitee(auth, ownerAndRepo, handle);
+
+    if (invitationId !== undefined){
+        // 招待中のユーザは、コラボレータ削除 API では削除できないため、招待削除 API で削除する
+        const isInvitationRemoved = removeInvitation(auth, ownerAndRepo, handle, invitationId);
+        if (isInvitationRemoved) {
+            return;
+        }
+    }
+
+    // コラボレータでない、招待していない、GitHub ユーザでない 場合に、エラーにしたい
+    // しかし、コラボレータ削除の API は、これらも削除成功と同様 204 レスポンスを返し、区別できない
+    // だから事前にコラボレータであるかどうかチェックする
     checkCollaborator(auth, ownerAndRepo, handle);
     removeCollaborator(auth, ownerAndRepo, handle);
 }
@@ -90,11 +103,12 @@ const retrieveHandle = () => {
 }
 
 /**
- * ユーザーがリポジトリ招待中であるかどうかを確認する
- * @param {AuthSettingWrapper} auth HTTP 認証設定
- * @param {String} ownerAndRepo {owner}/{repo}
- * @param {String} handle 削除する GitHub ユーザのハンドル名
- */
+  * ユーザーがリポジトリ招待中であるかどうかを確認する
+  * @param {AuthSettingWrapper} auth HTTP 認証設定
+  * @param {String} ownerAndRepo {owner}/{repo}
+  * @param {String} handle 削除する GitHub ユーザのハンドル名
+  * @return {String} invitationsId 招待 ID
+  */
 const checkInvitee = (auth, ownerAndRepo, handle) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/invitations`;
 
@@ -117,14 +131,51 @@ const checkInvitee = (auth, ownerAndRepo, handle) => {
     if (invitations.length === MAX_PER_PAGE) {
        throw new Error("Too many invitations found.");
     }
-	
-    if (invitations.some(invitation => invitation.invitee.login === handle)) {
-        throw new Error(`${handle} is a user pending for an invitation and unable to remove.`);
+
+    const invitation = invitations.find((element) => element.invitee.login === handle);
+    if (invitation === undefined){
+        return undefined;
     }
+    engine.log('Invitation found.');
+    return invitation.id;
+};
+
+/**
+ * リポジトリ招待中のユーザについて招待を削除（キャンセル）する
+ * 招待中のユーザは、コラボレータ削除 API では削除できないため、招待削除 API で削除する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} handle 削除する GitHub ユーザのハンドル名
+ * @param {String} invitationId  GitHub ユーザの招待 ID
+ */
+const removeInvitation = (auth, ownerAndRepo, handle, invitationId) => {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/invitations/${invitationId}`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .authSetting(auth)
+        .delete(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status === 204) { // 招待のキャンセル成功
+        engine.log(`Succeeded to remove the invitation(${handle}).`);
+        return true;
+    }
+    if (status === 404) { // 招待が承認済み or キャンセル済み
+        engine.log(`Failed to remove invitation as it is already approved or removed.`);
+        return false;
+    }
+    engine.log(responseStr);
+    throw new Error(`Failed to remove the invitation. status: ${status}`);
 };
 
 /**
  * ユーザーがリポジトリコラボレータであるかどうかを確認する
+ * コラボレータでない、招待していない、GitHub ユーザでない 場合に、エラーにしたい
+ * しかし、コラボレータ削除の API は、これらも削除成功と同様 204 レスポンスを返し、区別できない
+ * だから事前にコラボレータであるかどうかチェックする
  * @param {AuthSettingWrapper} auth HTTP 認証設定
  * @param {String} ownerAndRepo {owner}/{repo}
  * @param {String} handle 削除する GitHub ユーザのハンドル名
@@ -351,20 +402,6 @@ const INVITEE_RESPONSE =  [
     ];
 
 /**
- * ユーザーがリポジトリ招待中でエラー 
- */
-test('user already invited', () => {
-    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3');
-
-    httpClient.setRequestHandler((request) => {
-        assertGetInviteeRequest(request, 'user1Org/user1Org456');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-    });
-
-    assertError(main, 'user3 is a user pending for an invitation and unable to remove.');
-});
-
-/**
  * レスポンスに含まれる招待数が最大値 100 のためエラー  
  */
 test('Too many invitations found', () => {
@@ -404,6 +441,62 @@ test('Too many invitations found', () => {
     });
 
     assertError(main, 'Too many invitations found.');
+});
+
+/**
+ * リクエストのテスト（リポジトリ招待を削除する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ * @param invitationId
+ */
+const assertRemoveInvitationRequest = ({ url, method }, ownerAndRepo, invitationId) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations/${invitationId}`);
+    expect(method).toEqual('DELETE');
+};
+
+/**
+ * 招待削除成功
+ * URL 、ユーザ名をデータ項目で指定 
+ */
+test('Succeed - invitation', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user1Org/user1Org456');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertRemoveInvitationRequest(request, 'user1Org/user1Org456', '2');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * 招待削除失敗
+ * 招待が承認済み、キャンセル済み以外のエラー 
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('Failed - invitation - 403', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user1Org/user1Org456');
+    configs.put('conf_UserName', 'user3');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user1Org/user1Org456');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        assertRemoveInvitationRequest(request, 'user1Org/user1Org456', '2');
+        return httpClient.createHttpResponse(403, 'application/json', '{}');
+    });
+    assertError(main, 'Failed to remove the invitation. status: 403');
 });
 
 /**
@@ -455,6 +548,34 @@ test('user1 is not a collaborator', () => {
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
     assertError(main, 'user1 is not a collaborator. status: 404');
+});
+
+/**
+ * ユーザーがリポジトリコラボレータでないのでエラー
+ * 招待確認直後に招待削除される
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('userB is not a collaborator - fixed value', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+    configs.put('conf_UserName', 'userB');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        assertGetCollaborationRequest(request, 'user5/user5repo', 'userB');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+    assertError(main, 'userB is not a collaborator. status: 404');
 });
 
 
@@ -542,6 +663,39 @@ test('Succeed - fixed value', () => {
             return httpClient.createHttpResponse(204, 'application/json', '{}');
         }
         assertRemoveCollaborationRequest(request, 'user5/user5repo', 'user5');
+        return httpClient.createHttpResponse(204, 'application/json', '{}');
+    });
+    main();
+});
+
+/**
+ * コラボレータ削除成功
+ * 招待確認直後にコラボレーションされ招待削除失敗 404
+ * URL 、ユーザ名をを固定値で指定 
+ */
+test('Succeed - invitationFailed - fixed value', () => {
+    prepareConfigs('null', 'null');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+    configs.put('conf_UserName', 'userB');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetInviteeRequest(request, 'user5/user5repo');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        }
+        if (reqCount === 1) {
+            assertRemoveInvitationRequest(request, 'user5/user5repo', '1');
+            reqCount++;
+            return httpClient.createHttpResponse(404, 'application/json', '{}');
+        }
+        if (reqCount === 2) {
+            assertGetCollaborationRequest(request, 'user5/user5repo', 'userB');
+            reqCount++;
+            return httpClient.createHttpResponse(204, 'application/json', '{}');
+        }
+        assertRemoveCollaborationRequest(request, 'user5/user5repo', 'userB');
         return httpClient.createHttpResponse(204, 'application/json', '{}');
     });
     main();
