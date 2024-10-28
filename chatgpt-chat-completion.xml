@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2024-07-24</last-modified>
+    <last-modified>2024-10-28</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -48,6 +48,12 @@
             <item value="gpt-4o-mini">
                 <label>gpt-4o-mini</label>
             </item>
+            <item value="o1-preview">
+                <label>o1-preview</label>
+            </item>
+            <item value="o1-mini">
+                <label>o1-mini</label>
+            </item>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C3: Maximum number of tokens to consume (2048 if blank)</label>
@@ -87,7 +93,7 @@
             </item>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
-                select-data-type="STRING_TEXTAREA">
+                select-data-type="STRING_MULTILINE">
             <label>A1: Data item to save response from ChatGPT</label>
             <label locale="ja">A1: ChatGPT の回答を保存するデータ項目</label>
         </config>
@@ -128,7 +134,8 @@ function main() {
 }
 
 /**
- * config から最大トークン数を読み出す
+ * config から、max_completion_tokens として設定する最大トークン数を読み出す
+ * max_tokens は Deprecated
  * 指定なしの場合は 2048 を返す
  * @returns {Number}
  */
@@ -232,7 +239,7 @@ const createChat = (auth, organizationId, model, maxTokens, temperature, stopSeq
         user: requestUser,
         model,
         n: 1,
-        max_tokens: maxTokens,
+        max_completion_tokens: maxTokens,
         temperature,
         messages: []
     };
@@ -285,6 +292,7 @@ const createChat = (auth, organizationId, model, maxTokens, temperature, stopSeq
     engine.log(`Finish Reason: ${choices[0].finish_reason}`);
     engine.log(`Prompt Tokens: ${usage.prompt_tokens}`);
     engine.log(`Completion Tokens: ${usage.completion_tokens}`);
+    engine.log(`Completion Tokens Details: ${JSON.stringify(usage.completion_tokens_details)}`);
     return answer1;
 };
 
@@ -528,7 +536,7 @@ const assertRequest = ({
     expect(bodyObj.user).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
     expect(bodyObj.model).toEqual(model);
     expect(bodyObj.n).toEqual(1);
-    expect(bodyObj.max_tokens).toEqual(maxTokens);
+    expect(bodyObj.max_completion_tokens).toEqual(maxTokens);
     expect(bodyObj.temperature).toEqual(temperature);
     if (gptRole === '') {
         expect(bodyObj.messages.length).toEqual(1);
@@ -610,7 +618,10 @@ const createResponse = (answerText) => {
             "usage": {
                 "prompt_tokens": 9,
                 "completion_tokens": 12,
-                "total_tokens": 21
+                "completion_tokens_details": {
+                    "reasoning_tokens": 5
+                },
+                "total_tokens": 26
             }
         }
     ;
@@ -636,9 +647,16 @@ test('Success to request', () => {
 
 /**
  * 成功 - 組織 ID を指定
+ * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
 test('Success to request - with organization ID', () => {
-    const answerDef = prepareConfigs('key4', 'org-1', 'gpt-4-turbo', '', '', '', '', 'Hi!');
+    prepareConfigs('key4', 'org-1', 'gpt-4-turbo', '', '', '', '', 'Hi!');
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
 
     // 添付画像はデータ項目の指定はあるが、ファイル添付なし
     const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
@@ -672,12 +690,18 @@ test('Success to request - with max_tokens', () => {
 
 /**
  * 成功 - 温度を指定
+ * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
 test('Success to request - with temperature', () => {
-    const answerDef = prepareConfigs('key5', '', 'gpt-4o-mini', '', '0.8', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    prepareConfigs('key5', '', 'o1-preview', '', '1', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4o-mini', MAX_TOKENS_DEFAULT, 0.8, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'o1-preview', MAX_TOKENS_DEFAULT, 1, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -695,10 +719,10 @@ test('Success to request - with stop', () => {
         stopSequences.push(`stop${i}`);
     }
     const stopSequencesStr = stopSequences.join('\n') + '\n';
-    const answerDef = prepareConfigs('key5', '', 'gpt-4o', '', '', stopSequencesStr, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    const answerDef = prepareConfigs('key5', '', 'o1-mini', '', '', stopSequencesStr, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4o', MAX_TOKENS_DEFAULT, 1, stopSequences, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'o1-mini', MAX_TOKENS_DEFAULT, 1, stopSequences, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
