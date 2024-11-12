@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2024-07-30</last-modified>
+    <last-modified>2024-11-12</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -58,11 +58,11 @@
         </config>
         <config name="conf_Images1" required="false" form-type="SELECT"
                 select-data-type="FILE">
-            <label>I1: Images / videos / audios to attach to user message</label>
-            <label locale="ja">I1: ユーザメッセージに添付する画像／動画／音声</label>
+            <label>I1: Images / videos / audios / PDFs to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像／動画／音声／PDF</label>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
-                select-data-type="STRING_TEXTAREA">
+                select-data-type="STRING_MULTILINE">
             <label>A1: Data item to save response</label>
             <label locale="ja">A1: 回答を保存するデータ項目</label>
         </config>
@@ -198,8 +198,8 @@ const retrieveImages = () => {
             throw new Error(`Attached file "${image.getName()}" is too large. Each file must be less than ${MAX_IMAGE_SIZE} bytes.`);
         }
         const contentType = image.getContentType();
-        if (!contentType.startsWith('image/') && !contentType.startsWith('video/') && !contentType.startsWith('audio/')){
-            throw new Error(`Attached file "${image.getName()}" is neither an image, video nor audio.`);
+        if (!contentType.startsWith('image/') && !contentType.startsWith('video/') && !contentType.startsWith('audio/') && !contentType.startsWith('application/pdf')){
+            throw new Error(`Attached file "${image.getName()}" is neither an image, video, audio, nor PDF.`);
         }
         const inlineImage = {
             mimeType: image.getContentType(),
@@ -772,7 +772,7 @@ test('Attached file is neither an image, video nor audio', () => {
     const text = createQfile('テキストファイル', 'text/plain', 100);
     attachImages([video, text]);
 
-    assertError('Attached file "テキストファイル" is neither an image, video nor audio.');
+    assertError('Attached file "テキストファイル" is neither an image, video, audio, nor PDF.');
 });
 
 /**
@@ -1152,6 +1152,57 @@ test('Success - includes candidate without content', () => {
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('Hi. I am fine. Thank you.');
+});
+
+/**
+ * 成功
+ * gemini-1.5-pro
+ * 必須スコープのみ
+ * 最大トークン数、停止シーケンスを指定しない
+ * 温度を指定
+ * 画像ファイル、PDF ファイルを添付
+ * 回答を保存するデータ項目に、文字型 Markdown を指定
+ */
+test('Success - with default tokens, with a image and an PDF', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-1.5-pro';
+    const temperature = '1.00';
+    const message = 'Please describe the image and pdf attached.';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, region, projectId, model, '', temperature, '', message);
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    
+    // 添付ファイルを指定
+    const image = createQfile('画像.png', 'image/png', 1000);
+    const pdf = createQfile('PDF.pdf', 'application/pdf', 1000);
+    attachImages([image, pdf]);
+
+    const token = 'token-98765';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        assertRequest(request, token, region, projectId, model, null, 1, [], message, [image, pdf]);
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('The PDF is a description of the image.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('The PDF is a description of the image.');
 });
 
 ]]></test>
