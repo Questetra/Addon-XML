@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2024-11-28</last-modified>
+    <last-modified>2024-12-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -52,22 +52,26 @@
                 <label>Claude 3.5 Haiku</label>
             </item>
         </config>
+        <config name="conf_UseCrossRegion" form-type="TOGGLE">
+            <label>C5: Use cross-region inference</label>
+            <label locale="ja">C5: クロスリージョン推論を利用する</label>
+        </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
-            <label>C5: Maximum number of tokens to consume (2048 if blank)</label>
-            <label locale="ja">C5: 使用するトークン数の上限（空白の場合、2048）</label>
+            <label>C6: Maximum number of tokens to consume (2048 if blank)</label>
+            <label locale="ja">C6: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C6: Temperature (0.0 - 1.0) (1.0 if blank)</label>
-            <label locale="ja">C6: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
+            <label>C7: Temperature (0.0 - 1.0) (1.0 if blank)</label>
+            <label locale="ja">C7: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C7: Stop Sequences (write one per line)</label>
-            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ）</label>
+            <label>C8: Stop Sequences (write one per line)</label>
+            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ）</label>
         </config>
         <config name="conf_SystemPrompt" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C8: System Prompt</label>
-            <label locale="ja">C8: システムプロンプト</label>
+            <label>C9: System Prompt</label>
+            <label locale="ja">C9: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -97,7 +101,12 @@ function main() {
     const awsKey = configs.getObject('conf_AccessKey').getToken();
     const awsSecret = configs.getObject('conf_SecretKey').getToken();
     const region = retrieveRegion();
-    const model = retrieveModel();
+    let model = retrieveModel();
+    const useCrossRegion = configs.getObject("conf_UseCrossRegion");
+    if (useCrossRegion === true) {
+        model = retrieveCrossRegionModel(model, region);
+    } 
+
     const maxTokens = retrieveMaxTokens();
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
@@ -137,9 +146,28 @@ function retrieveModel() {
     if (!reg.test(model)) {
         throw new Error('Model is invalid. It contains an invalid character.');
     }
+    return model;
+}
+
+/**
+ * クロスリージョン推論モデル ID を決定する
+ * C3 のリージョンがクロスリージョン推論の対象でない場合はエラー
+ * @return {String}
+ */
+function retrieveCrossRegionModel(model, region) {
+   if (!region.startsWith('us-') && !region.startsWith('eu-') && !region.startsWith('ap-')){
+        throw new Error(`${region} is not supported by cross-region inference.`);
+    }
+
     const MODEL_PREFIX = 'anthropic.claude';
-    if (!model.startsWith(MODEL_PREFIX)){
-        throw new Error(`Model is invalid. It must start with "${MODEL_PREFIX}".`);
+    if (model.startsWith(MODEL_PREFIX)){
+        if (region.startsWith('us-')){
+            model = `us.${model}`;
+        } else if(region.startsWith('eu-')){
+            model = `eu.${model}`;
+        } else if (region.startsWith('ap-')){
+            model = `apac.${model}`;
+        }
     }
     return model;
 }
@@ -358,6 +386,7 @@ const saveData = (configName, data) => {
  * @param secret
  * @param region
  * @param model
+ * @param useCrossRegion
  * @param maxTokens
  * @param temperature
  * @param stopSequences
@@ -365,7 +394,7 @@ const saveData = (configName, data) => {
  * @param message
  * @returns {ProcessDataDefinitionView} answerDef
  */
-const prepareConfigs = (key, secret, region, model, maxTokens, temperature, stopSequences, systemPrompt, message) => {
+const prepareConfigs = (key, secret, region, model,  useCrossRegion, maxTokens, temperature, stopSequences, systemPrompt, message) => {
     // 認証設定を作成し、指定
     const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
     configs.putObject('conf_AccessKey', keyAuth);
@@ -374,6 +403,7 @@ const prepareConfigs = (key, secret, region, model, maxTokens, temperature, stop
 
     configs.put('conf_Region', region);
     configs.put('conf_Model', model);
+    configs.putObject('conf_UseCrossRegion', useCrossRegion);
     configs.put('conf_MaxTokens', maxTokens);
     configs.put('conf_Temperature', temperature);
     configs.put('conf_StopSequences', stopSequences);
@@ -417,7 +447,7 @@ test('Region Code is invalid - no hyphens', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'invalidregioncode';
-    prepareConfigs(key, secret, region, MODEL_2, '', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_2, false, '', '', '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -429,7 +459,7 @@ test('Region Code is invalid - too many characters', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'eu-toomanycharacters-1';
-    prepareConfigs(key, secret, region, MODEL_2, '', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_2, false, '', '', '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -441,21 +471,21 @@ test('Model is invalid - contains an invalid character', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, 'anthropic.claude-テスト', '1280', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, 'anthropic.claude-テスト', false, '1280', '', '', '', 'Hi. How are you?');
 
     assertError('Model is invalid. It contains an invalid character.');
 });
 
 /**
- * モデルの指定が不正 - anthropic.claude で始まらない
+ * リージョンコードがクロスリージョン推論の対象でない
  */
-test('Model is invalid - does not start with the prefix', () => {
+test('Region is not supported by cross-region inference', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
-    const region = 'us-east-1';
-    prepareConfigs(key, secret, region, 'invalid-model-2.0:1', '1280', '', '', '', 'Hi. How are you?');
+    const region = 'ca-sentral-1';
+    prepareConfigs(key, secret, region, MODEL_2, true, '1280', '', '', '', 'Hi. How are you?');
 
-    assertError('Model is invalid. It must start with "anthropic.claude".');
+    assertError('ca-sentral-1 is not supported by cross-region inference.');
 });
 
 /**
@@ -465,7 +495,7 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, '1.1', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_2, false, '1.1', '', '', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -477,7 +507,7 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, '0', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_2, false, '0', '', '', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -492,7 +522,7 @@ test('Invalid temperature - includes a non-numeric character', () => {
     const maxTokens = '100';
     const temperature = '-0.1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, maxTokens, temperature, '', message);
+    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, '', message);
 
     assertError('Temperature must be a number from 0 to 1.');
 });
@@ -507,7 +537,7 @@ test('Invalid temperature - bigger than 1', () => {
     const maxTokens = '100';
     const temperature = '1.1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, maxTokens, temperature, '', message);
+    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, '', message);
 
     assertError('Temperature must be a number from 0 to 1.');
 });
@@ -523,7 +553,7 @@ test('Too many stop sequences', () => {
     const temperature = '1.0';
     const stopSequences = 'a\n'.repeat(MAX_STOP_SEQUENCES_NUM + 1);
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, maxTokens, temperature, stopSequences, message);
+    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, stopSequences, message);
 
     assertError(`Too many stop sequences. The maximum number is ${MAX_STOP_SEQUENCES_NUM}.`);
 });
@@ -535,7 +565,7 @@ test('Message is empty', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, '1280', '', '', '', '');
+    prepareConfigs(key, secret, region, MODEL_2, false, '1280', '', '', '', '');
 
     assertError('User Message is empty.');
 });
@@ -582,7 +612,7 @@ test('Too many files attached', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
 
     // 添付ファイルを指定
     const images = [];
@@ -602,7 +632,7 @@ test('Attached image is too large', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
 
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -620,7 +650,7 @@ test('Content-Type of an attached file is not allowed', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
 
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png;filename="画像1.png"', 100);
@@ -679,18 +709,20 @@ const assertRequest = ({
 
 /**
  * API リクエストでエラー
+ * クロスリージョン推論を利用する
+ * 選択したモデルは、クロスリージョン推論 ID が無い
  */
 test('Fail to request', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
-    const region = 'us-east-1';
+    const region = 'ap-northeast-1';
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, '1280', temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, MODEL_2, true, '1280', temperature, stopSequences, '', message);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_2, 1280, 1, [], '', message);
+        assertRequest(request, region, 'apac.anthropic.claude-v2', 1280, 1, [], '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -733,7 +765,7 @@ test('Success - only with required configs', () => {
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, maxTokens, temperature, stopSequences, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, false, maxTokens, temperature, stopSequences, '', message);
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
@@ -749,9 +781,10 @@ test('Success - only with required configs', () => {
  * 成功 - 必須項目のみ指定
  * 最大トークン数はデフォルト値の 2048 を指定
  * 温度はデフォルト値の 1 を指定
+ * クロスリージョン推論を利用する 固定値で指定
  * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
-test('Success - only with required configs - Markdown', () => {
+test('Success - only with required configs - CrossRegionModel - Markdown', () => {
     const key = 'key-abcde';
     const secret = 'secret-fghij';
     const region = 'us-west-1';
@@ -759,7 +792,7 @@ test('Success - only with required configs - Markdown', () => {
     const temperature = '1';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_3_5_HAIKU, maxTokens, temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, 'us.anthropic.claude-3-5-haiku-20241022-v1:0', true, maxTokens, temperature, stopSequences, '', message);
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
@@ -768,8 +801,8 @@ test('Success - only with required configs - Markdown', () => {
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_5_HAIKU, MAX_TOKENS_DEFAULT, 1, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_5_HAIKU, answer));
+        assertRequest(request, region,'us.anthropic.claude-3-5-haiku-20241022-v1:0', MAX_TOKENS_DEFAULT, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('us.anthropic.claude-3-5-haiku-20241022-v1:0', answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -787,7 +820,7 @@ test('Success - with max tokens and temperature', () => {
     const temperature = '0.5';
     const stopSequences = '';
     const message = 'Are you a robot?\n\nHow old are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_2, maxTokens, temperature, stopSequences, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, stopSequences, '', message);
 
     const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
     httpClient.setRequestHandler((request) => {
@@ -812,7 +845,7 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
     const stopSequences = 'さようなら\nありがとう\nおやすみなさい';
     const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_3_SONNET, maxTokens, temperature, stopSequences, systemPrompt, message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_3_SONNET, false, maxTokens, temperature, stopSequences, systemPrompt, message);
     attachImages([]);
 
     const answer = 'こんにちは。お元気ですか？';
@@ -827,17 +860,18 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
 
 /**
  * 成功 - 添付画像を最大個数指定
+ * クロスリージョン推論を利用する
  * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
-test('Success - with attached images - Markdown', () => {
+test('Success - with attached images - CrossRegionModel - Markdown', () => {
     const key = 'key-54321';
     const secret = 'secret-99999';
-    const region = 'us-west-2';
+    const region = 'us-east-1';
     const maxTokens = '';
     const temperature = '';
     const stopSequences = '';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_5_SONNET_V2, maxTokens, temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, MODEL_3_5_SONNET_V2, true, maxTokens, temperature, stopSequences, '', message);
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
@@ -854,8 +888,8 @@ test('Success - with attached images - Markdown', () => {
 
     const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_5_SONNET_V2, MAX_TOKENS_DEFAULT, 1, [], '', message, images);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_5_SONNET_V2, answer));
+        assertRequest(request, region, 'us.anthropic.claude-3-5-sonnet-20241022-v2:0', MAX_TOKENS_DEFAULT, 1, [], '', message, images);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('us.anthropic.claude-3-5-sonnet-20241022-v2:0', answer));
     });
 
     expect(main()).toEqual(undefined);
