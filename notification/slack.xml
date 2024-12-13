@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <!--    <last-modified>2023-10-03</last-modified> -->
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <label>Slack</label>
+    <configs>
+        <config name="conf_OAuth2" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://slack.com/oauth2/chat:write,users:read,users:read.email">
+            <label>C1-a: Authorization Setting (Bot registered by Questetra)</label>
+        </config>
+    </configs>
+    <script><![CDATA[
+function onAllocate(user, workitem, messages) {
+    const auth = configs.getObject("conf_OAuth2");
+    const userId = getUserId(auth, user);
+    engine.log(`userId: ${userId}`);
+    const blocks = buildMessage(workitem, messages);
+    engine.log(JSON.stringify(blocks));
+
+    sendMessage(auth, userId, blocks);
+}
+
+function getUserId(auth, user) {
+    const url = 'https://slack.com/api/users.lookupByEmail';
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .queryParam("email", user.getEmail())
+        .get(url);
+    const status = response.getStatusCode();
+    const responseJson = response.getResponseAsString();
+
+    let responseBody;
+    try {
+        responseBody = JSON.parse(responseJson);
+    } catch (e) {
+        engine.log("failed to parse as json");
+        engine.log(`status: ${status}`);
+        engine.log(responseJson);
+        throw `Failed to users lookup By email. status: ${status}`;
+    }
+
+    if (responseBody.ok !== true) {
+        const error = `Failed to get`;
+        engine.log(`status: ${status}`);
+        engine.log(responseJson);
+        throw error;
+    }
+    return responseBody.user.id;
+}
+
+function buildMessage(workitem, messages) {
+    return [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": workitem.getProcessInstanceTitle()
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "plain_text",
+                    "text": messages.get('message')
+                }
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": ['view', 'form', 'spView'].map(key => ({
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": messages.get(key)
+                },
+                "url": messages.get(key + 'Url')
+            }))
+        }
+    ];
+}
+
+/**
+ * Send Message with Bots  チャット投稿
+ * @param {Object} auth
+ * @param {String} channel チャンネルID
+ * @param {String} blocks Block メッセージ
+ */
+function sendMessage(auth, channel, blocks) {
+    const jsonReq = {};
+    jsonReq["channel"] = channel;
+    jsonReq["blocks"] = blocks;
+
+    const url = 'https://slack.com/api/chat.postMessage';
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+        .post(url);
+    const status = response.getStatusCode();
+    const responseTxt = response.getResponseAsString();
+
+    let responseJson;
+    try {
+        responseJson = JSON.parse(responseTxt);
+    } catch (e) {
+        engine.log("failed to parse as json");
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(`Failed to send. status: ${status}`);
+    }
+    if (responseJson.ok !== true) {
+        engine.log(`status: ${status}`);
+        engine.log(responseTxt);
+        throw new Error(`response is not ok. error: ${responseJson.error}`);
+    }
+    engine.log(responseTxt);
+}
+]]></script>
+
+    <test><![CDATA[
+]]></test>
+</service-task-definition>
