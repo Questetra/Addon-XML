@@ -3,7 +3,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Stability AI: Generate Image</label>
     <label locale="ja">Amazon Bedrock: Stability AI: 画像生成</label>
-    <last-modified>2025-01-17</last-modified>
+    <last-modified>2025-01-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item generates an image using Stability AI's model on Amazon Bedrock.</summary>
     <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Stability AI の モデルを用いて、画像を生成します。</summary>
@@ -25,13 +25,13 @@
         <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
             <label>C4: Model</label>
             <label locale="ja">C4: モデル</label>
-            <item value="stability.stable-image-ultra-v1:0">
+            <item value="stability.sd3-5-large-v1:0">
+                <label>Stable Diffusion 3.5 Large</label>
+            </item>
+            <item value="stability.stable-image-ultra-v1:1">
                 <label>Stable Image Ultra</label>
             </item>
-            <item value="stability.sd3-large-v1:0">
-                <label>Stable Diffusion 3 Large</label>
-            </item>
-            <item value="stability.stable-image-core-v1:0">
+            <item value="stability.stable-image-core-v1:1">
                 <label>Stable Image Core</label>
             </item>
         </config>
@@ -48,7 +48,7 @@
             <label locale="ja">C7: シードを保持している／保存するデータ項目</label>
         </config>
         <config name="conf_Aspect" form-type="SELECT_ITEM">
-            <label>C8: Image Aspect ratio(1:1 if not selected)</label>
+            <label>C8: Image Aspect ratio (1:1 if not selected)</label>
             <label locale="ja">C8: 画像アスペクト比 (未設定の場合、1:1)</label>
             <item value="1:1">
                 <label>1:1</label>
@@ -79,7 +79,7 @@
             </item>
         </config>
         <config name="conf_Format" form-type="SELECT_ITEM">
-            <label>C9: Image Format(PNG if not selected)</label>
+            <label>C9: Image Format (PNG if not selected)</label>
             <label locale="ja">C9: 画像形式 (未設定の場合、PNG)</label>
             <item value="png">
                 <label>PNG</label>
@@ -111,6 +111,11 @@ function main() {
     if (fileName === "") {
         throw new Error("File name is blank.");
     }
+    //ファイル名が200文字を超えていないか
+    if(fileName.length > 200){
+        throw "File Name should be less than 200 characters";
+    }
+
 
     ////// == 演算 / Calculating ==
     const { generatedFile, seed } = generateImage(awsKey, awsSecret, region, model, payload, fileName);
@@ -259,7 +264,7 @@ const generateImage = (awsKey, awsSecret, region, model, payload, fileName) => {
     const image = base64.decodeFromStringToByteArray(responsesBody.images[0]);
 
     let format = "png";
-	if (payload.output_format === "jpg"){
+    if (payload.output_format === "jpg"){
         format = "jpg"
     }
 
@@ -388,9 +393,9 @@ const assertError = (errorMsg) => {
     }
 };
 
-const MODEL_ULTRA = 'stability.stable-image-ultra-v1:0';
-const MODEL_D3LARGE = 'stability.sd3-large-v1:0';
-const MODEL_CORE = 'stability.stable-image-core-v1:0';
+const MODEL_D3_5_LARGE = 'stability.sd3-5-large-v1:0';
+const MODEL_ULTRA = 'stability.stable-image-ultra-v1:1';
+const MODEL_CORE = 'stability.stable-image-core-v1:1';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -415,7 +420,7 @@ test('Region Code is invalid - too many characters', () => {
     const region = 'eu-toomanycharacters-1';
     const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
     const negative = 'flat color, flat shading, interlocked fingers';
-    prepareConfigs(key, secret, region, MODEL_D3LARGE, prompt, negative, '5:4','jpg', null, '生成された画像.png');
+    prepareConfigs(key, secret, region, MODEL_D3_5_LARGE, prompt, negative, '5:4','jpg', null, '生成された画像.png');
 
     assertError('Region Code is invalid.');
 });
@@ -475,6 +480,23 @@ test('File name is blank', () => {
     assertError('File name is blank.');
 });
 
+/**
+ * ファイル名が200文字を超える
+ */
+test('File Name Length > 200', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    let name = '';
+    while (name.length <= 200) {
+        name += 'a';
+    }
+    prepareConfigs(key, secret, region, MODEL_ULTRA, prompt, negative, '1:1', null, null, name);
+    assertError(main, 'File Name should be less than 200 characters');
+});
+
 
 /**
  * シードに数字でない文字を含む
@@ -499,7 +521,7 @@ test('Seed is invalid - exceeds the limit', () => {
     const region = 'us-west-2';
     const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
     const negative = 'flat color, flat shading, interlocked fingers';
-    prepareConfigs(key, secret, region, MODEL_D3LARGE, prompt, negative, '2:3','jpg', String(MAX_SEED + 1), '生成された画像.png');
+    prepareConfigs(key, secret, region, MODEL_D3_5_LARGE, prompt, negative, '2:3','jpg', String(MAX_SEED + 1), '生成された画像.png');
 
     assertError(`Seed must be an integer from 0 to ${MAX_SEED}.`);
 });
@@ -564,14 +586,14 @@ test('Fail in API request', () => {
 /**
  * API のレスポンスボディを作成
  * @param {String} seed
- * @param {String} base64
+ * @param {String} image
  * @returns {String} response
  */
-const createResponse = (seed, images) => {
+const createResponse = (seed, image) => {
     const responseObj = {
         seeds: [seed],
-        images: [images],
-        finishReason: ['null']
+        images: [image],
+        finish_reasons: ['null']
     };
     return JSON.stringify(responseObj);
 };
@@ -615,7 +637,7 @@ test('Success - only required params, data item for seed is not selected', () =>
     const negative = '';
     const aspect = '';
     const format = '';
-    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_D3LARGE, prompt, negative, aspect, format, null, '生成された画像.png');
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_D3_5_LARGE, prompt, negative, aspect, format, null, '生成された画像.png');
     // データ項目の指定をはずす
     configs.put('conf_Seed', '');
     // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
@@ -623,7 +645,7 @@ test('Success - only required params, data item for seed is not selected', () =>
 
     const seedNum = 1234567890;
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_D3LARGE, prompt, undefined, undefined, undefined, undefined);
+        assertRequest(request, region, MODEL_D3_5_LARGE, prompt, undefined, undefined, undefined, undefined);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('123')));
     });
 
