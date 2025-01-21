@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
-<last-modified>2024-11-18</last-modified>
+<last-modified>2025-01-21</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -11,10 +11,6 @@
 <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-foldersearch/</help-page-url>
 <configs>
-  <config name="OAuth" deprecated="true" form-type="OAUTH2" auth-type="OAUTH2" oauth2-setting-name="https://www.googleapis.com/auth/drive.metadata.readonly">
-    <label>C1-deprecated: OAuth2 Setting</label>
-    <label locale="ja">C1-deprecated: OAuth2設定</label>
-  </config>
   <config name="OAuth_V2" required="true" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER">
     <label>C1: Service Account Setting</label>
     <label locale="ja">C1: サービスアカウント設定</label>
@@ -40,14 +36,10 @@
 <script><![CDATA[
 function main() {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
-    const oauth = configs.getObject("OAuth");
     const oauthV2 = configs.getObject("OAuth_V2");
     let parentFolderId = configs.get("ParentFolderId");
-    if (oauthV2 !== null && parentFolderId === "") {
+    if (parentFolderId === "") {
         throw new Error("Parent Folder ID is blank.");
-    }
-    if (parentFolderId === "") { // 従来の OAuth 設定を使用する場合
-        parentFolderId = "root";
     }
     const folderName = configs.get("FolderName");
     if (folderName === "" || folderName === null) {
@@ -61,8 +53,8 @@ function main() {
     }
 
     //// == 演算 / Calculating ==
-    const driveId = getDriveId(oauth, oauthV2, parentFolderId);
-    const folders = searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName);
+    const driveId = getDriveId(oauthV2, parentFolderId);
+    const folders = searchFolder(oauthV2, driveId, parentFolderId, folderName);
     const folderNum = folders.length;
     if (folderNum === 0) {
         throw new Error(`Could not find Folder:${folderName} with Parent Folder ID:${parentFolderId}`);
@@ -144,22 +136,18 @@ const getAccessToken = (auth) => {
 
 /**
  * 親フォルダのドライブ ID を取得する
- * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} parentFolderId 親フォルダの ID
  * @return {String} driveId ドライブ ID (共有ドライブになければ null)
  */
-function getDriveId(oauth, oauthV2, parentFolderId) {
+function getDriveId(oauthV2, parentFolderId) {
     if (parentFolderId === "root") {
         return null;
     }
     const url = `https://www.googleapis.com/drive/v3/files/${parentFolderId}`;
     let request = httpClient.begin();
-    if (oauthV2 !== null) {
-        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
-    } else {
-        request = request.authSetting(oauth);
-    }
+    request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
+
     const response = request.queryParam("fields", "driveId")
         .queryParam("supportsAllDrives", "true")
         .get(url);
@@ -179,7 +167,6 @@ function getDriveId(oauth, oauthV2, parentFolderId) {
 
 /**
  * Google ドライブのフォルダを検索
- * @param {AuthSettingWrapper} oauth  OAuth2 認証設定
  * @param {AuthSettingWrapper} oauthV2  OAuth2 認証設定（サービスアカウント設定）
  * @param {String} driveId 親フォルダのドライブ ID (共有ドライブになければ null)
  * @param {String} parentFolderId 親フォルダの ID
@@ -188,16 +175,13 @@ function getDriveId(oauth, oauthV2, parentFolderId) {
  * @return {String} folders[].id フォルダの ID
  * @return {String} folders[].webViewLink フォルダの表示 URL
  */
-function searchFolder(oauth, oauthV2, driveId, parentFolderId, folderName) {
+function searchFolder(oauthV2, driveId, parentFolderId, folderName) {
     const folderNameRep = folderName.replace(/['\\]/g, "\\$&"); // ' と \ をエスケープ
     const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
     const url = "https://www.googleapis.com/drive/v3/files";
     let request = httpClient.begin();
-    if (oauthV2 !== null) {
-        request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
-    } else {
-        request = request.authSetting(oauth);
-    }
+
+    request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
     request = request.queryParam("q", q)
         .queryParam("pageSize", "1000")
         .queryParam("fields", "files(id,webViewLink)");
@@ -870,75 +854,6 @@ test('Success - Set a Folder to single-line string Data Item', () => {
     // 文字型データ項目の値をチェック	  
     expect(engine.findData(idDef)).toEqual('Folder1_mmmnnnooo333444555');
     expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_mmmnnnooo333444555');
-});
-
-/**
- * OAuth2 設定（Deprecated）の設定をする
- */
-const prepareOAuth2Deprecated = () => {
-    const auth = httpClient.createAuthSettingOAuth2(
-        'Google',
-        'https://accounts.google.com/o/oauth2/auth?access_type=offline&approval_prompt=force',
-        'https://accounts.google.com/o/oauth2/token',
-        'spreadsheets',
-        'consumer_key',
-        'consumer_secret',
-        'access_token'
-    );
-    configs.putObject('OAuth', auth);
-};
-
-/**
- * GET API 成功 - Deprecated な OAuth2 設定を使用する場合
- */
-test('Success - Deprecated OAuth2, My drive', () => {
-    const folderId = 'folderId-67890';
-    const folderName = 'フォルダ';
-    const {
-        idDef,
-        urlDef
-    } = prepareConfigs('', '', '', '', folderId, folderName);
-    configs.put('OAuth_V2', ''); // サービスアカウント設定を解除
-    prepareOAuth2Deprecated();
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount++ === 0) {
-            assertGetDriveIdRequest(request, 'access_token', folderId);
-            // マイドライブの場合、ドライブIDが無い
-            return httpClient.createHttpResponse(200, 'application/json', '{}');
-        }
-        assertSearchFolderRequest(request, 'access_token', null, folderId, folderName);
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
-    });
-    // <script> のスクリプトを実行
-    main();
-    // 文字型データ項目の値をチェック	  
-    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
-    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
-});
-
-/**
- * GET API 成功 - Deprecated な OAuth2 設定を使用する場合、ルートフォルダも検索できる
- */
-test('Success - Deprecated OAuth2, root', () => {
-    const folderName = 'フォルダ';
-    const {
-        idDef,
-        urlDef
-    } = prepareConfigs('', '', '', '', '', folderName);
-    configs.put('OAuth_V2', ''); // サービスアカウント設定を解除
-    prepareOAuth2Deprecated();
-
-    httpClient.setRequestHandler((request) => {
-        assertSearchFolderRequest(request, 'access_token', null, 'root', folderName);
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(prepareGetSearchDriveResponse('dddeeefff444555666')));
-    });
-    // <script> のスクリプトを実行
-    main();
-    // 文字型データ項目の値をチェック	  
-    expect(engine.findData(idDef)).toEqual('Folder1_dddeeefff444555666\nFolder2_dddeeefff444555666\nFolder3_dddeeefff444555666');
-    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/drive/folders/Folder1_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder2_dddeeefff444555666\nhttps://drive.google.com/drive/folders/Folder3_dddeeefff444555666');
 });
 
 ]]></test>
