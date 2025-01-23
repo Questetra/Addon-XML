@@ -1,0 +1,729 @@
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon Bedrock: Stability AI: Generate Image</label>
+    <label locale="ja">Amazon Bedrock: Stability AI: 画像生成</label>
+    <last-modified>2025-01-23</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item generates an image using Stability AI's model on Amazon Bedrock.</summary>
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Stability AI の モデルを用いて、画像を生成します。</summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-stability-ai-image-generate/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-bedrock-stability-ai-image-generate/</help-page-url>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="stability.sd3-large-v1:0">
+                <label>Stable Diffusion 3 Large</label>
+            </item>
+            <item value="stability.stable-image-ultra-v1:0">
+                <label>Stable Image Ultra v1</label>
+            </item>
+            <item value="stability.stable-image-core-v1:0">
+                <label>Stable Image Core v1</label>
+            </item>
+            <item value="stability.sd3-5-large-v1:0">
+                <label>Stable Diffusion 3.5 Large</label>
+            </item>
+            <item value="stability.stable-image-ultra-v1:1">
+                <label>Stable Image Ultra v1.1</label>
+            </item>
+            <item value="stability.stable-image-core-v1:1">
+                <label>Stable Image Core v1.1</label>
+            </item>
+        </config>
+        <config name="conf_Prompt" required="true" el-enabled="true" form-type="TEXTFIELD">
+            <label>C5: Prompt</label>
+            <label locale="ja">C5: プロンプト</label>
+        </config>
+        <config name="conf_Negative" el-enabled="true" form-type="TEXTFIELD">
+            <label>C6: Negative Prompt</label>
+            <label locale="ja">C6: ネガティブプロンプト</label>
+        </config>
+        <config name="conf_Seed" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C7: Data item that stores / to save the seed</label>
+            <label locale="ja">C7: シードを保持している／保存するデータ項目</label>
+        </config>
+        <config name="conf_Aspect" form-type="SELECT_ITEM">
+            <label>C8: Image Aspect ratio (1:1 if not selected)</label>
+            <label locale="ja">C8: 画像アスペクト比 (未設定の場合、1:1)</label>
+            <item value="1:1">
+                <label>1:1</label>
+            </item>
+            <item value="5:4">
+                <label>5:4</label>
+            </item>
+            <item value="3:2">
+                <label>3:2</label>
+            </item>
+            <item value="16:9">
+                <label>16:9</label>
+            </item>
+            <item value="21:9">
+                <label>21:9</label>
+            </item>
+            <item value="9:21">
+                <label>9:21</label>
+            </item>
+            <item value="9:16">
+                <label>9:16</label>
+            </item>
+            <item value="2:3">
+                <label>2:3</label>
+            </item>
+            <item value="4:5">
+                <label>4:5</label>
+            </item>
+        </config>
+        <config name="conf_Format" form-type="SELECT_ITEM">
+            <label>C9: Image Format (PNG if not selected)</label>
+            <label locale="ja">C9: 画像形式 (未設定の場合、PNG)</label>
+            <item value="png">
+                <label>PNG</label>
+            </item>
+            <item value="jpg">
+                <label>JPEG</label>
+            </item>
+        </config>
+        <config name="conf_File" required="true" form-type="SELECT" select-data-type="FILE">
+            <label>C10: Data item to add the generated file</label>
+            <label locale="ja">C10: 生成されたファイルを追加保存するデータ項目</label>
+        </config>
+        <config name="conf_FileName" form-type="TEXTFIELD" required="true" el-enabled="true">
+            <label>C11: File name to save as</label>
+            <label locale="ja">C11: 保存する際のファイル名</label>
+        </config>
+    </configs>
+    <script><![CDATA[
+const SERVICE = "bedrock";
+
+function main() {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject("conf_AccessKey").getToken();
+    const awsSecret = configs.getObject("conf_SecretKey").getToken();
+    const region = retrieveRegion();
+    const model = retrieveModel();
+    const payload = buildPayload();
+    const fileName = configs.get("conf_FileName");
+    if (fileName === "") {
+        throw new Error("File name is blank.");
+    }
+    //ファイル名が200文字を超えていないか
+    if(fileName.length > 200){
+        throw new Error("File Name should be less than 200 characters");
+    }
+
+
+    ////// == 演算 / Calculating ==
+    const { generatedFile, seed } = generateImage(awsKey, awsSecret, region, model, payload, fileName);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveFileData('conf_File', generatedFile);
+    saveData('conf_Seed', seed);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveRegion = () => {
+    const region = configs.get("conf_Region");
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp("^[a-z]{2}-[a-z]{4,16}-[1-9]$");
+    if (!reg.test(region)) {
+        throw new Error("Region Code is invalid.");
+    }
+    return region;
+}
+
+/**
+ * config からモデル ID を読み出す
+ * モデル ID として不正な場合はエラー
+ * @return {String}
+ */
+function retrieveModel() {
+    const model = configs.get('conf_Model');
+    const reg = new RegExp('^[a-z0-9.:-]+$');
+    if (!reg.test(model)) {
+        throw new Error('Model is invalid. It contains an invalid character.');
+    }
+    const MODEL_PREFIX = 'stability';
+    if (!model.startsWith(MODEL_PREFIX)){
+        throw new Error(`Model is invalid. It must start with "${MODEL_PREFIX}".`);
+    }
+    return model;
+}
+
+/**
+ * config から API リクエストのボティにセットするパラメータを読み出し、
+ * ペイロードを構築する
+ * @return {Object}
+ */
+const buildPayload = () => {
+    const payload = {
+        prompt: retrieveTextPrompts(),
+        seed: retrieveSeed()
+    };
+
+    const negative = configs.get('conf_Negative');
+    if (negative !== '') {
+        Object.assign(payload, {
+            negative_prompt: negative
+        });
+    }
+
+    const aspect = configs.get("conf_Aspect");
+    if (aspect !== '') {
+        Object.assign(payload, {
+            aspect_ratio: aspect
+        });
+    }
+
+    const format = configs.get("conf_Format");
+    if (format !== '') {
+        Object.assign(payload, {
+            output_format: format
+        });
+    }
+
+    engine.log(JSON.stringify(payload));
+    return payload;
+}
+
+/**
+ * config からテキストプロンプトを読み出す
+ * @return {Array}
+ */
+const retrieveTextPrompts = () => {
+    const prompt = configs.get('conf_Prompt');
+    if (prompt === '') {
+        throw new Error('Prompt is blank.');
+    }
+    return prompt;
+};
+
+
+const MAX_SEED = 4294967295;
+
+/**
+ * config からシードを読み出す
+ * @return {Number}
+ */
+const retrieveSeed = () => {
+    const seedDef = configs.getObject("conf_Seed");
+    if (seedDef === null) {
+        return undefined;
+    }
+    const seed = engine.findData(seedDef);
+    if (seed === null) {
+        return undefined;
+    }
+    const reg = new RegExp('^(0|[1-9][0-9]{0,9})$');
+    const errorMsg = `Seed must be an integer from 0 to ${MAX_SEED}.`;
+    if (!reg.test(seed)) {
+        throw new Error(errorMsg);
+    }
+    const seedNum = Number.parseInt(seed);
+    if (seedNum > MAX_SEED) {
+        throw new Error(errorMsg);
+    }
+    return seedNum;
+};
+
+/**
+ * 画像を生成する API リクエストを送信
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param payload
+ * @param fileName
+ * @return {Object} {generatedFile: NewQfile, seed: String}
+ */
+const generateImage = (awsKey, awsSecret, region, model, payload, fileName) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`;
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), "application/json")
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to invoke model. status: ${status}`);
+    }
+
+    const responsesBody = JSON.parse(respTxt);
+    engine.log(JSON.stringify(Object.assign({},responsesBody, { // images 以外の値をログ出力
+        images: undefined
+    })));
+    const image = base64.decodeFromStringToByteArray(responsesBody.images[0]);
+
+    let format = "png";
+    if (payload.output_format === "jpg"){
+        format = "jpg"
+    }
+
+    const generatedFile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        `image/${format}`,
+        image
+    );
+    const seed = String(responsesBody.seeds[0])
+    return { generatedFile, seed };
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param newFile
+ */
+const saveFileData = (configName, newFile) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    let files = engine.findData(def);
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+    files.add(newFile);
+    engine.setData(def, files);
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+    <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param model
+ * @param prompt
+ * @param negative
+ * @param aspect
+ * @param format
+ * @param seed
+ * @param fileName
+ * @returns {ProcessDataDefinitionView, ProcessDataDefinitionView} seedDef, fileDef
+ */
+const prepareConfigs = (key, secret, region, model, prompt, negative, aspect, format, seed, fileName) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    configs.put('conf_Model', model);
+    configs.put('conf_Prompt', prompt);
+    configs.put('conf_Negative', negative);
+    configs.put('conf_Aspect', aspect);
+    configs.put('conf_Format', format);
+    configs.put('conf_FileName', fileName);
+
+    // シードを保持している / 保存するデータ項目を作成し、指定
+    const seedDef = engine.createDataDefinition('シード', 2, 'q_seed', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Seed', seedDef);
+    engine.setData(seedDef, seed);
+    
+    // 生成された画像を保存するデータ項目を作成し、指定
+    const fileDef = engine.createDataDefinition('生成された画像', 3, 'q_file', 'FILE');
+    configs.putObject('conf_File', fileDef);
+
+    return {seedDef, fileDef};
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+const MODEL_D3_LARGE = 'stability.sd3-large-v1:0';
+const MODEL_ULTRA = 'stability.stable-image-ultra-v1:0';
+const MODEL_CORE = 'stability.stable-image-core-v1:0';
+const MODEL_D3_5_LARGE = 'stability.sd3-5-large-v1:0';
+const MODEL_ULTRA_1_1 = 'stability.stable-image-ultra-v1:1';
+const MODEL_CORE_1_1 = 'stability.stable-image-core-v1:1';
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'invalidregioncode';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_ULTRA, prompt, negative, '1:1','png', null, '生成された画像.png');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'eu-toomanycharacters-1';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_D3_5_LARGE, prompt, negative, '5:4','jpg', null, '生成された画像.png');
+
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * モデルの指定が不正 - 不正な文字を含む
+ */
+test('Model is invalid - contains an invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, 'stability.stable-テスト', prompt, negative, '3:2', null, null, '生成された画像.png');
+
+    assertError('Model is invalid. It contains an invalid character.');
+});
+
+/**
+ * モデルの指定が不正 - stability で始まらない
+ */
+test('Model is invalid - does not start with the prefix', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, 'invalid-model-2.0:1', prompt, negative, '16:9', 'png', null, '生成された画像.png');
+
+    assertError('Model is invalid. It must start with "stability".');
+});
+
+/**
+ * プロンプトが空
+ */
+test('Prompt is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_CORE_1_1, '', negative, '21:9', 'jpg', null, '生成された画像.png');
+
+    assertError('Prompt is blank.');
+});
+
+/**
+ * ファイル名が空
+ */
+test('File name is blank', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_ULTRA_1_1, prompt, negative, '9:21', null, null, '');
+
+    assertError('File name is blank.');
+});
+
+/**
+ * ファイル名が200文字を超える
+ */
+test('File Name Length > 200', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    let name = '';
+    while (name.length <= 200) {
+        name += 'a';
+    }
+    prepareConfigs(key, secret, region, MODEL_ULTRA, prompt, negative, '1:1', null, null, name);
+    assertError('File Name should be less than 200 characters');
+});
+
+
+/**
+ * シードに数字でない文字を含む
+ */
+test('Seed is invalid - includes invalid character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_ULTRA, prompt, negative, '9:16', 'png', '-1', '生成された画像.png');
+
+    assertError(`Seed must be an integer from 0 to ${MAX_SEED}.`);
+});
+
+/**
+ * シードが上限値を超える
+ */
+test('Seed is invalid - exceeds the limit', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_D3_LARGE, prompt, negative, '2:3','jpg', String(MAX_SEED + 1), '生成された画像.png');
+
+    assertError(`Seed must be an integer from 0 to ${MAX_SEED}.`);
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} region
+ * @param {String} model
+ * @param {String} prompt
+ * @param {String} negative
+ * @param {Number} aspect
+ * @param {Number} format
+ * @param {Number} seedNum
+ */
+const assertRequest = ({
+                           url,
+                           method,
+                           contentType,
+                           body
+                       },region, model, prompt, negative, aspect, format, seedNum) => {
+    expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/invoke`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    // Authorization ヘッダのテストは省略
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.prompt).toEqual(prompt);
+    if (negative !== undefined) {
+        expect(bodyObj.negative_prompt).toEqual(negative);
+    }
+    if (aspect !== undefined) {
+        expect(bodyObj.aspect_ratio).toEqual(aspect);
+    }
+    if (format !== undefined) {
+        expect(bodyObj.output_format).toEqual(format);
+    }
+    expect(bodyObj.seed).toEqual(seedNum);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail in API request', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    prepareConfigs(key, secret, region, MODEL_CORE, prompt, negative, '4:5', 'png', null, '生成された画像.png');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_CORE, prompt, negative, '4:5', 'png', undefined);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to invoke model. status: 400');
+});
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} seed
+ * @param {String} image
+ * @returns {String} response
+ */
+const createResponse = (seed, image) => {
+    const responseObj = {
+        seeds: [seed],
+        images: [image],
+        finish_reasons: ['null']
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * 成功 - 必須項目のみ指定。シードはデータ項目の指定はあるが、値が空
+ */
+test('Success - only required params', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = '';
+    const aspect = '';
+    const format = '';
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_ULTRA_1_1, prompt, negative, aspect, format, null, '生成された画像.png');
+
+    const seedNum = 1234567890;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_ULTRA_1_1, prompt, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('aaaaaaaa')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('生成された画像.png');
+    expect(files.get(0).getContentType()).toEqual('image/png');
+});
+
+/**
+ * 成功 - 必須項目のみ指定。シードはデータ項目の指定なし
+ * 生成された画像を保存するデータ項目に、他のファイルがすでに添付されている場合
+ */
+test('Success - only required params, data item for seed is not selected', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body';
+    const negative = '';
+    const aspect = '';
+    const format = '';
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_D3_5_LARGE, prompt, negative, aspect, format, null, '生成された画像.png');
+    // データ項目の指定をはずす
+    configs.put('conf_Seed', '');
+    // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
+    engine.setData(fileDef, [engine.createQfile('既存のファイル.txt', 'text/plain', 'aaa')]);
+
+    const seedNum = 1234567890;
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_D3_5_LARGE, prompt, undefined, undefined, undefined, undefined);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('123')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(null); // データ項目の指定が外れているので
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(2);
+    expect(files.get(0).getName()).toEqual('既存のファイル.txt');
+    expect(files.get(1).getName()).toEqual('生成された画像.png');
+    expect(files.get(1).getContentType()).toEqual('image/png');
+});
+
+/**
+ * 成功 - ネガティブプロンプト、画像アスペクト比 画像形式、シードを指定
+ */
+test('Success - with negative prompt, aspect, format and seed', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body,pink hair,blue eyes';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const aspect = '5:4';
+    const format = 'jpg';
+    const seedNum = MAX_SEED;
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_CORE_1_1, prompt, negative, aspect, format, String(seedNum), 'Image.jpg');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_CORE_1_1, prompt, negative, aspect, format, seedNum);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('bbb')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('Image.jpg');
+    expect(files.get(0).getContentType()).toEqual('image/jpg');
+});
+
+/**
+ * 成功 - ネガティブプロンプト、画像アスペクト比 画像形式、シードを指定
+ * 画像アスペクト比 画像形式 はデフォルト値を指定
+ */
+test('Success - aspect and format are set to default values', () => {
+    const key = 'key-09876';
+    const secret = 'secret-54321';
+    const region = 'us-west-2';
+    const prompt = 'masterpiece,high quality,extremely detailed face,1 girl,full body,pink hair,blue eyes';
+    const negative = 'flat color, flat shading, interlocked fingers';
+    const aspect = '1:1';
+    const format = 'png';
+    const seedNum = 0;
+    const {seedDef, fileDef} = prepareConfigs(key, secret, region, MODEL_ULTRA, prompt, negative, aspect, format, String(seedNum), 'Image2.png');
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_ULTRA, prompt, negative, aspect, format, seedNum);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(seedNum, base64.encodeToString('ccc')));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(seedDef)).toEqual(String(seedNum));
+    const files = engine.findData(fileDef);
+    expect(files.size()).toEqual(1);
+    expect(files.get(0).getName()).toEqual('Image2.png');
+    expect(files.get(0).getContentType()).toEqual('image/png');
+});
+
+]]></test>
+</service-task-definition>
