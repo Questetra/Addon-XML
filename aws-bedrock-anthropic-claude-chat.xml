@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-01-03</last-modified>
+    <last-modified>2025-01-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -74,7 +74,7 @@
             <label>I1: Images to attach to user message</label>
             <label locale="ja">I1: ユーザメッセージに添付する画像</label>
         </config>
-        <config name="conf_Pdfs1" required="false" form-type="SELECT"
+        <config name="conf_Docs1" required="false" form-type="SELECT"
                 select-data-type="FILE">
             <label>D1: PDFs to attach to user message</label>
             <label locale="ja">D1: ユーザメッセージに添付する PDF</label>
@@ -231,7 +231,7 @@ const retrieveUserMessage = () => {
         throw new Error('User Message is empty.');
     }
     const inlineImages = retrieveImages();
-    const inlinePdfs = retrievePdfs();
+    const inlineDocs = retrieveDocs();
     const userMessage = {
         role: 'user',
         content: [
@@ -239,7 +239,7 @@ const retrieveUserMessage = () => {
                 text: message
             },
             ...inlineImages,
-            ...inlinePdfs
+            ...inlineDocs
         ]
     };
     return userMessage;
@@ -247,7 +247,7 @@ const retrieveUserMessage = () => {
 };
 
 const MAX_IMAGE_NUM = 20; // Messages API の制限。1 ユーザメッセージにつき添付画像 20 個まで
-const MAX_IMAGE_SIZE = 3032160; // Messages API の制限。1 ファイルにつき 3.75 MB まで
+const MAX_IMAGE_SIZE = 3932160; // Messages API の制限。1 ファイルにつき 3.75 MB まで
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 /**
@@ -300,8 +300,8 @@ const retrieveImages = () => {
 };
 
 
-const MAX_PDF_NUM = 5; // Messages API の制限。1 ユーザメッセージにつき PDF 5 個まで
-const MAX_PDF_SIZE = 4718592; // Messages API の制限。1 ファイルにつき 4.5 MB まで
+const MAX_DOC_NUM = 5; // Messages API の制限。1 ユーザメッセージにつき PDF 5 個まで
+const MAX_DOC_SIZE = 4718592; // Messages API の制限。1 ファイルにつき 4.5 MB まで
 const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
 
 /**
@@ -312,45 +312,50 @@ const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
  * - Content-Type が許可されていない場合
  * @returns {Array<Object>} PDF オブジェクトの配列
  */
-const retrievePdfs = () => {
-    const pdfsDef = configs.getObject('conf_Pdfs1');
-    if (pdfsDef === null) {
+const retrieveDocs = () => {
+    const docsDef = configs.getObject('conf_Docs1');
+    if (docsDef === null) {
         return [];
     }
-    const pdfs = engine.findData(pdfsDef);
-    if (pdfs === null) {
+    const docs = engine.findData(docsDef);
+    if (docs === null) {
         return [];
     }
-    if (pdfs.size() > MAX_PDF_NUM) {
-        throw new Error(`Too many PDFs attached. The maximum number is ${MAX_PDF_NUM}.`);
+    if (docs.size() > MAX_DOC_NUM) {
+        throw new Error(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
     }
 
-    const inlinePdfs = [];
-    pdfs.forEach( (pdf, index ) => {
+    const inlineDocs = [];
 
-        if (pdf.getLength() > MAX_PDF_SIZE) {
-            throw new Error(`Attached file "${pdf.getName()}" is too large. The maximum size is ${MAX_PDF_SIZE} bytes.`);
+    let index = 0;
+
+    docs.forEach( doc => {
+
+        if (doc.getLength() > MAX_DOC_SIZE) {
+            throw new Error(`Attached file "${doc.getName()}" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
         }
 
-        const contentType = pdf.getContentType().split(';')[0];
+        const contentType = doc.getContentType().split(';')[0];
         if (!ALLOWED_DOCUMENT_TYPE.includes(contentType)) {
-            throw new Error(`Content-Type of the attached file "${pdf.getName()}" is not allowed.`);
+            throw new Error(`Content-Type of the attached file "${doc.getName()}" is not allowed.`);
         }
 
         const format = contentType.split('/')[1];
 
-        const inlinePdf = {
+        const inlineDoc = {
             document: {
                 format,
-                name: `PDF${index}`,
+                name: `DOC${index}`,
                 source: {
-                    bytes: base64.encodeToString(fileRepository.readFile(pdf))
+                    bytes: base64.encodeToString(fileRepository.readFile(doc))
                 }
             }
         };
-        inlinePdfs.push(inlinePdf);
+        inlineDocs.push(inlineDoc);
+
+        index++;
     });
-    return inlinePdfs;
+    return inlineDocs;
 };
 
 /**
@@ -382,7 +387,7 @@ const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, s
     if (systemPrompt !== '') {
         Object.assign(payload, {
             system: [
-            {text :`${systemPrompt}`}
+                {text :`${systemPrompt}`}
             ]
         });
     }
@@ -501,11 +506,12 @@ const assertError = (errorMsg) => {
     }
 };
 
-const MODEL_2 = 'anthropic.claude-v2';
-const MODEL_2_1 = 'anthropic.claude-v2:1';
+const MODEL_3_OPUS = 'anthropic.claude-3-opus-20240229-v1:0';
+const MODEL_3_HAIKU = 'anthropic.claude-3-haiku-20240307-v1:0';
 const MODEL_3_SONNET = 'anthropic.claude-3-sonnet-20240229-v1:0';
 const MODEL_3_5_SONNET_V2 = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 const MODEL_3_5_HAIKU = 'anthropic.claude-3-5-haiku-20241022-v1:0';
+
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -514,7 +520,7 @@ test('Region Code is invalid - no hyphens', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'invalidregioncode';
-    prepareConfigs(key, secret, region, MODEL_2, false, '', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '', '', '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -526,7 +532,7 @@ test('Region Code is invalid - too many characters', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'eu-toomanycharacters-1';
-    prepareConfigs(key, secret, region, MODEL_2, false, '', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '', '', '', '', 'Hi. How are you?');
 
     assertError('Region Code is invalid.');
 });
@@ -562,7 +568,7 @@ test('Region is not supported by cross-region inference', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'ca-sentral-1';
-    prepareConfigs(key, secret, region, MODEL_2, true, '1280', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, true, '1280', '', '', '', 'Hi. How are you?');
 
     assertError('Cross-region inference is not supported in ca-sentral-1.');
 });
@@ -574,7 +580,7 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, false, '1.1', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '1.1', '', '', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -586,7 +592,7 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, false, '0', '', '', '', 'Hi. How are you?');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '0', '', '', '', 'Hi. How are you?');
 
     assertError('Maximum number of tokens must be a positive integer.');
 });
@@ -601,7 +607,7 @@ test('Invalid temperature - includes a non-numeric character', () => {
     const maxTokens = '100';
     const temperature = '-0.1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, '', message);
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, '', message);
 
     assertError('Temperature must be a number from 0 to 1.');
 });
@@ -616,7 +622,7 @@ test('Invalid temperature - bigger than 1', () => {
     const maxTokens = '100';
     const temperature = '1.1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, '', message);
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, '', message);
 
     assertError('Temperature must be a number from 0 to 1.');
 });
@@ -632,7 +638,7 @@ test('Too many stop sequences', () => {
     const temperature = '1.0';
     const stopSequences = 'a\n'.repeat(MAX_STOP_SEQUENCES_NUM + 1);
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, stopSequences, message);
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, stopSequences, message);
 
     assertError(`Too many stop sequences. The maximum number is ${MAX_STOP_SEQUENCES_NUM}.`);
 });
@@ -644,7 +650,7 @@ test('Message is empty', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
-    prepareConfigs(key, secret, region, MODEL_2, false, '1280', '', '', '', '');
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '1280', '', '', '', '');
 
     assertError('User Message is empty.');
 });
@@ -684,16 +690,26 @@ const attachImages = (images) => {
 };
 
 /**
- * 添付ファイルの数が多すぎる
+ * PDF を添付
+ * @param {Array<Qfile>} docs
  */
-test('Too many files attached', () => {
+const attachDocs = (docs) => {
+    const docsDef = engine.createDataDefinition('添付 PDF', 3, 'q_docs', 'FILE');
+    engine.setData(docsDef, docs);
+    configs.putObject('conf_Docs1', docsDef);
+};
+
+/**
+ * 添付画像ファイルの数が多すぎる
+ */
+test('Too many images attached', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', '', message);
 
-    // 添付ファイルを指定
+    // 添付画像ファイルを指定
     const images = [];
     for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
         images.push(createQfile(`画像${i}.png`, 'image/png', 100));
@@ -704,6 +720,26 @@ test('Too many files attached', () => {
 });
 
 /**
+ * 添付 PDF ファイルの数が多すぎる
+ */
+test('Too many pdfs attached', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', '', message);
+
+    // 添付 PDF ファイルを指定
+    const docs = [];
+    for (let i = 0; i < MAX_DOC_NUM + 1; i++) {
+        docs.push(createQfile(`DOC${i}.pdf`, 'application/pdf', 100));
+    }
+    attachDocs(docs);
+
+    assertError(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
+});
+
+/**
  * 添付ファイルのサイズが大きすぎる
  */
 test('Attached image is too large', () => {
@@ -711,7 +747,7 @@ test('Attached image is too large', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', '', message);
 
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -729,7 +765,7 @@ test('Content-Type of an attached file is not allowed', () => {
     const secret = 'secret-67890';
     const region = 'us-east-1';
     const message = 'Describe each image attached.';
-    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', '', message);
 
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png;filename="画像1.png"', 100);
@@ -757,32 +793,36 @@ test('Content-Type of an attached file is not allowed', () => {
  * @param {String} systemPrompt
  * @param {String} message
  * @param {Array<Qfile>} images
+ * @param {Array<Qfile>} docs
  */
 const assertRequest = ({
                            url,
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, images = []) => {
+                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, images = [], docs = []) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     // Authorization ヘッダのテストは省略
     const bodyObj = JSON.parse(body);
     expect(bodyObj.anthropic_version).toEqual(ANTHROPIC_VERSION);
-    expect(bodyObj.max_tokens).toEqual(maxTokens);
-    expect(bodyObj.temperature).toEqual(temperature);
-    expect(bodyObj.stop_sequences).toEqual(stopSequences);
-    expect(bodyObj.system).toEqual(systemPrompt);
+    expect(bodyObj.inferenceConfig.maxTokens).toEqual(maxTokens);
+    expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
+    expect(bodyObj.inferenceConfig.stopSequences).toEqual(stopSequences);
+    if (systemPrompt !== ''){
+        expect(bodyObj.system[0].text).toEqual(systemPrompt);
+    }
     expect(bodyObj.messages[0].role).toEqual('user');
-    expect(bodyObj.messages[0].content[0].type).toEqual('text');
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
-    expect(bodyObj.messages[0].content.length).toEqual(images.length + 1);
+    expect(bodyObj.messages[0].content.length).toEqual(images.length + docs.length + 1);
     images.forEach((image, i) => {
-        expect(bodyObj.messages[0].content[i + 1].type).toEqual('image');
-        expect(bodyObj.messages[0].content[i + 1].source.type).toEqual('base64');
-        expect(bodyObj.messages[0].content[i + 1].source.media_type).toEqual(image.getContentType().split(';')[0]);
-        expect(bodyObj.messages[0].content[i + 1].source.data).toEqual(base64.encodeToString(fileRepository.readFile(image)));
+        expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(image.getContentType().split(';')[0].split('/')[1]);
+        expect(bodyObj.messages[0].content[i + 1].image.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(image)));
+    });
+    docs.forEach((doc, i) => {
+        expect(bodyObj.messages[0].content[i + images.length + 1].document.format).toEqual(doc.getContentType().split(';')[0].split('/')[1]);
+        expect(bodyObj.messages[0].content[i + images.length + 1].document.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(doc)));
     });
 };
 
@@ -798,10 +838,10 @@ test('Fail to request', () => {
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_2, true, '1280', temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, true, '1280', temperature, stopSequences, '', message);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, 'apac.anthropic.claude-v2', 1280, 1, [], '', message);
+        assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, 1, [], '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -817,15 +857,16 @@ const createResponse = (model, answerText) => {
     const responseObj = {
         model,
         stop_reason: 'end_turn',
-        content: [
-            {
-                type: 'text',
-                text: answerText
+        output: {
+            message:{
+                content: [
+                    {text: answerText}
+                ]
             }
-        ],
+        },
         usage: {
-            input_tokens: 1024,
-            output_tokens: 2048
+            inputTokens: 1024,
+            outputTokens: 2048
         }
     };
     return JSON.stringify(responseObj);
@@ -844,12 +885,12 @@ test('Success - only with required configs', () => {
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_2_1, false, maxTokens, temperature, stopSequences, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_3_HAIKU, false, maxTokens, temperature, stopSequences, '', message);
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_2_1, MAX_TOKENS_DEFAULT, 1, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_2_1, answer));
+        assertRequest(request, region, MODEL_3_HAIKU, MAX_TOKENS_DEFAULT, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_HAIKU, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -899,12 +940,12 @@ test('Success - with max tokens and temperature', () => {
     const temperature = '0.5';
     const stopSequences = '';
     const message = 'Are you a robot?\n\nHow old are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_2, false, maxTokens, temperature, stopSequences, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, stopSequences, '', message);
 
     const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_2, 500, 0.5, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_2, answer));
+        assertRequest(request, region, MODEL_3_OPUS, 500, 0.5, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_OPUS, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -924,13 +965,13 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
     const stopSequences = 'さようなら\nありがとう\nおやすみなさい';
     const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_3_SONNET, false, maxTokens, temperature, stopSequences, systemPrompt, message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_3_5_SONNET_V2, false, maxTokens, temperature, stopSequences, systemPrompt, message);
     attachImages([]);
 
     const answer = 'こんにちは。お元気ですか？';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_SONNET, MAX_TOKENS_DEFAULT, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_SONNET, answer));
+        assertRequest(request, region, MODEL_3_5_SONNET_V2, MAX_TOKENS_DEFAULT, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_5_SONNET_V2, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -938,11 +979,11 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
 });
 
 /**
- * 成功 - 添付画像を最大個数指定
+ * 成功 - 添付画像を最大個数指定 添付 PDF を最大個数指定
  * クロスリージョン推論を利用する
  * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
-test('Success - with attached images - CrossRegionModel - Markdown', () => {
+test('Success - with attached images and pdfs - CrossRegionModel - Markdown', () => {
     const key = 'key-54321';
     const secret = 'secret-99999';
     const region = 'ap-northeast-1';
@@ -957,7 +998,7 @@ test('Success - with attached images - CrossRegionModel - Markdown', () => {
     engine.setData(answerDef, '事前文字列');
     configs.putObject('conf_Answer1', answerDef);
 
-    // 添付ファイルを指定
+    // 添付画像を指定
     const images = [];
     for (let i = 0; i < MAX_IMAGE_NUM - 1; i++) {
         images.push(createQfile(`画像${i}.png`, ALLOWED_MEDIA_TYPES[i % 4], 100));
@@ -965,9 +1006,18 @@ test('Success - with attached images - CrossRegionModel - Markdown', () => {
     images.push(createQfile('最大サイズの画像.jpg', 'image/jpeg;filename="最大サイズの画像.jpg"', MAX_IMAGE_SIZE));
     attachImages(images);
 
+    // 添付 PDF を指定
+    const docs = [];
+    for (let i = 0; i < MAX_DOC_NUM - 1; i++) {
+        docs.push(createQfile(`PDF${i}.pdf`, ALLOWED_DOCUMENT_TYPE, 100));
+    }
+    docs.push(createQfile('最大サイズのPDF.pdf', 'application/pdf;filename="最大サイズのPDF.pdf"', MAX_DOC_SIZE));
+    attachDocs(docs);
+
+
     const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, MAX_TOKENS_DEFAULT, 1, [], '', message, images);
+        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, MAX_TOKENS_DEFAULT, 1, [], '', message, images, docs);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`apac.${MODEL_3_SONNET}`, answer));
     });
 
