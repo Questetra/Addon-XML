@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-01-30</last-modified>
+    <last-modified>2025-01-31</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -110,7 +110,7 @@ function main() {
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
+    const answer = converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -230,8 +230,8 @@ const retrieveUserMessage = () => {
     if (message === '') {
         throw new Error('User Message is empty.');
     }
-    const inlineImages = retrieveImages();
-    const inlineDocs = retrieveDocs();
+    const inlineImages = retrieveFiles("conf_Images1");
+    const inlineDocs = retrieveFiles("conf_Docs1");
     const userMessage = {
         role: 'user',
         content: [
@@ -246,117 +246,100 @@ const retrieveUserMessage = () => {
 	
 };
 
-const MAX_IMAGE_NUM = 20; // Messages API の制限。1 ユーザメッセージにつき添付画像 20 個まで
-const MAX_IMAGE_SIZE = 3932160; // Messages API の制限。1 ファイルにつき 3.75 MB まで
+const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
+const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
+const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
+const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
 
 /**
- * config から画像を読み出す
+ * config からファイルを読み出す
  * 以下の場合はエラー
  * - 添付ファイルの総数が多すぎる場合
  * - ファイルサイズが大きすぎる場合
  * - Content-Type が許可されていない場合
  * @returns {Array<Object>} 画像オブジェクトの配列
  */
-const retrieveImages = () => {
-    const imagesDef = configs.getObject('conf_Images1');
-    if (imagesDef === null) {
+const retrieveFiles = (configName) => {
+    const filesDef = configs.getObject(configName);
+    if (filesDef === null) {
         return [];
     }
-    const images = engine.findData(imagesDef);
-    if (images === null) {
+    const files = engine.findData(filesDef);
+    if (files === null) {
         return [];
     }
-    if (images.size() > MAX_IMAGE_NUM) {
-        throw new Error(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
-    }
 
-    const inlineImages = [];
-    images.forEach(image => {
+    const inlineFiles = [];
 
-        if (image.getLength() > MAX_IMAGE_SIZE) {
-            throw new Error(`Attached file "${image.getName()}" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+    if (configName === "conf_Images1"){
+        if (files.size() > MAX_IMAGE_NUM) {
+            throw new Error(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
         }
 
-        const contentType = image.getContentType().split(';')[0];
-        if (!ALLOWED_MEDIA_TYPES.includes(contentType)) {
-            throw new Error(`Content-Type of the attached file "${image.getName()}" is not allowed.`);
-        }
+        
+        files.forEach(file => {
 
-        const format = contentType.split('/')[1];
-
-        const inlineImage = {
-            image: {
-                format,
-                source: {
-                    bytes: base64.encodeToString(fileRepository.readFile(image))
-                }
+            if (file.getLength() > MAX_IMAGE_SIZE) {
+                throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
             }
-        };
 
-        inlineImages.push(inlineImage);
-    });
-    return inlineImages;
+            const contentType = file.getContentType().split(';')[0];
+            if (!ALLOWED_MEDIA_TYPES.includes(contentType)) {
+                throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+            }
+            const format = contentType.split('/')[1];
+
+            const inlineFile = {
+                image: {
+                    format,
+                    source: {
+                        bytes: base64.encodeToString(fileRepository.readFile(file))
+                    }
+                }
+            };
+
+            inlineFiles.push(inlineFile);
+        });
+    } else {
+        if (files.size() > MAX_DOC_NUM) {
+            throw new Error(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
+        }
+
+        let index = 0;
+
+        files.forEach( file => {
+
+            if (file.getLength() > MAX_DOC_SIZE) {
+                throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
+            }
+
+            const contentType = file.getContentType().split(';')[0];
+            if (!ALLOWED_DOCUMENT_TYPE.includes(contentType)) {
+                throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+            }
+
+            const format = contentType.split('/')[1];
+
+            const inlineFile = {
+                document: {
+                    format,
+                    name: `DOC${index}`,
+                    source: {
+                        bytes: base64.encodeToString(fileRepository.readFile(file))
+                    }
+                }
+            };
+            inlineFiles.push(inlineFile);
+
+            index++;
+        });
+    }
+
+    return inlineFiles;
 };
 
-
-const MAX_DOC_NUM = 5; // Messages API の制限。1 ユーザメッセージにつき PDF 5 個まで
-const MAX_DOC_SIZE = 4718592; // Messages API の制限。1 ファイルにつき 4.5 MB まで
-const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
-
-/**
- * config から PDF を読み出す
- * 以下の場合はエラー
- * - 添付ファイルの総数が多すぎる場合
- * - ファイルサイズが大きすぎる場合
- * - Content-Type が許可されていない場合
- * @returns {Array<Object>} PDF オブジェクトの配列
- */
-const retrieveDocs = () => {
-    const docsDef = configs.getObject('conf_Docs1');
-    if (docsDef === null) {
-        return [];
-    }
-    const docs = engine.findData(docsDef);
-    if (docs === null) {
-        return [];
-    }
-    if (docs.size() > MAX_DOC_NUM) {
-        throw new Error(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
-    }
-
-    const inlineDocs = [];
-
-    let index = 0;
-
-    docs.forEach( doc => {
-
-        if (doc.getLength() > MAX_DOC_SIZE) {
-            throw new Error(`Attached file "${doc.getName()}" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
-        }
-
-        const contentType = doc.getContentType().split(';')[0];
-        if (!ALLOWED_DOCUMENT_TYPE.includes(contentType)) {
-            throw new Error(`Content-Type of the attached file "${doc.getName()}" is not allowed.`);
-        }
-
-        const format = contentType.split('/')[1];
-
-        const inlineDoc = {
-            document: {
-                format,
-                name: `DOC${index}`,
-                source: {
-                    bytes: base64.encodeToString(fileRepository.readFile(doc))
-                }
-            }
-        };
-        inlineDocs.push(inlineDoc);
-
-        index++;
-    });
-    return inlineDocs;
-};
 
 /**
  * モデルの実行
@@ -371,7 +354,7 @@ const retrieveDocs = () => {
  * @param userMessage
  * @returns {String} answer
  */
-const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
+const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
     const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
     const payload = {
         anthropic_version: ANTHROPIC_VERSION,
@@ -402,7 +385,7 @@ const invokeModel = (awsKey, awsSecret, region, model, maxTokens, temperature, s
     const respTxt = response.getResponseAsString();
     if (status !== 200) {
         engine.log(respTxt);
-        throw new Error(`Failed to invoke model. status: ${status}`);
+        throw new Error(`Failed to converse. status: ${status}`);
     }
     const {output, stopReason, usage} = JSON.parse(respTxt);
     engine.log(`Stop Reason: ${stopReason}`);
@@ -740,7 +723,7 @@ test('Too many pdfs attached', () => {
 });
 
 /**
- * 添付ファイルのサイズが大きすぎる
+ * 添付画像ファイルのサイズが大きすぎる
  */
 test('Attached image is too large', () => {
     const key = 'key-12345';
@@ -755,6 +738,24 @@ test('Attached image is too large', () => {
     attachImages([image1, image2]);
 
     assertError(`Attached file "画像2.jpg" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+});
+
+/**
+ * 添付 PDF ファイルのサイズが大きすぎる
+ */
+test('Attached pdf is too large', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs(key, secret, region, MODEL_3_SONNET, false, '', '', '', '', message);
+
+    // 添付ファイルを指定
+    const doc1 = createQfile('PDF1.pdf', 'application/pdf', 100);
+    const doc2 = createQfile('PDF2.pdf', 'application/pdf', MAX_DOC_SIZE + 1);
+    attachDocs([doc1, doc2]);
+
+    assertError(`Attached file "PDF2.pdf" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
 });
 
 /**
@@ -822,6 +823,7 @@ const assertRequest = ({
     });
     docs.forEach((doc, i) => {
         expect(bodyObj.messages[0].content[i + images.length + 1].document.format).toEqual(doc.getContentType().split(';')[0].split('/')[1]);
+        expect(bodyObj.messages[0].content[i + images.length + 1].document.name).toEqual(`DOC${i}`);
         expect(bodyObj.messages[0].content[i + images.length + 1].document.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(doc)));
     });
 };
@@ -844,7 +846,7 @@ test('Fail to request', () => {
         assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, 1, [], '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
-    assertError('Failed to invoke model. status: 400');
+    assertError('Failed to converse. status: 400');
 });
 
 /**
@@ -856,7 +858,7 @@ test('Fail to request', () => {
 const createResponse = (model, answerText) => {
     const responseObj = {
         model,
-        stop_reason: 'end_turn',
+        stopReason: 'end_turn',
         output: {
             message:{
                 content: [
