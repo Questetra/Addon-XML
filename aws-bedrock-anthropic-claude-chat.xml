@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-01-31</last-modified>
+    <last-modified>2025-02-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -220,6 +220,15 @@ const retrieveStopSequences = () => {
     return stopSequences;
 };
 
+
+const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
+const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
+const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
+const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
+
+
 /**
  * config からユーザメッセージ（添付画像、添付 PDF を含む）を読み出す
  * ユーザメッセージが空の場合、添付画像や添付 PDF が不正な場合はエラー
@@ -230,8 +239,8 @@ const retrieveUserMessage = () => {
     if (message === '') {
         throw new Error('User Message is empty.');
     }
-    const inlineImages = retrieveFiles("conf_Images1");
-    const inlineDocs = retrieveFiles("conf_Docs1");
+    const inlineImages = retrieveImages(retrieveFiles("conf_Images1", "images", MAX_IMAGE_NUM, MAX_IMAGE_SIZE, ALLOWED_MEDIA_TYPES));
+    const inlineDocs = retrieveDocs(retrieveFiles("conf_Docs1", "PDFs", MAX_DOC_NUM, MAX_DOC_SIZE, ALLOWED_DOCUMENT_TYPE));
     const userMessage = {
         role: 'user',
         content: [
@@ -246,22 +255,20 @@ const retrieveUserMessage = () => {
 	
 };
 
-const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
-const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
-const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
-const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
-const ALLOWED_DOCUMENT_TYPE = 'application/pdf';
-
 /**
  * config からファイルを読み出す
  * 以下の場合はエラー
  * - 添付ファイルの総数が多すぎる場合
  * - ファイルサイズが大きすぎる場合
  * - Content-Type が許可されていない場合
- * @returns {Array<Object>} 画像オブジェクトの配列
+ * @param configName
+ * @param errorLabel
+ * @param maxNum
+ * @param maxSize
+ * @param allowedTypes
+ * @returns {Array<Object>} ファイルオブジェクトの配列
  */
-const retrieveFiles = (configName) => {
+const retrieveFiles = (configName, errorLabel, maxNum, maxSize, allowedTypes) => {
     const filesDef = configs.getObject(configName);
     if (filesDef === null) {
         return [];
@@ -273,71 +280,71 @@ const retrieveFiles = (configName) => {
 
     const inlineFiles = [];
 
-    if (configName === "conf_Images1"){
-        if (files.size() > MAX_IMAGE_NUM) {
-            throw new Error(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
-        }
-
-        
-        files.forEach(file => {
-
-            if (file.getLength() > MAX_IMAGE_SIZE) {
-                throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
-            }
-
-            const contentType = file.getContentType().split(';')[0];
-            if (!ALLOWED_MEDIA_TYPES.includes(contentType)) {
-                throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
-            }
-            const format = contentType.split('/')[1];
-
-            const inlineFile = {
-                image: {
-                    format,
-                    source: {
-                        bytes: base64.encodeToString(fileRepository.readFile(file))
-                    }
-                }
-            };
-
-            inlineFiles.push(inlineFile);
-        });
-    } else {
-        if (files.size() > MAX_DOC_NUM) {
-            throw new Error(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
-        }
-
-        let index = 0;
-
-        files.forEach( file => {
-
-            if (file.getLength() > MAX_DOC_SIZE) {
-                throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
-            }
-
-            const contentType = file.getContentType().split(';')[0];
-            if (!ALLOWED_DOCUMENT_TYPE.includes(contentType)) {
-                throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
-            }
-
-            const format = contentType.split('/')[1];
-
-            const inlineFile = {
-                document: {
-                    format,
-                    name: `DOC${index}`,
-                    source: {
-                        bytes: base64.encodeToString(fileRepository.readFile(file))
-                    }
-                }
-            };
-            inlineFiles.push(inlineFile);
-
-            index++;
-        });
+    if (files.size() > maxNum) {
+        throw new Error(`Too many ${errorLabel} attached. The maximum number is ${maxNum}.`);
     }
+        
+    files.forEach(file => {
+
+        if (file.getLength() > maxSize) {
+            throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        }
+
+        const contentType = file.getContentType().split(';')[0];
+        if (!allowedTypes.includes(contentType)) {
+            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+        }
+        const format = contentType.split('/')[1];
+        const source = {bytes: base64.encodeToString(fileRepository.readFile(file))}
+
+        inlineFiles.push({format, source});
+    });
 
     return inlineFiles;
+};
+
+
+/**
+ * inlineFiles から画像オブジェクトの配列を作成する
+ * @returns {Array<Object>} 画像オブジェクトの配列
+ */
+const retrieveImages = (inlineFiles) => {
+
+    const inlineImages = [];
+    inlineFiles.forEach( inlineFile => {
+        const inlineImage = {
+            image: {
+                format: inlineFile.format,
+                source: inlineFile.source
+            }
+        };
+
+        inlineImages.push(inlineImage);
+    });
+    return inlineImages;
+};
+
+
+/**
+ * inlineFiles から PDF オブジェクトの配列を作成する
+ * @returns {Array<Object>} PDF オブジェクトの配列
+ */
+const retrieveDocs = (inlineFiles) => {
+
+    const inlineDocs = [];
+
+    inlineFiles.forEach( (inlineFile, index) => {
+
+        const inlineDoc = {
+            document: {
+                format: inlineFile.format,
+                name: `DOC${index}`,
+                source: inlineFile.source
+            }
+        };
+        inlineDocs.push(inlineDoc);
+    });
+    return inlineDocs;
 };
 
 
