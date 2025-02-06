@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-02-04</last-modified>
+    <last-modified>2025-02-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -71,13 +71,8 @@
         </config>
         <config name="conf_Images1" required="false" form-type="SELECT"
                 select-data-type="FILE">
-            <label>I1: Images to attach to user message</label>
-            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
-        </config>
-        <config name="conf_Docs1" required="false" form-type="SELECT"
-                select-data-type="FILE">
-            <label>D1: PDFs to attach to user message</label>
-            <label locale="ja">D1: ユーザメッセージに添付する PDF</label>
+            <label>I1: Images / PDFs to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像／PDF</label>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_MULTILINE">
@@ -220,15 +215,6 @@ const retrieveStopSequences = () => {
     return stopSequences;
 };
 
-
-const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
-const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
-const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
-const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
-const ALLOWED_DOCUMENT_TYPES = ['application/pdf'];
-
-
 /**
  * config からユーザメッセージ（添付画像、添付 PDF を含む）を読み出す
  * ユーザメッセージが空の場合、添付画像や添付 PDF が不正な場合はエラー
@@ -256,13 +242,23 @@ const retrieveUserMessage = () => {
 };
 
 
+const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
+const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
+const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
+const ALLOWED_DOCUMENT_TYPES = ['application/pdf'];
+const ALL_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+
+
+
 /**
  * 画像オブジェクトの配列を作成する
  * @returns {Array<Object>} 画像オブジェクトの配列
  */
 const retrieveImages = () => {
 
-    const inlineFiles = retrieveFiles("conf_Images1", "images", MAX_IMAGE_NUM, MAX_IMAGE_SIZE, ALLOWED_MEDIA_TYPES);
+    const inlineFiles = retrieveFiles("image", MAX_IMAGE_NUM, MAX_IMAGE_SIZE, ALLOWED_MEDIA_TYPES, ALL_ALLOWED_TYPES);
     const inlineImages = inlineFiles.map(({format, source}) => ({image: {format, source}}));
 
     return inlineImages;
@@ -275,7 +271,7 @@ const retrieveImages = () => {
  */
 const retrieveDocs = () => {
 
-    const inlineFiles = retrieveFiles("conf_Docs1", "PDFs", MAX_DOC_NUM, MAX_DOC_SIZE, ALLOWED_DOCUMENT_TYPES);
+    const inlineFiles = retrieveFiles("PDF", MAX_DOC_NUM, MAX_DOC_SIZE, ALLOWED_DOCUMENT_TYPES, ALL_ALLOWED_TYPES);
     const inlineDocs = inlineFiles.map(({format, source}, index) => ({document: {format, name: `DOC${index}`,source}}));
 
     return inlineDocs;
@@ -288,15 +284,15 @@ const retrieveDocs = () => {
  * - 添付ファイルの総数が多すぎる場合
  * - ファイルサイズが大きすぎる場合
  * - Content-Type が許可されていない場合
- * @param configName
  * @param errorLabel
  * @param maxNum
  * @param maxSize
  * @param allowedTypes
+ * @param allAllowedTypes
  * @returns {Array<Object>} ファイルオブジェクトの配列
  */
-const retrieveFiles = (configName, errorLabel, maxNum, maxSize, allowedTypes) => {
-    const filesDef = configs.getObject(configName);
+const retrieveFiles = (errorLabel, maxNum, maxSize, allowedTypes, allAllowedTypes) => {
+    const filesDef = configs.getObject('conf_Images1');
     if (filesDef === null) {
         return [];
     }
@@ -305,21 +301,30 @@ const retrieveFiles = (configName, errorLabel, maxNum, maxSize, allowedTypes) =>
         return [];
     }
 
-    const inlineFiles = [];
-
-    if (files.size() > maxNum) {
-        throw new Error(`Too many ${errorLabel} attached. The maximum number is ${maxNum}.`);
-    }
+    const filesArray = [];
         
     files.forEach(file => {
 
-        if (file.getLength() > maxSize) {
-            throw new Error(`Attached file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        const contentType = file.getContentType().split(';')[0];
+        if (!allAllowedTypes.includes(contentType)) {
+            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
         }
 
-        const contentType = file.getContentType().split(';')[0];
-        if (!allowedTypes.includes(contentType)) {
-            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+        if (allowedTypes.includes(contentType)){
+            filesArray.push({file,contentType});
+        }
+    });
+
+    if (filesArray.length > maxNum) {
+        throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
+    }
+
+    const inlineFiles = [];
+
+    filesArray.forEach(({file,contentType}) => {
+
+        if (file.getLength() > maxSize) {
+            throw new Error(`Attached ${errorLabel} file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
         }
         const format = contentType.split('/')[1];
         const source = {bytes: base64.encodeToString(fileRepository.readFile(file))}
@@ -653,24 +658,15 @@ const createQfile = (name, contentType, size) => {
 };
 
 /**
- * 画像を添付
- * @param {Array<Qfile>} images
+ * 画像、 PDF を添付
+ * @param {Array<Qfile>} files
  */
-const attachImages = (images) => {
-    const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
-    engine.setData(imagesDef, images);
-    configs.putObject('conf_Images1', imagesDef);
+const attachFiles = (files) => {
+    const filesDef = engine.createDataDefinition('添付画像', 2, 'q_files', 'FILE');
+    engine.setData(filesDef, files);
+    configs.putObject('conf_Images1', filesDef);
 };
 
-/**
- * PDF を添付
- * @param {Array<Qfile>} docs
- */
-const attachDocs = (docs) => {
-    const docsDef = engine.createDataDefinition('添付 PDF', 3, 'q_docs', 'FILE');
-    engine.setData(docsDef, docs);
-    configs.putObject('conf_Docs1', docsDef);
-};
 
 /**
  * 添付画像ファイルの数が多すぎる
@@ -687,7 +683,7 @@ test('Too many images attached', () => {
     for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
         images.push(createQfile(`画像${i}.png`, 'image/png', 100));
     }
-    attachImages(images);
+    attachFiles(images);
 
     assertError(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
 });
@@ -707,7 +703,7 @@ test('Too many pdfs attached', () => {
     for (let i = 0; i < MAX_DOC_NUM + 1; i++) {
         docs.push(createQfile(`DOC${i}.pdf`, 'application/pdf', 100));
     }
-    attachDocs(docs);
+    attachFiles(docs);
 
     assertError(`Too many PDFs attached. The maximum number is ${MAX_DOC_NUM}.`);
 });
@@ -725,9 +721,9 @@ test('Attached image is too large', () => {
     // 添付ファイルを指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
     const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE + 1);
-    attachImages([image1, image2]);
+    attachFiles([image1, image2]);
 
-    assertError(`Attached file "画像2.jpg" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+    assertError(`Attached image file "画像2.jpg" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
 });
 
 /**
@@ -743,9 +739,9 @@ test('Attached pdf is too large', () => {
     // 添付ファイルを指定
     const doc1 = createQfile('PDF1.pdf', 'application/pdf', 100);
     const doc2 = createQfile('PDF2.pdf', 'application/pdf', MAX_DOC_SIZE + 1);
-    attachDocs([doc1, doc2]);
+    attachFiles([doc1, doc2]);
 
-    assertError(`Attached file "PDF2.pdf" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
+    assertError(`Attached PDF file "PDF2.pdf" is too large. The maximum size is ${MAX_DOC_SIZE} bytes.`);
 });
 
 /**
@@ -764,7 +760,7 @@ test('Content-Type of an attached file is not allowed', () => {
     const image3 = createQfile('画像3.gif', 'image/gif', 300);
     const image4 = createQfile('画像4.webp', 'image/webp', 100);
     const imageNotAllowed = createQfile('許可されていない画像.svg', 'image/svg+xml', 200);
-    attachImages([image1, image2, image3, image4, imageNotAllowed]);
+    attachFiles([image1, image2, image3, image4, imageNotAllowed]);
 
     assertError('Content-Type of the attached file "許可されていない画像.svg" is not allowed.');
 });
@@ -783,15 +779,14 @@ test('Content-Type of an attached file is not allowed', () => {
  * @param {Array<String>} stopSequences
  * @param {String} systemPrompt
  * @param {String} message
- * @param {Array<Qfile>} images
- * @param {Array<Qfile>} docs
+ * @param {Array<Qfile>} files
  */
 const assertRequest = ({
                            url,
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, images = [], docs = []) => {
+                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -806,16 +801,19 @@ const assertRequest = ({
     }
     expect(bodyObj.messages[0].role).toEqual('user');
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
-    expect(bodyObj.messages[0].content.length).toEqual(images.length + docs.length + 1);
-    images.forEach((image, i) => {
-        expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(image.getContentType().split(';')[0].split('/')[1]);
-        expect(bodyObj.messages[0].content[i + 1].image.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(image)));
+    expect(bodyObj.messages[0].content.length).toEqual(files.length + 1);
+
+    files.forEach((file, i) => {
+        if(file.getContentType().split(';')[0] === "image"){
+            expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(file.getContentType().split(';')[0].split('/')[1]);
+            expect(bodyObj.messages[0].content[i + 1].image.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(file)));
+        } else if (file.getContentType().split(';')[0] === "pdf"){
+            expect(bodyObj.messages[0].content[i + 1].document.format).toEqual(file.getContentType().split(';')[0].split('/')[1]);
+            expect(bodyObj.messages[0].content[i + 1].document.name).toEqual(`DOC${i}`);
+            expect(bodyObj.messages[0].content[i + 1].document.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(file)));
+        }
     });
-    docs.forEach((doc, i) => {
-        expect(bodyObj.messages[0].content[i + images.length + 1].document.format).toEqual(doc.getContentType().split(';')[0].split('/')[1]);
-        expect(bodyObj.messages[0].content[i + images.length + 1].document.name).toEqual(`DOC${i}`);
-        expect(bodyObj.messages[0].content[i + images.length + 1].document.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(doc)));
-    });
+
 };
 
 /**
@@ -958,7 +956,7 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
     const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
     const message = 'Hi. How are you?';
     const answerDef = prepareConfigs(key, secret, region, MODEL_3_5_SONNET_V2, false, maxTokens, temperature, stopSequences, systemPrompt, message);
-    attachImages([]);
+    attachFiles([]);
 
     const answer = 'こんにちは。お元気ですか？';
     httpClient.setRequestHandler((request) => {
@@ -991,25 +989,25 @@ test('Success - with attached images and pdfs - CrossRegionModel - Markdown', ()
     configs.putObject('conf_Answer1', answerDef);
 
     // 添付画像を指定
-    const images = [];
+    const files = [];
     for (let i = 0; i < MAX_IMAGE_NUM - 1; i++) {
-        images.push(createQfile(`画像${i}.png`, ALLOWED_MEDIA_TYPES[i % 4], 100));
+        files.push(createQfile(`画像${i}.png`, ALLOWED_MEDIA_TYPES[i % 4], 100));
     }
-    images.push(createQfile('最大サイズの画像.jpg', 'image/jpeg;filename="最大サイズの画像.jpg"', MAX_IMAGE_SIZE));
-    attachImages(images);
+    files.push(createQfile('最大サイズの画像.jpg', 'image/jpeg;filename="最大サイズの画像.jpg"', MAX_IMAGE_SIZE));
 
     // 添付 PDF を指定
-    const docs = [];
     for (let i = 0; i < MAX_DOC_NUM - 1; i++) {
-        docs.push(createQfile(`PDF${i}.pdf`, ALLOWED_DOCUMENT_TYPES[0], 100));
+        files.push(createQfile(`PDF${i}.pdf`, ALLOWED_DOCUMENT_TYPES[0], 100));
     }
-    docs.push(createQfile('最大サイズのPDF.pdf', 'application/pdf;filename="最大サイズのPDF.pdf"', MAX_DOC_SIZE));
-    attachDocs(docs);
+    files.push(createQfile('最大サイズのPDF.pdf', 'application/pdf;filename="最大サイズのPDF.pdf"', MAX_DOC_SIZE));
+
+    // 画像、 PDF を添付
+    attachFiles(files);
 
 
     const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, MAX_TOKENS_DEFAULT, 1, [], '', message, images, docs);
+        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, MAX_TOKENS_DEFAULT, 1, [], '', message, files);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`apac.${MODEL_3_SONNET}`, answer));
     });
 
