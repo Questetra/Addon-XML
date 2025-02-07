@@ -215,6 +215,14 @@ const retrieveStopSequences = () => {
     return stopSequences;
 };
 
+
+const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
+const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
+const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
+const ALLOWED_DOCUMENT_TYPES = ['application/pdf'];
+
 /**
  * config からユーザメッセージ（添付画像、添付 PDF を含む）を読み出す
  * ユーザメッセージが空の場合、添付画像や添付 PDF が不正な場合はエラー
@@ -225,8 +233,14 @@ const retrieveUserMessage = () => {
     if (message === '') {
         throw new Error('User Message is empty.');
     }
-    const inlineImages = retrieveImages();
-    const inlineDocs = retrieveDocs();
+
+const {imageFiles, docFiles} = retrieveFiles(); // Content-Type による振り分けと、どちらにも該当しない場合はエラー
+validateFiles(imageFiles, 'image', MAX_IMAGE_NUM, MAX_IMAGE_SIZE);
+validateFiles(docFiles, 'PDF', MAX_DOC_NUM, MAX_DOC_SIZE);
+const inlineImages = imageFiles.map(({format, source}) => ({image: {format, source}}));
+const inlineDocs = docFiles.map(({format, source}, index) => ({document: {format, name: `DOC${index}`,source}}));
+
+
     const userMessage = {
         role: 'user',
         content: [
@@ -242,56 +256,13 @@ const retrieveUserMessage = () => {
 };
 
 
-const MAX_IMAGE_NUM = 20; // Bedrock Converse API の制限。1 ユーザメッセージにつき添付画像 20 個まで
-const MAX_IMAGE_SIZE = 3932160; // Bedrock Converse API の制限。1 ファイルにつき 3.75 MB まで
-const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const MAX_DOC_NUM = 5; // Bedrock Converse API の制限。1 ユーザメッセージにつき PDF 5 個まで
-const MAX_DOC_SIZE = 4718592; // Bedrock Converse API の制限。1 ファイルにつき 4.5 MB まで
-const ALLOWED_DOCUMENT_TYPES = ['application/pdf'];
-const ALL_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
-
-
-
 /**
- * 画像オブジェクトの配列を作成する
- * @returns {Array<Object>} 画像オブジェクトの配列
- */
-const retrieveImages = () => {
-
-    const inlineFiles = retrieveFiles("image", MAX_IMAGE_NUM, MAX_IMAGE_SIZE, ALLOWED_MEDIA_TYPES, ALL_ALLOWED_TYPES);
-    const inlineImages = inlineFiles.map(({format, source}) => ({image: {format, source}}));
-
-    return inlineImages;
-};
-
-
-/**
- * PDF オブジェクトの配列を作成する
- * @returns {Array<Object>} PDF オブジェクトの配列
- */
-const retrieveDocs = () => {
-
-    const inlineFiles = retrieveFiles("PDF", MAX_DOC_NUM, MAX_DOC_SIZE, ALLOWED_DOCUMENT_TYPES, ALL_ALLOWED_TYPES);
-    const inlineDocs = inlineFiles.map(({format, source}, index) => ({document: {format, name: `DOC${index}`,source}}));
-
-    return inlineDocs;
-};
-
-
-/**
- * config からファイルを読み出す
+ * config からファイルを読み出し、画像と PDF に振り分ける
  * 以下の場合はエラー
- * - 添付ファイルの総数が多すぎる場合
- * - ファイルサイズが大きすぎる場合
  * - Content-Type が許可されていない場合
- * @param errorLabel
- * @param maxNum
- * @param maxSize
- * @param allowedTypes
- * @param allAllowedTypes
- * @returns {Array<Object>} ファイルオブジェクトの配列
+ * @returns {Array<Object>, Array<Object>} ファイルオブジェクトの配列
  */
-const retrieveFiles = (errorLabel, maxNum, maxSize, allowedTypes, allAllowedTypes) => {
+const retrieveFiles = () => {
     const filesDef = configs.getObject('conf_Images1');
     if (filesDef === null) {
         return [];
@@ -301,39 +272,53 @@ const retrieveFiles = (errorLabel, maxNum, maxSize, allowedTypes, allAllowedType
         return [];
     }
 
-    const filesArray = [];
-        
+    const imageFiles = [];
+    const docFiles = [];
+
     files.forEach(file => {
 
         const contentType = file.getContentType().split(';')[0];
-        if (!allAllowedTypes.includes(contentType)) {
-            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
-        }
-
-        if (allowedTypes.includes(contentType)){
-            filesArray.push({file,contentType});
-        }
-    });
-
-    if (filesArray.length > maxNum) {
-        throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
-    }
-
-    const inlineFiles = [];
-
-    filesArray.forEach(({file,contentType}) => {
-
-        if (file.getLength() > maxSize) {
-            throw new Error(`Attached ${errorLabel} file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
-        }
         const format = contentType.split('/')[1];
         const source = {bytes: base64.encodeToString(fileRepository.readFile(file))}
 
-        inlineFiles.push({format, source});
+        if (ALLOWED_MEDIA_TYPES.includes(contentType)){
+            imageFiles.push({file, contentType, format, source});
+        } else if (ALLOWED_DOCUMENT_TYPES.includes(contentType)){
+            docFiles.push({file, contentType, format, source});
+        } else {
+            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+        }
+
     });
 
-    return inlineFiles;
+    return {imageFiles, docFiles};
 };
+
+
+/**
+ * 振り分けられた画像配列と PDF 配列をチェックする
+ * 以下の場合はエラー
+ * - 添付ファイルの総数が多すぎる場合
+ * - ファイルサイズが大きすぎる場合
+ * @param {Array<Object>} ファイルオブジェクトの配列
+ * @param errorLabel
+ * @param maxNum
+ * @param maxSize
+ */
+function validateFiles(files, errorLabel, maxNum, maxSize) {
+
+    if (files.length > maxNum) {
+        throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
+    }
+
+    files.forEach(file => {
+
+        if (file.file.getLength() > maxSize) {
+            throw new Error(`Attached ${errorLabel} file "${file.file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        }
+    });
+
+}
 
 
 /**
