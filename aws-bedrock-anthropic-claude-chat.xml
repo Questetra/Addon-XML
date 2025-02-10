@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-02-06</last-modified>
+    <last-modified>2025-02-10</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -87,7 +87,7 @@
 const SERVICE = 'bedrock';
 const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 
-function main() {
+const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const awsKey = configs.getObject('conf_AccessKey').getToken();
     const awsSecret = configs.getObject('conf_SecretKey').getToken();
@@ -116,7 +116,7 @@ function main() {
  * リージョンコードの形式として不正な場合はエラー
  * @return {String}
  */
-function retrieveRegion() {
+const retrieveRegion = () => {
     const region = configs.get('conf_Region');
     // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
     const reg = new RegExp('^[a-z]{2}-[a-z]{4,16}-[1-9]$');
@@ -131,7 +131,7 @@ function retrieveRegion() {
  * モデル ID として不正な場合はエラー
  * @return {String}
  */
-function retrieveModel() {
+const retrieveModel = () => {
     const model = configs.get('conf_Model');
     const reg = new RegExp('^[a-z0-9.:-]+$');
     if (!reg.test(model)) {
@@ -149,7 +149,7 @@ function retrieveModel() {
  * C3 のリージョンがクロスリージョン推論の対象でない場合はエラー
  * @return {String}
  */
-function decideCrossRegionModel(model, region) {
+const decideCrossRegionModel = (model, region) => {
     if (region.startsWith('us-')){
         return `us.${model}`;
     } else if(region.startsWith('eu-')){
@@ -234,12 +234,16 @@ const retrieveUserMessage = () => {
         throw new Error('User Message is empty.');
     }
 
-const {imageFiles, docFiles} = retrieveFiles(); // Content-Type による振り分けと、どちらにも該当しない場合はエラー
-validateFiles(imageFiles, 'image', MAX_IMAGE_NUM, MAX_IMAGE_SIZE);
-validateFiles(docFiles, 'PDF', MAX_DOC_NUM, MAX_DOC_SIZE);
-const inlineImages = imageFiles.map(({format, source}) => ({image: {format, source}}));
-const inlineDocs = docFiles.map(({format, source}, index) => ({document: {format, name: `DOC${index}`,source}}));
+    const {imageFiles, docFiles} = retrieveFiles(); // Content-Type による振り分けと、どちらにも該当しない場合はエラー
+    if (imageFiles !== []){
+        validateFiles(imageFiles, 'image', MAX_IMAGE_NUM, MAX_IMAGE_SIZE);
+    }
+    if (docFiles !== []){
+        validateFiles(docFiles, 'PDF', MAX_DOC_NUM, MAX_DOC_SIZE);
+    }
 
+    const inlineImages = imageFiles.map(file => ({image: {format: file.getContentType().split('/')[1], source: {bytes: base64.encodeToString(fileRepository.readFile(file))}}}));
+    const inlineDocs = docFiles.map((file, index) => ({document: {format: file.getContentType().split('/')[1], name: `DOC${index}`,source: {bytes: base64.encodeToString(fileRepository.readFile(file))}}}));
 
     const userMessage = {
         role: 'user',
@@ -263,32 +267,29 @@ const inlineDocs = docFiles.map(({format, source}, index) => ({document: {format
  * @returns {Array<Object>, Array<Object>} ファイルオブジェクトの配列
  */
 const retrieveFiles = () => {
+    const imageFiles = [];
+    const docFiles = [];
+
     const filesDef = configs.getObject('conf_Images1');
     if (filesDef === null) {
-        return [];
+        return {imageFiles, docFiles};
     }
     const files = engine.findData(filesDef);
     if (files === null) {
-        return [];
+        return {imageFiles, docFiles};
     }
-
-    const imageFiles = [];
-    const docFiles = [];
 
     files.forEach(file => {
 
         const contentType = file.getContentType().split(';')[0];
-        const format = contentType.split('/')[1];
-        const source = {bytes: base64.encodeToString(fileRepository.readFile(file))}
 
         if (ALLOWED_MEDIA_TYPES.includes(contentType)){
-            imageFiles.push({file, contentType, format, source});
+            imageFiles.push(file);
         } else if (ALLOWED_DOCUMENT_TYPES.includes(contentType)){
-            docFiles.push({file, contentType, format, source});
+            docFiles.push(file);
         } else {
             throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
         }
-
     });
 
     return {imageFiles, docFiles};
@@ -305,7 +306,7 @@ const retrieveFiles = () => {
  * @param maxNum
  * @param maxSize
  */
-function validateFiles(files, errorLabel, maxNum, maxSize) {
+const validateFiles = (files, errorLabel, maxNum, maxSize) => {
 
     if (files.length > maxNum) {
         throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
@@ -313,8 +314,8 @@ function validateFiles(files, errorLabel, maxNum, maxSize) {
 
     files.forEach(file => {
 
-        if (file.file.getLength() > maxSize) {
-            throw new Error(`Attached ${errorLabel} file "${file.file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        if (file.getLength() > maxSize) {
+            throw new Error(`Attached ${errorLabel} file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
         }
     });
 
@@ -786,7 +787,10 @@ const assertRequest = ({
     }
     expect(bodyObj.messages[0].role).toEqual('user');
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
+
     expect(bodyObj.messages[0].content.length).toEqual(files.length + 1);
+
+
 
     files.forEach((file, i) => {
         if(file.getContentType().split(';')[0] === "image"){
@@ -798,6 +802,8 @@ const assertRequest = ({
             expect(bodyObj.messages[0].content[i + 1].document.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(file)));
         }
     });
+
+
 
 };
 
