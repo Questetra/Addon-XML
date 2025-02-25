@@ -1,0 +1,583 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>GitHub: Get File</label>
+    <label locale="ja">GitHub: ファイル取得</label>
+    <last-modified>2025-02-25</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item gets a file in a specified repository on GitHub.
+    </summary>
+    <summary locale="ja">
+        この工程は、GitHub の指定したリポジトリのファイルを取得します。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-file-get/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-file-get/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Personal Access Token (fine-grained)</label>
+            <label locale="ja">C1: 個人用アクセストークン（fine-grained）</label>
+        </config>
+        <config name="conf_RepositoryUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C2: Repository's URL (https://github.com/{owner}/{repository})</label>
+            <label locale="ja">C2: リポジトリの URL (https://github.com/{owner}/{repository})</label>
+        </config>
+        <config name="conf_Path" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: File Path</label>
+            <label locale="ja">C3: ファイルパス</label>
+        </config>
+        <config name="conf_Branch" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C4: Branch/Commit SHA/TAG(Default Branch if blank)</label>
+            <label locale="ja"> ブランチ／コミットの SHA／タグ（空白の場合、デフォルトのブランチ）</label>
+        </config>
+        <config name="conf_Hash" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save File SHA</label>
+            <label locale="ja">C5: ファイルの SHA を保存するデータ項目</label>
+        </config>
+        <config name="conf_File" required="false" form-type="SELECT" select-data-type="FILE">
+            <label>C6: Data item to save a File</label>
+            <label locale="ja">C6: ファイルを保存するデータ項目</label>
+        </config>		
+    </configs>
+
+    <script><![CDATA[
+
+const API_VERSION = '2022-11-28';
+const API_VERSION_HEADER = 'X-GitHub-Api-Version';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const ownerAndRepo = retrieveOwnerAndRepo();
+    const path = getFilePath();
+    const branch = getBranch();
+    const fileShaDef = configs.getObject( "conf_Hash" );
+    const filesDef = configs.getObject("conf_File");
+
+    if ((fileShaDef === null || fileShaDef === "") && (filesDef === null || filesDef === "")) {
+        throw new Error("Neither of Data Items to save result are set.");
+    }
+
+    ////// == 演算 / Calculating ==
+    const {fileSha, fileName} = getSha(auth, ownerAndRepo, path, branch);
+    if (fileShaDef !== null) {
+        engine.setData(fileShaDef, fileSha);
+    }
+
+    if (filesDef !== null) {
+        const file = downloadFile(auth, ownerAndRepo, path, fileSha, fileName);
+        let files = engine.findData( filesDef );
+        if (files === null) {
+            files = new java.util.ArrayList();
+        }
+        engine.setData(filesDef, file);
+    }
+}
+
+/**
+  * config からリポジトリの URL を読み出し、API に必要な文字列を取り出す
+  * @return {String} ownerAndRepo
+  */
+const retrieveOwnerAndRepo = () => {
+    const repositoryUrlDef = configs.getObject('conf_RepositoryUrl');
+    let repositoryUrl;
+    if (repositoryUrlDef === null) { // 固定値で指定
+        repositoryUrl = configs.get('conf_RepositoryUrl');
+    } else {
+        repositoryUrl = engine.findData(repositoryUrlDef);
+    }
+    if (repositoryUrl === null) {
+        throw new Error("Repository's URL is blank.");
+    }
+
+    const regExp = /^https:\/\/github\.com\/([a-zA-Z0-9-_]+\/[a-zA-Z0-9-_]+)$/;
+    const found = repositoryUrl.match(regExp);
+    if (found === null) {
+        throw new Error("Invalid repository URL.");
+    }
+    const ownerAndRepo = found[1];
+    return ownerAndRepo;
+}
+
+/**
+ * config から ファイルパス の値を読み出す
+ * @return {String}
+ */
+const getFilePath = () => {
+    const path = configs.get("conf_Path");
+    if (path === '') {
+        throw new Error('File Path is blank.');
+    }
+    return path;
+};
+
+
+/**
+  * ブランチ／コミットの SHA／タグ　の設定値を読み出す
+  * @return {String} value 設定値
+  */
+const getBranch = () => {
+    let value = '';
+    const dataDef = configs.getObject("conf_Branch");
+    if (dataDef === null) {
+        value = configs.get("conf_Branch");
+    } else {
+        value = engine.findData(dataDef);
+    }
+    return value;
+};
+
+
+/**
+ * 保存時のファイル名の最大長
+ */
+const FILE_NAME_MAX_LENGTH = 200;
+
+
+/**
+ * ファイルの SHA を取得する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} path ファイルのパス
+ * @param {String} branch ブランチ
+ * @return {String} fileSha ファイルの SHA
+ * @return {String} fileName ファイル名
+ */
+const getSha = (auth, ownerAndRepo, path, branch) => {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/contents/${path}`;
+
+    let request = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .header("accept", "application/vnd.github+json")
+        .authSetting(auth);
+    if (branch !== null) {
+        request = request.queryParam("ref", branch);
+    } 
+    const response = request.get(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get file SHA. status: ${status}`);
+    }
+
+    const jsonRes = JSON.parse(responseStr);
+    if (jsonRes.type !== "file") {
+        throw new Error('Resource is not a file.');
+    }
+
+    let fileName = jsonRes.name;
+    if(fileName.length > FILE_NAME_MAX_LENGTH) {
+        fileName = fileName.substring(0, FILE_NAME_MAX_LENGTH-3) + "...";
+    }
+    return {
+        fileSha : jsonRes.sha,
+        fileName : fileName
+    };
+
+};
+
+
+/**
+ * ファイルをダウンロードする
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} path ファイルのパス
+ * @param {String} sha ファイルの SHA
+ * @param {String} name ファイル名
+ * @return {Qfile} file  ファイルオブジェクト 
+ */
+const downloadFile = (auth, ownerAndRepo, path, sha, name) => {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/git/blobs/${sha}`;
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .header("accept", "application/vnd.github.raw+json")
+        .authSetting(auth)
+        .get(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to download. status: ${status}`);
+    }
+
+    const data = response.getResponse();
+
+    return new com.questetra.bpms.core.event.scripttask.NewQfile(
+        name,
+        response.getContentType(),
+        data
+    );
+};
+
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABM9JREFUWEfF
+        V2tQlFUYfs4ugiKgePkTiE3gCIssGWRhg1EwaE2OUZNjVDIFEwyJM12MSZKgokkNUdZNMhwCCg0p
+        Bi8UxGVRblkgLHFJ12ZipImBLiAOg7h7mvfT/dz99lt2sR+8v3bPe3vOez0fw/+gqKgoF1LX6XQ3
+        79YMc1bxvuBgP2ZSRjHGH4SJqcCwGsCi2/pj4PgVCt7HOfuJK4y633p7B52x7RBAgCo0GCYeD4bn
+        AKxyxiiAy+A4CQUrM/R1986kYxdAWFjYvH8nb6YoOE/igNpJx1ZiDNCbGCtcvMCloKOjY1rOhiyA
+        ALXal93gb3PG0u7GsVSHca7hrmyfQa+/asOTHpBzTCMLQKIj5wqFAiaTyZGYmX8M85AlBWEVAQr7
+        +PUbufZu7uvrg+SkV3B/aAj8VqyAu7u7AGB09C8MXLqEH+oacKK8wi4gioTXQtc3LdNhBcBfFZrG
+        OM+Xs7AjNRlpqSmgW89Evw8OIiExGUNDf8iKccZ2Xunr1piZIgCqdsZ5mbTgvL0Xo7ysFPeu9HM2
+        1EJU9uXm4VhRiY0OFSZnLN7cHXcABKpzwLBbqlH1zddQBQU67dxScGv8dlzs6rbV5fjIMKDPIIYA
+        gIaMwqSsk/b5i/Hb8N677wgGJicnsSfrA6S9loKVfn7CLaempqBUKuHq6gqj0Sjkf8H8+Xgmboug
+        MzY2hnWPRMkV6mWTwhhDw0oA4B+k3s6AYkuoi7y80N7cCBcXYdqCchuzabPwe/nyZRgZGRXFyanS
+        RYmJieuIeGgdSoo+F3nfVlYhPSPTJgocSLjSry8RAASoQjTgbIelVPy2rcjOFKIk0MjoKNZviHaY
+        Crr93pz3Rbmx8XGEPxxpq8f4YUNfT9otAIHqejA8bil1+GAuNsbGiEd0C7qNI6IuudDaBIqgmQJD
+        1sJolMwLjgbDgD76FoAgNU0oH0vjjbXVoL4nonyvXrPWkW+Rn5+3H09sjBX/U1u2trVL9YcM/Xpf
+        Riv16vDf/wDwsJT45eIFuLm5CUdUYIEhDzgN4OOcbDwb97Qor9EWIF97RKo/YejXe9oF0Ha+AcuW
+        LhWV1j8abVV4M6GpPHkca4JVoshb6btRdfqsPAB7Kag48SVC1SGiErUYtaEjWrLEGy26OrF7SD7y
+        sVj8OTwsnwJ7RUgdQJ1gSY4KkSJGwH187hHV7KbPqghl2pBGcPv5RmH2U89T7xNRO3Z2diEjMxvU
+        YkQ0sOK2bBbCLt0V39XUYufru2wDZ9mGcoOINPI+2YunntyE6elpYcq99MLzgiGacOERG0SjSS8n
+        IH3XGzZOqHvCIyJx7dqEDc9qENkbxR4eC9FUXwMvT090detxvLwCqwL8cfpMNfr6B0SjFJ3Wpnob
+        J3n5WnxacFSubKxH8e06kF1GVFS11aeEwUKjVt/TA925ZhQVl4qG6V3Q/XOblSPtkaM4qNHK16x0
+        GQkA7Kxj4lE9fFH4mbgVzzW3IPHVVNG4p6cHOn9sEf7Tgtp/4BCKS7+SdW53HZP0TA8S4lNbfpi9
+        B1WnzqKw6M7uooX1/ZlK1NTW4cAhje3YtYBi90FCMo6eZPLxdP7U4ZNMSMUsHqXOuxYkHT9KzQbn
+        9FluBjGnHyaWoZ2zTzNpfufs43SWhTZr8f8AaTovPzYDLOEAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param repositoryUrl
+ * @param path
+ * @param branch
+ * @param files
+ * @return {
+ *     fileShaDef: {Object},
+ *     filesDef: {Object}
+ * }
+ */
+const prepareConfigs = (repositoryUrl, path, branch, files) => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    // 文字型データ項目を準備して、config に指定
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    // 文字型データ項目の値（リポジトリURL）を指定
+    engine.setData(repositoryUrlDef, repositoryUrl);
+
+    configs.put('conf_Path', path);
+
+    // 文字型データ項目を準備して、config に指定
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    // 文字型データ項目の値（ブランチ）を指定
+    engine.setData(branchDef, branch);
+
+    // 文字型データ項目を準備して、config に指定
+    const fileShaDef = engine.createDataDefinition('ファイルSHA', 4, 'q_SHA', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Hash', fileShaDef);
+    // 文字型データ項目の値（S）を指定
+    engine.setData(fileShaDef, '事前文字列');
+
+    // ファイル型データ項目を準備して、config に指定
+    const filesDef = engine.createDataDefinition('ファイル', 5, 'q_files', 'FILE');
+    configs.putObject('conf_File', filesDef);
+    engine.setData(filesDef, files);
+
+    return {
+        fileShaDef,
+        filesDef
+    };
+};
+
+/**
+  * 異常系のテスト
+  * @param func
+  * @param errorMsg
+  */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * conf_RepositoryUrl にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+ */
+test("Repository's URL is blank - Repository's URL specified by String Data", () => {
+    prepareConfigs(null, 'path1/test.txt', 'branchQ', null);
+    assertError("Repository's URL is blank.");
+});
+
+/**
+ * リポジトリURLが不正
+ */
+test("Invalid repository URL - handle specified by String Data", () => {
+    prepareConfigs("https://invalid.com/user1Org/user1Org123", 'folder0', '', null);
+    assertError("Invalid repository URL.");
+});
+
+/**
+ * ファイルパスが空
+ */
+test('File Path is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", '', 'branch2', null);
+    assertError('File Path is blank.');
+});
+
+
+/**
+ * conf_Hash  conf_File  が未設定でエラーになる場合
+ */
+test('Neither of Data Items to save result are set - neither C5 nor C6 are set ', () => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    engine.setData(repositoryUrlDef, 'https://github.com/user1Org/user1Org456');
+
+    configs.put('conf_Path', 'path');
+
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    engine.setData(branchDef, 'branch');
+
+    assertError('Neither of Data Items to save result are set.');
+});
+
+/**
+ * リクエストのテスト（ファイルの情報を取得する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ * @param path
+ * @param branch
+ */
+const assertGetFileInfomationRequest = ({ url, method }, ownerAndRepo, path, branch) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/contents/${path}?ref=${branch}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ファイルの情報を取得する API リクエストでエラー 
+ */
+test('GET file infomation Failed', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'folder1/file1.txt', 'branch1');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetFileInfomationRequest(request, 'user1Org/user1Org123', 'folder1/file1.txt', 'branch1');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+
+    assertError('Failed to get file SHA. status: 404');
+});
+
+
+/**
+ * ファイル情報取得 API のレスポンスボディを作成
+ * @param {String} type
+ * @param {String} path
+ * @returns {String} response
+ */
+const createResponse = (type, path, string) => {
+    const name = path.split("/").pop();
+    const responseObj = {
+        type,
+        encoding: "base64",
+        size: 5362,
+        name,
+        path,
+        content: `content1234567890${string}`,
+        sha: `sha123456789012345678901234567890${string}`
+    }
+    return JSON.stringify(responseObj);
+};
+
+
+/**
+ * ファイルパスがフォルダタイプでエラー 
+ */
+test('failed - path is folder', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org456", 'folder2', 'branch2');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetFileInfomationRequest(request, 'user1Org/user1Org456', 'folder2', 'branch2');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('folder', 'folder2'));
+    });
+
+    assertError('Resource is not a file.');
+});
+
+/**
+ * SHA 取得成功 
+ * ブランチ無
+ * ダウンロードファイルを保存するファイル型データ項目を設定していない  
+ */
+test('Success SHA get', () => {
+
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    engine.setData(repositoryUrlDef, 'https://github.com/user1Org/user1Org100');
+
+    configs.put('conf_Path', 'fileQ.txt');
+
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    engine.setData(branchDef, '');
+
+    const fileShaDef = engine.createDataDefinition('ファイルSHA', 4, 'q_SHA', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Hash', fileShaDef);
+    engine.setData(fileShaDef, '事前文字列');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetFileInfomationRequest(request, 'user1Org/user1Org100', 'fileQ.txt', '');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse('file', 'fileQ.txt', 'string0'));
+    });
+
+    main();
+    expect(engine.findData(fileShaDef)).toEqual('sha123456789012345678901234567890string0');
+});
+
+/**
+ * リクエストのテスト（ファイルの blob を取得する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param ownerAndRepo
+ * @param sha
+ */
+const assertGetFileBlobRequest = ({ url, method }, ownerAndRepo, sha) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/git/blobs/${sha}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * ファイルの blob を取得する API リクエストでエラー 
+ */
+test('GETBlob Failed', () => {
+    prepareConfigs("https://github.com/user1/user1repo", 'folder111/file333.txt', 'branch2');
+
+    const filesDef = engine.createDataDefinition('ファイル', 5, 'q_files', 'FILE');
+    configs.putObject('conf_File', filesDef);
+    engine.setData(filesDef, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetFileInfomationRequest(request, 'user1/user1repo', 'folder111/file333.txt', 'branch2');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createResponse('file', 'folder111/file333.txt', 'string0'));
+        }
+        assertGetFileBlobRequest(request, 'user1/user1repo', 'sha123456789012345678901234567890string0');
+        return httpClient.createHttpResponse(404, 'application/vnd.github.raw+json', '{}');
+    });
+    assertError('Failed to download. status: 404');
+});
+
+
+/**
+ * ファイルのテスト
+ * @param file
+ * @param name
+ * @param encoding
+ * @param body
+ */
+const assertFile = (file, name, encoding, body) => {
+    expect(file.getName()).toEqual(name);
+    expect(file.getContentType()).toEqual(CONTENT_TYPE);
+
+    const text = fileRepository.readFile(file, encoding);
+    expect(text).toEqual(body);
+};
+
+
+/**
+ * SHA 取得成功
+ * ファイルダウンロード 成功
+ * 事前にファイルが添付されている
+ */
+test('Succeed - ', () => {
+    const attachedfiles = new java.util.ArrayList();
+    attachedfiles.add(engine.createQfile('test.html', 'text/html', '<html lang="ja"></html>'));
+    attachedfiles.add(engine.createQfile('test.xml', 'text/xml', '<xml>test</xml>'));
+
+    const {
+        fileShaDef,
+        filesDef
+    } = prepareConfigs("https://github.com/user1/user1repo", 'folder2/file3.txt', 'branch2', attachedfiles);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetFileInfomationRequest(request, 'user1/user1repo', 'folder2/file3.txt', 'branch2');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createResponse('file', 'folder2/file3.txt', 'string1'));
+        }
+        assertGetFileBlobRequest(request, 'user1/user1repo', 'sha123456789012345678901234567890string1');
+        return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'test');
+    });
+    main();
+    expect(engine.findData(fileShaDef)).toEqual('sha123456789012345678901234567890string1');
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(3);
+    assertFile(files.get(2), 'file3.txt', 'UTF-8', 'test');
+
+});
+
+/**
+ * SHA 取得成功
+ * ファイルダウンロード 成功
+ * SHA を保存するファイル型データ項目を設定していない  
+ */
+test('Succeed2 - ', () => {
+
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    engine.setData(repositoryUrlDef, 'https://github.com/user1/user1repo');
+
+    configs.put('conf_Path', 'folderAA/fileBB.txt');
+
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    engine.setData(branchDef, 'branchC');
+
+    const filesDef = engine.createDataDefinition('ファイル', 5, 'q_files', 'FILE');
+    configs.putObject('conf_File', filesDef);
+    engine.setData(filesDef, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertGetFileInfomationRequest(request, 'user1/user1repo', 'folderAA/fileBB.txt', 'branchC');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', createResponse('file', 'folderAA/fileBB.txt', 'string2'));
+        }
+        assertGetFileBlobRequest(request, 'user1/user1repo', 'sha123456789012345678901234567890string2');
+        return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'テスト');
+    });
+    main();
+    const files = engine.findData(filesDef);
+    expect(files.size()).toEqual(1);
+    assertFile(files.get(0), 'fileBB.txt', 'UTF-8', 'テスト');
+
+});
+
+]]></test>
+</service-task-definition>
