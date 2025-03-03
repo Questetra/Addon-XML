@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Get File</label>
     <label locale="ja">GitHub: ファイル取得</label>
-    <last-modified>2025-02-27</last-modified>
+    <last-modified>2025-03-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item gets a specified file from a repository on GitHub.
@@ -50,32 +50,34 @@ const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
     const ownerAndRepo = retrieveOwnerAndRepo();
-    const path = getFilePath();
-    const branch = getBranch();
+    const path = retrieveFilePath();
+    const branch = retrieveBranch();
     const fileShaDef = configs.getObject("conf_Hash");
     const filesDef = configs.getObject("conf_File");
 
-    if ((fileShaDef === null || fileShaDef === "") && (filesDef === null || filesDef === "")) {
-        throw new Error("Neither of Data Items to save result are set.");
+    if (fileShaDef === null && filesDef === null) {
+        throw new Error("No data item to save the result is set.");
     }
 
     ////// == 演算 / Calculating ==
-    const { fileSha, fileName } = getSha(auth, ownerAndRepo, path, branch);
+    const { fileSha, fileName } = getFileInfo(auth, ownerAndRepo, path, branch);
     if (fileShaDef !== null) {
         engine.setData(fileShaDef, fileSha);
     }
 
-    if (filesDef !== null) {
-        const file = downloadFile(auth, ownerAndRepo, fileSha, fileName);
-
-        let files = engine.findData(filesDef);
-        if (files === null) {
-            files = new java.util.ArrayList();
-        }
-
-        files.add(file);
-        engine.setData(filesDef, files);
+    if (filesDef === null) {
+        return;
     }
+
+    const file = downloadFile(auth, ownerAndRepo, fileSha, fileName);
+
+    let files = engine.findData(filesDef);
+    if (files === null) {
+        files = new java.util.ArrayList();
+    }
+
+    files.add(file);
+    engine.setData(filesDef, files);
 }
 
 /**
@@ -107,7 +109,7 @@ const retrieveOwnerAndRepo = () => {
  * config から ファイルパス の値を読み出す
  * @return {String}
  */
-const getFilePath = () => {
+const retrieveFilePath = () => {
     const path = configs.get("conf_Path");
     if (path === '') {
         throw new Error('File Path is blank.');
@@ -120,7 +122,7 @@ const getFilePath = () => {
   * ブランチ／コミットの SHA／タグ　の設定値を読み出す
   * @return {String} value 設定値
   */
-const getBranch = () => {
+const retrieveBranch = () => {
     let value = '';
     const dataDef = configs.getObject("conf_Branch");
     if (dataDef === null) {
@@ -139,7 +141,7 @@ const FILE_NAME_MAX_LENGTH = 200;
 
 
 /**
- * ファイルの SHA を取得する
+ * ファイルの情報を取得する
  * @param {AuthSettingWrapper} auth HTTP 認証設定
  * @param {String} ownerAndRepo {owner}/{repo}
  * @param {String} path ファイルのパス
@@ -148,7 +150,7 @@ const FILE_NAME_MAX_LENGTH = 200;
  * @return {String} result.fileSha ファイルの SHA
  * @return {String} result.fileName ファイル名
  */
-const getSha = (auth, ownerAndRepo, path, branch) => {
+const getFileInfo = (auth, ownerAndRepo, path, branch) => {
     const url = `https://api.github.com/repos/${ownerAndRepo}/contents/${path}`;
 
     let request = httpClient.begin()
@@ -342,20 +344,13 @@ test('File Path is blank', () => {
 * conf_Hash  conf_File  が未設定でエラーになる場合
 */
 test('Neither of Data Items to save result are set - neither C5 nor C6 are set ', () => {
-    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
-    configs.putObject('conf_Auth', auth);
+    prepareConfigs("https://github.com/user1Org/user1Org456", 'path', 'branch', null);
 
-    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
-    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
-    engine.setData(repositoryUrlDef, 'https://github.com/user1Org/user1Org456');
+    //conf_Hash と conf_File を空で上書き
+    configs.put('conf_Hash', '');
+    configs.put('conf_File', '');
 
-    configs.put('conf_Path', 'path');
-
-    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
-    configs.putObject('conf_Branch', branchDef);
-    engine.setData(branchDef, 'branch');
-
-    assertError('Neither of Data Items to save result are set.');
+    assertError('No data item to save the result is set.');
 });
 
 /**
@@ -447,24 +442,14 @@ test('failed - path is folder', () => {
 * ブランチ無
 * ダウンロードファイルを保存するファイル型データ項目を設定していない  
 */
-test('Success SHA get', () => {
+test('Succeed - SHA get', () => {
+    const {
+        fileShaDef,
+        filesDef
+    } = prepareConfigs("https://github.com/user1Org/user1Org100", 'fileQ.txt', '', null);
 
-    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
-    configs.putObject('conf_Auth', auth);
-
-    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
-    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
-    engine.setData(repositoryUrlDef, 'https://github.com/user1Org/user1Org100');
-
-    configs.put('conf_Path', 'fileQ.txt');
-
-    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
-    configs.putObject('conf_Branch', branchDef);
-    engine.setData(branchDef, '');
-
-    const fileShaDef = engine.createDataDefinition('ファイルSHA', 4, 'q_SHA', 'STRING_TEXTFIELD');
-    configs.putObject('conf_Hash', fileShaDef);
-    engine.setData(fileShaDef, '事前文字列');
+    //conf_File を空で上書き
+    configs.put('conf_File', '');
 
     httpClient.setRequestHandler((request) => {
         assertGetFileInfomationRequest(request, 'user1Org/user1Org100', 'fileQ.txt', '');
@@ -516,14 +501,14 @@ test('GETBlob Failed', () => {
 * ファイルのテスト
 * @param file
 * @param name
-* @param encoding
 * @param body
+* @param contentTipe
 */
-const assertFile = (file, name, encoding, body, contentTipe) => {
+const assertFile = (file, name, body, contentTipe) => {
     expect(file.getName()).toEqual(name);
     expect(file.getContentType()).toEqual(contentTipe);
 
-    const text = fileRepository.readFile(file, encoding);
+    const text = fileRepository.readFile(file, 'UTF-8');
     expect(text).toEqual(body);
 };
 
@@ -533,15 +518,15 @@ const assertFile = (file, name, encoding, body, contentTipe) => {
 * ファイルダウンロード 成功
 * 事前にファイルが添付されている
 */
-test('Succeed - ', () => {
-    const attachedfiles = new java.util.ArrayList();
-    attachedfiles.add(engine.createQfile('test.html', 'text/html', '<html lang="ja"></html>'));
-    attachedfiles.add(engine.createQfile('test.xml', 'text/xml', '<xml>test</xml>'));
+test('Succeed - both sha and file saved ', () => {
+    const attachedFiles = new java.util.ArrayList();
+    attachedFiles.add(engine.createQfile('test.html', 'text/html', '<html lang="ja"></html>'));
+    attachedFiles.add(engine.createQfile('test.xml', 'text/xml', '<xml>test</xml>'));
 
     const {
         fileShaDef,
         filesDef
-    } = prepareConfigs("https://github.com/user1/user1repo", 'folder2/file3.txt', 'branch2', attachedfiles);
+    } = prepareConfigs("https://github.com/user1/user1repo", 'folder2/file3.txt', 'branch2', attachedFiles);
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -557,7 +542,7 @@ test('Succeed - ', () => {
     expect(engine.findData(fileShaDef)).toEqual('sha123456789012345678901234567890string1');
     const files = engine.findData(filesDef);
     expect(files.size()).toEqual(3);
-    assertFile(files.get(2), 'file3.txt', 'UTF-8', 'test', 'text/plain');
+    assertFile(files.get(2), 'file3.txt', 'test', 'text/plain');
 
 });
 
@@ -568,25 +553,17 @@ test('Succeed - ', () => {
 * ファイル名 が QBPMS の制限長を超える
 * SHA を保存するデータ項目を設定していない  
 */
-test('Succeed2 - ', () => {
-
-    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
-    configs.putObject('conf_Auth', auth);
-
-    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
-    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
-    engine.setData(repositoryUrlDef, 'https://github.com/user1/user1repo');
-
+test('Succeed - file saved - file size is over 1 MB', () => {
     const fileName = 'a'.repeat(FILE_NAME_MAX_LENGTH) + '.txt';
     configs.put('conf_Path', fileName);
 
-    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
-    configs.putObject('conf_Branch', branchDef);
-    engine.setData(branchDef, 'branchC');
+    const {
+        fileShaDef,
+        filesDef
+    } = prepareConfigs("https://github.com/user1/user1repo", fileName, 'branchC', null);
 
-    const filesDef = engine.createDataDefinition('ファイル', 5, 'q_files', 'FILE');
-    configs.putObject('conf_File', filesDef);
-    engine.setData(filesDef, null);
+    //conf_Hash を空で上書き
+    configs.put('conf_Hash', '');
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
@@ -596,12 +573,12 @@ test('Succeed2 - ', () => {
             return httpClient.createHttpResponse(200, 'application/json', createOver1MBResponse('file', fileName, 'string2'));
         }
         assertGetFileBlobRequest(request, 'user1/user1repo', 'sha123456789012345678901234567890string2');
-        return httpClient.createHttpResponse(200, 'text/plain; charset=UTF-8', 'テスト');
+        return httpClient.createHttpResponse(200, 'text/html; charset=UTF-8', 'テスト');
     });
     main();
     const files = engine.findData(filesDef);
     expect(files.size()).toEqual(1);
-    assertFile(files.get(0), 'a'.repeat(FILE_NAME_MAX_LENGTH - 3) + '...', 'UTF-8', 'テスト', 'text/plain');
+    assertFile(files.get(0), 'a'.repeat(FILE_NAME_MAX_LENGTH - 3) + '...', 'テスト', 'text/html');
 
 });
 
