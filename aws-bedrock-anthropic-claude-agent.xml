@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon Bedrock: Anthropic Claude: Chat</label>
+    <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
+    <last-modified>2025-02-14</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Anthropic Claude 
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="anthropic.claude-3-haiku-20240307-v1:0">
+                <label>Claude 3 Haiku</label>
+            </item>
+            <item value="anthropic.claude-3-opus-20240229-v1:0">
+                <label>Claude 3 Opus</label>
+            </item>
+            <item value="anthropic.claude-3-5-sonnet-20240620-v1:0">
+                <label>Claude 3.5 Sonnet</label>
+            </item>
+            <item value="anthropic.claude-3-5-sonnet-20241022-v2:0">
+                <label>Claude 3.5 Sonnet v2</label>
+            </item>
+            <item value="anthropic.claude-3-5-haiku-20241022-v1:0">
+                <label>Claude 3.5 Haiku</label>
+            </item>
+        </config>
+        <config name="conf_UseCrossRegion" form-type="TOGGLE">
+            <label>C5: Use cross-region inference</label>
+            <label locale="ja">C5: クロスリージョン推論を利用する</label>
+        </config>
+        <config name="conf_Message1" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>U1: User Message</label>
+            <label locale="ja">U1: ユーザメッセージ</label>
+        </config>
+        <config name="conf_Answer1" required="true" form-type="SELECT"
+                select-data-type="STRING_MULTILINE">
+            <label>A1: Data item to save response</label>
+            <label locale="ja">A1: 回答を保存するデータ項目</label>
+        </config>
+    </configs>
+    <!--
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-anthropic-claude-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-bedrock-anthropic-claude-chat/</help-page-url>
+    -->
+
+    <script><![CDATA[
+const SERVICE = 'bedrock';
+const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
+const MAX_TOKENS_DEFAULT = 2048;
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject('conf_AccessKey').getToken();
+    const awsSecret = configs.getObject('conf_SecretKey').getToken();
+    const region = retrieveRegion();
+    let model = retrieveModel();
+    model = decideCrossRegionModel(model, region);
+
+    const maxTokens = MAX_TOKENS_DEFAULT;
+    const temperature = 1;
+    const stopSequences = [];
+    const systemPrompt = ```
+    ```;
+    const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
+
+    ////// == 演算 / Calculating ==
+    const answer = converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveRegion = () => {
+    const region = configs.get('conf_Region');
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp('^[a-z]{2}-[a-z]{4,16}-[1-9]$');
+    if (!reg.test(region)) {
+        throw new Error('Region Code is invalid.');
+    }
+    return region;
+}
+
+/**
+ * config からモデル ID を読み出す
+ * モデル ID として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveModel = () => {
+    const model = configs.get('conf_Model');
+    const reg = new RegExp('^[a-z0-9.:-]+$');
+    if (!reg.test(model)) {
+        throw new Error('Model is invalid. It contains an invalid character.');
+    }
+    const MODEL_PREFIX = 'anthropic.claude';
+    if (!model.startsWith(MODEL_PREFIX)){
+        throw new Error(`Model is invalid. It must start with "${MODEL_PREFIX}".`);
+    }
+    return model;
+}
+
+/**
+ * クロスリージョン推論モデル ID を決定する
+ * C3 のリージョンがクロスリージョン推論の対象でない場合はエラー
+ * @return {String}
+ */
+const decideCrossRegionModel = (model, region) => {
+    if (region.startsWith('us-')){
+        return `us.${model}`;
+    } else if(region.startsWith('eu-')){
+        return `eu.${model}`;
+    } else if (region.startsWith('ap-')){
+        return `apac.${model}`;
+    }
+    throw new Error(`Cross-region inference is not supported in ${region}.`);
+}
+
+const tools = [{
+    "toolSpec": {
+        "name": 'form_get',
+        "description": 'プロセスに付属するデータの値を取得します。',
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "値を取得するデータの名前を指定します。",
+                    },
+                },
+                "required": ["name"],
+            }
+        },
+    }
+},{
+    "toolSpec": {
+        "name": 'form_set',
+        "description": 'プロセスに付属するデータの値を更新します。',
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "値を更新するデータの名前を指定します。",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "更新する値を指定します。",
+                    },
+                },
+                "required": ["name", "value"],
+            }
+        },
+    }
+}];
+
+/**
+ * config からユーザメッセージ（添付画像、添付 PDF を含む）を読み出す
+ * ユーザメッセージが空の場合、添付画像や添付 PDF が不正な場合はエラー
+ * @returns {Object} ユーザメッセージオブジェクト
+ */
+const retrieveUserMessage = () => {
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+
+    const userMessage = {
+        role: 'user',
+        content: [
+            {
+                text: message
+            },
+        ]
+    };
+    return userMessage;
+};
+
+/**
+ * モデルの実行
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param temperature
+ * @param stopSequences
+ * @param systemPrompt
+ * @param userMessage
+ * @returns {String} answer
+ */
+const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
+    const payload = {
+        anthropic_version: ANTHROPIC_VERSION,
+        inferenceConfig: {
+            maxTokens,
+            stopSequences,
+            temperature
+        },
+        toolConfig={
+            tools,
+            "toolChoice": {
+                "tool": {
+                    "name": 'form_set',
+                },
+            },
+        },
+        messages: [userMessage]
+    };
+
+    if (systemPrompt !== '') {
+        Object.assign(payload, {
+            system: [
+                {text :`${systemPrompt}`}
+            ]
+        });
+    }
+
+
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to converse. status: ${status}`);
+    }
+    const {output, stopReason, usage} = JSON.parse(respTxt);
+    engine.log(`Stop Reason: ${stopReason}`);
+    engine.log(`Input Tokens: ${usage.inputTokens}`);
+    engine.log(`Output Tokens: ${usage.outputTokens}`);
+    return output.message.content[0].text;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+]]></test>
+</service-task-definition>
