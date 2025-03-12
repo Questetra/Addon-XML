@@ -87,11 +87,8 @@ const main = () => {
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
     ////// == 演算 / Calculating ==
-    const answer = converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences,
+    converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences,
         SYSTEM_PROMPT, userMessage);
-
-    ////// == ワークフローデータへの代入 / Data Updating ==
-    saveData('conf_Answer1', answer);
 }
 
 /**
@@ -229,9 +226,7 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
         toolConfig: {
             tools: TOOLS,
             "toolChoice": {
-                "tool": {
-                    "name": 'form_set',
-                },
+                "auto": {}
             },
         },
         messages: [userMessage],
@@ -258,20 +253,43 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
     engine.log(`Stop Reason: ${stopReason}`);
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
-    return output.message.content[0].text;
+    const content = [];
+    output.message.content.forEach(({toolUse}) => {
+        if (toolUse) {
+            const {
+                toolUseId,
+                name,
+                input
+            } = toolUse;
+            const toolResult = callFunction(name, input);
+            if (toolResult !== undefined) {
+                toolResult.toolUseId = toolUseId;
+                content.push({toolResult});
+            }
+        }
+    });
+    engine.log(JSON.stringify(content));
 };
 
-/**
- * データ項目への保存
- * @param configName
- * @param data
- */
-const saveData = (configName, data) => {
-    const def = configs.getObject(configName);
-    if (def === null) {
-        return;
+const callFunction = (name, input) => {
+    const {name: dataName, value} = input;
+    switch (name) {
+        case 'form_get': {
+            const def = engine.findDataDefinitionByName(dataName);
+            if (def !== null) {
+                return {
+                    content: [{
+                        text: engine.findData(def)
+                    }]
+                };
+            }
+            return;
+        }
+        case 'form_set': {
+            const def = engine.findDataDefinitionByName(dataName);
+            eigine.setData(def, value);
+        }
     }
-    engine.setData(def, data);
 };
     ]]></script>
 
