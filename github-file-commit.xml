@@ -4,13 +4,13 @@
     <addon-version>2</addon-version>
     <label>GitHub: Create/Update Textfile</label>
     <label locale="ja">GitHub: テキストファイル作成／更新</label>
-    <last-modified>2025-03-13</last-modified>
+    <last-modified>2025-03-17</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
-        This item creates/updates a text file in a specified repository on GitHub.
+        This item creates/updates a text file in a specified repository on GitHub. To update an existing file, you have to specify the file's SHA.
     </summary>
     <summary locale="ja">
-        この工程は、GitHub の指定したリポジトリにテキストファイルを作成／更新します。
+        この工程は、GitHub の指定したリポジトリにテキストファイルを作成／更新します。ファイルを更新する場合、更新するファイルの SHA を指定してください。
     </summary>
     <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-textfile-commit/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-textfile-commit/</help-page-url>
@@ -28,16 +28,16 @@
             <label locale="ja">C3: ファイルパス</label>
         </config>
         <config name="conf_Branch" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-            <label>C4: Branch(Default Branch if blank)</label>
-            <label locale="ja"> ブランチ（空白の場合、デフォルトのブランチ）</label>
+            <label>C4: Branch (Default Branch if blank)</label>
+            <label locale="ja">C4: ブランチ（空白の場合、デフォルトのブランチ）</label>
         </config>
         <config name="conf_Content" required="true" form-type="TEXTAREA" el-enabled="true">
-            <label>C5: Text file Contents</label>
+            <label>C5: Text File Contents</label>
             <label locale="ja">C5: テキストファイルの内容</label>
         </config>
-        <config name="conf_Hash" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
-            <label>C6: File Hash Value</label>
-            <label locale="ja">C6: ファイルのハッシュ値</label>
+        <config name="conf_Hash" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: SHA of the file to update</label>
+            <label locale="ja">C6: 更新するファイルの SHA</label>
         </config>
         <config name="conf_Message" required="true" form-type="TEXTAREA" el-enabled="true">
             <label>C7: Commit Message</label>
@@ -56,7 +56,7 @@ const main = () => {
     const ownerAndRepo = retrieveOwnerAndRepo();
     const path = getConfTextFieldValue("conf_Path", "File Path");
     const branch = getSelectValue("conf_Branch");
-    const content = getConfTextFieldValue("conf_Content", "Text file Contents");
+    const content = getConfTextFieldValue("conf_Content", "Text File Content");
     const hash = getSelectValue("conf_Hash");
     const message = getConfTextFieldValue("conf_Message", "Commit Message");
 
@@ -69,13 +69,8 @@ const main = () => {
   * @return {String} ownerAndRepo
   */
 const retrieveOwnerAndRepo = () => {
-    const repositoryUrlDef = configs.getObject('conf_RepositoryUrl');
-    let repositoryUrl;
-    if (repositoryUrlDef === null) { // 固定値で指定
-        repositoryUrl = configs.get('conf_RepositoryUrl');
-    } else {
-        repositoryUrl = engine.findData(repositoryUrlDef);
-    }
+    const repositoryUrl = getSelectValue("conf_RepositoryUrl");
+
     if (repositoryUrl === null) {
         throw new Error("Repository's URL is blank.");
     }
@@ -90,7 +85,7 @@ const retrieveOwnerAndRepo = () => {
 }
 
 /**
- * config からform-type="TEXTFIELD"/"TEXTAREA" editable="true" の値を読み出す
+ * config からform-type="TEXTFIELD"/"TEXTAREA" の値を読み出す
  * @return {String}
  */
 const getConfTextFieldValue = (configName, label) => {
@@ -196,11 +191,11 @@ const commitFile = (auth, ownerAndRepo, path, branch, content, hash, message) =>
 /**
  * 設定の準備
  * @param repositoryUrl
- * @param name
- * @param permission
- * @return returnObj
- * @return returnObj.fullNameDef
- * @return returnObj.urlDef
+ * @param path
+ * @param branch
+ * @param content
+ * @param hash
+ * @param message
  */
 const prepareConfigs = (repositoryUrl, path, branch, content, hash, message) => {
     const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
@@ -277,7 +272,7 @@ test('File Path is blank', () => {
 */
 test('Contents is blank', () => {
     prepareConfigs("https://github.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ2', '', 'hash-0002-012345678901234567890123456789', 'update a file');
-    assertError('Text file Contents is blank.');
+    assertError('Text File Content is blank.');
 });
 
 /**
@@ -306,12 +301,8 @@ const assertCommitRequest = ({ url, method, body }, ownerAndRepo, path, branch, 
 
     const bodyObj = JSON.parse(body);
 
-    if (branch !== undefined) {
-        expect(bodyObj.branch).toEqual(branch);
-    }
-    if (hash !== undefined) {
-        expect(bodyObj.sha).toEqual(hash);
-    }
+    expect(bodyObj.branch).toEqual(branch);
+    expect(bodyObj.sha).toEqual(hash);
     expect(bodyObj.content).toEqual(base64.encodeToString(content));
     expect(bodyObj.message).toEqual(message);
 
@@ -334,12 +325,30 @@ test('commit Failed', () => {
 
 
 /**
- * 作成成功（hash 値 データ項目を指定し、空）
+ * 作成成功（hash 値 データ項目指定無）
  * ブランチを固定値で指定
  */
-test('Succeed - create ', () => {
+test('Succeed - create - Hash not set - Branch is fixed', () => {
     prepareConfigs("https://github.com/user1Org/user1Org123", 'newfile.xml', null, '<xml>test</xml>', null, 'create a file');
     configs.put('conf_Branch', 'branchQ4');
+    configs.put('conf_Hash', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertCommitRequest(request, 'user1Org/user1Org123', 'newfile.xml', 'branchQ4', '<xml>test</xml>', undefined, 'create a file');
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    main();
+
+});
+
+
+/**
+ * 作成成功（hash 値 データ項目指定し、空）
+ * ブランチをデータ項目で指定
+ */
+test('Succeed - create - Hash is empty - Branch is data item ', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'newfile.xml', 'branchQ4', '<xml>test</xml>', null, 'create a file');
 
     httpClient.setRequestHandler((request) => {
         assertCommitRequest(request, 'user1Org/user1Org123', 'newfile.xml', 'branchQ4', '<xml>test</xml>', undefined, 'create a file');
@@ -355,12 +364,11 @@ test('Succeed - create ', () => {
  * 更新成功
  * branch 無（データ項目を指定し、空）
  * URL を固定値で指定
- * hash 値を固定値で指定
+ * hash 値をデータ項目で指定
  */
-test('Succeed - update ', () => {
-    prepareConfigs(null, 'path5/test.txt', null, 'contentQ5', null, 'update a file');
+test('Succeed - update - URL is fixed', () => {
+    prepareConfigs(null, 'path5/test.txt', null, 'contentQ5', 'hash-0005-012345678901234567890123456789', 'update a file');
     configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
-    configs.put('conf_Hash', 'hash-0005-012345678901234567890123456789');
 
     httpClient.setRequestHandler((request) => {
         assertCommitRequest(request, 'user5/user5repo', 'path5/test.txt', undefined, 'contentQ5', 'hash-0005-012345678901234567890123456789', 'update a file');
