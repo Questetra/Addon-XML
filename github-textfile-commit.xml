@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>GitHub: Create/Update Textfile</label>
+    <label locale="ja">GitHub: テキストファイル作成／更新</label>
+    <last-modified>2025-03-17</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item creates/updates a text file in a specified repository on GitHub. To update an existing file, you have to specify the file's SHA.
+    </summary>
+    <summary locale="ja">
+        この工程は、GitHub の指定したリポジトリにテキストファイルを作成／更新します。ファイルを更新する場合、更新するファイルの SHA を指定してください。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-github-textfile-commit/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-github-textfile-commit/</help-page-url>
+    <configs>
+        <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Personal Access Token (fine-grained)</label>
+            <label locale="ja">C1: 個人用アクセストークン（fine-grained）</label>
+        </config>
+        <config name="conf_RepositoryUrl" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C2: Repository's URL (https://github.com/{owner}/{repository})</label>
+            <label locale="ja">C2: リポジトリの URL (https://github.com/{owner}/{repository})</label>
+        </config>
+        <config name="conf_Path" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: File Path</label>
+            <label locale="ja">C3: ファイルパス</label>
+        </config>
+        <config name="conf_Branch" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C4: Branch (Default Branch if blank)</label>
+            <label locale="ja">C4: ブランチ（空白の場合、デフォルトのブランチ）</label>
+        </config>
+        <config name="conf_Content" required="true" form-type="TEXTAREA" el-enabled="true">
+            <label>C5: Text File Contents</label>
+            <label locale="ja">C5: テキストファイルの内容</label>
+        </config>
+        <config name="conf_Hash" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: SHA of the file to update</label>
+            <label locale="ja">C6: 更新するファイルの SHA</label>
+        </config>
+        <config name="conf_Message" required="true" form-type="TEXTAREA" el-enabled="true">
+            <label>C7: Commit Message</label>
+            <label locale="ja">C7: コミットメッセージ</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+
+const API_VERSION = '2022-11-28';
+const API_VERSION_HEADER = 'X-GitHub-Api-Version';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const auth = configs.getObject('conf_Auth');
+    const ownerAndRepo = retrieveOwnerAndRepo();
+    const path = getConfTextFieldValue("conf_Path", "File Path");
+    const branch = getSelectValue("conf_Branch");
+    const content = getConfTextFieldValue("conf_Content", "Text File Content");
+    const hash = getSelectValue("conf_Hash");
+    const message = getConfTextFieldValue("conf_Message", "Commit Message");
+
+    ////// == 演算 / Calculating ==
+    commitFile(auth, ownerAndRepo, path, branch, content, hash, message);
+}
+
+/**
+  * config からリポジトリの URL を読み出し、API に必要な文字列を取り出す
+  * @return {String} ownerAndRepo
+  */
+const retrieveOwnerAndRepo = () => {
+    const repositoryUrl = getSelectValue("conf_RepositoryUrl");
+
+    if (repositoryUrl === null) {
+        throw new Error("Repository's URL is blank.");
+    }
+
+    const regExp = /^https:\/\/github\.com\/([a-zA-Z0-9-_]+\/[a-zA-Z0-9-_]+)$/;
+    const found = repositoryUrl.match(regExp);
+    if (found === null) {
+        throw new Error("Invalid repository URL.");
+    }
+    const ownerAndRepo = found[1];
+    return ownerAndRepo;
+}
+
+/**
+ * config からform-type="TEXTFIELD"/"TEXTAREA" の値を読み出す
+ * @return {String}
+ */
+const getConfTextFieldValue = (configName, label) => {
+    const value = configs.get(configName);
+    if (value === '') {
+        throw new Error(`${label} is blank.`);
+    }
+    return value;
+};
+
+/**
+  * form-type="SELECT" の値を読み出す
+  * @return {String} value 設定値
+  */
+const getSelectValue = (configName) => {
+    let value = '';
+    const dataDef = configs.getObject(configName);
+    if (dataDef === null) {
+        value = configs.get(configName);
+    } else {
+        value = engine.findData(dataDef);
+    }
+    return value;
+};
+
+
+/**
+ * テキストファイルを 作成／更新 する
+ * @param {AuthSettingWrapper} auth HTTP 認証設定
+ * @param {String} ownerAndRepo {owner}/{repo}
+ * @param {String} updateFile ファイルを更新するか
+ * @param {String} content テキストファイルの内容
+ * @param {String} path 作成する/更新する ファイルのパス
+ * @param {String} message コミットメッセージ
+ */
+const commitFile = (auth, ownerAndRepo, path, branch, content, hash, message) => {
+    const url = `https://api.github.com/repos/${ownerAndRepo}/contents/${path}`;
+
+    const jsonReq = {
+        content: base64.encodeToString(content),
+        message
+    };
+    if (hash !== "" && hash !== null) {
+        Object.assign(jsonReq, {
+            sha: hash
+        })
+    };
+    if (branch !== "" && branch !== null) {
+        Object.assign(jsonReq, {
+            branch
+        })
+    };
+
+    const response = httpClient.begin()
+        .header(API_VERSION_HEADER, API_VERSION)
+        .header("accept", "application/vnd.github+json")
+        .authSetting(auth)
+        .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
+        .put(url);
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+
+    if (status === 201) {
+        engine.log('Succeeded to create a textfile.');
+    } else if (status === 200) {
+        engine.log('Succeeded to update a textfile.');
+    } else {
+        engine.log(responseStr);
+        throw new Error(`Failed to commit a textfile. status: ${status}`);
+    }
+};
+
+]]>    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABM9JREFUWEfF
+        V2tQlFUYfs4ugiKgePkTiE3gCIssGWRhg1EwaE2OUZNjVDIFEwyJM12MSZKgokkNUdZNMhwCCg0p
+        Bi8UxGVRblkgLHFJ12ZipImBLiAOg7h7mvfT/dz99lt2sR+8v3bPe3vOez0fw/+gqKgoF1LX6XQ3
+        79YMc1bxvuBgP2ZSRjHGH4SJqcCwGsCi2/pj4PgVCt7HOfuJK4y633p7B52x7RBAgCo0GCYeD4bn
+        AKxyxiiAy+A4CQUrM/R1986kYxdAWFjYvH8nb6YoOE/igNpJx1ZiDNCbGCtcvMCloKOjY1rOhiyA
+        ALXal93gb3PG0u7GsVSHca7hrmyfQa+/asOTHpBzTCMLQKIj5wqFAiaTyZGYmX8M85AlBWEVAQr7
+        +PUbufZu7uvrg+SkV3B/aAj8VqyAu7u7AGB09C8MXLqEH+oacKK8wi4gioTXQtc3LdNhBcBfFZrG
+        OM+Xs7AjNRlpqSmgW89Evw8OIiExGUNDf8iKccZ2Xunr1piZIgCqdsZ5mbTgvL0Xo7ysFPeu9HM2
+        1EJU9uXm4VhRiY0OFSZnLN7cHXcABKpzwLBbqlH1zddQBQU67dxScGv8dlzs6rbV5fjIMKDPIIYA
+        gIaMwqSsk/b5i/Hb8N677wgGJicnsSfrA6S9loKVfn7CLaempqBUKuHq6gqj0Sjkf8H8+Xgmboug
+        MzY2hnWPRMkV6mWTwhhDw0oA4B+k3s6AYkuoi7y80N7cCBcXYdqCchuzabPwe/nyZRgZGRXFyanS
+        RYmJieuIeGgdSoo+F3nfVlYhPSPTJgocSLjSry8RAASoQjTgbIelVPy2rcjOFKIk0MjoKNZviHaY
+        Crr93pz3Rbmx8XGEPxxpq8f4YUNfT9otAIHqejA8bil1+GAuNsbGiEd0C7qNI6IuudDaBIqgmQJD
+        1sJolMwLjgbDgD76FoAgNU0oH0vjjbXVoL4nonyvXrPWkW+Rn5+3H09sjBX/U1u2trVL9YcM/Xpf
+        Riv16vDf/wDwsJT45eIFuLm5CUdUYIEhDzgN4OOcbDwb97Qor9EWIF97RKo/YejXe9oF0Ha+AcuW
+        LhWV1j8abVV4M6GpPHkca4JVoshb6btRdfqsPAB7Kag48SVC1SGiErUYtaEjWrLEGy26OrF7SD7y
+        sVj8OTwsnwJ7RUgdQJ1gSY4KkSJGwH187hHV7KbPqghl2pBGcPv5RmH2U89T7xNRO3Z2diEjMxvU
+        YkQ0sOK2bBbCLt0V39XUYufru2wDZ9mGcoOINPI+2YunntyE6elpYcq99MLzgiGacOERG0SjSS8n
+        IH3XGzZOqHvCIyJx7dqEDc9qENkbxR4eC9FUXwMvT090detxvLwCqwL8cfpMNfr6B0SjFJ3Wpnob
+        J3n5WnxacFSubKxH8e06kF1GVFS11aeEwUKjVt/TA925ZhQVl4qG6V3Q/XOblSPtkaM4qNHK16x0
+        GQkA7Kxj4lE9fFH4mbgVzzW3IPHVVNG4p6cHOn9sEf7Tgtp/4BCKS7+SdW53HZP0TA8S4lNbfpi9
+        B1WnzqKw6M7uooX1/ZlK1NTW4cAhje3YtYBi90FCMo6eZPLxdP7U4ZNMSMUsHqXOuxYkHT9KzQbn
+        9FluBjGnHyaWoZ2zTzNpfufs43SWhTZr8f8AaTovPzYDLOEAAAAASUVORK5CYII=
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param repositoryUrl
+ * @param path
+ * @param branch
+ * @param content
+ * @param hash
+ * @param message
+ */
+const prepareConfigs = (repositoryUrl, path, branch, content, hash, message) => {
+    const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
+    configs.putObject('conf_Auth', auth);
+
+    // 文字型データ項目を準備して、config に指定
+    const repositoryUrlDef = engine.createDataDefinition('リポジトリURL', 2, 'q_RepositoryUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_RepositoryUrl', repositoryUrlDef);
+    // 文字型データ項目の値（リポジトリURL）を指定
+    engine.setData(repositoryUrlDef, repositoryUrl);
+
+    configs.put('conf_Path', path);
+
+    // 文字型データ項目を準備して、config に指定
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    // 文字型データ項目の値（ブランチ）を指定
+    engine.setData(branchDef, branch);
+
+    configs.put('conf_Content', content);
+
+    // 文字型データ項目を準備して、config に指定
+    const fileShaDef = engine.createDataDefinition('ファイルSHA', 4, 'q_SHA', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Hash', fileShaDef);
+    // 文字型データ項目の値（S）を指定
+    engine.setData(fileShaDef, hash);
+
+    configs.put('conf_Message', message);
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+* conf_RepositoryUrl にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+*/
+test("Repository's URL is blank - Repository's URL specified by String Data", () => {
+    prepareConfigs(null, 'path0/test.txt', 'branchQ0', 'contentQ0', 'hash-0000-012345678901234567890123456789', 'update a file');
+    assertError("Repository's URL is blank.");
+});
+
+/**
+* リポジトリURLが不正
+*/
+test("Invalid repository URL - handle specified by String Data", () => {
+    prepareConfigs("https://invalid.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ1', 'contentQ1', 'hash-0001-012345678901234567890123456789', 'update a file');
+    assertError("Invalid repository URL.");
+});
+
+/**
+* ファイルパスが空
+*/
+test('File Path is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", '', 'branchQ2', 'contentQ2', 'hash-0002-012345678901234567890123456789', 'update a file');
+    assertError('File Path is blank.');
+});
+
+/**
+* テキストファイルの内容が空
+*/
+test('Contents is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ2', '', 'hash-0002-012345678901234567890123456789', 'update a file');
+    assertError('Text File Content is blank.');
+});
+
+/**
+* コミットメッセージが空
+*/
+test('Message is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ2', 'contentQ2', 'hash-0002-012345678901234567890123456789', '');
+    assertError('Commit Message is blank.');
+});
+
+/**
+ * リクエストのテスト（ファイルを 作成／更新 する）
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.body
+ * @param ownerAndRepo
+ * @param path
+ * @param branch
+ * @param content
+ * @param hash
+ * @param message
+ */
+const assertCommitRequest = ({ url, method, body }, ownerAndRepo, path, branch, content, hash, message) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/contents/${path}`);
+
+    const bodyObj = JSON.parse(body);
+
+    expect(bodyObj.branch).toEqual(branch);
+    expect(bodyObj.sha).toEqual(hash);
+    expect(bodyObj.content).toEqual(base64.encodeToString(content));
+    expect(bodyObj.message).toEqual(message);
+
+    expect(method).toEqual('PUT');
+};
+
+/**
+ * ファイルを 作成／更新 する API リクエストでエラー 
+ */
+test('commit Failed', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'test3.txt', 'branchQ3', 'contentQ3', 'hash-0003-012345678901234567890123456789', 'update a file');
+
+    httpClient.setRequestHandler((request) => {
+        assertCommitRequest(request, 'user1Org/user1Org123', 'test3.txt', 'branchQ3', 'contentQ3', 'hash-0003-012345678901234567890123456789', 'update a file');
+        return httpClient.createHttpResponse(404, 'application/json', '{}');
+    });
+
+    assertError('Failed to commit a textfile. status: 404');
+});
+
+
+/**
+ * 作成成功（hash 値 データ項目指定無）
+ * ブランチを固定値で指定
+ */
+test('Succeed - create - Hash not set - Branch is fixed', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'newfile.xml', null, '<xml>test</xml>', null, 'create a file');
+    configs.put('conf_Branch', 'branchQ4');
+    configs.put('conf_Hash', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertCommitRequest(request, 'user1Org/user1Org123', 'newfile.xml', 'branchQ4', '<xml>test</xml>', undefined, 'create a file');
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    main();
+
+});
+
+
+/**
+ * 作成成功（hash 値 データ項目指定し、空）
+ * ブランチをデータ項目で指定
+ */
+test('Succeed - create - Hash is empty - Branch is data item ', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'newfile.xml', 'branchQ4', '<xml>test</xml>', null, 'create a file');
+
+    httpClient.setRequestHandler((request) => {
+        assertCommitRequest(request, 'user1Org/user1Org123', 'newfile.xml', 'branchQ4', '<xml>test</xml>', undefined, 'create a file');
+        return httpClient.createHttpResponse(201, 'application/json', '{}');
+    });
+
+    main();
+
+});
+
+
+/**
+ * 更新成功
+ * branch 無（データ項目を指定し、空）
+ * URL を固定値で指定
+ * hash 値をデータ項目で指定
+ */
+test('Succeed - update - URL is fixed', () => {
+    prepareConfigs(null, 'path5/test.txt', null, 'contentQ5', 'hash-0005-012345678901234567890123456789', 'update a file');
+    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
+
+    httpClient.setRequestHandler((request) => {
+        assertCommitRequest(request, 'user5/user5repo', 'path5/test.txt', undefined, 'contentQ5', 'hash-0005-012345678901234567890123456789', 'update a file');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
+    });
+
+    main();
+
+});
+
+
+]]>    </test>
+</service-task-definition>
