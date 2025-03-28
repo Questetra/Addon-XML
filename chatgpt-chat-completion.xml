@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2025-02-04</last-modified>
+    <last-modified>2025-03-28</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -294,11 +294,15 @@ const createChat = (auth, organizationId, model, maxTokens, temperature, stopSeq
         throw new Error(`Failed to request. status: ${responseCode}`);
     }
     const {choices, usage} = JSON.parse(responseBody);
+    const finishReason = choices[0].finish_reason;
     const answer1 = choices[0].message.content;
-    engine.log(`Finish Reason: ${choices[0].finish_reason}`);
+    engine.log(`Finish Reason: ${finishReason}`);
     engine.log(`Prompt Tokens: ${usage.prompt_tokens}`);
     engine.log(`Completion Tokens: ${usage.completion_tokens}`);
     engine.log(`Completion Tokens Details: ${JSON.stringify(usage.completion_tokens_details)}`);
+    if (answer1 === undefined || answer1 === null || answer1 === '') {
+        throw new Error(`No response content generated. Finish Reason: ${finishReason}`);
+    }
     return answer1;
 };
 
@@ -601,6 +605,40 @@ test('Fail to request', () => {
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
+});
+
+/**
+ * API リクエストが 200 レスポンスを返すが、トークン切れで回答が空の場合
+ */
+test('No response content generated', () => {
+    prepareConfigs('key2', '', 'o1', '100', '', '', '', 'こんにちは');
+    const responseObj = {
+        "id": "chatcmpl-123",
+        "object": "chat.completion",
+        "created": 1677652288,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "",
+            },
+            "finish_reason": "length"
+        }],
+        "usage": {
+            "prompt_tokens": 25,
+            "completion_tokens": 100,
+            "completion_tokens_details": {
+                "reasoning_tokens": 100
+            },
+            "total_tokens": 125
+        }
+    };
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, 'key2', '', 'o1', '100', 1, [], '', 'こんにちは', []);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+    assertError('No response content generated. Finish Reason: length');
 });
 
 /**
