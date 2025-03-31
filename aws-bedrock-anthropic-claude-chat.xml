@@ -109,10 +109,17 @@ const main = () => {
         model = decideCrossRegionModel(model, region);
     } 
 
-    const maxTokens = retrieveMaxTokens('conf_MaxTokens', 'Maximum number of tokens');
+    const maxTokens = retrieveMaxTokens('conf_MaxTokens', 'Maximum number of tokens to consume');
     const enableThinking = configs.getObject('conf_EnableThinking');
-    const budgetTokens = enableThinking ? retrieveMaxTokens('conf_BudgetTokens', 'Maximum number of tokens for reasoning') : undefined;
+    let budgetTokens;
+    if (enableThinking) {
+        budgetTokens = retrieveMaxTokens('conf_BudgetTokens', 'Maximum number of tokens for reasoning');
+        validateBudgetTokens(budgetTokens, maxTokens);
+    }
     const temperature = retrieveTemperature();
+    if (enableThinking && temperature !== 1) {
+        throw new Error('Temperature must be 1 when Extended Thinking Mode is enabled.');
+    }
     const stopSequences = retrieveStopSequences();
     const systemPrompt = configs.get('conf_SystemPrompt');
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
@@ -185,7 +192,7 @@ const decideCrossRegionModel = (model, region) => {
     throw new Error(`Cross-region inference is not supported in ${region}.`);
 }
 
-const MAX_TOKENS_DEFAULT = Object.freeze({
+const DEFAULT_NUM_OF_TOKENS = Object.freeze({
     'conf_MaxTokens': 2048,
     'conf_BudgetTokens': 1024
 });
@@ -200,13 +207,29 @@ const MAX_TOKENS_DEFAULT = Object.freeze({
 const retrieveMaxTokens = (confName, label) => {
     const maxTokens = configs.get(confName);
     if (maxTokens === '') {
-        return MAX_TOKENS_DEFAULT[confName];
+        return DEFAULT_NUM_OF_TOKENS[confName];
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
         throw new Error(`${label} must be a positive integer.`);
     }
     return parseInt(maxTokens, 10);
+};
+
+const MIN_BUDGET_TOKENS = 1024;
+
+/**
+ * 推論に使用する最大トークン数のバリデーション
+ * @param budgetTokens
+ * @param maxTokens
+ */
+const validateBudgetTokens = (budgetTokens, maxTokens) => {
+    if (budgetTokens >= maxTokens) {
+        throw new Error('Maximum number of tokens for reasoning must be less than the maximum number of tokens to consume.');
+    }
+    if (budgetTokens < MIN_BUDGET_TOKENS) {
+        throw new Error(`Maximum number of tokens for reasoning must be greater than or equal to ${MIN_BUDGET_TOKENS}.`);
+    }
 };
 
 /**
