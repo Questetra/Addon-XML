@@ -54,6 +54,14 @@
             <label>C6: Maximum number of tokens to consume (2048 if blank)</label>
             <label locale="ja">C6: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
+        <config name="conf_EnableThinking" form-type="TOGGLE">
+            <label>C7: Enable reasoning in Extended Thinking Mode</label>
+            <label locale="ja">C7: 拡張思考モードでの推論を有効にする</label>
+        </config>
+        <config name="conf_BudgetTokens" required="false" form-type="TEXTFIELD" depends-on="conf_EnableThinking">
+            <label>C7-b: Maximum number of tokens for reasoning (1024 if blank)</label>
+            <label locale="ja">C7-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+        </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
             <label>C7: Temperature (0.0 - 1.0) (1.0 if blank)</label>
             <label locale="ja">C7: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
@@ -101,14 +109,28 @@ const main = () => {
         model = decideCrossRegionModel(model, region);
     } 
 
-    const maxTokens = retrieveMaxTokens();
+    const maxTokens = retrieveMaxTokens('conf_MaxTokens', 'Maximum number of tokens');
+    const enableThinking = configs.getObject('conf_EnableThinking');
+    const budgetTokens = enableThinking ? retrieveMaxTokens('conf_BudgetTokens', 'Maximum number of tokens for reasoning') : undefined;
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
     const systemPrompt = configs.get('conf_SystemPrompt');
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
     ////// == 演算 / Calculating ==
-    const answer = converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
+    const answer = converse(
+        awsKey,
+        awsSecret,
+        region,
+        model,
+        maxTokens,
+        enableThinking,
+        budgetTokens,
+        temperature,
+        stopSequences,
+        systemPrompt,
+        userMessage
+    );
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -163,21 +185,26 @@ const decideCrossRegionModel = (model, region) => {
     throw new Error(`Cross-region inference is not supported in ${region}.`);
 }
 
-const MAX_TOKENS_DEFAULT = 2048;
+const MAX_TOKENS_DEFAULT = Object.freeze({
+    'conf_MaxTokens': 2048,
+    'conf_BudgetTokens': 1024
+});
 
 /**
  * config から最大トークン数を読み出す
- * 指定なしの場合は 2048 を返す
+ * 指定なしの場合はデフォルト値を返す
+ * @param confName 設定名
+ * @param label エラーメッセージ用のラベル
  * @returns {Number}
  */
-const retrieveMaxTokens = () => {
-    const maxTokens = configs.get('conf_MaxTokens');
+const retrieveMaxTokens = (confName, label) => {
+    const maxTokens = configs.get(confName);
     if (maxTokens === '') {
-        return MAX_TOKENS_DEFAULT;
+        return MAX_TOKENS_DEFAULT[confName];
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
-        throw new Error('Maximum number of tokens must be a positive integer.');
+        throw new Error(`${label} must be a positive integer.`);
     }
     return parseInt(maxTokens, 10);
 };
@@ -346,13 +373,27 @@ const fileToObj = file => ({
  * @param region
  * @param model
  * @param maxTokens
+ * @param enableThinking
+ * @param budgetTokens
  * @param temperature
  * @param stopSequences
  * @param systemPrompt
  * @param userMessage
  * @returns {String} answer
  */
-const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
+const converse = (
+    awsKey,
+    awsSecret,
+    region,
+    model,
+    maxTokens,
+    enableThinking,
+    budgetTokens,
+    temperature,
+    stopSequences,
+    systemPrompt,
+    userMessage
+) => {
     const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
     const payload = {
         anthropic_version: ANTHROPIC_VERSION,
@@ -364,6 +405,17 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
 
         messages: [userMessage]
     };
+
+    if (enableThinking) {
+        Object.assign(payload, {
+            additionalModelRequestFields: {
+                thinking: {
+                    type: 'enabled',
+                    budget_tokens: budgetTokens
+                }
+            }
+        });
+    }
 
     if (systemPrompt !== '') {
         Object.assign(payload, {
@@ -389,7 +441,9 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
     engine.log(`Stop Reason: ${stopReason}`);
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
-    return output.message.content[0].text;
+    // extended thinking が有効な場合、回答以外に、推論の過程を表す content も返る
+    // そのため、text プロパティ（回答）を持つコンテンツを探して、最初のものを返す
+    return output.message.content.find(content => content.text !== undefined).text;
 };
 
 /**
@@ -405,7 +459,7 @@ const saveData = (configName, data) => {
     engine.setData(def, data);
 };
 
-    ]]></script>
+    ]]>    </script>
 
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
@@ -1023,5 +1077,5 @@ test('Success - with attached images and pdfs - CrossRegionModel - Markdown', ()
     expect(engine.findData(answerDef)).toEqual(answer);
 });
 
-]]></test>
+]]>    </test>
 </service-task-definition>
