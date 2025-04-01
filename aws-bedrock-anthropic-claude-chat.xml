@@ -202,7 +202,7 @@ const decideCrossRegionModel = (model, region) => {
 
 const MIN_BUDGET_TOKENS = 1024;
 
-const TOKENS_ERROR_MSG = Object.freeze({
+const ERROR_MSG = Object.freeze({
     'conf_MaxTokens': 'Maximum number of tokens to consume must be a positive integer.',
     'conf_BudgetTokens':
         `Maximum number of tokens for reasoning must be an integer greater than or equal to ${MIN_BUDGET_TOKENS}.`
@@ -221,11 +221,11 @@ const retrieveMaxTokens = (confName) => {
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
-        throw new Error(TOKENS_ERROR_MSG[confName]);
+        throw new Error(ERROR_MSG[confName]);
     }
     const maxTokensInt = parseInt(maxTokens, 10);
     if (confName === 'conf_BudgetTokens' && maxTokensInt < MIN_BUDGET_TOKENS) {
-        throw new Error(TOKENS_ERROR_MSG[confName]);
+        throw new Error(ERROR_MSG[confName]);
     }
     return maxTokensInt;
 };
@@ -930,6 +930,8 @@ test('Content-Type of an attached file is not allowed', () => {
  * @param {String} region
  * @param {String} model
  * @param {Number} maxTokens
+ * @param {Boolean} enableThinking
+ * @param {Number} budgetTokens
  * @param {Number} temperature
  * @param {Array<String>} stopSequences
  * @param {String} systemPrompt
@@ -941,7 +943,7 @@ const assertRequest = ({
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
+                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -949,6 +951,12 @@ const assertRequest = ({
     const bodyObj = JSON.parse(body);
     expect(bodyObj.anthropic_version).toEqual(ANTHROPIC_VERSION);
     expect(bodyObj.inferenceConfig.maxTokens).toEqual(maxTokens);
+    if (enableThinking) {
+        expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('enabled');
+        expect(bodyObj.additionalModelRequestFields.thinking.budget_tokens).toEqual(budgetTokens);
+    } else {
+        expect(bodyObj.additionalModelRequestFields).toEqual(undefined);
+    }
     expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
     expect(bodyObj.inferenceConfig.stopSequences).toEqual(stopSequences);
     if (systemPrompt !== ''){
@@ -958,9 +966,6 @@ const assertRequest = ({
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
 
     expect(bodyObj.messages[0].content.length).toEqual(files.length + 1);
-
-
-
     files.forEach((file, i) => {
         if(file.getContentType().split(';')[0] === "image"){
             expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(file.getContentType().split(';')[0].split('/')[1]);
@@ -991,7 +996,7 @@ test('Fail to request', () => {
     prepareConfigs(key, secret, region, MODEL_3_OPUS, true, '1280', temperature, stopSequences, '', message);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, 1, [], '', message);
+        assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to converse. status: 400');
@@ -1010,6 +1015,7 @@ const createResponse = (model, answerText) => {
         output: {
             message:{
                 content: [
+                    {reasoningContext: 'Reasoning...'}, // 実際には、拡張思考が有効な場合にのみ返る
                     {text: answerText}
                 ]
             }
@@ -1039,7 +1045,7 @@ test('Success - only with required configs', () => {
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_HAIKU, DEFAULT['conf_MaxTokens'], 1, [], '', message);
+        assertRequest(request, region, MODEL_3_HAIKU, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_HAIKU, answer));
     });
 
@@ -1071,7 +1077,7 @@ test('Success - only with required configs - CrossRegionModel - Markdown', () =>
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region,`us.${MODEL_3_5_HAIKU}`, DEFAULT['conf_MaxTokens'], 1, [], '', message);
+        assertRequest(request, region,`us.${MODEL_3_5_HAIKU}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_5_HAIKU}`, answer));
     });
 
@@ -1094,7 +1100,7 @@ test('Success - with max tokens and temperature', () => {
 
     const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_OPUS, 500, 0.5, [], '', message);
+        assertRequest(request, region, MODEL_3_OPUS, 500, false, undefined, 0.5, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_OPUS, answer));
     });
 
@@ -1120,7 +1126,7 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
 
     const answer = 'こんにちは。お元気ですか？';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_5_SONNET_V2, DEFAULT['conf_MaxTokens'], 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
+        assertRequest(request, region, MODEL_3_5_SONNET_V2, DEFAULT['conf_MaxTokens'], false, undefined, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_5_SONNET_V2, answer));
     });
 
@@ -1167,8 +1173,60 @@ test('Success - with attached images and pdfs - CrossRegionModel - Markdown', ()
 
     const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, DEFAULT['conf_MaxTokens'], 1, [], '', message, files);
+        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message, files);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`apac.${MODEL_3_SONNET}`, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 拡張思考を有効にし、必須項目のみ指定
+ */
+test('Success - thinking enabled, only with required configs', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, '', '', '', '', message);
+    enableThinking('');
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], DEFAULT['conf_Temperature'], [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 拡張思考を有効にし、トークン数上限、推論に使用するトークン数上限、温度（1 のみ可）を指定
+ */
+test('Success - thinking enabled, max tokens to consume and for reasoning specified', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, '2500', '1', '', '', message);
+    enableThinking('1600');
+
+    // 回答を保存するデータ項目に、文字型（複数行）を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_TEXTAREA');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, 2500, true, 1600, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
     });
 
     expect(main()).toEqual(undefined);
