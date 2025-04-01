@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-02-14</last-modified>
+    <last-modified>2025-04-01</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -42,6 +42,9 @@
             <item value="anthropic.claude-3-5-haiku-20241022-v1:0">
                 <label>Claude 3.5 Haiku</label>
             </item>
+            <item value="anthropic.claude-3-7-sonnet-20250219-v1:0">
+                <label>Claude 3.7 Sonnet</label>
+            </item>
         </config>
         <config name="conf_UseCrossRegion" form-type="TOGGLE">
             <label>C5: Use cross-region inference</label>
@@ -51,18 +54,26 @@
             <label>C6: Maximum number of tokens to consume (2048 if blank)</label>
             <label locale="ja">C6: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
+        <config name="conf_EnableThinking" form-type="TOGGLE">
+            <label>C7: Enable reasoning in Extended Thinking Mode</label>
+            <label locale="ja">C7: 拡張思考モードでの推論を有効にする</label>
+        </config>
+        <config name="conf_BudgetTokens" required="false" form-type="TEXTFIELD" depends-on="conf_EnableThinking">
+            <label>C7-b: Maximum number of tokens for reasoning (1024 if blank)</label>
+            <label locale="ja">C7-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+        </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C7: Temperature (0.0 - 1.0) (1.0 if blank)</label>
-            <label locale="ja">C7: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
+            <label>C8: Temperature (0.0 - 1.0) (1.0 if blank)</label>
+            <label locale="ja">C8: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C8: Stop Sequences (write one per line)</label>
-            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ）</label>
+            <label>C9: Stop Sequences (write one per line)</label>
+            <label locale="ja">C9: 停止シーケンス（1 行に 1 つ）</label>
         </config>
         <config name="conf_SystemPrompt" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C9: System Prompt</label>
-            <label locale="ja">C9: システムプロンプト</label>
+            <label>C10: System Prompt</label>
+            <label locale="ja">C10: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -87,6 +98,12 @@
 const SERVICE = 'bedrock';
 const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 
+const DEFAULT = Object.freeze({
+    'conf_MaxTokens': 2048,
+    'conf_BudgetTokens': 1024,
+    'conf_Temperature': 1,
+});
+
 const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const awsKey = configs.getObject('conf_AccessKey').getToken();
@@ -98,14 +115,37 @@ const main = () => {
         model = decideCrossRegionModel(model, region);
     } 
 
-    const maxTokens = retrieveMaxTokens();
+    const maxTokens = retrieveMaxTokens('conf_MaxTokens');
+    const enableThinking = configs.getObject('conf_EnableThinking');
+    let budgetTokens;
+    if (enableThinking) {
+        budgetTokens = retrieveMaxTokens('conf_BudgetTokens');
+        if (budgetTokens >= maxTokens) {
+            throw new Error('Maximum number of tokens for reasoning must be less than maximum number of tokens to consume.');
+        }
+    }
     const temperature = retrieveTemperature();
+    if (enableThinking && temperature !== DEFAULT['conf_Temperature']) {
+        throw new Error(`Temperature must be ${DEFAULT['conf_Temperature']} when Extended Thinking Mode is enabled.`);
+    }
     const stopSequences = retrieveStopSequences();
     const systemPrompt = configs.get('conf_SystemPrompt');
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
     ////// == 演算 / Calculating ==
-    const answer = converse(awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage);
+    const answer = converse(
+        awsKey,
+        awsSecret,
+        region,
+        model,
+        maxTokens,
+        enableThinking,
+        budgetTokens,
+        temperature,
+        stopSequences,
+        systemPrompt,
+        userMessage
+    );
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
@@ -160,34 +200,45 @@ const decideCrossRegionModel = (model, region) => {
     throw new Error(`Cross-region inference is not supported in ${region}.`);
 }
 
-const MAX_TOKENS_DEFAULT = 2048;
+const MIN_BUDGET_TOKENS = 1024;
+
+const ERROR_MSG = Object.freeze({
+    'conf_MaxTokens': 'Maximum number of tokens to consume must be a positive integer.',
+    'conf_BudgetTokens':
+        `Maximum number of tokens for reasoning must be an integer greater than or equal to ${MIN_BUDGET_TOKENS}.`
+});
 
 /**
  * config から最大トークン数を読み出す
- * 指定なしの場合は 2048 を返す
+ * 指定なしの場合はデフォルト値を返す
+ * @param confName 設定名
  * @returns {Number}
  */
-const retrieveMaxTokens = () => {
-    const maxTokens = configs.get('conf_MaxTokens');
+const retrieveMaxTokens = (confName) => {
+    const maxTokens = configs.get(confName);
     if (maxTokens === '') {
-        return MAX_TOKENS_DEFAULT;
+        return DEFAULT[confName];
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
-        throw new Error('Maximum number of tokens must be a positive integer.');
+        throw new Error(ERROR_MSG[confName]);
     }
-    return parseInt(maxTokens, 10);
+    const maxTokensInt = parseInt(maxTokens, 10);
+    if (confName === 'conf_BudgetTokens' && maxTokensInt < MIN_BUDGET_TOKENS) {
+        throw new Error(ERROR_MSG[confName]);
+    }
+    return maxTokensInt;
 };
 
 /**
  * config から温度を読み出す
- * 指定なしの場合は 1 を返す
+ * 指定なしの場合はデフォルト値(1)を返す
  * @returns {Number}
  */
 const retrieveTemperature = () => {
     const temperature = configs.get('conf_Temperature');
     if (temperature === '') {
-        return 1;
+        return DEFAULT['conf_Temperature'];
     }
     const regExp = /^(0(\.\d+)?|1(\.0+)?)$/;
     if (!regExp.test(temperature)) {
@@ -343,13 +394,27 @@ const fileToObj = file => ({
  * @param region
  * @param model
  * @param maxTokens
+ * @param enableThinking
+ * @param budgetTokens
  * @param temperature
  * @param stopSequences
  * @param systemPrompt
  * @param userMessage
  * @returns {String} answer
  */
-const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stopSequences, systemPrompt, userMessage) => {
+const converse = (
+    awsKey,
+    awsSecret,
+    region,
+    model,
+    maxTokens,
+    enableThinking,
+    budgetTokens,
+    temperature,
+    stopSequences,
+    systemPrompt,
+    userMessage
+) => {
     const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
     const payload = {
         anthropic_version: ANTHROPIC_VERSION,
@@ -361,6 +426,17 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
 
         messages: [userMessage]
     };
+
+    if (enableThinking) {
+        Object.assign(payload, {
+            additionalModelRequestFields: {
+                thinking: {
+                    type: 'enabled',
+                    budget_tokens: budgetTokens
+                }
+            }
+        });
+    }
 
     if (systemPrompt !== '') {
         Object.assign(payload, {
@@ -386,7 +462,18 @@ const converse = (awsKey, awsSecret, region, model, maxTokens, temperature, stop
     engine.log(`Stop Reason: ${stopReason}`);
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
-    return output.message.content[0].text;
+
+    // extended thinking が有効な場合、回答以外に、推論の過程を表す content も返る
+    // そのため、text プロパティ（回答）を持つコンテンツを探して、最初のものを返す
+    const responseContent = output.message.content.find(content => content.text !== undefined);
+    if (responseContent === undefined) {
+        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
+    }
+    const answer1 = responseContent.text;
+    if (answer1 === null || answer1 === '') {
+        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
+    }
+    return answer1;
 };
 
 /**
@@ -402,7 +489,7 @@ const saveData = (configName, data) => {
     engine.setData(def, data);
 };
 
-    ]]></script>
+    ]]>    </script>
 
     <icon>
         iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
@@ -468,6 +555,15 @@ const prepareConfigs = (key, secret, region, model,  useCrossRegion, maxTokens, 
 };
 
 /**
+ * 拡張思考による推論を有効にし、推論に使用するトークン数上限を指定
+ * @param debugTokens 推論に使用するトークン数上限
+ */
+const enableThinking = (debugTokens) => {
+    configs.putObject('conf_EnableThinking', true);
+    configs.put('conf_BudgetTokens', debugTokens);
+};
+
+/**
  * 異常系のテスト
  * @param errorMsg
  */
@@ -489,7 +585,7 @@ const MODEL_3_HAIKU = 'anthropic.claude-3-haiku-20240307-v1:0';
 const MODEL_3_SONNET = 'anthropic.claude-3-sonnet-20240229-v1:0';
 const MODEL_3_5_SONNET_V2 = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 const MODEL_3_5_HAIKU = 'anthropic.claude-3-5-haiku-20241022-v1:0';
-
+const MODEL_3_7_SONNET = 'anthropic.claude-3-7-sonnet-20250219-v1:0';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -554,25 +650,77 @@ test('Region is not supported by cross-region inference', () => {
 /**
  * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
  */
-test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+test('Maximum number of tokens to consume must be a positive integer - includes a non-numeric character', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
     prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '1.1', '', '', '', 'Hi. How are you?');
 
-    assertError('Maximum number of tokens must be a positive integer.');
+    assertError('Maximum number of tokens to consume must be a positive integer.');
 });
 
 /**
  * トークン数の最大値が正の整数でない - ゼロ
  */
-test('Maximum number of tokens must be a positive integer - 0', () => {
+test('Maximum number of tokens to consume must be a positive integer - 0', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
     prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '0', '', '', '', 'Hi. How are you?');
 
-    assertError('Maximum number of tokens must be a positive integer.');
+    assertError('Maximum number of tokens to consume must be a positive integer.');
+});
+
+/**
+ * 推論に使用するトークン数の上限が不正 - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens for reasoning is invalid - includes a non-numeric character', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '', '', '', '', 'Hi. How are you?');
+    enableThinking('1024.1');
+
+    assertError('Maximum number of tokens for reasoning must be an integer greater than or equal to 1024.');
+});
+
+/**
+ * 推論に使用するトークン数の上限が不正 - 1024 より小さい
+ */
+test('Maximum number of tokens for reasoning is invalid - less than 1024', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '', '', '', '', 'Hi. How are you?');
+    enableThinking('1023');
+
+    assertError('Maximum number of tokens for reasoning must be an integer greater than or equal to 1024.');
+});
+
+/**
+ * 推論に使用するトークン数の上限が不正 - 消費するトークン数の上限と同じ
+ */
+test('Maximum number of tokens for reasoning is invalid - equal to maximun number of tokens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '2048', '', '', '', 'Hi. How are you?');
+    enableThinking('2048');
+
+    assertError('Maximum number of tokens for reasoning must be less than maximum number of tokens to consume.');
+});
+
+/**
+ * 推論に使用するトークン数の上限が不正 - 消費するトークン数の上限より大きい
+ */
+test('Maximum number of tokens for reasoning is invalid -  greater than maximun number of tokens', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, '2048', '', '', '', 'Hi. How are you?');
+    enableThinking('2049');
+
+    assertError('Maximum number of tokens for reasoning must be less than maximum number of tokens to consume.');
 });
 
 /**
@@ -603,6 +751,22 @@ test('Invalid temperature - bigger than 1', () => {
     prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, '', message);
 
     assertError('Temperature must be a number from 0 to 1.');
+});
+
+/**
+ * 温度が不正 - 拡張思考モードが有効なのに、1 でない
+ */
+test('Invalid temperature - not 1 when thinking is enabled', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const maxTokens = '';
+    const temperature = '0.5';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_OPUS, false, maxTokens, temperature, '', message);
+    enableThinking('');
+
+    assertError('Temperature must be 1 when Extended Thinking Mode is enabled.');
 });
 
 /**
@@ -775,6 +939,8 @@ test('Content-Type of an attached file is not allowed', () => {
  * @param {String} region
  * @param {String} model
  * @param {Number} maxTokens
+ * @param {Boolean} enableThinking
+ * @param {Number} budgetTokens
  * @param {Number} temperature
  * @param {Array<String>} stopSequences
  * @param {String} systemPrompt
@@ -786,7 +952,7 @@ const assertRequest = ({
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
+                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -794,6 +960,12 @@ const assertRequest = ({
     const bodyObj = JSON.parse(body);
     expect(bodyObj.anthropic_version).toEqual(ANTHROPIC_VERSION);
     expect(bodyObj.inferenceConfig.maxTokens).toEqual(maxTokens);
+    if (enableThinking) {
+        expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('enabled');
+        expect(bodyObj.additionalModelRequestFields.thinking.budget_tokens).toEqual(budgetTokens);
+    } else {
+        expect(bodyObj.additionalModelRequestFields).toEqual(undefined);
+    }
     expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
     expect(bodyObj.inferenceConfig.stopSequences).toEqual(stopSequences);
     if (systemPrompt !== ''){
@@ -803,9 +975,6 @@ const assertRequest = ({
     expect(bodyObj.messages[0].content[0].text).toEqual(message);
 
     expect(bodyObj.messages[0].content.length).toEqual(files.length + 1);
-
-
-
     files.forEach((file, i) => {
         if(file.getContentType().split(';')[0] === "image"){
             expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(file.getContentType().split(';')[0].split('/')[1]);
@@ -836,7 +1005,7 @@ test('Fail to request', () => {
     prepareConfigs(key, secret, region, MODEL_3_OPUS, true, '1280', temperature, stopSequences, '', message);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, 1, [], '', message);
+        assertRequest(request, region, 'apac.anthropic.claude-3-opus-20240229-v1:0', 1280, false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to converse. status: 400');
@@ -855,6 +1024,7 @@ const createResponse = (model, answerText) => {
         output: {
             message:{
                 content: [
+                    {reasoningContext: 'Reasoning...'}, // 実際には、拡張思考が有効な場合にのみ返る
                     {text: answerText}
                 ]
             }
@@ -866,6 +1036,81 @@ const createResponse = (model, answerText) => {
     };
     return JSON.stringify(responseObj);
 };
+
+/**
+ * レスポンスに回答を含まないため、エラー - text フィールドを持つ content がない場合
+ */
+test('No response content - no content with text field', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const maxTokens = '';
+    const temperature = '';
+    const stopSequences = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, maxTokens, temperature, stopSequences, '', message);
+    enableThinking('');
+
+    const responseObj = {
+        model: `us.${MODEL_3_7_SONNET}`,
+        stopReason: 'max_tokens',
+        output: {
+            message:{
+                content: [
+                    {reasoningContext: 'Reasoning...'}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, `us.${MODEL_3_7_SONNET}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('No response content generated. Stop Reason: max_tokens');
+});
+
+/**
+ * レスポンスに回答を含まないため、エラー - text フィールドの値が空の場合
+ */
+test('No response content - no content with text field', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const maxTokens = '';
+    const temperature = '';
+    const stopSequences = '';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, maxTokens, temperature, stopSequences, '', message);
+    enableThinking('');
+
+    const responseObj = {
+        model: `us.${MODEL_3_7_SONNET}`,
+        stopReason: 'max_tokens',
+        output: {
+            message:{
+                content: [
+                    {reasoningContext: 'Reasoning...'},
+                    {text: ''}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, `us.${MODEL_3_7_SONNET}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('No response content generated. Stop Reason: max_tokens');
+});
 
 /**
  * 成功 - 必須項目のみ指定
@@ -884,7 +1129,7 @@ test('Success - only with required configs', () => {
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_HAIKU, MAX_TOKENS_DEFAULT, 1, [], '', message);
+        assertRequest(request, region, MODEL_3_HAIKU, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_HAIKU, answer));
     });
 
@@ -916,7 +1161,7 @@ test('Success - only with required configs - CrossRegionModel - Markdown', () =>
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region,`us.${MODEL_3_5_HAIKU}`, MAX_TOKENS_DEFAULT, 1, [], '', message);
+        assertRequest(request, region,`us.${MODEL_3_5_HAIKU}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_5_HAIKU}`, answer));
     });
 
@@ -939,7 +1184,7 @@ test('Success - with max tokens and temperature', () => {
 
     const answer = "Yes, I'm an AI assistant created by Anthropic.\n\nI don't have an age.";
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_OPUS, 500, 0.5, [], '', message);
+        assertRequest(request, region, MODEL_3_OPUS, 500, false, undefined, 0.5, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_OPUS, answer));
     });
 
@@ -965,7 +1210,7 @@ test('Success - with temperature, stop sequences and system prompt, empty attach
 
     const answer = 'こんにちは。お元気ですか？';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_5_SONNET_V2, MAX_TOKENS_DEFAULT, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
+        assertRequest(request, region, MODEL_3_5_SONNET_V2, DEFAULT['conf_MaxTokens'], false, undefined, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_5_SONNET_V2, answer));
     });
 
@@ -1012,7 +1257,7 @@ test('Success - with attached images and pdfs - CrossRegionModel - Markdown', ()
 
     const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, MAX_TOKENS_DEFAULT, 1, [], '', message, files);
+        assertRequest(request, region, `apac.${MODEL_3_SONNET}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message, files);
         return httpClient.createHttpResponse(200, 'application/json', createResponse(`apac.${MODEL_3_SONNET}`, answer));
     });
 
@@ -1020,5 +1265,57 @@ test('Success - with attached images and pdfs - CrossRegionModel - Markdown', ()
     expect(engine.findData(answerDef)).toEqual(answer);
 });
 
-]]></test>
+/**
+ * 成功 - 拡張思考を有効にし、必須項目のみ指定
+ */
+test('Success - thinking enabled, only with required configs', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, '', '', '', '', message);
+    enableThinking('');
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], DEFAULT['conf_Temperature'], [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 拡張思考を有効にし、トークン数上限、推論に使用するトークン数上限、温度（1 のみ可）を指定
+ */
+test('Success - thinking enabled, max tokens to consume and for reasoning specified', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_3_7_SONNET, true, '2500', '1', '', '', message);
+    enableThinking('1600');
+
+    // 回答を保存するデータ項目に、文字型（複数行）を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_TEXTAREA');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, 2500, true, 1600, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+]]>    </test>
 </service-task-definition>
