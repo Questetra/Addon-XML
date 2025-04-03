@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-04-01</last-modified>
+    <last-modified>2025-04-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -462,6 +462,11 @@ const converse = (
     engine.log(`Stop Reason: ${stopReason}`);
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
+    const reasoningContentItem = output.message.content.find(content => content.reasoningContent !== undefined);
+    const reasoningText = reasoningContentItem?.reasoningContent?.reasoningText?.text;
+    if (reasoningText !== undefined) {
+        engine.log(`Thinking: ${reasoningText}`);
+    }
 
     // extended thinking が有効な場合、回答以外に、推論の過程を表す content も返る
     // そのため、text プロパティ（回答）を持つコンテンツを探して、最初のものを返す
@@ -1024,8 +1029,43 @@ const createResponse = (model, answerText) => {
         output: {
             message:{
                 content: [
-                    {reasoningContext: 'Reasoning...'}, // 実際には、拡張思考が有効な場合にのみ返る
                     {text: answerText}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * API のレスポンスボディを作成
+ * 拡張思考モードが有効で、レスポンスに reasoningContent が含まれる場合
+ * @param {String} model
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponseWithReasoning = (model, answerText) => {
+    const responseObj = {
+        model,
+        stopReason: 'end_turn',
+        output: {
+            message:{
+                content: [
+                    {
+                        reasoningContent: {
+                            reasoningText: {
+                                signature: "signature",
+                                text: "Reasoning..."
+                            }
+                        }
+                    }, // 拡張思考が有効な場合にのみ返る
+                    {
+                        text: answerText
+                    }
                 ]
             }
         },
@@ -1284,7 +1324,7 @@ test('Success - thinking enabled, only with required configs', () => {
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
         assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], DEFAULT['conf_Temperature'], [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(`us.${MODEL_3_7_SONNET}`, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -1310,7 +1350,7 @@ test('Success - thinking enabled, max tokens to consume and for reasoning specif
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
         assertRequest(request, region,`us.${MODEL_3_7_SONNET}`, 2500, true, 1600, 1, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_7_SONNET}`, answer));
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(`us.${MODEL_3_7_SONNET}`, answer));
     });
 
     expect(main()).toEqual(undefined);
