@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>GitHub: Delete File</label>
     <label locale="ja">GitHub: ファイル削除</label>
-    <last-modified>2025-01-14</last-modified>
+    <last-modified>2025-01-28</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>
         This item deletes a file in a specified repository on GitHub.
@@ -23,7 +23,7 @@
             <label>C2: Repository's URL (https://github.com/{owner}/{repository})</label>
             <label locale="ja">C2: リポジトリの URL (https://github.com/{owner}/{repository})</label>
         </config>
-        <config name="conf_Path" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+        <config name="conf_Path" required="true" form-type="TEXTFIELD" el-enabled="true">
             <label>C3: File Path</label>
             <label locale="ja">C3: ファイルパス</label>
         </config>
@@ -32,8 +32,8 @@
             <label locale="ja">C4: ブランチ（空白の場合、デフォルトのブランチ）</label>
         </config>
         <config name="conf_Hash" required="true" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C5: SHA of the file</label>
-            <label locale="ja">C5: ファイルの SHA</label>
+            <label>C5: SHA of the file to delete</label>
+            <label locale="ja">C5: 削除するファイルの SHA</label>
         </config>
         <config name="conf_Message" required="true" form-type="TEXTAREA" el-enabled="true">
             <label>C6: Commit Message</label>
@@ -50,7 +50,7 @@ const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
     const ownerAndRepo = retrieveOwnerAndRepo();
-    const path = retrieveSelectValue("conf_Path");
+    const path = retrieveConfTextFieldValue("conf_Path", "File Path");
     const branch = retrieveSelectValue("conf_Branch");
     const hash = retrieveSelectValue("conf_Hash", "SHA of the file");
     const message = retrieveConfTextFieldValue("conf_Message", "Commit Message");
@@ -80,13 +80,13 @@ const retrieveOwnerAndRepo = () => {
 }
 
 /**
- * config からform-type="TEXTFIELD"/"TEXTAREA" の値を読み出す
+ * config からform-type="TEXTFIELD" "TEXTAREA" の値を読み出す
  * @return {String}
  */
-const retrieveConfTextFieldValue = (configName) => {
+const retrieveConfTextFieldValue = (configName, label) => {
     const value = configs.get(configName);
     if (value === '') {
-        throw new Error(`${configName} is blank.`);
+        throw new Error(`${label} is blank.`);
     }
     return value;
 };
@@ -94,7 +94,6 @@ const retrieveConfTextFieldValue = (configName) => {
 /**
   * form-type="SELECT" 
   * の設定値を読み出す
-  * editable="true" の設定値が空の場合はエラー
   * @param {String} confName 設定名
   * @param {String} label エラー出力用ラベル
   * @return {String} value 設定値
@@ -123,33 +122,20 @@ function retrieveSelectValue(confName, label) {
  * @param {String} message コミットメッセージ
  */
 const deleteFile = (auth, ownerAndRepo, path, branch, hash, message) => {
-        engine.log(path);
-        engine.log(branch);
-        engine.log(hash);
-        engine.log(message);
-        engine.log(ownerAndRepo);
+
     const url = `https://api.github.com/repos/${ownerAndRepo}/contents/${path}`;
 
-    const jsonReq = {
-        sha: hash,
-        message
-    };
-
-    if (branch !== "" && branch !== null) {
-        Object.assign(jsonReq, {
-            branch
-        })
-    };
-
-    engine.log(url);
-    engine.log(JSON.stringify(jsonReq));
-
-    const response = httpClient.begin()
+    let request = httpClient.begin()
         .header(API_VERSION_HEADER, API_VERSION)
         .header("accept", "application/vnd.github+json")
         .authSetting(auth)
-        .body(JSON.stringify(jsonReq), "application/json; charset=UTF-8")
-        .delete(url);
+        .queryParam("sha", `${hash}`)
+        .queryParam("message", `${message}`);
+
+    if (branch !== null) {
+        request = request.queryParam("branch", branch);
+    }
+    const response = request.delete(url);
 
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -195,13 +181,12 @@ const deleteFile = (auth, ownerAndRepo, path, branch, hash, message) => {
 /**
  * 設定の準備
  * @param repositoryUrl
- * @param name
- * @param permission
- * @return returnObj
- * @return returnObj.fullNameDef
- * @return returnObj.urlDef
+ * @param path
+ * @param branch
+ * @param hash
+ * @param message
  */
-const prepareConfigs = (repositoryUrl, name, permission) => {
+const prepareConfigs = (repositoryUrl, path, branch, hash, message) => {
     const auth = httpClient.createAuthSettingToken('Personal Access Token', 'github-token-12345');
     configs.putObject('conf_Auth', auth);
 
@@ -211,24 +196,35 @@ const prepareConfigs = (repositoryUrl, name, permission) => {
     // 文字型データ項目の値（リポジトリURL）を指定
     engine.setData(repositoryUrlDef, repositoryUrl);
 
-    // 文字型データ項目を準備して、config に指定
-    const nameDef = engine.createDataDefinition('ハンドル名', 3, 'q_Handle', 'STRING_TEXTFIELD');
-    configs.putObject('conf_UserName', nameDef);
-    // 文字型データ項目の値（ハンドル名）を指定
-    engine.setData(nameDef, name);
+    configs.put('conf_Path', path);
 
-    configs.put('conf_Permission', permission);
+    // 文字型データ項目を準備して、config に指定
+    const branchDef = engine.createDataDefinition('ブランチ', 3, 'q_Branch', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Branch', branchDef);
+    // 文字型データ項目の値（ブランチ）を指定
+    engine.setData(branchDef, branch);
+
+    // 文字型データ項目を準備して、config に指定
+    const fileShaDef = engine.createDataDefinition('ファイルSHA', 4, 'q_SHA', 'STRING_TEXTFIELD');
+    configs.putObject('conf_Hash', fileShaDef);
+    // 文字型データ項目の値（SHA）を指定
+    engine.setData(fileShaDef, hash);
+
+    engine.log("test hash");    
+    engine.log(hash);
+
+    configs.put('conf_Message', message);
 };
 
+
 /**
-  * 異常系のテスト
-  * @param func
-  * @param errorMsg
-  */
-const assertError = (func, errorMsg) => {
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
     let failed = false;
     try {
-        func();
+        main();
     } catch (e) {
         failed = true;
         expect(e.message).toEqual(errorMsg);
@@ -239,363 +235,109 @@ const assertError = (func, errorMsg) => {
 };
 
 /**
- * conf_RepositoryUrl にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
- */
+* conf_RepositoryUrl にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
+*/
 test("Repository's URL is blank - Repository's URL specified by String Data", () => {
-    prepareConfigs(null, 'user1', 'pull');
-    assertError(main, "Repository's URL is blank.");
+    prepareConfigs(null, 'path0/test.txt', 'branchQ0', 'hash-0000-012345678901234567890123456789', 'delete a file');
+    assertError("Repository's URL is blank.");
 });
 
 /**
- * conf_UserName にデータ項目を設定しているが、そのデータ項目の値が空でエラーになる場合
- */
-test("handle is blank - handle specified by String Data", () => {
-    prepareConfigs("https://github.com/user1Org/user1Org123", null, 'push');
-    assertError(main, "handle is blank.");
-});
-
-/**
- * リポジトリURLが不正
- */
+* リポジトリURLが不正
+*/
 test("Invalid repository URL - handle specified by String Data", () => {
-    prepareConfigs("https://invalid.com/user1Org/user1Org123", 'user1', '');
-    assertError(main, "Invalid repository URL.");
+    prepareConfigs("https://invalid.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ1', 'hash-0001-012345678901234567890123456789', 'delete a file');
+    assertError("Invalid repository URL.");
 });
 
 /**
- * リクエストのテスト（ユーザーがリポジトリ招待中であるかどうかを確認する）
+* ファイルパスが空
+*/
+test('File Path is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", '', 'branchQ2', 'hash-0002-012345678901234567890123456789', 'delete a file');
+    assertError('File Path is blank.');
+});
+
+/**
+* SHA が空
+*/
+test('SHA of the file is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ2', "", 'delete');
+    assertError('SHA of the file is blank.');
+});
+
+/**
+* コミットメッセージが空
+*/
+test('Message is blank', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'path1/test.txt', 'branchQ2', 'hash-0002-012345678901234567890123456789', '');
+    assertError('Commit Message is blank.');
+});
+
+
+/**
+ * リクエストのテスト（ファイルを削除する）
  * @param {Object} request
  * @param request.url
  * @param request.method
  * @param ownerAndRepo
+ * @param path
+ * @param branch
+ * @param hash
+ * @param message
  */
-const assertGetInviteeRequest = ({ url, method }, ownerAndRepo) => {
-    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/invitations?per_page=100`);
-    expect(method).toEqual('GET');
+const assertDeleteRequest = ({ url, method }, ownerAndRepo, path, branch, hash, message) => {
+    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/contents/${path}?sha=${hash}&message=${message}&branch=${branch}`);
+    expect(method).toEqual('DELETE');
 };
 
+
 /**
- * ユーザーがリポジトリ招待中であるかどうかを確認する API リクエストでエラー 
+ * ファイルを削除する API リクエストでエラー 
  */
-test('GETinvitee Failed', () => {
-    prepareConfigs("https://github.com/user1Org/user1Org123", 'user2', 'push');
+test('delete Failed', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'test3.txt', 'branchQ3', 'hash-0003-012345678901234567890123456789', 'delete');
 
     httpClient.setRequestHandler((request) => {
-        assertGetInviteeRequest(request, 'user1Org/user1Org123', 'user2');
+        assertDeleteRequest(request, 'user1Org/user1Org123', 'test3.txt', 'branchQ3', 'hash-0003-012345678901234567890123456789', 'delete');
         return httpClient.createHttpResponse(404, 'application/json', '{}');
     });
 
-    assertError(main, 'Failed to get invitee information. status: 404');
+    assertError('Failed to delete a file. status: 404');
 });
 
-/**
- * GETinvitee リクエスト のレスポンス
- */
-const INVITEE_RESPONSE =  [
-        {
-            "id": 1,
-            "repository": {
-                "full_name": "octocat/Hello-World",
-                "owner": {
-                    "login": "userA",
-                    "url": `https://api.github.com/users/userA`,
-                    "type": "User"
-                }
-            },
-            "invitee": {
-                "login": "userB",
-                "id": 1,
-                "url": `https://api.github.com/users/userB`,
-                "html_url": "https://github.com/userB",
-                "type": "User"
-            },
-            "inviter": {
-                "login": "userC",
-                "id": 1,
-                "url": `https://api.github.com/users/userC`,
-                "type": "User"
-            },
-            "permissions": "read"
-        },
-        {
-            "id": 2,
-            "repository": {
-                "full_name": "octocat/Hello-World",
-                "owner": {
-                    "login": "user2",
-                    "url": `https://api.github.com/users/user2`,
-                    "type": "User"
-                }
-            },
-            "invitee": {
-                "login": "user3",
-                "id": 1,
-                "url": `https://api.github.com/users/user3`,
-                "html_url": "https://github.com/user3",
-                "type": "User"
-            },
-            "inviter": {
-                "login": "user4",
-                "id": 1,
-                "url": `https://api.github.com/users/user4`,
-                "type": "User"
-            },
-            "permissions": "write"
-        }
-    ];
 
 /**
- * ユーザーがリポジトリ招待中でエラー 
- */
-test('user already invited', () => {
-    prepareConfigs("https://github.com/user1Org/user1Org456", 'user3', 'pull');
+* 削除成功 
+* ブランチ有
+*/
+test('Succeed - delete', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'test3.txt', 'branchQ3', 'hash-0003-012345678901234567890123456789', 'delete');
 
     httpClient.setRequestHandler((request) => {
-        assertGetInviteeRequest(request, 'user1Org/user1Org456', 'user3');
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
+        assertDeleteRequest(request, 'user1Org/user1Org123', 'test3.txt', 'branchQ3', 'hash-0003-012345678901234567890123456789', 'delete');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
 
-    assertError(main, 'user3 is already invited.');
-});
-
-/**
- * レスポンスに含まれる招待数が最大値 100 のためエラー  
- */
-test('Too many invitations found', () => {
-    prepareConfigs("https://github.com/user1Org/user1Org100", 'user100', 'pull');
-
-    httpClient.setRequestHandler((request) => {
-        assertGetInviteeRequest(request, 'user1Org/user1Org100', 'user100');
-        const invitee_ResponseObj =  [];
-        for (let i = 0; i < 100; i++) {
-            invitee_ResponseObj.push({
-                "id": `${i}`,
-                "repository": {
-                    "full_name": "octocat/Hello-World",
-                    "owner": {
-                        "login": `UserA${i}`,
-                        "url": `https://api.github.com/users/userA${i}`,
-                        "type": "User"
-                    }
-                },
-                "invitee": {
-                    "login": `UserB${i}`,
-                    "id": `${i}`,
-                    "url": `https://api.github.com/users/userB${i}`,
-                    "html_url": `https://github.com/userB${i}`,
-                    "type": "User"
-                },
-                "inviter": {
-                    "login": `UserC${i}`,
-                    "id": `${i}`,
-                    "url": `https://api.github.com/users/userC${i}`,
-                    "type": "User"
-                },
-                "permissions": "read"                
-                });    
-        }
-        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(invitee_ResponseObj));
-    });
-
-    assertError(main, 'Too many invitations found.');
-});
-
-/**
- * リクエストのテスト（ユーザーがリポジトリコラボレータであるかどうかを確認する）
- * @param {Object} request
- * @param request.url
- * @param request.method
- * @param ownerAndRepo
- * @param name
- */
-const assertGetCollaborationRequest = ({ url, method }, ownerAndRepo, name) => {
-    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(name)}`);
-    expect(method).toEqual('GET');
-};
-
-/**
- * ユーザーがリポジトリコラボレータであるかどうかを確認する API リクエストでエラー 
- */
-test('GETCollaboration Failed', () => {
-    prepareConfigs("https://github.com/user1/user1repo", 'user1', 'push');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user1/user1repo', 'user1');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        assertGetCollaborationRequest(request, 'user1/user1repo', 'user1');
-        return httpClient.createHttpResponse(403, 'application/json', '{}');
-    });
-    assertError(main, 'Failed to get a user1 information. status: 403');
-});
-
-/**
- * ユーザーがすでにリポジトリコラボレータでエラー 
- */
-test('user already collaborator', () => {
-    prepareConfigs("https://github.com/user2/user2repo", 'user2', '');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user2/user2repo', 'user2');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        assertGetCollaborationRequest(request, 'user2/user2repo', 'user2');
-        return httpClient.createHttpResponse(204, 'application/json', '{}');
-    });
-    assertError(main, 'user2 is already a collaborator.');
-});
-
-/**
- * リクエストのテスト（ユーザーをリポジトリコラボレータに追加する）
- * @param {Object} request
- * @param request.url
- * @param request.method
- * @param request.body
- * @param ownerAndRepo
- * @param name
- * @param permission
- */
-const assertPutCollaborationRequest = ({ url, method, body }, ownerAndRepo, name, permission) => {
-    expect(url).toEqual(`https://api.github.com/repos/${ownerAndRepo}/collaborators/${encodeURIComponent(name)}`);
-    const bodyObj = JSON.parse(body);
-    expect(bodyObj.permission).toEqual(permission);
-    expect(method).toEqual('PUT');
-};
-
-/**
- * ユーザーをリポジトリにコラボレーション追加する API でエラー 
- */
-test('PUTCollaboration Failed', () => {
-    prepareConfigs("https://github.com/user7/user7repo", 'user7', '');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user7/user7repo', 'user7');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        if (reqCount === 1) {
-            assertGetCollaborationRequest(request, 'user7/user7repo', 'user7');
-            reqCount++;
-            return httpClient.createHttpResponse(404, 'application/json', '{}');
-        }
-        assertPutCollaborationRequest(request, 'user7/user7repo', 'user7');
-        return httpClient.createHttpResponse(403, 'application/json', '{}');
-    });
-    assertError(main, 'Failed to add a collaborator. status: 403');
-});
-
-/**
- * PutCollaboration リクエスト のレスポンスを準備
- * @param role
- * @param name
- * @param ownerAndRepo
- */
-const preparePutCollaborationResponse = (role, name, ownerAndRepo) => {
-    let permission = "write";
-    if (role === "pull") {
-        permission = "read";
-    }
-    const responsePutCollaborationObj = {
-        "id": 1,
-        "repository": {
-            "full_name": `${ownerAndRepo}`
-        },
-        "invitee": {
-            "login": `${name}`
-        },
-        "inviter": {
-            "login": "inviter"
-        },
-        "permissions": `${permission}`
-    };
-    return responsePutCollaborationObj;
-};
-
-/**
- * コラボレーション成功 push
- * URL 、ユーザ名をデータ項目で指定
- */
-test('Succeed - push', () => {
-    prepareConfigs("https://github.com/user4/user4repo", 'user4', 'push');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user4/user4repo', 'user4');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        if (reqCount === 1) {
-            assertGetCollaborationRequest(request, 'user4/user4repo', 'user4');
-            reqCount++;
-            return httpClient.createHttpResponse(404, 'application/json', '{}');
-        }
-        assertPutCollaborationRequest(request, 'user4/user4repo', 'user4', 'push');
-        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('push', 'user4', 'user4/user4repo')));
-    });
     main();
+//    expect(engine.findData(fileShaDef)).toEqual('sha123456789012345678901234567890string0');
 });
 
-/**
- * コラボレーション成功 権限を空で設定（push）
- * URL を固定値で指定
- * ユーザ名をデータ項目で指定 
- */
-test('Succeed - empty', () => {
-    prepareConfigs(null, 'user5', '');
-    configs.put('conf_RepositoryUrl', 'https://github.com/user5/user5repo');
-
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user5/user5repo', 'user5');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        if (reqCount === 1) {
-            assertGetCollaborationRequest(request, 'user5/user5repo', 'user5');
-            reqCount++;
-            return httpClient.createHttpResponse(404, 'application/json', '{}');
-        }
-        assertPutCollaborationRequest(request, 'user5/user5repo', 'user5', undefined);
-        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('', 'user5', 'user5/user5repo')));
-    });
-    main();
-});
 
 /**
- * コラボレーション成功 権限を空で設定（pull） 
- * URL をデータ項目で指定 
- * ユーザ名を固定値で指定 
- */
-test('Succeed - pull', () => {
-    prepareConfigs("https://github.com/user6/user6repo", null, 'pull');
-    configs.put('conf_UserName', 'user6');
+* 削除成功 
+* ブランチ無
+*/
+test('Succeed - delete no-branch', () => {
+    prepareConfigs("https://github.com/user1Org/user1Org123", 'test3.txt', '', 'hash-0003-012345678901234567890123456789', 'delete');
 
-    let reqCount = 0;
     httpClient.setRequestHandler((request) => {
-        if (reqCount === 0) {
-            assertGetInviteeRequest(request, 'user6/user6repo', 'user6');
-            reqCount++;
-            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(INVITEE_RESPONSE));
-        }
-        if (reqCount === 1) {
-            assertGetCollaborationRequest(request, 'user6/user6repo', 'user6');
-            reqCount++;
-            return httpClient.createHttpResponse(404, 'application/json', '{}');
-        }
-        assertPutCollaborationRequest(request, 'user6/user6repo', 'user6', 'pull');
-        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(preparePutCollaborationResponse('pull', 'user6', 'user6/user6repo')));
+        assertDeleteRequest(request, 'user1Org/user1Org123', 'test3.txt', '', 'hash-0003-012345678901234567890123456789', 'delete');
+        return httpClient.createHttpResponse(200, 'application/json', '{}');
     });
+
     main();
+//    expect(engine.findData(fileShaDef)).toEqual('sha123456789012345678901234567890string0');
 });
 
 ]]></test>
