@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2025-07-17</last-modified>
+    <last-modified>2025-07-18</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -83,8 +83,8 @@
             </item>
         </config>
         <config name="conf_Style" form-type="SELECT_ITEM">
-            <label>C6: Image Style</label>
-            <label locale="ja">C6: 画像スタイル</label>
+            <label>C6: Image Style (dall-e-3 only / vivid if not selected)</label>
+            <label locale="ja">C6: 画像スタイル (dall-e-3 のみ／未設定の場合、vivid)</label>
             <item value="vivid">
                 <label>vivid</label>
             </item>
@@ -101,14 +101,14 @@
             <item value="hd">
                 <label>hd (dall-e-3)</label>
             </item>
-            <item value="high">
-                <label>high (gpt-image-1)</label>
+            <item value="low">
+                <label>low (gpt-image-1)</label>
             </item>
             <item value="medium">
                 <label>medium (gpt-image-1)</label>
             </item>
-            <item value="low">
-                <label>low (gpt-image-1)</label>
+            <item value="high">
+                <label>high (gpt-image-1)</label>
             </item>
         </config>
         <config name="conf_File" required="true" form-type="SELECT" select-data-type="FILE">
@@ -134,7 +134,7 @@ function main() {
 
     const size = retriveSelectItem('conf_Size');
     const style = retriveSelectItem('conf_Style');
-    const format = retriveSelectFormatItem('conf_Format');
+    const format = retrieveFormat();
     const quality = retriveSelectItem('conf_Quality');
     const fileName = configs.get('conf_FileName');
     if (fileName === '') {
@@ -164,10 +164,9 @@ const retriveSelectItem = (configName) => {
 /**
  * form-type="SELECT_ITEM" format の設定値を取得する
  * 空の場合、png を返す
- * @param configName
- * @returns {undefined|String}
+ * @returns {png|String}
  */
-const retriveSelectFormatItem = () => {
+const retrieveFormat = () => {
     const value = configs.get("conf_Format");
     if (value === '') {
         return "png";
@@ -197,6 +196,7 @@ const generateImage = (auth, organizationId, model, prompt, size, style, format,
         model,
         prompt,
         size,
+        style,
         quality,
         user,
         n: 1,
@@ -208,7 +208,6 @@ const generateImage = (auth, organizationId, model, prompt, size, style, format,
         });
     } else {
         Object.assign(requestJson, {
-            style,
             response_format: 'b64_json'
         });
     }
@@ -408,13 +407,16 @@ const assertRequest = ({
     expect(bodyObj.size).toEqual(size);
     if (model === "gpt-image-1") {
         expect(bodyObj.output_format).toEqual(format);
+    } else {
+        expect(bodyObj.output_format).toEqual(undefined);
     }
     expect(bodyObj.style).toEqual(style);
     expect(bodyObj.quality).toEqual(quality);
     expect(bodyObj.n).toEqual(1);
-    //expect(bodyObj.response_format).toEqual('b64_json');
     if (model !== "gpt-image-1") {
         expect(bodyObj.response_format).toEqual('b64_json');
+    }else {
+        expect(bodyObj.response_format).toEqual(undefined);
     }
 };
 
@@ -468,7 +470,7 @@ test('Success to request', () => {
 
     httpClient.setRequestHandler(request => {
         assertRequest(request, 'key', '', 'dall-e-2', 'Prompt', '512x512', '', undefined, undefined);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
+        return httpClient.createHttpResponse(200, 'image/png', createResponse("image"));
     });
     main();
 
@@ -486,18 +488,18 @@ test('Success to request', () => {
 test('Success to request - with organization ID, Style, Quality', () => {
     const fileDef = prepareConfigs('key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', '', 'vivid', 'hd', 'image.png', null);
     // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
-    engine.setData(fileDef, [engine.createQfile('既存のファイル.json', 'application/json', '{}')]);
+    engine.setData(fileDef, [engine.createQfile('既存のファイル.json', 'image/png', '{}')]);
 
     httpClient.setRequestHandler(request => {
         assertRequest(request, 'key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', '', 'vivid', 'hd');
-        return httpClient.createHttpResponse(200, 'application/json', createResponse("png"));
+        return httpClient.createHttpResponse(200, 'image/png', createResponse("png"));
     });
     main();
 
     // データ項目の値をチェック
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(2);
-    assertFile(files.get(0), '既存のファイル.json', 'application/json', '{}');
+    assertFile(files.get(0), '既存のファイル.json', 'image/png', '{}');
     assertFile(files.get(1), 'image.png', 'image/png', 'png');
 });
 
@@ -510,7 +512,7 @@ test('Success to request - Size, Format, Quality', () => {
 
     httpClient.setRequestHandler(request => {
         assertRequest(request, 'key', '', 'gpt-image-1', 'Prompt', '1024x1792', 'webp', undefined, 'high');
-        return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
+        return httpClient.createHttpResponse(200, 'image/webp', createResponse("image"));
     });
     main();
 
