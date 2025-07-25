@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2025-07-18</last-modified>
+    <last-modified>2025-07-25</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -45,10 +45,16 @@
             <label locale="ja">C3: プロンプト</label>
         </config>
         <config name="conf_Size" form-type="SELECT_ITEM">
-            <label>C4: Image Size</label>
-            <label locale="ja">C4: 画像サイズ</label>
+            <label>C4: Image Size (1024x1024 if not selected)</label>
+            <label locale="ja">C4: 画像サイズ (未設定の場合、1024x1024)</label>
             <item value="1024x1024">
                 <label>1024x1024</label>
+            </item>
+            <item value="512x512">
+                <label>512x512 (dall-e-2)</label>
+            </item>
+            <item value="256x256">
+                <label>256x256 (dall-e-2)</label>
             </item>
             <item value="1792x1024">
                 <label>1792x1024 (dall-e-3)</label>
@@ -61,12 +67,6 @@
             </item>
             <item value="1024x1536">
                 <label>1024x1536 (gpt-image-1)</label>
-            </item>
-            <item value="512x512">
-                <label>512x512 (dall-e-2)</label>
-            </item>
-            <item value="256x256">
-                <label>256x256 (dall-e-2)</label>
             </item>
         </config>
         <config name="conf_Format" form-type="SELECT_ITEM">
@@ -93,8 +93,8 @@
             </item>
         </config>
         <config name="conf_Quality" form-type="SELECT_ITEM">
-            <label>C7: Image Quality</label>
-            <label locale="ja">C7: 画像品質</label>
+            <label>C7: Image Quality (auto if not selected)</label>
+            <label locale="ja">C7: 画像品質 (未設定の場合、自動)</label>
             <item value="standard">
                 <label>standard (dall-e-3)</label>
             </item>
@@ -134,7 +134,7 @@ function main() {
 
     const size = retriveSelectItem('conf_Size');
     const style = retriveSelectItem('conf_Style');
-    const format = retrieveFormat();
+    const format = retriveSelectItem('conf_Format');
     const quality = retriveSelectItem('conf_Quality');
     const fileName = configs.get('conf_FileName');
     if (fileName === '') {
@@ -162,19 +162,6 @@ const retriveSelectItem = (configName) => {
 };
 
 /**
- * form-type="SELECT_ITEM" format の設定値を取得する
- * 空の場合、png を返す
- * @returns {png|String}
- */
-const retrieveFormat = () => {
-    const value = configs.get("conf_Format");
-    if (value === '') {
-        return "png";
-    }
-    return value;
-};
-
-/**
  * 画像生成
  * @param auth
  * @param organizationId
@@ -197,16 +184,13 @@ const generateImage = (auth, organizationId, model, prompt, size, style, format,
         prompt,
         size,
         style,
+        output_format: format,
         quality,
         user,
         n: 1,
     };
 
-    if (model === "gpt-image-1") {
-        Object.assign(requestJson, {
-            output_format: format
-        });
-    } else {
+    if (model !== "gpt-image-1") {
         Object.assign(requestJson, {
             response_format: 'b64_json'
         });
@@ -228,19 +212,16 @@ const generateImage = (auth, organizationId, model, prompt, size, style, format,
     const responseJson = JSON.parse(responseBody);
     const image = base64.decodeFromStringToByteArray(responseJson.data[0].b64_json);
 
-    if (model === "gpt-image-1"){
-        return new com.questetra.bpms.core.event.scripttask.NewQfile(
-            fileName,
-            `image/${format}`,
-            image
-        );
-    } else {
-        return new com.questetra.bpms.core.event.scripttask.NewQfile(
-            fileName,
-            "image/png",
-            image
-        );
+    let contentType = "image/png";
+    if (model === "gpt-image-1" && format !== undefined) {
+        contentType = `image/${format}`;
     }
+
+    return new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        contentType,
+        image
+    );
 };
 
 /**
