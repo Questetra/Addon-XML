@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2025-07-10</last-modified>
+    <last-modified>2025-10-02</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -57,6 +57,15 @@
             <item value="gpt-4.1-nano">
                 <label>gpt-4.1-nano</label>
             </item>
+            <item value="gpt-5">
+                <label>gpt-5</label>
+            </item>
+            <item value="gpt-5-mini">
+                <label>gpt-5-mini</label>
+            </item>
+            <item value="gpt-5-nano">
+                <label>gpt-5-nano</label>
+            </item>
             <item value="o1">
                 <label>o1</label>
             </item>
@@ -74,18 +83,50 @@
             <label>C3: Maximum number of tokens to consume (2048 if blank)</label>
             <label locale="ja">C3: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
+        <config name="conf_ReasoningEffort" form-type="SELECT_ITEM">
+            <label>C4: Reasoning Effort (Only supported for o- and gpt-5 series)</label>
+            <label locale="ja">C4: 推論量 (o-シリーズ、gpt-5 シリーズのみ指定可能)</label>
+            <item value="minimal">
+                <label>minimal (Only for gpt-5 series)</label>
+                <label locale="ja">minimal (gpt-5 シリーズのみ)</label>
+            </item>
+            <item value="low">
+                <label>low</label>
+            </item>
+            <item value="medium">
+                <label>medium (default)</label>
+                <label locale="ja">medium (デフォルト)</label>
+            </item>
+            <item value="high">
+                <label>high</label>
+            </item>
+        </config>
+        <config name="conf_Verbosity" form-type="SELECT_ITEM">
+            <label>C5: Verbosity (Only supported for gpt-5 series)</label>
+            <label locale="ja">C5: 回答量 (gpt-5 シリーズのみ指定可能)</label>
+            <item value="low">
+                <label>low</label>
+            </item>
+            <item value="medium">
+                <label>medium (default)</label>
+                <label locale="ja">medium (デフォルト)</label>
+            </item>
+            <item value="high">
+                <label>high</label>
+            </item>
+        </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C4: Temperature (0.0 - 2.0) (1.0 if blank)</label>
-            <label locale="ja">C4: 温度（0.0 〜 2.0）（空白の場合、1.0）</label>
+            <label>C6: Temperature (0.0 - 2.0) (1.0 if blank)</label>
+            <label locale="ja">C6: 温度（0.0 〜 2.0）（空白の場合、1.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C5: Stop Sequences (write one per line, up to four)</label>
-            <label locale="ja">C5: 停止シーケンス（1 行に 1 つ、最大 4 つ）</label>
+            <label>C7: Stop Sequences (write one per line, up to four)</label>
+            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ、最大 4 つ）</label>
         </config>
         <config name="conf_GPT_Role" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C6: Role for ChatGPT</label>
-            <label locale="ja">C6: ChatGPT に与える役割</label>
+            <label>C8: Role for ChatGPT</label>
+            <label locale="ja">C8: ChatGPT に与える役割</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -126,6 +167,8 @@ function main() {
     const organizationId = configs.get('conf_OrganizationId');
     const model = configs.get('conf_Model');
     const maxTokens = retrieveMaxTokens();
+    const reasoningEffort = retrieveSelectItem('conf_ReasoningEffort');
+    const verbosity = retrieveSelectItem('conf_Verbosity');
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
 
@@ -139,14 +182,28 @@ function main() {
         throw new Error('User Message is empty.');
     }
     const imageUrls1 = retrieveImageUrls('conf_Images1');
-    const imageDetail1 = configs.get('conf_Images1Detail');
+    const imageDetail1 = retrieveSelectItem('conf_Images1Detail');
 
     ////// == 演算 / Calculating ==
-    const answer1 = createChat(auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1);
+    const answer1 = createChat(auth, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1);
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer1 ?? '');
 }
+
+/**
+ * SELECT_ITEM の設定値を取得する
+ * 空の場合、undefined を返す
+ * @param configName
+ * @returns {undefined|String}
+ */
+const retrieveSelectItem = (configName) => {
+    const value = configs.get(configName);
+    if (value === '') {
+        return undefined;
+    }
+    return value;
+};
 
 /**
  * config から、max_completion_tokens として設定する最大トークン数を読み出す
@@ -236,6 +293,8 @@ const retrieveImageUrls = (configName) => {
  * @param organizationId
  * @param model
  * @param maxTokens
+ * @param reasoningEffort
+ * @param verbosity
  * @param temperature
  * @param stopSequences
  * @param requestUser
@@ -245,16 +304,18 @@ const retrieveImageUrls = (configName) => {
  * @param imageDetail1
  * @returns {String} answer1
  */
-const createChat = (auth, organizationId, model, maxTokens, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1) => {
+const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1) => {
     //// OpenAI API > Documentation > API REFERENCE > CHAT
     //// https://platform.openai.com/docs/api-reference/chat
 
     /// prepare json
     const requestJson = {
-        user: requestUser,
+        safety_identifier: requestUser,
         model,
         n: 1,
         max_completion_tokens: maxTokens,
+        reasoning_effort: reasoningEffort,
+        verbosity,
         temperature,
         messages: []
     };
@@ -279,9 +340,7 @@ const createChat = (auth, organizationId, model, maxTokens, temperature, stopSeq
                 url: imageUrl
             }
         };
-        if (imageDetail1 !== '') {
-            imageObj.image_url.detail = imageDetail1;
-        }
+        imageObj.image_url.detail = imageDetail1;
         message1Content.push(imageObj);
     });
     requestJson.messages.push({
@@ -368,19 +427,23 @@ const saveData = (configName, data) => {
  * @param {String} organizationId
  * @param {String} model
  * @param {String} maxTokens
+ * @param {String} reasoningEffort
+ * @param {String} verbosity
  * @param {String} temperature
  * @param {String} stopSequences
  * @param {String} gptRole
  * @param {String} message
  * @returns {DataDefinitionView} answerDef
  */
-const prepareConfigs = (authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message) => {
+const prepareConfigs = (authKey, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, gptRole, message) => {
     const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
     configs.putObject('conf_Auth', authSetting);
 
     configs.put('conf_OrganizationId', organizationId);
     configs.put('conf_Model', model);
     configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_ReasoningEffort', reasoningEffort);
+    configs.put('conf_Verbosity', verbosity);
     configs.put('conf_Temperature', temperature);
     configs.put('conf_StopSequences', stopSequences);
     configs.put('conf_GPT_Role', gptRole);
@@ -413,7 +476,7 @@ const assertError = (errorMsg) => {
  * メッセージが空
  */
 test('Message is empty', () => {
-    prepareConfigs('key', '', 'gpt-4', '', '', '', '', '');
+    prepareConfigs('key', '', 'gpt-4', '', '', '', '', '', '', '');
     assertError('User Message is empty.');
 });
 
@@ -421,7 +484,7 @@ test('Message is empty', () => {
  * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
  */
 test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
-    prepareConfigs('key', '', 'gpt-4', '1.1', '', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '1.1', '', '', '', '', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
 });
 
@@ -429,7 +492,7 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
  * トークン数の最大値が正の整数でない - ゼロ
  */
 test('Maximum number of tokens must be a positive integer - 0', () => {
-    prepareConfigs('key', '', 'gpt-4', '0', '', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '0', '', '', '', '', '', 'こんにちは');
     assertError('Maximum number of tokens must be a positive integer.');
 });
 
@@ -437,7 +500,7 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
  * 温度が不正 - 数字、小数点でない文字を含む
  */
 test('Invalid temperature - includes a non-numeric character', () => {
-    prepareConfigs('key', '', 'gpt-4', '', '-1', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '', '', '', '-1', '', '', 'こんにちは');
     assertError('Temperature must be a number from 0 to 2.');
 });
 
@@ -445,7 +508,7 @@ test('Invalid temperature - includes a non-numeric character', () => {
  * 温度が不正 - 2 を超える
  */
 test('Invalid temperature - bigger than 2', () => {
-    prepareConfigs('key', '', 'gpt-4', '', '2.1', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '', '', '', '2.1', '', '', 'こんにちは');
     assertError('Temperature must be a number from 0 to 2.');
 });
 
@@ -457,7 +520,7 @@ test('Too many stop sequences', () => {
     for (let i = 0; i < MAX_STOP_SEQUENCE_NUM + 1; i++) {
         stopSequences += `stop${i}\n`;
     }
-    prepareConfigs('key', '', 'gpt-4', '', '', stopSequences, '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4', '', '', '', '', stopSequences, '', 'こんにちは');
     assertError(`Too many stop sequences. The maximum number is ${MAX_STOP_SEQUENCE_NUM}.`);
 });
 
@@ -489,7 +552,7 @@ const createQfile = (name, contentType, size) => {
  * 添付画像のサイズが大きすぎる
  */
 test('Image file is too large', () => {
-    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', '', '', 'こんにちは');
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -505,7 +568,7 @@ test('Image file is too large', () => {
  * 添付画像の Content-Type がサポート外
  */
 test('Content-Type of image file is not supported', () => {
-    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', 'こんにちは');
+    prepareConfigs('key', '', 'gpt-4-vision-preview', '150', '', '', '', '', '', 'こんにちは');
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -530,6 +593,8 @@ test('Content-Type of image file is not supported', () => {
  * @param {String} organizationId
  * @param {String} model
  * @param {Number} maxTokens
+ * @param {String} reasoningEffort
+ * @param {String} verbosity
  * @param {Number} temperature
  * @param {Array<String>} stopSequences
  * @param {String} gptRole
@@ -543,7 +608,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, maxTokens, temperature, stopSequences, gptRole, message, imageContentTypes, imageDetail = '') => {
+                       }, authKey, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, gptRole, message, imageContentTypes, imageDetail = undefined) => {
     expect(url).toEqual('https://api.openai.com/v1/chat/completions');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -552,10 +617,12 @@ const assertRequest = ({
         expect(headers['OpenAI-Organization']).toEqual(organizationId);
     }
     const bodyObj = JSON.parse(body);
-    expect(bodyObj.user).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
+    expect(bodyObj.safety_identifier).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
     expect(bodyObj.model).toEqual(model);
     expect(bodyObj.n).toEqual(1);
     expect(bodyObj.max_completion_tokens).toEqual(maxTokens);
+    expect(bodyObj.reasoning_effort).toEqual(reasoningEffort);
+    expect(bodyObj.verbosity).toEqual(verbosity);
     expect(bodyObj.temperature).toEqual(temperature);
     if (gptRole === '') {
         expect(bodyObj.messages.length).toEqual(1);
@@ -566,11 +633,7 @@ const assertRequest = ({
             content: gptRole
         });
     }
-    if (stopSequences.length === 0) {
-        expect(bodyObj.stop).toEqual(undefined);
-    } else {
-        expect(bodyObj.stop).toEqual(stopSequences);
-    }
+    expect(bodyObj.stop).toEqual(stopSequences);
     const userMessage = bodyObj.messages[bodyObj.messages.length - 1];
     expect(userMessage.role).toEqual('user');
     expect(userMessage.content[0]).toEqual({
@@ -596,21 +659,17 @@ const assertAttachment = (userMessage, index, contentType, imageDetail) => {
     const url = imageObj.image_url.url;
     expect(url.split(',')[0]).toEqual(`data:${contentType};base64`);
     // ファイルのバイナリデータが base64 エンコードされた部分の確認は省略
-    if (imageDetail === '') {
-        expect(imageObj.image_url.detail).toEqual(undefined);
-    } else {
-        expect(imageObj.image_url.detail).toEqual(imageDetail);
-    }
+    expect(imageObj.image_url.detail).toEqual(imageDetail);
 };
 
 /**
  * API リクエストでエラー
  */
 test('Fail to request', () => {
-    prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', '', '', 'こんにちは');
+    prepareConfigs('key2', '', 'gpt-3.5-turbo', '', '', '', '', '', '', 'こんにちは');
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', MAX_TOKENS_DEFAULT, 1, [], '', 'こんにちは', []);
+        assertRequest(request, 'key2', '', 'gpt-3.5-turbo', MAX_TOKENS_DEFAULT, undefined, undefined, 1, undefined, '', 'こんにちは', []);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -620,7 +679,7 @@ test('Fail to request', () => {
  * API リクエストが 200 レスポンスを返すが、トークン切れで回答が空の場合
  */
 test('No response content generated', () => {
-    prepareConfigs('key2', '', 'chatgpt-4o-latest', '100', '', '', '', 'こんにちは');
+    prepareConfigs('key2', '', 'chatgpt-4o-latest', '100', '', '', '', '', '', 'こんにちは');
     const responseObj = {
         "id": "chatcmpl-123",
         "object": "chat.completion",
@@ -644,7 +703,7 @@ test('No response content generated', () => {
     };
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'key2', '', 'chatgpt-4o-latest', 100, 1, [], '', 'こんにちは', []);
+        assertRequest(request, 'key2', '', 'chatgpt-4o-latest', 100, undefined, undefined, 1, undefined, '', 'こんにちは', []);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
     assertError('No response content generated. Finish Reason: length');
@@ -685,11 +744,11 @@ const createResponse = (answerText) => {
  * 成功
  */
 test('Success to request', () => {
-    const answerDef = prepareConfigs('key3', '', 'gpt-4.1', '', '', '', 'Robot', 'Hello World');
+    const answerDef = prepareConfigs('key3', '', 'gpt-4.1', '', '', '', '', '', 'Robot', 'Hello World');
     // 添付画像指定なし
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key3', '', 'gpt-4.1', MAX_TOKENS_DEFAULT, 1, [], 'Robot', 'Hello World', []);
+        assertRequest(request, 'key3', '', 'gpt-4.1', MAX_TOKENS_DEFAULT, undefined, undefined, 1, undefined, 'Robot', 'Hello World', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("\n\nHello there, how may I assist you today?"));
     });
     main();
@@ -700,10 +759,12 @@ test('Success to request', () => {
 
 /**
  * 成功 - 組織 ID を指定
+ * reasoningEffort を指定
+ * verbosity は指定なし
  * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
 test('Success to request - with organization ID', () => {
-    prepareConfigs('key4', 'org-1', 'o4-mini', '', '', '', '', 'Hi!');
+    prepareConfigs('key4', 'org-1', 'gpt-5', '', 'minimal', '', '', '', '', 'Hi!');
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
@@ -716,7 +777,7 @@ test('Success to request - with organization ID', () => {
     configs.putObject('conf_Images1', imagesDef);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key4', 'org-1', 'o4-mini', MAX_TOKENS_DEFAULT, 1, [], '', 'Hi!', []);
+        assertRequest(request, 'key4', 'org-1', 'gpt-5', MAX_TOKENS_DEFAULT, 'minimal', undefined, 1, undefined, '', 'Hi!', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! How can I help you?"));
     });
     main();
@@ -727,12 +788,14 @@ test('Success to request - with organization ID', () => {
 
 /**
  * 成功 - 最大トークン数を指定
+ * reasoning_effort は指定なし
+ * verbosity を指定
  */
 test('Success to request - with max_tokens', () => {
-    const answerDef = prepareConfigs('key5', '', 'o3', '100', '', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    const answerDef = prepareConfigs('key5', '', 'gpt-5-mini', '100', '', 'high', '', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'o3', 100, 1, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'gpt-5-mini', 100, undefined, 'high', 1, undefined, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -746,7 +809,7 @@ test('Success to request - with max_tokens', () => {
  * 回答を保存するデータ項目に、文字型 Markdown を指定
  */
 test('Success to request - with temperature', () => {
-    prepareConfigs('key5', '', 'gpt-4.1-mini', '', '1', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    prepareConfigs('key5', '', 'gpt-4.1-mini', '', '', '', '1', '', 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
@@ -754,7 +817,7 @@ test('Success to request - with temperature', () => {
     configs.putObject('conf_Answer1', answerDef);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4.1-mini', MAX_TOKENS_DEFAULT, 1, [], 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'gpt-4.1-mini', MAX_TOKENS_DEFAULT, undefined, undefined,1, undefined, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -772,10 +835,10 @@ test('Success to request - with stop', () => {
         stopSequences.push(`stop${i}`);
     }
     const stopSequencesStr = stopSequences.join('\n') + '\n';
-    const answerDef = prepareConfigs('key5', '', 'gpt-4.1-nano', '', '', stopSequencesStr, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
+    const answerDef = prepareConfigs('key5', '', 'gpt-4.1-nano', '', '', '', '', stopSequencesStr, 'Assistant', 'Hi! How\'s the weather in Kyoto today?');
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'gpt-4.1-nano', MAX_TOKENS_DEFAULT, 1, stopSequences, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
+        assertRequest(request, 'key5', '', 'gpt-4.1-nano', MAX_TOKENS_DEFAULT, undefined, undefined, 1, stopSequences, 'Assistant', 'Hi! How\'s the weather in Kyoto today?', []);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("Hi! It's sunny today."));
     });
     main();
@@ -785,10 +848,11 @@ test('Success to request - with stop', () => {
 });
 
 /**
- * 成功 - 画像を添付。detail 指定なし
+ * 成功 - 画像を添付。detail 指定なし  reasoningEffort  verbosity を指定
  */
 test('Success to request - with attached images, no detail param', () => {
-    const answerDef = prepareConfigs('key5', '', 'o3-mini', '', '', '', '', 'Describe the images attached.');
+    const answerDef = prepareConfigs('key5', '', 'o3-mini', '', 'high', 'low', '', '', '', 'Describe the images attached.');
+    configs.put('conf_Images1Detail', undefined);
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
@@ -801,7 +865,7 @@ test('Success to request - with attached images, no detail param', () => {
 
     const imageContentTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'o3-mini', MAX_TOKENS_DEFAULT, 1, [], '', 'Describe the images attached.', imageContentTypes);
+        assertRequest(request, 'key5', '', 'o3-mini', MAX_TOKENS_DEFAULT, 'high', 'low', 1, undefined, '', 'Describe the images attached.', imageContentTypes, undefined);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
     });
     main();
@@ -811,10 +875,10 @@ test('Success to request - with attached images, no detail param', () => {
 });
 
 /**
- * 成功 - 画像を添付。detail を指定
+ * 成功 - 画像を添付。detail を指定    reasoningEffort  verbosity を指定
  */
 test('Success to request - with attached images, detail param set', () => {
-    const answerDef = prepareConfigs('key5', '', 'chatgpt-4o-latest', '', '', '', '', 'Describe the images attached.');
+    const answerDef = prepareConfigs('key5', '', 'gpt-5-nano', '', 'medium', 'medium', '', '', '', 'Describe the images attached.');
     configs.put('conf_Images1Detail', 'low');
 
     // 添付画像を指定
@@ -826,7 +890,7 @@ test('Success to request - with attached images, detail param set', () => {
 
     const imageContentTypes = ['image/png', 'image/jpeg'];
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key5', '', 'chatgpt-4o-latest', MAX_TOKENS_DEFAULT, 1, [], '', 'Describe the images attached.', imageContentTypes, 'low');
+        assertRequest(request, 'key5', '', 'gpt-5-nano', MAX_TOKENS_DEFAULT, 'medium', 'medium', 1, undefined, '', 'Describe the images attached.', imageContentTypes, 'low');
         return httpClient.createHttpResponse(200, 'application/json', createResponse("The first one is a blue circle and the second one is a red square."));
     });
     main();
