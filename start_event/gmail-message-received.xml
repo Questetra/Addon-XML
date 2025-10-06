@@ -3,7 +3,7 @@
     <addon-type>START_EVENT</addon-type>
     <label>Start: Gmail: Email Message Received</label>
     <label locale="ja">開始: Gmail: メール受信時</label>
-    <last-modified>2024-04-16</last-modified>
+    <last-modified>2025-10-06</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -148,9 +148,8 @@ function getMessages(auth, labelIds, limit, timestampLowerLimit) {
     labelIds.forEach(labelId => {
         request = request.queryParam('labelIds', labelId);
     });
-    // 時刻は Sent が対象なので、余裕を持たせて、timestampLowerLimit の 1 日前の時刻から
     // 単位はミリ秒ではなく秒
-    const q = `newer: ${Math.floor(timestampLowerLimit.addDays(-1).getTime() / 1000)}`;
+    const q = `newer: ${Math.floor(timestampLowerLimit.getTime() / 1000)}`;
     engine.log(`q: ${q}`);
     request = request.queryParam('q', q);
     const response = request
@@ -175,7 +174,15 @@ function getMessages(auth, labelIds, limit, timestampLowerLimit) {
     return json.messages
         .filter(msg => !engine.isProcessStarted(msg.id)) // 既にプロセス開始済みのものを除く
         .map(msg => getMessage(auth, msg.id)) // id 以外の情報を取得
-        .filter(msg => !msg.timestamp.before(timestampLowerLimit)); // timestamp が下限より前のものを除く
+        // 検索条件ですでに timestampLowerLimit によりフィルタしているが、
+        // 検索条件の対象時刻とメールの timestamp が一致しない場合が稀にあるため、再フィルタ
+        .filter(msg => {
+            const isOld = msg.timestamp.before(timestampLowerLimit);
+            if (isOld) {
+                engine.log(`excluded by timestampLowerLimit: id=${msg.id}, timestamp=${datetimeFormatter.format(msg.timestamp)}`);
+            }
+            return !isOld; // timestampLowerLimit 以前のものを除外
+        });
 }
 
 /**
@@ -278,7 +285,7 @@ const assertGetMessageListRequest = ({url, method}, labelIds, limit, timestampLo
     labelIds.forEach(labelId => {
         expectedUrl += `&labelIds=${labelId}`;
     });
-    const q = `newer: ${Math.floor(timestampLowerLimit.addDays(-1).getTime() / 1000)}`;
+    const q = `newer: ${Math.floor(timestampLowerLimit.getTime() / 1000)}`;
     expectedUrl += `&q=${encodeURIComponent(q)}`;
     expectedUrl = expectedUrl.replace(/%20/g, '+'); // HttpRequestWrapper#queryParam() はスペースを + に置き換える;
     expect(url).toEqual(expectedUrl);
