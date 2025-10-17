@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Drive: Copy File</label>
+    <label locale="ja">Google ドライブ: ファイルコピー</label>
+    <last-modified>2025-02-14</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item copies the specified file on Google Drive. You can optionally specify the destination folder and the new file
+        name, and store the ID or web view URL of the created file.
+    </summary>
+    <summary locale="ja">
+        この工程は、Google ドライブ上の指定ファイルをコピーします。保存先のフォルダや新しいファイル名を任意で設定でき、作成さ
+        れたファイルの ID や表示用 URL を保存できます。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-filecopy/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-filecopy/</help-page-url>
+
+    <configs>
+        <config name="conf_UserID" form-type="QUSER" required="true">
+            <label>C1: User connects to Google Drive (must be App Administrator)</label>
+            <label locale="ja">C1: Google ドライブ に接続するユーザ（要アプリ管理権限）</label>
+        </config>
+        <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true" required="true">
+            <label>C2: Source File ID</label>
+            <label locale="ja">C2: コピー元ファイルの ID</label>
+        </config>
+        <config name="conf_DestinationFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C3: Folder ID to store (The same folder as the source if blank)</label>
+            <label locale="ja">C3: 保存先フォルダの ID（空欄の場合、コピー元と同じ場所に作成されます）</label>
+        </config>
+        <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
+            <label>C4: New File Name (named automatically if blank)</label>
+            <label locale="ja">C4: 新しいファイル名（空欄の場合、自動的に設定されます）</label>
+        </config>
+        <config name="conf_NewFileIdItem" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save new File ID</label>
+            <label locale="ja">C5: 作成されたファイル ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_NewFileUrlItem" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save new File Web View URL</label>
+            <label locale="ja">C6: 作成されたファイルの表示用 URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+const COPY_FIELDS = 'id,name,parents,webViewLink';
+
+function main() {
+    const quser = getQuser();
+    const sourceFileId = getSourceFileId();
+    const destinationFolderId = getDestinationFolderId();
+    const newFileName = getNewFileName();
+    const newFileIdDataDef = configs.getObject('conf_NewFileIdItem');
+    const newFileUrlDataDef = configs.getObject('conf_NewFileUrlItem');
+
+    const copiedFile = copyFile(quser, sourceFileId, destinationFolderId, newFileName);
+
+    engine.log(`Succeeded to copy. Source ID: ${sourceFileId}, New ID: ${copiedFile.id}`);
+
+    if (newFileIdDataDef !== null) {
+        engine.setData(newFileIdDataDef, copiedFile.id);
+    }
+    if (newFileUrlDataDef !== null) {
+        const webViewUrl = copiedFile.webViewLink ?? `https://drive.google.com/file/d/${copiedFile.id}/view`;
+        engine.setData(newFileUrlDataDef, webViewUrl);
+    }
+}
+
+/**
+ * 実行ユーザを取得する
+ * @return {QuserView} 実行ユーザ
+ */
+function getQuser() {
+    const quser = configs.getObject('conf_UserID');
+    if (quser === null) {
+        throw 'User not found.';
+    }
+    engine.log(`User Name: ${quser.getName()}`);
+    return quser;
+}
+
+/**
+ * コピー元のファイル ID を取得する
+ * @return {String} コピー元ファイル ID
+ */
+function getSourceFileId() {
+    let fileId = configs.get('conf_SourceFileId');
+    const fileIdDef = configs.getObject('conf_SourceFileId');
+    if (fileIdDef !== null) {
+        fileId = engine.findData(fileIdDef);
+    }
+    if (fileId === null) {
+        throw "Source File ID isn't set.";
+    }
+    const trimmed = fileId.trim();
+    if (trimmed === '') {
+        throw "Source File ID isn't set.";
+    }
+    return trimmed;
+}
+
+/**
+ * 保存先フォルダ ID を取得する（未指定の場合は空文字を返す）
+ * @return {String} 保存先フォルダ ID または空文字
+ */
+function getDestinationFolderId() {
+    let folderId = configs.get('conf_DestinationFolderId');
+    const folderIdDef = configs.getObject('conf_DestinationFolderId');
+    if (folderIdDef !== null) {
+        folderId = engine.findData(folderIdDef);
+    }
+    if (folderId === null) {
+        return '';
+    }
+    return folderId.trim();
+}
+
+/**
+ * 新しいファイル名を取得する（未指定の場合は空文字を返す）
+ * @return {String} 新しいファイル名または空文字
+ */
+function getNewFileName() {
+    const newName = configs.get('conf_NewFileName');
+    if (newName === null) {
+        return '';
+    }
+    return newName.trim();
+}
+
+/**
+ * ファイルをコピーする
+ * @param {QuserView} quser 実行ユーザ
+ * @param {String} sourceFileId コピー元のファイル ID
+ * @param {String} destinationFolderId 保存先フォルダ ID
+ * @param {String} newFileName 新しいファイル名
+ * @return {Object} コピー後のファイル情報
+ */
+function copyFile(quser, sourceFileId, destinationFolderId, newFileName) {
+    const url = `https://www.googleapis.com/drive/v3/files/${sourceFileId}/copy`;
+    const body = {};
+    if (destinationFolderId !== '') {
+        body.parents = [destinationFolderId];
+    }
+    if (newFileName !== '') {
+        body.name = newFileName;
+    }
+
+    const response = httpClient.begin()
+        .googleOAuth2(quser, 'Drive')
+        .queryParam('fields', COPY_FIELDS)
+        .queryParam('supportsAllDrives', 'true')
+        .body(JSON.stringify(body), 'application/json; charset=UTF-8')
+        .post(url);
+
+    const status = response.getStatusCode();
+    const responseBody = response.getResponseAsString();
+    if (status >= 300) {
+        engine.log(responseBody);
+        throw `Failed to copy. Source ID: ${sourceFileId}, status: ${status}`;
+    }
+
+    let json;
+    try {
+        json = JSON.parse(responseBody);
+    } catch (error) {
+        throw `Failed to parse response. Source ID: ${sourceFileId}`;
+    }
+
+    if (json.id === undefined) {
+        throw `Failed to retrieve new file information. Source ID: ${sourceFileId}`;
+    }
+
+    return json;
+}
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA71JREFUWEfF
+        V11oFFcU/s7M7K6TRs1vK1VUSGmbCK2SB6VFgpLWlYC2omIDLaUlCBGfimwWgw9Fu9mW0ocSoUhE
+        aKmlgUgUyShiEUWSh4AW7L9CS5PGZhuTJmTi7swcmUn3d+ZOdtGy87Ts3HvOd77zfefeIZT5oVLy
+        h2MP3wTMViJqZqABQM1/+6cIuMvMo4B8RYuGzhUbd0kArT1TK2VWj5CEg2DUFRWYkGALX5ikf3Kl
+        q2bGb48vgJ0x/T2WEC86cWEmQoIsRIai6mkRCCGAcHy+F0ydRVW81CLik1qk4pDXMk8A4bj+NRhv
+        LRW3pPeEs1pEbXeTVPDPE63clc3NRB4DTs8JfX6V7d2soKVRgizlk5cyGBdvmbj8velLDDHez9VE
+        JoqtdoXU3/wE19Io452tCtQgUP2Uu3u/TliInE1CT/pgICQM1p9LuyMTZUdMP06Eo37wYweC2LhO
+        wsQ0o245QZHzVxsm8O2IgS+vG74sMOPEpajabS/KAAjH9Um/6vdvUdD+qoKQAiykgFmdUb/CzcLE
+        DCN+PoWfxi0xCEJCi6j1GQDOhCNrQLRjdQ2h+40g1tdnE/4zy6gIkdOO3Mdi4OodE59eTPmbhKU9
+        9sR0IoZj870gsec7tivY1axAkbIxDQuY/JexaiWBCoiYnmd8fsnAzV98BMl8UotWHHK27uzRhxnY
+        7AX55XUSjrQFULvcTbdNs92G2kr3u1u/W4h+I1YjASNDXeqWRQZ69EnAe85Hdwew9QXZVeXsAqP3
+        soENayS0bZJR4EpHJ2eupTA4KmQhoXWpi00N9+j2qhyCF7l4/SUZHdsUVC7Lr9Du87UfTXx8IYW1
+        dYRje4JYXe1m4d7fjI8GkxibYi9yLa1LlYUAbHEd3xdE0xoXLhQqPdchuZlsnZwfNXDqqqct8wC4
+        WlBK0FLA5gDMtsBLhJ+9HcSLz7qrH3/AmFtgBJR8ym0uQwG4tGJawNBtE/3D+Szki9DDhrubZbzb
+        EsCyQBaz3wASmX7sAePDgST+SBToINeGokF0Yn8Qm9ZLTlXMwF/TjKdXuEewKHnSAPpHDHx1w0MD
+        uYPIcYLHKH7leRmHdyioqiCHdltU9u9inx/+tNDd73E4FY5iO6DoMPqgLYBtTTLuzzBWVZHL7yIw
+        cw8Zfd8Z0G6754DnYSQ6jm2fd74WQMMzhMpQcdXb7br+s4nYoMd5IDqOnZFcxIWkWPpF64QXkvSG
+        sl7JsiDKeCn9X5go9VqeBlHWD5M0iLJ+mhUquSwfp49ru6X2PwLQFL0wM02BagAAAABJRU5ErkJg
+        gg==
+    </icon>
+
+    <test><![CDATA[
+const prepareUser = () => {
+    const quser = engine.createQuser(3, 'South Pole', 'south.pole@example.com');
+    configs.putObject('conf_UserID', quser);
+    return quser;
+};
+
+const prepareSourceIdConfig = (value) => {
+    const sourceDef = engine.createDataDefinition('コピー元ファイルID', 1, 'q_sourceFileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_SourceFileId', sourceDef);
+    if (value !== undefined) {
+        engine.setData(sourceDef, value);
+    }
+    return sourceDef;
+};
+
+const prepareDestinationConfig = (value) => {
+    const destinationDef = engine.createDataDefinition('保存先フォルダID', 2, 'q_destinationFolderId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_DestinationFolderId', destinationDef);
+    if (value !== undefined) {
+        engine.setData(destinationDef, value);
+    }
+    return destinationDef;
+};
+
+const prepareResultDataDefs = () => {
+    const idDef = engine.createDataDefinition('コピー後ファイルID', 3, 'q_newFileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_NewFileIdItem', idDef);
+    engine.setData(idDef, '既存値');
+
+    const urlDef = engine.createDataDefinition('コピー後ファイルURL', 4, 'q_newFileUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_NewFileUrlItem', urlDef);
+    engine.setData(urlDef, '既存値');
+
+    return { idDef, urlDef };
+};
+
+const assertCopyRequest = ({ url, method, contentType, body }, sourceFileId, destinationId, newFileName) => {
+    const fields = encodeURIComponent('id,name,parents,webViewLink');
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${sourceFileId}/copy?fields=${fields}&supportsAllDrives=true`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    if (destinationId !== null) {
+        expect(bodyObj.parents).toEqual([destinationId]);
+    } else {
+        expect(bodyObj.parents).toBeUndefined();
+    }
+    if (newFileName !== '') {
+        expect(bodyObj.name).toEqual(newFileName);
+    } else {
+        expect(bodyObj.name).toBeUndefined();
+    }
+};
+
+const assertError = (func, errorMsg) => {
+    let thrown = false;
+    try {
+        func();
+    } catch (e) {
+        thrown = true;
+        expect(e.toString()).toEqual(errorMsg);
+    }
+    if (!thrown) {
+        fail('No error was thrown.');
+    }
+};
+
+test('User not found', () => {
+    configs.put('conf_UserID', '3');
+    configs.put('conf_SourceFileId', 'abc123');
+
+    assertError(() => main(), 'User not found.');
+});
+
+test('Source File ID is blank', () => {
+    prepareUser();
+    configs.put('conf_SourceFileId', '  ');
+
+    assertError(() => main(), "Source File ID isn't set.");
+});
+
+test('Failed to copy', () => {
+    prepareUser();
+    prepareSourceIdConfig('src123');
+    configs.put('conf_NewFileName', 'Copy');
+
+    httpClient.setRequestHandler((request) => {
+        assertCopyRequest(request, 'src123', null, 'Copy');
+        return httpClient.createHttpResponse(403, 'application/json', '{"error":"forbidden"}');
+    });
+
+    assertError(() => main(), 'Failed to copy. Source ID: src123, status: 403');
+});
+
+test('Success without destination (no webViewLink)', () => {
+    prepareUser();
+    prepareSourceIdConfig('src456');
+    configs.put('conf_NewFileName', '');
+    const { idDef, urlDef } = prepareResultDataDefs();
+
+    httpClient.setRequestHandler((request) => {
+        assertCopyRequest(request, 'src456', null, '');
+        return httpClient.createHttpResponse(200, 'application/json', '{"id":"new456"}');
+    });
+
+    main();
+
+    expect(engine.findData(idDef)).toEqual('new456');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/file/d/new456/view');
+});
+
+test('Success with destination and new name', () => {
+    prepareUser();
+    prepareSourceIdConfig('src789');
+    prepareDestinationConfig('folder987');
+    configs.put('conf_NewFileName', 'CopyFile.docx');
+    const { idDef, urlDef } = prepareResultDataDefs();
+
+    httpClient.setRequestHandler((request) => {
+        assertCopyRequest(request, 'src789', 'folder987', 'CopyFile.docx');
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            '{"id":"new789","webViewLink":"https://drive.google.com/file/d/new789/view","name":"CopyFile.docx"}'
+        );
+    });
+
+    main();
+
+    expect(engine.findData(idDef)).toEqual('new789');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/file/d/new789/view');
+});
+
+]]></test>
+</service-task-definition>
