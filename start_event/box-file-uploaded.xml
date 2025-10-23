@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <addon-type>START_EVENT</addon-type>
-    <last-modified>2023-09-21</last-modified>
+    <last-modified>2025-10-23</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <label>Start: Box: File Uploaded</label>
@@ -128,7 +128,8 @@ const getFiles = (oauth2, folderId, timestampLowerLimit) => {
     }
 
     return json.entries
-        .filter(entry => entry.type === 'file') // ファイルのみに絞り込み
+        // ファイルのみに絞り込み、既にプロセス開始済みのものを除く
+        .filter(entry => entry.type === 'file' && !engine.isProcessStarted(entry.id))
         .map(formatFile)
         .filter(entry => !entry.timestamp.before(timestampLowerLimit)); // timestampLowerLimit 以降のデータのみに絞り込み
 }
@@ -549,6 +550,61 @@ test('Fail - response includes next_marker', () => {
         expect(e.toString()).toEqual('More than 1000 items are in the specified folder');
     }
 });
+
+
+/**
+ * 正常系のテストケース
+ * プロセス開始済みのファイルを含むレスポンス
+ */
+test('Success - response includes files that are already processed', () => {
+    const response = {
+        "entries": [
+            {
+                "id": "12345", // プロセス開始済み
+                "type": "file",
+                "name": "ファイル1.pdf",
+                "created_at": "2012-12-12T12:00:00+09;00"
+            },
+            {
+                "id": "23456",
+                "type": "file",
+                "name": "ファイル2.pdf",
+                "created_at": "2012-12-12T10:30:00+09:00"
+            },
+            {
+                "id": "34567", // プロセス開始済み
+                "type": "file",
+                "name": "ファイル3.pdf",
+                "created_at": "2012-12-25T10:00:00+09:00"
+            }
+        ],
+        "next_marker": null
+    };
+
+    const folderId = '1234567';
+    prepareConfigs(folderId);
+
+    execute();
+
+    const limit = 3;
+    const timestampLowerLimit = dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T00:00:00+09:00');
+
+    // engine.isProcessStarted のモック設定
+    engine.addProcessStartedSet('12345'); // 1 つ目のファイル ID をプロセス開始済みにセット
+    engine.addProcessStartedSet('34567'); // 3 つ目のファイル ID をプロセス開始済みにセット
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, folderId, limit);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(response));
+    });
+
+    const result = list(limit, timestampLowerLimit);
+    expect(result.length).toEqual(1); // プロセス開始済みのファイルは除外される
+
+    // プロセス未開始のファイルのみが返される
+    assertFile(result[0], '23456', dateFormatter.parse(DATETIME_FORMAT, '2012-12-12T10:30:00+09:00'));
+});
+
 
 ]]></test>
 
