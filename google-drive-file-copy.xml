@@ -1,0 +1,501 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Google Drive: Copy File</label>
+    <label locale="ja">Google ドライブ: ファイルコピー</label>
+    <last-modified>2025-12-15</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>
+        This item copies the specified file on Google Drive. You can optionally specify the destination folder and the new file
+        name, and store the ID or web view URL of the created file.
+    </summary>
+    <summary locale="ja">
+        この工程は、Google ドライブ上の指定ファイルをコピーします。保存先のフォルダや新しいファイル名を任意で設定でき、作成さ
+        れたファイルの ID や表示用 URL を保存できます。
+    </summary>
+    <help-page-url>https://support.questetra.com/bpmn-icons/googledrive-filecopy/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/googledrive-filecopy/</help-page-url>
+
+    <configs>
+        <config name="conf_Auth" form-type="OAUTH2" auth-type="OAUTH2_JWT_BEARER" required="true">
+            <label>C1: Service Account Setting</label>
+            <label locale="ja">C1: サービスアカウント設定</label>
+        </config>
+        <config name="conf_SourceFileId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true" required="true">
+            <label>C2: Source File ID</label>
+            <label locale="ja">C2: コピー元ファイルの ID</label>
+        </config>
+        <config name="conf_DestinationFolderId" form-type="SELECT" select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C3: Folder ID to store (The same folder as the source if blank)</label>
+            <label locale="ja">C3: 保存先フォルダの ID（空欄の場合、コピー元と同じ場所に作成されます）</label>
+        </config>
+        <config name="conf_NewFileName" form-type="TEXTFIELD" el-enabled="true">
+            <label>C4: New File Name (named automatically if blank)</label>
+            <label locale="ja">C4: 新しいファイル名（空欄の場合、自動的に設定されます）</label>
+        </config>
+        <config name="conf_NewFileIdItem" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save new File ID</label>
+            <label locale="ja">C5: 作成されたファイル ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_NewFileUrlItem" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save new File Web View URL</label>
+            <label locale="ja">C6: 作成されたファイルの表示用 URL を保存するデータ項目</label>
+        </config>
+    </configs>
+
+    <script><![CDATA[
+const COPY_FIELDS = 'id,name,parents,webViewLink';
+
+function main() {
+    const auth = configs.getObject('conf_Auth');
+    const sourceFileId = getSourceFileId();
+    const destinationFolderId = getDestinationFolderId();
+    const newFileName = getNewFileName();
+    const newFileIdDataDef = configs.getObject('conf_NewFileIdItem');
+    const newFileUrlDataDef = configs.getObject('conf_NewFileUrlItem');
+
+    const copiedFile = copyFile(auth, sourceFileId, destinationFolderId, newFileName);
+
+    engine.log(`Succeeded to copy. Source ID: ${sourceFileId}, New ID: ${copiedFile.id}`);
+
+    if (newFileIdDataDef !== null) {
+        engine.setData(newFileIdDataDef, copiedFile.id);
+    }
+    if (newFileUrlDataDef !== null) {
+        const webViewUrl = copiedFile.webViewLink ?? `https://drive.google.com/file/d/${copiedFile.id}/view`;
+        engine.setData(newFileUrlDataDef, webViewUrl);
+    }
+}
+
+/**
+ * コピー元のファイル ID を取得する
+ * @return {String} コピー元ファイル ID
+ */
+function getSourceFileId() {
+    let fileId = configs.get('conf_SourceFileId');
+    const fileIdDef = configs.getObject('conf_SourceFileId');
+    if (fileIdDef !== null) {
+        fileId = engine.findData(fileIdDef);
+    }
+    if (fileId === null) {
+        throw "Source File ID isn't set.";
+    }
+    const trimmed = fileId.trim();
+    if (trimmed === '') {
+        throw "Source File ID isn't set.";
+    }
+    return trimmed;
+}
+
+/**
+ * 保存先フォルダ ID を取得する（未指定の場合は空文字を返す）
+ * @return {String} 保存先フォルダ ID または空文字
+ */
+function getDestinationFolderId() {
+    let folderId = configs.get('conf_DestinationFolderId');
+    const folderIdDef = configs.getObject('conf_DestinationFolderId');
+    if (folderIdDef !== null) {
+        folderId = engine.findData(folderIdDef);
+    }
+    if (folderId === null) {
+        return '';
+    }
+    return folderId.trim();
+}
+
+/**
+ * 新しいファイル名を取得する（未指定の場合は空文字を返す）
+ * @return {String} 新しいファイル名または空文字
+ */
+function getNewFileName() {
+    const newName = configs.get('conf_NewFileName');
+    if (newName === null) {
+        return '';
+    }
+    return newName.trim();
+}
+
+/**
+ * ファイルをコピーする
+ * @param {HttpAuthSettingWrapper} auth 認証設定
+ * @param {String} sourceFileId コピー元のファイル ID
+ * @param {String} destinationFolderId 保存先フォルダ ID
+ * @param {String} newFileName 新しいファイル名
+ * @return {Object} コピー後のファイル情報
+ */
+function copyFile(auth, sourceFileId, destinationFolderId, newFileName) {
+    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sourceFileId)}/copy`;
+    const body = {};
+    if (destinationFolderId !== '') {
+        body.parents = [destinationFolderId];
+    }
+    if (newFileName !== '') {
+        body.name = newFileName;
+    }
+
+    const response = httpClient.begin()
+        .oauth2JwtBearer(auth, () => getAccessToken(auth))
+        .queryParam('fields', COPY_FIELDS)
+        .queryParam('supportsAllDrives', 'true')
+        .body(JSON.stringify(body), 'application/json; charset=UTF-8')
+        .post(url);
+
+    const status = response.getStatusCode();
+    const responseBody = response.getResponseAsString();
+    if (status >= 300) {
+        engine.log(responseBody);
+        throw `Failed to copy. Source ID: ${sourceFileId}, status: ${status}`;
+    }
+
+    let json;
+    try {
+        json = JSON.parse(responseBody);
+    } catch (error) {
+        throw `Failed to parse response. Source ID: ${sourceFileId}`;
+    }
+
+    if (json.id === undefined) {
+        throw `Failed to retrieve new file information. Source ID: ${sourceFileId}`;
+    }
+
+    return json;
+}
+
+const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
+const SCOPE = 'https://www.googleapis.com/auth/drive';
+
+/**
+ * @param {HttpAuthSettingWrapper} auth HTTP 認証設定
+ * @returns {{access_token: string}} アクセストークンを含むオブジェクト
+ */
+function getAccessToken(auth) {
+    const privateKeyId = auth.getPrivateKeyId();
+    const privateKey = auth.getPrivateKey();
+    const serviceAccount = auth.getCustomSecret1();
+    const scope = auth.getScope();
+    if (!scope.split(' ').includes(SCOPE)) {
+        throw new Error(`Scope ${SCOPE} must be included in the scope.`);
+    }
+    if (privateKeyId === '') {
+        throw new Error('Private Key ID is required.');
+    }
+    if (privateKey === '') {
+        throw new Error('Private Key is required.');
+    }
+    if (serviceAccount === '') {
+        throw new Error('Service Account must be set to Custom Secret 1.');
+    }
+
+    const header = {
+        alg: 'RS256',
+        typ: 'at+jwt',
+        kid: privateKeyId,
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+        iss: serviceAccount,
+        aud: URL_TOKEN_REQUEST,
+        sub: '',
+        iat: now,
+        exp: now + 3600,
+        scope,
+    };
+    const keyB = rsa.readKeyFromPkcs8(privateKey);
+    const assertion = jwt.build(header, payload, keyB);
+
+    const response = httpClient.begin()
+        .formParam('grant_type', 'urn:ietf:params:oauth:grant-type:jwt-bearer')
+        .formParam('assertion', assertion)
+        .post(URL_TOKEN_REQUEST);
+    const responseText = response.getResponseAsString();
+    if (response.getStatusCode() !== 200) {
+        engine.log(responseText);
+        throw new Error(`Failed to get Access token. status: ${response.getStatusCode()}`);
+    }
+    const result = JSON.parse(responseText);
+    if (result.access_token === undefined) {
+        engine.log(responseText);
+        throw new Error('Failed to get Access token. access token not found.');
+    }
+    return result;
+}
+]]></script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA71JREFUWEfF
+        V11oFFcU/s7M7K6TRs1vK1VUSGmbCK2SB6VFgpLWlYC2omIDLaUlCBGfimwWgw9Fu9mW0ocSoUhE
+        aKmlgUgUyShiEUWSh4AW7L9CS5PGZhuTJmTi7swcmUn3d+ZOdtGy87Ts3HvOd77zfefeIZT5oVLy
+        h2MP3wTMViJqZqABQM1/+6cIuMvMo4B8RYuGzhUbd0kArT1TK2VWj5CEg2DUFRWYkGALX5ikf3Kl
+        q2bGb48vgJ0x/T2WEC86cWEmQoIsRIai6mkRCCGAcHy+F0ydRVW81CLik1qk4pDXMk8A4bj+NRhv
+        LRW3pPeEs1pEbXeTVPDPE63clc3NRB4DTs8JfX6V7d2soKVRgizlk5cyGBdvmbj8velLDDHez9VE
+        JoqtdoXU3/wE19Io452tCtQgUP2Uu3u/TliInE1CT/pgICQM1p9LuyMTZUdMP06Eo37wYweC2LhO
+        wsQ0o245QZHzVxsm8O2IgS+vG74sMOPEpajabS/KAAjH9Um/6vdvUdD+qoKQAiykgFmdUb/CzcLE
+        DCN+PoWfxi0xCEJCi6j1GQDOhCNrQLRjdQ2h+40g1tdnE/4zy6gIkdOO3Mdi4OodE59eTPmbhKU9
+        9sR0IoZj870gsec7tivY1axAkbIxDQuY/JexaiWBCoiYnmd8fsnAzV98BMl8UotWHHK27uzRhxnY
+        7AX55XUSjrQFULvcTbdNs92G2kr3u1u/W4h+I1YjASNDXeqWRQZ69EnAe85Hdwew9QXZVeXsAqP3
+        soENayS0bZJR4EpHJ2eupTA4KmQhoXWpi00N9+j2qhyCF7l4/SUZHdsUVC7Lr9Du87UfTXx8IYW1
+        dYRje4JYXe1m4d7fjI8GkxibYi9yLa1LlYUAbHEd3xdE0xoXLhQqPdchuZlsnZwfNXDqqqct8wC4
+        WlBK0FLA5gDMtsBLhJ+9HcSLz7qrH3/AmFtgBJR8ym0uQwG4tGJawNBtE/3D+Szki9DDhrubZbzb
+        EsCyQBaz3wASmX7sAePDgST+SBToINeGokF0Yn8Qm9ZLTlXMwF/TjKdXuEewKHnSAPpHDHx1w0MD
+        uYPIcYLHKH7leRmHdyioqiCHdltU9u9inx/+tNDd73E4FY5iO6DoMPqgLYBtTTLuzzBWVZHL7yIw
+        cw8Zfd8Z0G6754DnYSQ6jm2fd74WQMMzhMpQcdXb7br+s4nYoMd5IDqOnZFcxIWkWPpF64QXkvSG
+        sl7JsiDKeCn9X5go9VqeBlHWD5M0iLJ+mhUquSwfp49ru6X2PwLQFL0wM02BagAAAABJRU5ErkJg
+        gg==
+    </icon>
+
+    <test><![CDATA[
+const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD3Zg0KVn2jff8t
+NHk7p8uWEvsaxA59CkGi1v81kyVsnd+yxm23nWIKhGplhy0hK7dnBP3OMB0YCfvo
+yXqryQMJb96xMyPkW+n9a1uh3wOibpPzhw/QbVzd5vgMcK9qN2M5oB1iYLEUvlGq
+ogQ8r1gYUlt/Of0oIYKIwe9HiQXUTNxnNyW+wrURNkDio4QKMvAEqdG4iEzShAzE
+bNLOG4YAdmKxZ+gL0646s5XRTIO7q/3haiF9BszxFul9GiugQ8rdPKxJEvQ9YMMt
+cz39wVM4ZvJ8gmUrD5wwucDQXfeiP7bU9meBAQGpXcmYBFpBHI0hTEHYqM0MZ7pW
+JVB9eEeFAgMBAAECggEBAK5LBCbjVjJHgu37COoBRcmd57AsrbRj9Gffpf69guEp
+vD570zJHu5mDPl32xNGYteXrO0/2z5hu+D1BLJ43yF7upGociE3Kf2fdKbo5nprh
+4nPwFDEXyxQ+M0S4YqynBs3DQtBbJIZjqq9W4ztJoPvJkdJpLTQHn6nvTz8LhsLQ
+XN9nTWqTNQ3KSiUXPrXkV0dZ2sm2OCjQE99X9rm7araP6Y1FO2irGySPftwGnR+C
+/jw1vLzeTCsI9+pZQ2A3JZMwYB5UPQPo/roWJ7tfrT/aT6h+eLpavDUd5W0Wowh/
+HqzFQE2bJGE09F8w9mHaQAI+hG/Lr7BbO4sl3n5E3GUCgYEA/TZZc96Jqsom2f5g
+iXtl6hX/5DrKVfHp6RzRpQ8aKNokJdTvtd25YiWHUY8h25O28Wdo9QDsKMkuCnlz
+EOV3/624iiTGzuVCpB2/LInO4uL5mqYtBVHVDwR41WCOM2RbX5HyB8NqpycIHSO5
+gZtb48OSJnGZbHEn1BkoaoywzwcCgYEA+h9Q/Bz/09GHfMNUfsjp4cQ67IX1iHqA
+noPqnD8KY1UA2+KR3SBa04zk4KQkilNN5wb1r4XLvFnIWjEEicCQqsw2aEnJwGBI
+6Tvd6KWw4xON2SqPlgPH75AOUQwbrsF0Gbee3OktMdOPsG86cTES7XwCOj1syN9d
+kxyEMbIbRhMCgYAA8Vbb65QvopkKbrwFRwRWHsbZHq7qKwBn8ceGCcxbIpTH30cV
+MkIib2lVkGbb3mzr8Sqe3uYCMN2PBGy9P113AjqRqRlkY84ftkyj6c9vYND1FnFM
+d8WHTMj2YmmlH1aHwI9aIAwhmy+YjC2AogdxjaTZp8qecL1pOL7BxsxRuQKBgQCJ
+qkjhqnhoNk/zLHNKIP0RhPbFjemZR4uZM5QikVP/Xh7N54NPCOrUuxySQ+XUuIsN
+GDiLdgGv1l6+vXH4+6LkTue3OL2xg409yfSWgvO719xf5dwHvmcCBPDMTPTDl7h2
+Gyl1/2UfoojYnC+3c0Iuse1r7rj8SmxvduePjq8SPwKBgACswSW/FWGFyqfhXvIv
+QWSZF/yiIsywjJgiTsRp92Cr98QDQNC0c8SCQWew3T1r/CHX3EDqjf3djx5qISpi
+ESFz5+HMVWL2lMD5KqLxIdHZNe4fbPyW779yMNdyd0rlgOS1kM3WrYdV9tgjc1VI
+lweR14IODzhshANib/N8F47e
+-----END PRIVATE KEY-----`;
+
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIDbzCCAlegAwIBAgIUPV0u0uVd+8UHrS6NRz/xVad9oRUwDQYJKoZIhvcNAQEL
+BQAwRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYDVQQKDAlRdWVz
+dGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MB4XDTI0MDExODA4MDYxMVoXDTI0
+MDIxNzA4MDYxMVowRzELMAkGA1UEBhMCSlAxDjAMBgNVBAgMBUt5b3RvMRIwEAYD
+VQQKDAlRdWVzdGV0cmExFDASBgNVBAsMC0RldmVsb3BtZW50MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA92YNClZ9o33/LTR5O6fLlhL7GsQOfQpBotb/
+NZMlbJ3fssZtt51iCoRqZYctISu3ZwT9zjAdGAn76Ml6q8kDCW/esTMj5Fvp/Wtb
+od8Dom6T84cP0G1c3eb4DHCvajdjOaAdYmCxFL5RqqIEPK9YGFJbfzn9KCGCiMHv
+R4kF1EzcZzclvsK1ETZA4qOECjLwBKnRuIhM0oQMxGzSzhuGAHZisWfoC9OuOrOV
+0UyDu6v94WohfQbM8RbpfRoroEPK3TysSRL0PWDDLXM9/cFTOGbyfIJlKw+cMLnA
+0F33oj+21PZngQEBqV3JmARaQRyNIUxB2KjNDGe6ViVQfXhHhQIDAQABo1MwUTAd
+BgNVHQ4EFgQU+XQRQgTm3ffYqLngkqr03TFcbvcwHwYDVR0jBBgwFoAU+XQRQgTm
+3ffYqLngkqr03TFcbvcwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAOnZodDZ4tqjkofJbIcuXczFGPta6geFl/my3H2Ubf2PJNEkDxklgml7uMych
+vs/lWi0p7YQII52lbMytADKeG/YLOBVQMp5e3WDI3D+630b3T20AwZcXW3KuAYn1
+sQuSh7RijcOKDoTMQNUCMjgBbzr5Z4eq0HYl/Uivmkdh5YH0nU2+LbU/G1RDDodh
+Q+J3TyL+Ms9ba5V8/7gs7Vaz9uuRBdYpq/MP+Iyb78/yIGOxk9Qj0fXdc+W69XGP
+rqpI6o1cfaFHC3zkRdyZA9Tvh3yE3XID9J5xRZRmUuCzUR4YkJQx436E7EzVohq7
+lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
+-----END CERTIFICATE-----`;
+
+const DEFAULT_PRIVATE_KEY_ID = 'key-12345';
+const DEFAULT_SERVICE_ACCOUNT = 'service-account@questetra.com';
+
+const createAuthSetting = (scope = SCOPE, privateKeyId = DEFAULT_PRIVATE_KEY_ID, privateKey = PRIVATE_KEY, serviceAccount = DEFAULT_SERVICE_ACCOUNT) => {
+    const auth = httpClient.createAuthSettingOAuth2JwtBearer('JWT', scope, '', '', privateKeyId, privateKey, serviceAccount, '');
+    configs.putObject('conf_Auth', auth);
+    return auth;
+};
+
+const prepareSourceIdConfig = (value) => {
+    const sourceDef = engine.createDataDefinition('コピー元ファイルID', 1, 'q_sourceFileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_SourceFileId', sourceDef);
+    if (value !== undefined) {
+        engine.setData(sourceDef, value);
+    }
+    return sourceDef;
+};
+
+const prepareDestinationConfig = (value) => {
+    const destinationDef = engine.createDataDefinition('保存先フォルダID', 2, 'q_destinationFolderId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_DestinationFolderId', destinationDef);
+    if (value !== undefined) {
+        engine.setData(destinationDef, value);
+    }
+    return destinationDef;
+};
+
+const prepareResultDataDefs = () => {
+    const idDef = engine.createDataDefinition('コピー後ファイルID', 3, 'q_newFileId', 'STRING_TEXTFIELD');
+    configs.putObject('conf_NewFileIdItem', idDef);
+    engine.setData(idDef, '既存値');
+
+    const urlDef = engine.createDataDefinition('コピー後ファイルURL', 4, 'q_newFileUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_NewFileUrlItem', urlDef);
+    engine.setData(urlDef, '既存値');
+
+    return { idDef, urlDef };
+};
+
+const assertTokenRequest = ({ url, method, contentType, body }, scope, serviceAccount) => {
+    expect(url).toEqual(URL_TOKEN_REQUEST);
+    expect(method).toEqual('POST');
+    expect(contentType).startsWith('application/x-www-form-urlencoded');
+    const query = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=`;
+    expect(body).startsWith(query);
+    const assertion = decodeURIComponent(body.substring(query.length));
+
+    const publicKey = rsa.readKeyFromX509(CERTIFICATE);
+    expect(jwt.verify(assertion, publicKey)).toEqual(true);
+
+    const payloadJson = base64.decodeFromUrlSafeString(assertion.split('.')[1]);
+    const payload = JSON.parse(payloadJson);
+    expect(payload.iss).toEqual(serviceAccount);
+    expect(payload.aud).toEqual(URL_TOKEN_REQUEST);
+    expect(payload.scope).toEqual(scope);
+};
+
+const assertCopyRequest = ({ url, method, headers, contentType, body }, token, sourceFileId, destinationId, newFileName) => {
+    const fields = encodeURIComponent('id,name,parents,webViewLink');
+    expect(url).toEqual(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sourceFileId)}/copy?fields=${fields}&supportsAllDrives=true`);
+    expect(method).toEqual('POST');
+    expect(headers.Authorization).toEqual(`Bearer ${token}`);
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    const bodyObj = JSON.parse(body);
+    if (destinationId !== null) {
+        expect(bodyObj.parents).toEqual([destinationId]);
+    } else {
+        expect(bodyObj.parents ?? null).toEqual(null);
+    }
+    if (newFileName !== '') {
+        expect(bodyObj.name).toEqual(newFileName);
+    } else {
+        expect(bodyObj.name ?? null).toEqual(null);
+    }
+};
+
+const assertError = (func, errorMsg) => {
+    let thrown = false;
+    try {
+        func();
+    } catch (e) {
+        thrown = true;
+        if (e instanceof Error) {
+            expect(e.message).toEqual(errorMsg);
+        } else {
+            expect(e.toString()).toEqual(errorMsg);
+        }
+    }
+    if (!thrown) {
+        fail('No error was thrown.');
+    }
+};
+
+test('Scope is missing', () => {
+    createAuthSetting('');
+    configs.put('conf_SourceFileId', 'src123');
+
+    assertError(() => main(), `Scope ${SCOPE} must be included in the scope.`);
+});
+
+test('Private Key ID is empty', () => {
+    createAuthSetting(SCOPE, '');
+    configs.put('conf_SourceFileId', 'src123');
+
+    assertError(() => main(), 'Private Key ID is required.');
+});
+
+test('Private Key is empty', () => {
+    createAuthSetting(SCOPE, DEFAULT_PRIVATE_KEY_ID, '');
+    configs.put('conf_SourceFileId', 'src123');
+
+    assertError(() => main(), 'Private Key is required.');
+});
+
+test('Service Account is empty', () => {
+    createAuthSetting(SCOPE, DEFAULT_PRIVATE_KEY_ID, PRIVATE_KEY, '');
+    configs.put('conf_SourceFileId', 'src123');
+
+    assertError(() => main(), 'Service Account must be set to Custom Secret 1.');
+});
+
+test('Source File ID is blank', () => {
+    createAuthSetting();
+    configs.put('conf_SourceFileId', '  ');
+
+    assertError(() => main(), "Source File ID isn't set.");
+});
+
+test('Failed to copy', () => {
+    const serviceAccount = DEFAULT_SERVICE_ACCOUNT;
+    createAuthSetting();
+    prepareSourceIdConfig('src123');
+    configs.put('conf_NewFileName', 'Copy');
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ access_token: token }));
+        }
+        assertCopyRequest(request, token, 'src123', null, 'Copy');
+        return httpClient.createHttpResponse(403, 'application/json', '{"error":"forbidden"}');
+    });
+
+    assertError(() => main(), 'Failed to copy. Source ID: src123, status: 403');
+});
+
+test('Success without destination (no webViewLink)', () => {
+    const serviceAccount = DEFAULT_SERVICE_ACCOUNT;
+    createAuthSetting();
+    prepareSourceIdConfig('src456');
+    configs.put('conf_NewFileName', '');
+    const { idDef, urlDef } = prepareResultDataDefs();
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ access_token: token }));
+        }
+        assertCopyRequest(request, token, 'src456', null, '');
+        return httpClient.createHttpResponse(200, 'application/json', '{"id":"new456"}');
+    });
+
+    main();
+
+    expect(engine.findData(idDef)).toEqual('new456');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/file/d/new456/view');
+});
+
+test('Success with destination and new name', () => {
+    const serviceAccount = DEFAULT_SERVICE_ACCOUNT;
+    createAuthSetting();
+    prepareSourceIdConfig('src789');
+    prepareDestinationConfig('folder987');
+    configs.put('conf_NewFileName', 'CopyFile.docx');
+    const { idDef, urlDef } = prepareResultDataDefs();
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({ access_token: token }));
+        }
+        assertCopyRequest(request, token, 'src789', 'folder987', 'CopyFile.docx');
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            '{"id":"new789","webViewLink":"https://drive.google.com/file/d/new789/view","name":"CopyFile.docx"}'
+        );
+    });
+
+    main();
+
+    expect(engine.findData(idDef)).toEqual('new789');
+    expect(engine.findData(urlDef)).toEqual('https://drive.google.com/file/d/new789/view');
+});
+
+]]></test>
+</service-task-definition>
