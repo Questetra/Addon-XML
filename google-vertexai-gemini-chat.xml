@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2025-10-09</last-modified>
+    <last-modified>2025-12-23</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -29,12 +29,6 @@
         <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
             <label>C4: Model</label>
             <label locale="ja">C4: モデル</label>
-            <item value="gemini-2.0-flash">
-                <label>Gemini 2.0 Flash</label>
-            </item>
-            <item value="gemini-2.0-flash-lite">
-                <label>Gemini 2.0 Flash-Lite</label>
-            </item>
             <item value="gemini-2.5-pro">
                 <label>Gemini 2.5 Pro</label>
             </item>
@@ -44,18 +38,47 @@
             <item value="gemini-2.5-flash-lite">
                 <label>Gemini 2.5 Flash-Lite</label>
             </item>
+            <item value="gemini-3-pro-preview">
+                <label>Gemini 3 Pro (Preview)</label>
+            </item>
+            <item value="gemini-3-flash-preview">
+                <label>Gemini 3 Flash (Preview)</label>
+            </item>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C5: Maximum number of tokens to consume (model default if blank)</label>
             <label locale="ja">C5: 使用するトークン数の上限（空白の場合、モデルのデフォルト値）</label>
         </config>
+        <config name="conf_ThinkingBudget" required="false" form-type="TEXTFIELD">
+            <label>C6-a: Maximum number of tokens for thinking</label>
+            <label locale="ja">C6-a: 思考に使用するトークン数の上限</label>
+        </config>
+        <config name="conf_ThinkingLevel" required="false" form-type="SELECT_ITEM">
+            <label>C6-b: Thinking Level (Only Supported for Gemini 3 series)</label>
+            <label locale="ja">C6-b: 思考レベル（Gemini 3 シリーズのみ指定可能）</label>
+            <item value="MINIMAL">
+                <label>minimal (Only for Gemini 3 Flash)</label>
+                <label locale="ja">minimal（Gemini 3 Flash のみ）</label>
+            </item>
+            <item value="LOW">
+                <label>low</label>
+            </item>
+            <item value="MEDIUM">
+                <label>medium (Only for Gemini 3 Flash)</label>
+                <label locale="ja">medium（Gemini 3 Flash のみ）</label>
+            </item>
+            <item value="HIGH">
+                <label>high (default)</label>
+                <label locale="ja">high（デフォルト）</label>
+            </item>
+        </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C6: Temperature (0.0 - 2.0) (model default if blank)</label>
-            <label locale="ja">C6: 温度（0.0 〜 2.0）（空白の場合、モデルのデフォルト値）</label>
+            <label>C7: Temperature (0.0 - 2.0) (model default if blank)</label>
+            <label locale="ja">C7: 温度（0.0 〜 2.0）（空白の場合、モデルのデフォルト値）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C7: Stop Sequences (write one per line, up to five)</label>
-            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
+            <label>C8: Stop Sequences (write one per line, up to five)</label>
+            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -66,6 +89,11 @@
                 select-data-type="FILE">
             <label>I1: Files to attach to user message</label>
             <label locale="ja">I1: ユーザメッセージに添付するファイル</label>
+        </config>
+        <config name="conf_Thought1" required="false" form-type="SELECT"
+                select-data-type="STRING_MULTILINE">
+            <label>T1: Data item to save summary of thought</label>
+            <label locale="ja">T1: 思考の要約を保存するデータ項目</label>
         </config>
         <config name="conf_Answer1" required="true" form-type="SELECT"
                 select-data-type="STRING_MULTILINE">
@@ -78,14 +106,19 @@
 
 const MAX_IMAGE_SIZE = 20971520; // Gemini のインラインファイルの制限。1 ファイルにつき 20 MB まで
 
-function main() {
+const main = () => {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');
 
     const region = retrieveRegion();
     const projectId = configs.get('conf_ProjectId');
     const model = retrieveModel();
-    const maxTokens = retrieveMaxTokens();
+    const maxTokens = retrieveMaxTokens('conf_MaxTokens', 'Maximum number of tokens to consume');
+    const thinkingBudget = retrieveMaxTokens('conf_ThinkingBudget', 'Maximum number of tokens for reasoning');
+    if (maxTokens !== null && thinkingBudget !== null && thinkingBudget >= maxTokens) {
+        throw new Error('Maximum number of tokens for thinking must be less than maximum number of tokens to consume.');
+    }
+    const thinkingLevel = configs.get('conf_ThinkingLevel');
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
     const message = configs.get('conf_Message1');
@@ -95,12 +128,14 @@ function main() {
     const inlineImages = retrieveImages();
 
     ////// == 演算 / Calculating ==
-    const answer = invokeModel(
+    const {answer, thought} = invokeModel(
         auth,
         region,
         projectId,
         model,
         maxTokens,
+        thinkingBudget,
+        thinkingLevel,
         temperature,
         stopSequences,
         message,
@@ -109,14 +144,15 @@ function main() {
 
     ////// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_Answer1', answer);
-}
+    saveData('conf_Thought1', thought);
+};
 
 /**
  * config からリージョンコードを読み出す
  * リージョンコードの形式として不正な場合はエラー
  * @return {String}
  */
-function retrieveRegion() {
+const retrieveRegion = () => {
     const region = configs.get('conf_Region');
     // 今後リージョンが増えることも考えて、文字数には余裕をみている
     const reg = new RegExp('^[a-z]{2,20}-[a-z]{2,20}[1-9]{1,2}$');
@@ -124,35 +160,37 @@ function retrieveRegion() {
         throw new Error('Region Code is invalid.');
     }
     return region;
-}
+};
 
 /**
  * config からモデル ID を読み出す
  * モデル ID として不正な文字が含まれている場合はエラー
  * @return {String}
  */
-function retrieveModel() {
+const retrieveModel = () => {
     const model = configs.get('conf_Model');
     const reg = new RegExp('^[a-z0-9.-]+$');
     if (!reg.test(model)) {
         throw new Error('Model includes an invalid character.');
     }
     return model;
-}
+};
 
 /**
  * config から最大トークン数を読み出す
  * 未定義の場合、null を返す
+ * @param confName 設定名
+ * @param label エラーメッセージ用のラベル
  * @returns {Number}
  */
-const retrieveMaxTokens = () => {
-    const maxTokens = configs.get('conf_MaxTokens');
+const retrieveMaxTokens = (confName, label) => {
+    const maxTokens = configs.get(confName);
     if (maxTokens === '') {
         return null;
     }
     const regExp = new RegExp(/^[1-9][0-9]*$/);
     if (!regExp.test(maxTokens)) {
-        throw new Error('Maximum number of tokens must be a positive integer.');
+        throw new Error(`${label} must be a positive integer.`);
     }
     return parseInt(maxTokens, 10);
 };
@@ -222,9 +260,9 @@ const retrieveImages = () => {
             !contentType.startsWith('application/pdf') &&
             !contentType.startsWith('text/plain')
         ) {
-            throw new Error(
-                `Attached file "${image.getName()}" is neither an image, video, audio, PDF, nor text.`
-            );
+//            throw new Error(
+//                `Attached file "${image.getName()}" is neither an image, video, audio, PDF, nor text.`
+//            );
         }
         const inlineImage = {
             mimeType: image.getContentType(),
@@ -305,11 +343,13 @@ const getAccessToken = (auth) => {
  * @param projectId
  * @param model
  * @param maxTokens
+ * @param thinkingBudget
+ * @param thinkingLevel
  * @param temperature
  * @param stopSequences
  * @param message
  * @param inlineImages
- * @returns {String} answer
+ * @returns {String, String} answer, thought
  */
 const invokeModel = (
     auth,
@@ -317,6 +357,8 @@ const invokeModel = (
     projectId,
     model,
     maxTokens,
+    thinkingBudget,
+    thinkingLevel,
     temperature,
     stopSequences,
     message,
@@ -324,14 +366,29 @@ const invokeModel = (
 ) => {
     const URL = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
 
-    const generation_config = {};
+    const generationConfig = {};
     if (maxTokens !== null) {
-        generation_config.maxOutputTokens = maxTokens;
+        generationConfig.maxOutputTokens = maxTokens;
     }
     if (temperature !== null) {
-        generation_config.temperature = temperature;
+        generationConfig.temperature = temperature;
     }
-    generation_config.stopSequences = stopSequences;
+    generationConfig.stopSequences = stopSequences;
+
+    const thinkingConfig = {};
+    if (configs.getObject('conf_Thought1') !== null) {
+        thinkingConfig.includeThoughts = true;
+    }
+    if (thinkingBudget !== null) {
+        thinkingConfig.thinkingBudget = thinkingBudget;
+    }
+    if (thinkingLevel !== '') {
+        thinkingConfig.thinkingLevel = thinkingLevel;
+    }
+    if (Object.keys(thinkingConfig).length > 0) {
+        generationConfig.thinkingConfig = thinkingConfig;
+    }
+
     const payload = {
         contents: {
             role: 'user',
@@ -341,11 +398,11 @@ const invokeModel = (
                 },
             ],
         },
-        safety_settings: {
+        safetySettings: {
             category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
             threshold: 'BLOCK_LOW_AND_ABOVE',
         },
-        generation_config,
+        generationConfig,
     };
     inlineImages.forEach((inlineImage) => {
         payload.contents.parts.push({
@@ -366,14 +423,26 @@ const invokeModel = (
         throw new Error(`Failed to invoke model. status: ${status}`);
     }
     const json = JSON.parse(respTxt);
-    let answers = [];
+    const answers = [];
+    const thoughts = [];
 
     for (const { candidates, usageMetadata } of json) {
+        // 回答本文と思考の要約を取得
         if (candidates[0].content === undefined) {
             engine.log('No content in the candidate.');
         } else {
-            answers.push(candidates[0].content.parts[0].text);
+            for (const part of candidates[0].content.parts) {
+                if (part.text === undefined) {
+                    continue;
+                } else if (part.thought) {
+                    thoughts.push(part.text);
+                } else {
+                    answers.push(part.text);
+                }
+            }
         }
+
+        // finishReason とメタデータをログ出力
         const finishReason = candidates[0].finishReason;
         if (finishReason !== undefined) {
             engine.log(`Finish Reason: ${finishReason}`);
@@ -382,8 +451,14 @@ const invokeModel = (
             if (usageMetadata.promptTokenCount !== undefined) {
                 engine.log(`Prompt Token Count: ${usageMetadata.promptTokenCount}`);
             }
+            if (usageMetadata.thoughtsTokenCount !== undefined) {
+                engine.log(`Thoughts Token Count: ${usageMetadata.thoughtsTokenCount}`);
+            }
             if (usageMetadata.candidatesTokenCount !== undefined) {
                 engine.log(`Candidates Token Count: ${usageMetadata.candidatesTokenCount}`);
+            }
+            if (usageMetadata.totalTokenCount !== undefined) {
+                engine.log(`Total Token Count: ${usageMetadata.totalTokenCount}`);
             }
         }
     }
@@ -391,8 +466,13 @@ const invokeModel = (
     if (answers.length === 0 || answers.join('') === '') {
         throw new Error(`No response content generated.`);
     }
-
-    return answers.join('');
+    const result = {
+        answer: answers.join('')
+    };
+    if (thoughts.length !== 0 && thoughts.join('') !== '') {
+        result.thought = thoughts.join('');
+    }
+    return result;
 };
 
 /**
@@ -402,7 +482,7 @@ const invokeModel = (
  */
 const saveData = (configName, data) => {
     const def = configs.getObject(configName);
-    if (def === null) {
+    if (def === null || data === undefined) {
         return;
     }
     engine.setData(def, data);
