@@ -631,6 +631,10 @@ lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
  * @param temperature 温度
  * @param stopSequences 停止シーケンス
  * @param message ユーザーのメッセージ
+ * @param thinkingBudget 思考トークン数の最大値
+ * @param thinkingLevel 思考レベル
+ * @param mediaResolution 添付ファイルの解像度
+ * @param thoughtDef 思考の要約を保存するデータ項目
  * @returns {ProcessDataDefinitionView} answerDef
  */
 const prepareConfigs = (
@@ -644,7 +648,11 @@ const prepareConfigs = (
     maxTokens,
     temperature,
     stopSequences,
-    message
+    message,
+    thinkingBudget = '',
+    thinkingLevel = '',
+    mediaResolution = '',
+    thoughtDef = null
 ) => {
     // 認証設定を作成し、指定
     const jwtAuth = httpClient.createAuthSettingOAuth2JwtBearer(
@@ -666,6 +674,12 @@ const prepareConfigs = (
     configs.put('conf_Temperature', temperature);
     configs.put('conf_StopSequences', stopSequences);
     configs.put('conf_Message1', message);
+    configs.put('conf_ThinkingBudget', thinkingBudget);
+    configs.put('conf_ThinkingLevel', thinkingLevel);
+    configs.put('conf_Image1Resolution', mediaResolution);
+    if (thoughtDef !== null) {
+        configs.putObject('conf_Thought1', thoughtDef);
+    }
 
     // 回答を保存するデータ項目を作成し、指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_response', 'STRING_TEXTAREA');
@@ -797,7 +811,7 @@ test('Maximum number of tokens must be a positive integer - includes a non-numer
         message
     );
 
-    assertError('Maximum number of tokens must be a positive integer.');
+    assertError('Maximum number of tokens for generating output must be a positive integer.');
 });
 
 /**
@@ -825,7 +839,64 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
         message
     );
 
-    assertError('Maximum number of tokens must be a positive integer.');
+    assertError('Maximum number of tokens for generating output must be a positive integer.');
+});
+
+/**
+ * C5-a と C5-b を同時に指定
+ */
+test('Thinking config conflict - thinking level and thinking budget', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-2.5-flash';
+    const message = 'Hi. How are you?';
+    prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        '100',
+        'LOW'
+    );
+
+    assertError('C5-a and C5-b cannot be used together.');
+});
+
+/**
+ * 思考トークン数が不正
+ */
+test('Invalid thinking budget - non-integer', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-2.5-flash';
+    const message = 'Hi. How are you?';
+    prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        '1.5'
+    );
+
+    assertError('Maximum number of tokens for thinking must be an integer of -1 or greater.');
 });
 
 /**
@@ -1123,7 +1194,7 @@ test('Attached file is too large', () => {
 });
 
 /**
- * 添付ファイルに画像/動画/音声でないファイルを含む
+ * 添付ファイルに画像/動画/音声/PDF/テキストでないファイルを含む
  */
 test('Attached file is neither an image, video, audio, PDF, nor text', () => {
     const privateKeyId = 'key-12345';
@@ -1148,10 +1219,10 @@ test('Attached file is neither an image, video, audio, PDF, nor text', () => {
 
     // 添付ファイルを指定
     const video = createQfile('動画', 'video/mp4', 200);
-    const csv = createQfile('CSV ファイル', 'text/csv', 100);
-    attachImages([video, csv]);
+    const zip = createQfile('ZIP ファイル', 'application/zip', 100);
+    attachImages([video, zip]);
 
-    assertError('Attached file "CSV ファイル" is neither an image, video, audio, PDF, nor text.');
+    assertError('Attached file "ZIP ファイル" is neither an image, video, audio, PDF, nor text.');
 });
 
 /**
@@ -1197,10 +1268,14 @@ const assertTokenRequest = ({ url, method, contentType, body }, scope, serviceAc
  * @param {String} projectId
  * @param {String} model
  * @param {Number} maxTokens
+ * @param {Number} thinkingBudget
+ * @param {String} thinkingLevel
  * @param {Number} temperature
  * @param {Array<String>} stopSequences
  * @param {String} message
  * @param {Array<Qfile>} images
+ * @param {String} mediaResolution
+ * @param {Boolean} includeThoughts
  */
 const assertRequest = (
     { url, method, contentType, headers, body },
@@ -1209,13 +1284,18 @@ const assertRequest = (
     projectId,
     model,
     maxTokens,
+    thinkingBudget,
+    thinkingLevel,
     temperature,
     stopSequences,
     message,
-    images = []
+    images = [],
+    mediaResolution = '',
+    includeThoughts = false
 ) => {
+    const domainPrefix = region === 'global' ? '' : `${region}-`;
     expect(url).toEqual(
-        `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`
+        `https://${domainPrefix}aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`
     );
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -1223,18 +1303,44 @@ const assertRequest = (
     const bodyObj = JSON.parse(body);
     expect(bodyObj.contents.parts[0].text).toEqual(message);
     if (maxTokens !== null) {
-        expect(bodyObj.generation_config.maxOutputTokens).toEqual(maxTokens);
+        expect(bodyObj.generationConfig.maxOutputTokens).toEqual(maxTokens);
     } else {
-        expect(bodyObj.generation_config.maxOutputTokens).toEqual(undefined);
+        expect(bodyObj.generationConfig.maxOutputTokens).toEqual(undefined);
     }
     if (temperature !== null) {
-        expect(bodyObj.generation_config.temperature).toEqual(temperature);
+        expect(bodyObj.generationConfig.temperature).toEqual(temperature);
     } else {
-        expect(bodyObj.generation_config.temperature).toEqual(undefined);
+        expect(bodyObj.generationConfig.temperature).toEqual(undefined);
     }
-    expect(bodyObj.generation_config.stopSequences).toEqual(stopSequences);
+    expect(bodyObj.generationConfig.stopSequences).toEqual(stopSequences);
+    if (mediaResolution !== '') {
+        expect(bodyObj.generationConfig.mediaResolution).toEqual(mediaResolution);
+    } else {
+        expect(bodyObj.generationConfig.mediaResolution).toEqual(undefined);
+    }
+    const expectedThinkingConfig = {};
+    if (includeThoughts) {
+        expectedThinkingConfig.includeThoughts = true;
+    }
+    if (thinkingBudget !== null) {
+        expectedThinkingConfig.thinkingBudget = thinkingBudget;
+    }
+    if (thinkingLevel !== '') {
+        expectedThinkingConfig.thinkingLevel = thinkingLevel;
+    }
+    if (Object.keys(expectedThinkingConfig).length > 0) {
+        expect(bodyObj.generationConfig.thinkingConfig).toEqual(expectedThinkingConfig);
+    } else {
+        expect(bodyObj.generationConfig.thinkingConfig).toEqual(undefined);
+    }
     images.forEach((image, i) => {
-        expect(bodyObj.contents.parts[i + 1].inlineData.mimeType).toEqual(image.getContentType());
+        let expectedContentType = image.getContentType();
+        if (expectedContentType.startsWith('text/')) {
+            const parts = expectedContentType.split(';');
+            parts[0] = 'text/plain';
+            expectedContentType = parts.join(';');
+        }
+        expect(bodyObj.contents.parts[i + 1].inlineData.mimeType).toEqual(expectedContentType);
         expect(bodyObj.contents.parts[i + 1].inlineData.data).toEqual(
             base64.encodeToString(fileRepository.readFile(image))
         );
@@ -1305,7 +1411,7 @@ test('Fail to request', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, [], message);
+        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -1351,7 +1457,7 @@ test('No response content generated - no content with text field', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1413,7 +1519,7 @@ test('No response content generated - content is undefined', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1476,7 +1582,7 @@ test('No response content generated - text field is blank', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1556,6 +1662,8 @@ test('Success - with max tokens, no attached files', () => {
             projectId,
             model,
             2048,
+            null,
+            '',
             0.5,
             ['a', 'b', 'c', 'd', 'e'],
             message
@@ -1617,7 +1725,7 @@ test('Success - withmax tokens, empty attached files', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 1024, 0, [], message);
+        assertRequest(request, token, region, projectId, model, 1024, null, '', 0, [], message);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1678,7 +1786,7 @@ test('Success - with default tokens, with a number of attached images', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, [], message, images);
+        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message, images);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1739,7 +1847,7 @@ test('Success - with default tokens, with an attached video', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, 1, [], message, [video]);
+        assertRequest(request, token, region, projectId, model, null, null, '', 1, [], message, [video]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1784,7 +1892,7 @@ test('Success - with default tokens, with a video and an audio', () => {
     // 添付ファイルを指定
     const video = createQfile('動画.mov', 'video/mov', 500);
     const audio = createQfile('音声.mp3', 'audio/mp3', 500);
-    const text = createQfile('テキスト.txt', 'text/plain', 500);
+    const text = createQfile('テキスト.txt', 'text/csv', 500);
     attachImages([video, audio, text]);
 
     const token = 'token-98765';
@@ -1800,7 +1908,7 @@ test('Success - with default tokens, with a video and an audio', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, 2, [], message, [video]);
+        assertRequest(request, token, region, projectId, model, null, null, '', 2, [], message, [video, audio, text]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1856,7 +1964,7 @@ test('Success - includes candidate without content', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, [], message);
+        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message);
         const responseObj = ['Hi. ', 'dummy', 'I am fine. ', 'Thank you.'].map((answer) => ({
             candidates: [
                 {
@@ -1932,7 +2040,7 @@ test('Success - with default tokens, with a image and an PDF', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, 1, [], message, [image, pdf]);
+        assertRequest(request, token, region, projectId, model, null, null, '', 1, [], message, [image, pdf]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1942,6 +2050,285 @@ test('Success - with default tokens, with a image and an PDF', () => {
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('The PDF is a description of the image.');
+});
+
+/**
+ * 思考の要約を保存するデータ項目が指定されている場合
+ */
+test('Success - includes thought summary', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'asia-southeast1';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-2.5-flash';
+    const message = 'Summarize and answer.';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message
+    );
+    const thoughtDef = engine.createDataDefinition('思考要約', 1, 'q_thought', 'STRING_TEXTAREA');
+    configs.putObject('conf_Thought1', thoughtDef);
+
+    const token = 'token-55555';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            null,
+            '',
+            null,
+            [],
+            message,
+            [],
+            '',
+            true
+        );
+        const responseObj = [
+            {
+                candidates: [
+                    {
+                        content: {
+                            parts: [
+                                {
+                                    text: 'Reasoning summary.',
+                                    thought: true,
+                                },
+                                {
+                                    text: 'Final answer.',
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ];
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Final answer.');
+    expect(engine.findData(thoughtDef)).toEqual('Reasoning summary.');
+});
+
+/**
+ * thinkingLevel を指定
+ */
+test('Success - with thinking level', () => {
+    const privateKeyId = 'key-33333';
+    const region = 'asia-southeast1';
+    const projectId = 'project-33333';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-2.5-flash';
+    const message = 'Please answer briefly.';
+    const thinkingLevel = 'LOW';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        '',
+        thinkingLevel
+    );
+
+    const token = 'token-33333';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            null,
+            thinkingLevel,
+            null,
+            [],
+            message
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('Brief answer.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Brief answer.');
+});
+
+/**
+ * thinkingBudget を指定
+ */
+test('Success - with thinking budget', () => {
+    const privateKeyId = 'key-44444';
+    const region = 'asia-southeast1';
+    const projectId = 'project-44444';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-2.5-flash';
+    const message = 'Please answer briefly.';
+    const thinkingBudget = '256';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        thinkingBudget
+    );
+
+    const token = 'token-44444';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            256,
+            '',
+            null,
+            [],
+            message
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('Brief answer.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Brief answer.');
+});
+
+/**
+ * mediaResolution を指定
+ */
+test('Success - with media resolution', () => {
+    const privateKeyId = 'key-99999';
+    const region = 'global';
+    const projectId = 'project-77777';
+    const serviceAccount = 'service@example.com';
+    const model = 'gemini-2.5-pro';
+    const message = 'Please describe the image attached.';
+    const mediaResolution = 'MEDIA_RESOLUTION_HIGH';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        '',
+        '',
+        mediaResolution
+    );
+
+    const image = createQfile('画像.png', 'image/png', 1000);
+    attachImages([image]);
+
+    const token = 'token-77777';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            null,
+            '',
+            null,
+            [],
+            message,
+            [image],
+            mediaResolution
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('The image is a mountain.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('The image is a mountain.');
 });
 
 
