@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2025-12-29</last-modified>
+    <last-modified>2026-01-09</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -46,8 +46,8 @@
             </item>
         </config>
         <config name="conf_ThinkingLevel" required="false" form-type="SELECT_ITEM">
-            <label>C5-a: Thinking Level (Only Supported for Gemini 3 series)</label>
-            <label locale="ja">C5-a: 思考レベル（Gemini 3 シリーズのみ指定可能）</label>
+            <label>C5: Thinking Level (Only Supported for Gemini 3 series)</label>
+            <label locale="ja">C5: 思考レベル（Gemini 3 シリーズのみ指定可能）</label>
             <item value="MINIMAL">
                 <label>minimal (Only for Gemini 3 Flash)</label>
                 <label locale="ja">minimal（Gemini 3 Flash のみ）</label>
@@ -63,10 +63,6 @@
                 <label>high (default)</label>
                 <label locale="ja">high（デフォルト）</label>
             </item>
-        </config>
-        <config name="conf_ThinkingBudget" required="false" form-type="TEXTFIELD">
-            <label>C5-b: Maximum number of tokens for thinking</label>
-            <label locale="ja">C5-b: 思考に使用するトークン数の上限</label>
         </config>
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
             <label>C6: Maximum number of tokens for generating response</label>
@@ -127,11 +123,7 @@ const main = () => {
     const projectId = configs.get('conf_ProjectId');
     const model = retrieveModel();
     const maxTokens = retrieveMaxTokens();
-    const thinkingBudget = retrieveThinkingBudget();
     const thinkingLevel = configs.get('conf_ThinkingLevel');
-    if (thinkingBudget !== null && thinkingLevel !== '') {
-        throw new Error('C5-a and C5-b cannot be used together.');
-    }
     const temperature = retrieveTemperature();
     const stopSequences = retrieveStopSequences();
     const message = configs.get('conf_Message1');
@@ -148,7 +140,6 @@ const main = () => {
         projectId,
         model,
         maxTokens,
-        thinkingBudget,
         thinkingLevel,
         temperature,
         stopSequences,
@@ -189,24 +180,6 @@ const retrieveModel = () => {
         throw new Error('Model includes an invalid character.');
     }
     return model;
-};
-
-/**
- * config から最大思考トークン数を読み出す
- * -1 以上の整数でない場合、エラー
- * 未定義の場合、null を返す
- * @returns {Number}
- */
-const retrieveThinkingBudget = () => {
-    const thinkingBudget = configs.get('conf_ThinkingBudget');
-    if (thinkingBudget === '') {
-        return null;
-    }
-    const regExp = new RegExp(/^(?:-1|0|[1-9][0-9]*)$/);
-    if (!regExp.test(thinkingBudget)) {
-        throw new Error('Maximum number of tokens for thinking must be an integer of -1 or greater.');
-    }
-    return parseInt(thinkingBudget, 10);
 };
 
 /**
@@ -379,7 +352,6 @@ const getAccessToken = (auth) => {
  * @param projectId
  * @param model
  * @param maxTokens
- * @param thinkingBudget
  * @param thinkingLevel
  * @param temperature
  * @param stopSequences
@@ -394,7 +366,6 @@ const invokeModel = (
     projectId,
     model,
     maxTokens,
-    thinkingBudget,
     thinkingLevel,
     temperature,
     stopSequences,
@@ -423,9 +394,6 @@ const invokeModel = (
     const thinkingConfig = {};
     if (configs.getObject('conf_Thought1') !== null) {
         thinkingConfig.includeThoughts = true;
-    }
-    if (thinkingBudget !== null) {
-        thinkingConfig.thinkingBudget = thinkingBudget;
     }
     if (thinkingLevel !== '') {
         thinkingConfig.thinkingLevel = thinkingLevel;
@@ -629,7 +597,6 @@ lc8AgiU0Y7Qg6Nm8cXQ7LgMfKw==
  * @param temperature 温度
  * @param stopSequences 停止シーケンス
  * @param message ユーザーのメッセージ
- * @param thinkingBudget 思考トークン数の最大値
  * @param thinkingLevel 思考レベル
  * @param mediaResolution 添付ファイルの解像度
  * @param thoughtDef 思考の要約を保存するデータ項目
@@ -647,7 +614,6 @@ const prepareConfigs = (
     temperature,
     stopSequences,
     message,
-    thinkingBudget = '',
     thinkingLevel = '',
     mediaResolution = '',
     thoughtDef = null
@@ -672,7 +638,6 @@ const prepareConfigs = (
     configs.put('conf_Temperature', temperature);
     configs.put('conf_StopSequences', stopSequences);
     configs.put('conf_Message1', message);
-    configs.put('conf_ThinkingBudget', thinkingBudget);
     configs.put('conf_ThinkingLevel', thinkingLevel);
     configs.put('conf_Image1Resolution', mediaResolution);
     if (thoughtDef !== null) {
@@ -838,63 +803,6 @@ test('Maximum number of tokens must be a positive integer - 0', () => {
     );
 
     assertError('Maximum number of tokens for generating output must be a positive integer.');
-});
-
-/**
- * C5-a と C5-b を同時に指定
- */
-test('Thinking config conflict - thinking level and thinking budget', () => {
-    const privateKeyId = 'key-12345';
-    const serviceAccount = 'service@questetra.com';
-    const region = 'asia-northeast1';
-    const projectId = 'project-67890';
-    const model = 'gemini-2.5-flash';
-    const message = 'Hi. How are you?';
-    prepareConfigs(
-        SCOPE,
-        privateKeyId,
-        PRIVATE_KEY,
-        serviceAccount,
-        region,
-        projectId,
-        model,
-        '',
-        '',
-        '',
-        message,
-        '100',
-        'LOW'
-    );
-
-    assertError('C5-a and C5-b cannot be used together.');
-});
-
-/**
- * 思考トークン数が不正
- */
-test('Invalid thinking budget - non-integer', () => {
-    const privateKeyId = 'key-12345';
-    const serviceAccount = 'service@questetra.com';
-    const region = 'asia-northeast1';
-    const projectId = 'project-67890';
-    const model = 'gemini-2.5-flash';
-    const message = 'Hi. How are you?';
-    prepareConfigs(
-        SCOPE,
-        privateKeyId,
-        PRIVATE_KEY,
-        serviceAccount,
-        region,
-        projectId,
-        model,
-        '',
-        '',
-        '',
-        message,
-        '1.5'
-    );
-
-    assertError('Maximum number of tokens for thinking must be an integer of -1 or greater.');
 });
 
 /**
@@ -1266,7 +1174,6 @@ const assertTokenRequest = ({ url, method, contentType, body }, scope, serviceAc
  * @param {String} projectId
  * @param {String} model
  * @param {Number} maxTokens
- * @param {Number} thinkingBudget
  * @param {String} thinkingLevel
  * @param {Number} temperature
  * @param {Array<String>} stopSequences
@@ -1282,7 +1189,6 @@ const assertRequest = (
     projectId,
     model,
     maxTokens,
-    thinkingBudget,
     thinkingLevel,
     temperature,
     stopSequences,
@@ -1319,9 +1225,6 @@ const assertRequest = (
     const expectedThinkingConfig = {};
     if (includeThoughts) {
         expectedThinkingConfig.includeThoughts = true;
-    }
-    if (thinkingBudget !== null) {
-        expectedThinkingConfig.thinkingBudget = thinkingBudget;
     }
     if (thinkingLevel !== '') {
         expectedThinkingConfig.thinkingLevel = thinkingLevel;
@@ -1409,7 +1312,7 @@ test('Fail to request', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message);
+        assertRequest(request, token, region, projectId, model, null, '', null, [], message);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to invoke model. status: 400');
@@ -1455,7 +1358,7 @@ test('No response content generated - no content with text field', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1517,7 +1420,7 @@ test('No response content generated - content is undefined', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1580,7 +1483,7 @@ test('No response content generated - text field is blank', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 100, null, '', 1, [], message);
+        assertRequest(request, token, region, projectId, model, 100, '', 1, [], message);
 
         const responseObj = [
             {
@@ -1660,7 +1563,6 @@ test('Success - with max tokens, no attached files', () => {
             projectId,
             model,
             2048,
-            null,
             '',
             0.5,
             ['a', 'b', 'c', 'd', 'e'],
@@ -1723,7 +1625,7 @@ test('Success - withmax tokens, empty attached files', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, 1024, null, '', 0, [], message);
+        assertRequest(request, token, region, projectId, model, 1024, '', 0, [], message);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1784,7 +1686,7 @@ test('Success - with default tokens, with a number of attached images', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message, images);
+        assertRequest(request, token, region, projectId, model, null, '', null, [], message, images);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1845,7 +1747,7 @@ test('Success - with default tokens, with an attached video', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', 1, [], message, [video]);
+        assertRequest(request, token, region, projectId, model, null, '', 1, [], message, [video]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1906,7 +1808,7 @@ test('Success - with default tokens, with a video and an audio', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', 2, [], message, [video, audio, text]);
+        assertRequest(request, token, region, projectId, model, null, '', 2, [], message, [video, audio, text]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -1962,7 +1864,7 @@ test('Success - includes candidate without content', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', null, [], message);
+        assertRequest(request, token, region, projectId, model, null, '', null, [], message);
         const responseObj = ['Hi. ', 'dummy', 'I am fine. ', 'Thank you.'].map((answer) => ({
             candidates: [
                 {
@@ -2038,7 +1940,7 @@ test('Success - with default tokens, with a image and an PDF', () => {
                 })
             );
         }
-        assertRequest(request, token, region, projectId, model, null, null, '', 1, [], message, [image, pdf]);
+        assertRequest(request, token, region, projectId, model, null, '', 1, [], message, [image, pdf]);
         return httpClient.createHttpResponse(
             200,
             'application/json',
@@ -2095,7 +1997,6 @@ test('Success - includes thought summary', () => {
             region,
             projectId,
             model,
-            null,
             null,
             '',
             null,
@@ -2155,7 +2056,6 @@ test('Success - with thinking level', () => {
         '',
         '',
         message,
-        '',
         thinkingLevel
     );
 
@@ -2179,71 +2079,7 @@ test('Success - with thinking level', () => {
             projectId,
             model,
             null,
-            null,
             thinkingLevel,
-            null,
-            [],
-            message
-        );
-        return httpClient.createHttpResponse(
-            200,
-            'application/json',
-            createResponse('Brief answer.')
-        );
-    });
-
-    expect(main()).toEqual(undefined);
-    expect(engine.findData(answerDef)).toEqual('Brief answer.');
-});
-
-/**
- * thinkingBudget を指定
- */
-test('Success - with thinking budget', () => {
-    const privateKeyId = 'key-44444';
-    const region = 'asia-southeast1';
-    const projectId = 'project-44444';
-    const serviceAccount = 'service@questetra.com';
-    const model = 'gemini-2.5-flash';
-    const message = 'Please answer briefly.';
-    const thinkingBudget = '256';
-    const answerDef = prepareConfigs(
-        SCOPE,
-        privateKeyId,
-        PRIVATE_KEY,
-        serviceAccount,
-        region,
-        projectId,
-        model,
-        '',
-        '',
-        '',
-        message,
-        thinkingBudget
-    );
-
-    const token = 'token-44444';
-    let reqCount = 0;
-    httpClient.setRequestHandler((request) => {
-        if (reqCount++ === 0) {
-            assertTokenRequest(request, SCOPE, serviceAccount);
-            return httpClient.createHttpResponse(
-                200,
-                'application/json',
-                JSON.stringify({
-                    access_token: token,
-                })
-            );
-        }
-        assertRequest(
-            request,
-            token,
-            region,
-            projectId,
-            model,
-            null,
-            256,
-            '',
             null,
             [],
             message
@@ -2283,7 +2119,6 @@ test('Success - with media resolution', () => {
         '',
         message,
         '',
-        '',
         mediaResolution
     );
 
@@ -2310,7 +2145,6 @@ test('Success - with media resolution', () => {
             projectId,
             model,
             null,
-            null,
             '',
             null,
             [],
@@ -2328,7 +2162,6 @@ test('Success - with media resolution', () => {
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('The image is a mountain.');
 });
-
 
 ]]></test>
 </service-task-definition>
