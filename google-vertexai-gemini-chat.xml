@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2026-01-09</last-modified>
+    <last-modified>2026-01-13</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -495,8 +495,11 @@ const invokeModel = (
  */
 const saveData = (configName, data) => {
     const def = configs.getObject(configName);
-    if (def === null || data === undefined) {
+    if (def === null) {
         return;
+    }
+    if (data === undefined) {
+        engine.setData(def, null);
     }
     engine.setData(def, data);
 };
@@ -1956,7 +1959,7 @@ test('Success - with default tokens, with a image and an PDF', () => {
 /**
  * 思考の要約を保存するデータ項目が指定されている場合
  */
-test('Success - includes thought summary', () => {
+test('Success - save thought summary', () => {
     const privateKeyId = 'key-12345';
     const region = 'asia-southeast1';
     const projectId = 'project-67890';
@@ -2034,6 +2037,7 @@ test('Success - includes thought summary', () => {
     expect(engine.findData(thoughtDef)).toEqual('Reasoning summary.');
 });
 
+
 /**
  * thinkingLevel を指定
  */
@@ -2095,6 +2099,87 @@ test('Success - with global region and thinking level', () => {
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('Brief answer.');
 });
+
+/**
+ * 思考の要約を保存するデータ項目が指定されていて、レスポンスに思考の要約が含まれない場合 (thinkingLevel に minimal を指定した場合を想定)
+ */
+test('Success - no thought summary', () => {
+    const privateKeyId = 'key-12345';
+    const region = 'global';
+    const projectId = 'project-67890';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-3-flash';
+    const message = 'Summarize and answer.';
+    const thinkingLevel = 'MINIMAL';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        thinkingLevel
+    );
+    const thoughtDef = engine.createDataDefinition('思考要約', 1, 'q_thought', 'STRING_TEXTAREA');
+    engine.setData(thoughtDef, '事前文字列');
+    configs.putObject('conf_Thought1', thoughtDef);
+
+    const token = 'token-55555';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            thinkingLevel,
+            null,
+            [],
+            message,
+            [],
+            '',
+            true
+        );
+        const responseObj = [
+            {
+                candidates: [
+                    {
+                        content: {
+                            parts: [
+                                {
+                                    text: 'Final answer.',
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ];
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Final answer.');
+    expect(engine.findData(thoughtDef)).toEqual(null); // レスポンスに思考の要約がない場合、空で上書きされる
+});
+
 
 /**
  * mediaResolution を指定
