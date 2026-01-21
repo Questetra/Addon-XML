@@ -319,24 +319,34 @@ const retrieveImageUrls = (configName) => {
  * @returns {String} answer1
  */
 const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1) => {
-    //// OpenAI API > Documentation > API REFERENCE > CHAT
-    //// https://platform.openai.com/docs/api-reference/chat
+    //// OpenAI API > Documentation > API REFERENCE > RESPONSES
+    //// https://platform.openai.com/docs/api-reference/responses
 
     /// prepare json
     const requestJson = {
         safety_identifier: requestUser,
         model,
-        n: 1,
-        max_completion_tokens: maxTokens,
-        reasoning_effort: reasoningEffort,
-        verbosity,
+        max_output_tokens: maxTokens,
         temperature,
-        messages: []
+        input: []
     };
+    if (reasoningEffort !== undefined) {
+        requestJson.reasoning = {
+            effort: reasoningEffort
+        };
+    }
+    if (verbosity !== undefined) {
+        requestJson.text = {
+            verbosity
+        };
+    }
     if (gptRole !== '') {
-        requestJson.messages.push({
+        requestJson.input.push({
             role: 'system',
-            content: gptRole
+            content: [{
+                type: 'input_text',
+                text: gptRole
+            }]
         });
     }
     if (stopSequences.length > 0) { // モデルによっては、空配列をセットするとエラーになる
@@ -344,12 +354,12 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
     }
     const message1Content = [];
     message1Content.push({
-        type: 'text',
+        type: 'input_text',
         text: message1
     });
     imageUrls1.forEach(imageUrl => {
         const imageObj = {
-            type: 'image_url',
+            type: 'input_image',
             image_url: {
                 url: imageUrl
             }
@@ -357,7 +367,7 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
         imageObj.image_url.detail = imageDetail1;
         message1Content.push(imageObj);
     });
-    requestJson.messages.push({
+    requestJson.input.push({
         role: 'user',
         content: message1Content
     });
@@ -367,7 +377,7 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
     if (organizationId !== null && organizationId !== '') {
         request = request.header('OpenAI-Organization', organizationId);
     }
-    const response = request.post('https://api.openai.com/v1/chat/completions');
+    const response = request.post('https://api.openai.com/v1/responses');
 
     const responseCode = response.getStatusCode();
     const responseBody = response.getResponseAsString();
@@ -375,13 +385,25 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
         engine.log(responseBody);
         throw new Error(`Failed to request. status: ${responseCode}`);
     }
-    const {choices, usage} = JSON.parse(responseBody);
-    const finishReason = choices[0].finish_reason;
-    const answer1 = choices[0].message.content;
+    const responseObj = JSON.parse(responseBody);
+    const {usage} = responseObj;
+    let finishReason = responseObj.status;
+    let answer1 = responseObj.output_text;
+    if (answer1 === undefined || answer1 === null || answer1 === '') {
+        const outputs = responseObj.output ?? [];
+        if (outputs.length > 0) {
+            finishReason = outputs[0].finish_reason ?? finishReason;
+            const contentItems = outputs[0].content ?? [];
+            const outputText = contentItems.find(item => item.type === 'output_text');
+            answer1 = outputText?.text;
+        }
+    }
     engine.log(`Finish Reason: ${finishReason}`);
-    engine.log(`Prompt Tokens: ${usage.prompt_tokens}`);
-    engine.log(`Completion Tokens: ${usage.completion_tokens}`);
-    engine.log(`Completion Tokens Details: ${JSON.stringify(usage.completion_tokens_details)}`);
+    if (usage !== undefined) {
+        engine.log(`Prompt Tokens: ${usage.input_tokens}`);
+        engine.log(`Completion Tokens: ${usage.output_tokens}`);
+        engine.log(`Completion Tokens Details: ${JSON.stringify(usage.output_tokens_details)}`);
+    }
     if (answer1 === undefined || answer1 === null || answer1 === '') {
         throw new Error(`No response content generated. Finish Reason: ${finishReason}`);
     }
@@ -623,7 +645,7 @@ const assertRequest = ({
                            headers,
                            body
                        }, authKey, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, gptRole, message, imageContentTypes, imageDetail = undefined) => {
-    expect(url).toEqual('https://api.openai.com/v1/chat/completions');
+    expect(url).toEqual('https://api.openai.com/v1/responses');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     expect(headers['Authorization']).toEqual(`Bearer ${authKey}`);
@@ -633,25 +655,43 @@ const assertRequest = ({
     const bodyObj = JSON.parse(body);
     expect(bodyObj.safety_identifier).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
     expect(bodyObj.model).toEqual(model);
-    expect(bodyObj.n).toEqual(1);
-    expect(bodyObj.max_completion_tokens).toEqual(maxTokens);
-    expect(bodyObj.reasoning_effort).toEqual(reasoningEffort);
-    expect(bodyObj.verbosity).toEqual(verbosity);
-    expect(bodyObj.temperature).toEqual(temperature);
-    if (gptRole === '') {
-        expect(bodyObj.messages.length).toEqual(1);
+    expect(bodyObj.max_output_tokens).toEqual(maxTokens);
+    if (reasoningEffort === undefined) {
+        expect(bodyObj.reasoning).toEqual(undefined);
     } else {
-        expect(bodyObj.messages.length).toEqual(2);
-        expect(bodyObj.messages[0]).toEqual({
-            role: 'system',
-            content: gptRole
+        expect(bodyObj.reasoning).toEqual({
+            effort: reasoningEffort
         });
     }
-    expect(bodyObj.stop).toEqual(stopSequences);
-    const userMessage = bodyObj.messages[bodyObj.messages.length - 1];
+    if (verbosity === undefined) {
+        expect(bodyObj.text).toEqual(undefined);
+    } else {
+        expect(bodyObj.text).toEqual({
+            verbosity
+        });
+    }
+    expect(bodyObj.temperature).toEqual(temperature);
+    if (gptRole === '') {
+        expect(bodyObj.input.length).toEqual(1);
+    } else {
+        expect(bodyObj.input.length).toEqual(2);
+        expect(bodyObj.input[0]).toEqual({
+            role: 'system',
+            content: [{
+                type: 'input_text',
+                text: gptRole
+            }]
+        });
+    }
+    if (stopSequences === undefined || stopSequences.length === 0) {
+        expect(bodyObj.stop).toEqual(undefined);
+    } else {
+        expect(bodyObj.stop).toEqual(stopSequences);
+    }
+    const userMessage = bodyObj.input[bodyObj.input.length - 1];
     expect(userMessage.role).toEqual('user');
     expect(userMessage.content[0]).toEqual({
-        type: 'text',
+        type: 'input_text',
         text: message
     });
     imageContentTypes.forEach((contentType, index) => {
@@ -669,7 +709,7 @@ const assertRequest = ({
  */
 const assertAttachment = (userMessage, index, contentType, imageDetail) => {
     const imageObj = userMessage.content[index + 1]; // 0 番目は text なので、1 加算
-    expect(imageObj.type).toEqual('image_url');
+    expect(imageObj.type).toEqual('input_image');
     const url = imageObj.image_url.url;
     expect(url.split(',')[0]).toEqual(`data:${contentType};base64`);
     // ファイルのバイナリデータが base64 エンコードされた部分の確認は省略
@@ -695,21 +735,21 @@ test('Fail to request', () => {
 test('No response content generated', () => {
     prepareConfigs('key2', '', 'chatgpt-4o-latest', '100', '', '', '', '', '', 'こんにちは');
     const responseObj = {
-        "id": "chatcmpl-123",
-        "object": "chat.completion",
+        "id": "resp-123",
+        "object": "response",
         "created": 1677652288,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": "",
-            },
-            "finish_reason": "length"
+        "output": [{
+            "role": "assistant",
+            "finish_reason": "length",
+            "content": [{
+                "type": "output_text",
+                "text": ""
+            }]
         }],
         "usage": {
-            "prompt_tokens": 25,
-            "completion_tokens": 100,
-            "completion_tokens_details": {
+            "input_tokens": 25,
+            "output_tokens": 100,
+            "output_tokens_details": {
                 "reasoning_tokens": 100
             },
             "total_tokens": 125
@@ -730,21 +770,22 @@ test('No response content generated', () => {
  */
 const createResponse = (answerText) => {
     const responseObj = {
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
+            "id": "resp-123",
+            "object": "response",
             "created": 1677652288,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": answerText,
-                },
-                "finish_reason": "stop"
+            "output": [{
+                "role": "assistant",
+                "finish_reason": "stop",
+                "content": [{
+                    "type": "output_text",
+                    "text": answerText
+                }]
             }],
+            "output_text": answerText,
             "usage": {
-                "prompt_tokens": 9,
-                "completion_tokens": 12,
-                "completion_tokens_details": {
+                "input_tokens": 9,
+                "output_tokens": 12,
+                "output_tokens_details": {
                     "reasoning_tokens": 5
                 },
                 "total_tokens": 26
@@ -870,7 +911,7 @@ test('Success to request - with attached images, no detail param', () => {
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
-    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', 200);
     const image3 = createQfile('画像3.gif', 'image/gif', 100);
     const image4 = createQfile('画像4.webp', 'image/webp', 100);
     const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
@@ -897,7 +938,7 @@ test('Success to request - with attached images, detail param set', () => {
 
     // 添付画像を指定
     const image1 = createQfile('画像1.png', 'image/png', 100);
-    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', 200);
     const imagesDef = engine.createDataDefinition('添付画像', 2, 'q_images', 'FILE');
     engine.setData(imagesDef, [image1, image2]);
     configs.putObject('conf_Images1', imagesDef);
