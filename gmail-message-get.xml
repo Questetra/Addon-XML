@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2026-03-16</last-modified>
+<last-modified>2026-03-23</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -362,30 +362,79 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
 
 /**
  * multipart/related を解析する
- * 先頭パートを本文（ルートパート）として bodyParts に push し、残りのインラインリソースは無視する
- * ルートパートが multipart の場合は再帰的に解析する
+ * 本文パートを 1 件だけ選択し、それ以外の直下のパートは添付ファイルとして扱う（ファイル名がなければ noname）
+ * 本文パート候補は上から順に探す:
+ *   - 明示的に添付ファイルでない text/plain または text/html → そのパートが本文
+ *   - 本文未確定の段階で multipart が現れた場合 → その multipart 自身の本文選択ロジックで解析し本文と添付ファイルを追加
+ *   - 本文確定後の multipart → 中の全パートを再帰的に添付ファイルとして処理
  * @param {Object} part
  * @param {Array<Object>} bodyParts
  * @param {Array<Object>} attachments
  */
 function parseMultiPartRelated( part, bodyParts, attachments ) {
-  const rootPart = part.parts[0];
-  if ( rootPart === undefined ) {
-    engine.log(`No root part was found in multipart/related. partId: ${part.partId}`);
-    return;
+  let bodyFound = false;
+
+  for ( const innerPart of part.parts ) {
+    if ( !bodyFound ) {
+      if ( innerPart.mimeType.startsWith('multipart/') ) {
+        const tempBodyParts = [];
+        parseMultiPart( innerPart, tempBodyParts, attachments );
+        if ( tempBodyParts.length > 0 ) {
+          bodyParts.push( ...tempBodyParts );
+          bodyFound = true;
+        }
+      } else if ( !isObviouslyAttachment(innerPart) && ( innerPart.mimeType === 'text/plain' || innerPart.mimeType === 'text/html' ) ) {
+        bodyParts.push( innerPart );
+        bodyFound = true;
+      } else {
+        addPartAsAttachment( innerPart, attachments );
+      }
+    } else { // すでに本文パートが見つかっている場合
+      if ( innerPart.mimeType.startsWith('multipart/') ) {
+        addAllPartsAsAttachments( innerPart, attachments );
+      } else {
+        addPartAsAttachment( innerPart, attachments );
+      }
+    }
   }
 
-  // 残りのパート（インラインリソース）はログだけ残して無視
-  part.parts.slice(1).forEach( innerPart => {
-    engine.log(`Ignoring inline resource in multipart/related. partId: ${innerPart.partId}, mimeType: ${innerPart.mimeType}`);
+  if ( !bodyFound ) {
+    engine.log(`No body part was found in multipart/related. partId: ${part.partId}`);
+  }
+}
+
+/**
+ * パートを添付ファイルとして attachments に追加する
+ * ファイル名が設定されていなければ noname を使う
+ * @param {Object} part  MIME メールのパート
+ * @param {Array<Object>} attachments  添付ファイルの情報を格納する配列
+ */
+function addPartAsAttachment( part, attachments ) {
+  const filename = isFileNameBlank( part ) ? 'noname' : part.filename;
+  attachments.push({
+    filename:    filename,
+    contentType: getContentType( part ),
+    body:        part.body
   });
+}
 
-  if ( rootPart.mimeType.startsWith('multipart/') ) {
-    parseMultiPart( rootPart, bodyParts, attachments );
+/**
+ * multipart の中のすべてのパートを再帰的に添付ファイルとして処理する（ファイル名がなければ noname）
+ * multipart/related の本文確定後に現れた multipart の処理に使う
+ * @param {Object} part  multipart/* のパート
+ * @param {Array<Object>} attachments  添付ファイルの情報を格納する配列
+ */
+function addAllPartsAsAttachments( part, attachments ) {
+  if ( part.parts === undefined || part.parts.length === 0 ) {
     return;
   }
-
-  bodyParts.push( rootPart );
+  part.parts.forEach( innerPart => {
+    if ( innerPart.mimeType.startsWith('multipart/') ) {
+      addAllPartsAsAttachments( innerPart, attachments );
+    } else {
+      addPartAsAttachment( innerPart, attachments );
+    }
+  });
 }
 
 /**
@@ -407,15 +456,7 @@ function parseMultiPartMixed( part, bodyParts, attachments ) {
       return;
     }
     // 添付ファイルとして処理
-    let filename = innerPart.filename;
-    if ( isFileNameBlank( innerPart ) ) {
-      filename = 'noname';
-    }
-    attachments.push({
-      filename:    filename,
-      contentType: getContentType( innerPart ),
-      body:        innerPart.body
-    });
+    addPartAsAttachment( innerPart, attachments );
   });
 }
 
