@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2026-03-23</last-modified>
+<last-modified>2026-03-24</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -311,35 +311,48 @@ function parseMultiPart( part, bodyParts, attachments ) {
 
 /**
  * multipart/alternative を解析する
- * 各パートは同じ内容の異なる表現であるため、1件だけ bodyParts に push する
- * 優先順位: text/plain > text/html > ネストした multipart から得た本文
+ * 各パートは同じ内容の異なる表現であるため、採用した1グループだけを bodyParts に push する
+ * 優先順位: text/plain > text/html（multipart 内から取得した本文も含む）
+ * Gmail の UI とは異なり、できるだけ簡易な本文を採用したいので、先頭から走査していく
  * @param {Object} part
  * @param {Array<Object>} bodyParts
  * @param {Array<Object>} attachments
  */
 function parseMultiPartAlternative( part, bodyParts, attachments ) {
-  let textPart = null;
-  let htmlPart = null;
-  const nestedBodyParts = [];
+  let textParts = []; // text/plain のパート群
+  let htmlParts = []; // text/html のパート群
 
   part.parts.forEach( innerPart => {
     if ( innerPart.mimeType.startsWith('multipart/') ) {
+      const nestedBodyParts = [];
       parseMultiPart( innerPart, nestedBodyParts, attachments );
+      if ( nestedBodyParts.length === 0 ) {
+        return;
+      }
+      if ( textParts.length === 0 && nestedBodyParts.every( p => p.mimeType === 'text/plain' )) {
+        nestedBodyParts.forEach( p => outputLogBodyCandidatePart(p) );
+        textParts = nestedBodyParts;
+      } else if ( htmlParts.length === 0 ) {
+        nestedBodyParts.forEach( p => outputLogBodyCandidatePart(p) );
+        htmlParts = nestedBodyParts;
+      } else {
+        nestedBodyParts.forEach( c => outputLogIgnoredPart(c) );
+      }
       return;
     }
     if ( !isObviouslyAttachment(innerPart) && innerPart.mimeType === 'text/html' ) {
-      if ( htmlPart === null ) {
+      if ( htmlParts.length === 0 ) {
         outputLogBodyCandidatePart( innerPart );
-        htmlPart = innerPart;
+        htmlParts = [innerPart];
       } else {
         outputLogIgnoredPart( innerPart );
       }
       return;
     }
     if ( !isObviouslyAttachment(innerPart) && innerPart.mimeType === 'text/plain' ) {
-      if ( textPart === null ) {
+      if ( textParts.length === 0 ) {
         outputLogBodyCandidatePart( innerPart );
-        textPart = innerPart;
+        textParts = [innerPart];
       } else {
         outputLogIgnoredPart( innerPart );
       }
@@ -349,15 +362,16 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
     outputLogIgnoredPart( innerPart );
   });
 
-  // 優先順位: text/plain > ネストした multipart から得た本文 > text/html
-  // 採用した1件だけを push し、残りはログに残す
-  const candidates = [textPart, ...nestedBodyParts, htmlPart].filter( c => c !== null );
-  if ( candidates.length === 0 ) {
+  // 優先順位: text/plain > text/html
+  // 採用グループの全パートを push し、落選グループはログに残す
+  const selected  = textParts.length > 0 ? textParts : htmlParts;
+  const discarded = textParts.length > 0 ? htmlParts : [];
+  if ( selected.length === 0 ) {
     engine.log(`No body part was found in multipart/alternative. partId: ${part.partId}`);
     return;
   }
-  bodyParts.push( candidates[0] );
-  candidates.slice(1).forEach( c => outputLogIgnoredPart(c) );
+  bodyParts.push( ...selected );
+  discarded.forEach( c => outputLogIgnoredPart(c) );
 }
 
 /**
