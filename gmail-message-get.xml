@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2026-03-24</last-modified>
+<last-modified>2026-03-27</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -311,9 +311,14 @@ function parseMultiPart( part, bodyParts, attachments ) {
 
 /**
  * multipart/alternative を解析する
- * 各パートは同じ内容の異なる表現であるため、採用した1グループだけを bodyParts に push する
+ * 各パートは同じ内容の異なる表現であるため、採用した1グループだけを bodyParts に push する。
  * 優先順位: text/plain > text/html（multipart 内から取得した本文も含む）
- * Gmail の UI とは異なり、できるだけ簡易な本文を採用したいので、先頭から走査していく
+ * Gmail の UI とは異なり、できるだけ簡易な本文を採用したいので、先頭から走査していく。
+ * 本文パートとして採用されうるのは、明示的に添付ファイルでないパートのみ。
+ * 本文パートとして採用されなかったパートは基本的には無視されるが、
+ * 以下のパートは、例外的に添付ファイルとして保存される。(Gmail の仕様と揃えている)
+ * - multipart/alternative 内でさらに multipart/* がある場合、その multipart で添付ファイルと判定されたパート
+ * - ファイル名が設定されているパート
  * @param {Object} part
  * @param {Array<Object>} bodyParts
  * @param {Array<Object>} attachments
@@ -325,7 +330,7 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
   part.parts.forEach( innerPart => {
     if ( innerPart.mimeType.startsWith('multipart/') ) {
       const nestedBodyParts = [];
-      parseMultiPart( innerPart, nestedBodyParts, attachments );
+      parseMultiPart( innerPart, nestedBodyParts, attachments ); // 添付ファイルが追加されうる
       if ( nestedBodyParts.length === 0 ) {
         return;
       }
@@ -336,7 +341,7 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
         nestedBodyParts.forEach( p => outputLogBodyCandidatePart(p) );
         htmlParts = nestedBodyParts;
       } else {
-        nestedBodyParts.forEach( c => outputLogIgnoredPart(c) );
+        nestedBodyParts.forEach( p => outputLogIgnoredPart(p) );
       }
       return;
     }
@@ -358,10 +363,16 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
       }
       return;
     }
-    // alternative 内で添付ファイル扱いになるパートは通常想定外だがログだけ残す
+    // alternative 直下のパートは、ファイル名がある場合のみ添付ファイルとして扱う
+    if ( !isFileNameBlank( innerPart ) ) {
+      addPartAsAttachment( innerPart, attachments );
+      return;
+    }
+    // それ以外のパートは、ログだけ残して無視
     outputLogIgnoredPart( innerPart );
   });
 
+  // 本文パートを選択
   // 優先順位: text/plain > text/html
   // 採用グループの全パートを push し、落選グループはログに残す
   const selected  = textParts.length > 0 ? textParts : htmlParts;
@@ -371,7 +382,7 @@ function parseMultiPartAlternative( part, bodyParts, attachments ) {
     return;
   }
   bodyParts.push( ...selected );
-  discarded.forEach( c => outputLogIgnoredPart(c) );
+  discarded.forEach( p => outputLogIgnoredPart(p) );
 }
 
 /**
@@ -889,6 +900,7 @@ test('Unsupported MIME type', () => {
 
 /**
  * 添付ファイル 1 つのマルチパートメール
+ * multipart/mixed の中に multipart/alternative がある
  * 本文パートは text/plain
  */
 const SAMPLE_MESSAGE_1 = {
@@ -1094,6 +1106,7 @@ test('Fail in 2nd GET Request', () => {
 
 /**
  * 添付ファイル 2 つのマルチパートメール
+ * multipart/mixed の中に multipart/alternative がある
  * 本文パートは text/html
  */
 const SAMPLE_MESSAGE_2 = {
@@ -1889,6 +1902,7 @@ test('200 Success - Some data items are not set', () => {
 
 /**
  * マルチパートが入れ子になったメール
+ * multipart/mixed の中に、さらに multipart/mixed
  * ネストされたマルチパートに添付ファイルがある
  */
 const SAMPLE_MESSAGE_6 = {
@@ -2035,6 +2049,7 @@ test('200 Success - Multipart message with a nested multipart which has attachme
 
 /**
  * マルチパートが入れ子になったメール
+ * multipart/related の中に multipart/alternative
  * ネストされたマルチパートに本文パートがある
  */
 const SAMPLE_MESSAGE_7 = {
