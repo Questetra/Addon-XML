@@ -1019,6 +1019,11 @@ const createMultiLayerMultipartMessage = (mimeType1, mimeType2) => {
     }
   };
 };
+
+/**
+ * HTML メールのよくある構造
+ * multipart/mixed の中に multipart/alternative がある
+ */
 const SAMPLE_MESSAGE_1 = createMultiLayerMultipartMessage('multipart/mixed', 'multipart/alternative');
 
 const SAMPLE_ATTACHMENT_1 = { // png ファイル
@@ -2738,6 +2743,152 @@ test('200 Success - Body is blank', () => {
   expect(engine.findData(dataDefs.body)).toEqual(''); // 本文として空文字列が保存される
   const files = engine.findData(dataDefs.attachments);
   expect(files.length).toEqual(0);
+});
+
+/**
+ * HTML メールのよくある構造
+ * multipart/alternative の中に multipart/related があり、HTML 本文とインライン画像を含む
+ * text/plain と multipart/related（HTML 本文 + インライン画像）がある場合、text/plain が採用される
+ * インライン画像はファイル名なしで添付ファイルとして保存される
+ */
+const SAMPLE_MESSAGE_12 = (() => {
+  const message = createMultiLayerMultipartMessage('multipart/alternative', 'multipart/related');
+  const related = message.payload.parts[0]; // multipart/related（変更前の参照を保持）
+
+  // outer alternative に text/plain を先頭として追加
+  message.payload.parts.unshift({
+    "partId": "0",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      { "name": "Content-Type", "value": "text/plain; charset=\"UTF-8\"" },
+      { "name": "Content-Transfer-Encoding", "value": "base64" }
+    ],
+    "body": {
+      "data": base64.encodeToUrlSafeString('テストメールです。\nこれはテストメールです。')
+    }
+  });
+  related.partId = "1";
+
+  // related 内の text/plain → text/html に変更
+  related.parts[0].partId = "1.0";
+  related.parts[0].mimeType = "text/html";
+  related.parts[0].headers = [
+    { "name": "Content-Type", "value": "text/html; charset=\"UTF-8\"" },
+    { "name": "Content-Transfer-Encoding", "value": "base64" }
+  ];
+  related.parts[0].body = {
+    "data": base64.encodeToUrlSafeString('<p>テストメールです。</p><img src="cid:image001.png"><p>これはテストメールです。</p>')
+  };
+
+  // related 内の image/png をインライン画像に変更（filename と Content-Disposition を除去）
+  related.parts[1].partId = "1.1";
+  delete related.parts[1].filename;
+  related.parts[1].headers = [
+    { "name": "Content-Type", "value": "image/png" },
+    { "name": "Content-ID", "value": "<image001.png>" }
+  ];
+
+  return message;
+})();
+
+/**
+ * メール取得成功
+ * multipart/alternative の中に multipart/related がある（HTML メールのよくある構造）
+ * text/plain が multipart/related 内の text/html より優先される
+ * multipart/related 内のインライン画像はファイル名なしで添付ファイルとして保存される
+ */
+test('200 Success - multipart/alternative containing multipart/related, text/plain preferred, inline image saved as attachment', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_12));
+    }
+    // 添付ファイル取得の GET リクエスト（インライン画像）
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメールです。\nこれはテストメールです。'); // text/plain が採用される
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1); // インライン画像が添付ファイルとして保存される
+  expect(files[0].getName()).toEqual('noname'); // ファイル名がないので noname
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('image/png');
+});
+
+/**
+ * multipart/related の本文確定後に multipart が現れるメール
+ * 本文確定後の multipart は addAllPartsAsAttachments で再帰的に添付ファイルとして処理される
+ */
+const SAMPLE_MESSAGE_13 = (() => {
+  const message = createMultiLayerMultipartMessage('multipart/related', 'multipart/mixed');
+  const innerMixed = message.payload.parts[0]; // multipart/mixed（変更前の参照を保持）
+
+  // related の先頭に text/plain を追加（本文）
+  message.payload.parts.unshift({
+    "partId": "0",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      { "name": "Content-Type", "value": "text/plain; charset=\"UTF-8\"" },
+      { "name": "Content-Transfer-Encoding", "value": "base64" }
+    ],
+    "body": {
+      "data": base64.encodeToUrlSafeString('テストメールです。\nこれはテストメールです。')
+    }
+  });
+  innerMixed.partId = "1";
+  innerMixed.parts[0].partId = "1.0"; // text/plain（ファイル名なし → noname 添付）
+  innerMixed.parts[1].partId = "1.1"; // image/png（添付ファイル1.png）
+
+  return message;
+})();
+
+/**
+ * メール取得成功
+ * multipart/related の本文確定後に multipart が現れる場合
+ * addAllPartsAsAttachments でネストされた multipart 内のパートが添付ファイルとして処理される
+ */
+test('200 Success - multipart/related: nested multipart after body found, processed by addAllPartsAsAttachments', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) { // メール取得の GET リクエスト
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_MESSAGE_13));
+    }
+    // 添付ファイル取得の GET リクエスト
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  // <script> のスクリプトを実行
+  main();
+
+  // 保存先データ項目の値をチェック
+  expect(engine.findData(dataDefs.subject)).toEqual('件名');
+  expect(engine.findData(dataDefs.body)).toEqual('テストメールです。\nこれはテストメールです。');
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(2); // innerMixed 内の 2 パートが添付ファイルとして保存される
+  expect(files[0].getName()).toEqual('noname'); // text/plain はファイル名なし
+  expect(files[0].getContentType()).toEqual('text/plain; charset=UTF-8');
+  expect(files[1].getName()).toEqual('添付ファイル1.png');
+  expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[1].getContentType()).toEqual('image/png');
 });
 
 ]]></test>
