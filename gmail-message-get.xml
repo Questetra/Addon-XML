@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?><service-task-definition>
 <label>Gmail: Get Email Message</label>
 <label locale="ja">Gmail: メール取得</label>
-<last-modified>2026-03-27</last-modified>
+<last-modified>2026-03-30</last-modified>
 <license>(C) Questetra, Inc. (MIT License)</license>
 <engine-type>3</engine-type>
 <addon-version>2</addon-version>
@@ -556,6 +556,9 @@ function getDisposition( part ) {
   return dispositionHeader.value.split(";")[0].toLowerCase();
 }
 
+/** 添付ファイルの Content-Type のデフォルト値 */
+const DEFAULT_FILE_CONTENT_TYPE = "application/octet-stream";
+
 /**
   * MIME メールのパートの "Content-Type" ヘッダの値を返す
   * ヘッダが無い場合はデフォルト値として "application/octet-stream" を返す
@@ -563,13 +566,12 @@ function getDisposition( part ) {
   * @return {String} contentType  "Content-Type" ヘッダの値
   */
 function getContentType( part ) {
-  const defaultContentType = "application/octet-stream";
   if ( part.headers === undefined ) { // パートにヘッダが無い場合はデフォルト値を返す
-    return defaultContentType;
+    return DEFAULT_FILE_CONTENT_TYPE;
   }
   const contentTypeHeader = part.headers.find( header => header.name.toLowerCase() === "content-type" );
   if ( contentTypeHeader === undefined ) { // 無い場合はデフォルト値を返す
-    return defaultContentType;
+    return DEFAULT_FILE_CONTENT_TYPE;
   }
   return contentTypeHeader.value;
 }
@@ -622,18 +624,38 @@ function getAttachments( apiUri, auth, attachments ) {
   });
 }
 
+/** 保存時のファイル名の最大長 */
+const FILE_NAME_MAX_LENGTH = 200;
+
 /**
   * 添付ファイルを Qfile に変換し、ファイルの配列に追加する
+  * - ファイル名が長すぎる場合、省略する
+  * - Content-Type が不正な場合、デフォルトの Content-Type で保存する
   * @param {Array<Object>} attachments  添付ファイルの情報（オブジェクト）が格納された配列
   * @param {ListArray<Qfile>} files  ファイルの配列
   */
 function convertAndAddAttachments( attachments, files ) {
-  attachments.forEach( attachment => {  
-    const qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
-      attachment.filename,
-      attachment.contentType,
-      base64.decodeFromUrlSafeStringToByteArray( attachment.body.data ) // ByteArrayWrapper
-    );
+  attachments.forEach( attachment => {
+    let qfile;
+    let fileName = attachment.filename;
+    if( fileName.length > FILE_NAME_MAX_LENGTH ) {
+        fileName = fileName.substring(0, FILE_NAME_MAX_LENGTH-3) + "...";
+    }
+    const bytes = base64.decodeFromUrlSafeStringToByteArray( attachment.body.data ); // ByteArrayWrapper
+    try {
+      qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        attachment.contentType,
+        bytes
+      );
+    } catch (_e) {
+      // Content-Type が不正な場合に例外になるので、DEFAULT_FILE_CONTENT_TYPE で作成し直す
+      qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
+        fileName,
+        DEFAULT_FILE_CONTENT_TYPE,
+        bytes
+      );
+    }
     files.add( qfile );
   });
 }
