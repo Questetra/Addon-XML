@@ -648,7 +648,9 @@ function convertAndAddAttachments( attachments, files ) {
         attachment.contentType,
         bytes
       );
-    } catch (_e) {
+    } catch (e) {
+      engine.log(`Failed to convert attachment ${fileName} to qfile. ${e.toString()}`);
+      engine.log(`Trying to save it as ${DEFAULT_FILE_CONTENT_TYPE}.`);
       // Content-Type が不正な場合に例外になるので、DEFAULT_FILE_CONTENT_TYPE で作成し直す
       qfile = new com.questetra.bpms.core.event.scripttask.NewQfile(
         fileName,
@@ -2911,6 +2913,109 @@ test('200 Success - multipart/related: nested multipart after body found, proces
   expect(files[1].getName()).toEqual('添付ファイル1.png');
   expect(files[1].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
   expect(files[1].getContentType()).toEqual('image/png');
+});
+
+/**
+ * 添付ファイル名が長すぎる場合、省略して保存される
+ * 201 文字 → 先頭 197 文字 + "..."（計 200 文字）
+ */
+test('200 Success - Long attachment filename is truncated', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
+  attachmentPart.filename = 'A'.repeat(201); // 201 文字
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1));
+  message.payload.parts[0].parts[1] = attachmentPart;
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(message));
+    }
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  main();
+
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1);
+  expect(files[0].getName()).toEqual('A'.repeat(197) + '...'); // 197 文字 + "..." = 200 文字
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+});
+
+/**
+ * 添付ファイル名がちょうど 200 文字の場合、省略されない
+ */
+test('200 Success - Attachment filename of exactly 200 characters is not truncated', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
+  attachmentPart.filename = 'A'.repeat(200); // 200 文字（ちょうど上限）
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1));
+  message.payload.parts[0].parts[1] = attachmentPart;
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(message));
+    }
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  main();
+
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1);
+  expect(files[0].getName()).toEqual('A'.repeat(200)); // 省略なし
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+});
+
+/**
+ * 添付ファイルの Content-Type が不正な場合、デフォルトの Content-Type で保存される
+ */
+test('200 Success - Attachment with invalid Content-Type is saved with default Content-Type', () => {
+  const messageId = 'messageId-1';
+  const dataDefs = prepareConfigs(messageId);
+
+  const attachmentPart = JSON.parse(JSON.stringify(ATTACHMENT_PART)); // ディープコピー
+  // 拡張子のないファイル名にする（拡張子があると Content-Type がファイル名から推定されてしまうため）
+  attachmentPart.filename = '添付ファイル';
+  // Content-Type の末尾に不要な " を付けて不正にする
+  attachmentPart.headers = attachmentPart.headers.map(header =>
+    header.name === 'Content-Type'
+      ? { ...header, "value": "image/png\"" }
+      : header
+  );
+
+  const message = JSON.parse(JSON.stringify(SAMPLE_MESSAGE_1));
+  message.payload.parts[0].parts[1] = attachmentPart;
+
+  let reqCount = 0;
+  httpClient.setRequestHandler((request) => {
+    if (reqCount === 0) {
+      assertGetMessageRequest(request, messageId);
+      reqCount++;
+      return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(message));
+    }
+    assertGetAttachmentRequest(request, messageId, 'attachmentId-1');
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(SAMPLE_ATTACHMENT_1));
+  });
+
+  main();
+
+  const files = engine.findData(dataDefs.attachments);
+  expect(files.length).toEqual(1);
+  expect(files[0].getName()).toEqual('添付ファイル');
+  expect(files[0].getLength()).toEqual(SAMPLE_ATTACHMENT_1.size);
+  expect(files[0].getContentType()).toEqual('application/octet-stream'); // デフォルト Content-Type
 });
 
 ]]></test>
