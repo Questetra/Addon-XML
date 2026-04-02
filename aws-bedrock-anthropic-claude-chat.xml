@@ -58,25 +58,45 @@
             <label locale="ja">C6: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
         <config name="conf_EnableThinking" form-type="TOGGLE">
-            <label>C7: Enable reasoning in Extended Thinking Mode</label>
-            <label locale="ja">C7: 拡張思考モードでの推論を有効にする</label>
+            <label>C7E: Enable reasoning in Extended Thinking Mode</label>
+            <label locale="ja">C7E: 拡張思考モードでの推論を有効にする</label>
         </config>
         <config name="conf_BudgetTokens" required="false" form-type="TEXTFIELD" depends-on="conf_EnableThinking">
-            <label>C7-b: Maximum number of tokens for reasoning (1024 if blank)</label>
-            <label locale="ja">C7-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+            <label>C7E-b: Maximum number of tokens for reasoning (1024 if blank)</label>
+            <label locale="ja">C7E-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+        </config>
+        <config name="conf_EnableAdaptiveThinking" form-type="TOGGLE">
+            <label>C7A: Enable reasoning in Adaptive Thinking Mode</label>
+            <label locale="ja">C7A: 適応型思考モードでの推論を有効にする</label>
+        </config>
+        <config name="conf_Effort" required="false" form-type="SELECT_ITEM">
+            <label>C8: Effort</label>
+            <label locale="ja">C8: エフォート</label>
+            <item value="low">
+                <label>low</label>
+            </item>
+            <item value="medium">
+                <label>medium</label>
+            </item>
+            <item value="high">
+                <label>high</label>
+            </item>
+            <item value="max">
+                <label>max</label>
+            </item>
         </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C8: Temperature (0.0 - 1.0) (1.0 if blank)</label>
-            <label locale="ja">C8: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
+            <label>C9: Temperature (0.0 - 1.0) (1.0 if blank)</label>
+            <label locale="ja">C9: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C9: Stop Sequences (write one per line)</label>
-            <label locale="ja">C9: 停止シーケンス（1 行に 1 つ）</label>
+            <label>C10: Stop Sequences (write one per line)</label>
+            <label locale="ja">C10: 停止シーケンス（1 行に 1 つ）</label>
         </config>
         <config name="conf_SystemPrompt" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C10: System Prompt</label>
-            <label locale="ja">C10: システムプロンプト</label>
+            <label>C11: System Prompt</label>
+            <label locale="ja">C11: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -127,6 +147,11 @@ const main = () => {
             throw new Error('Maximum number of tokens for reasoning must be less than maximum number of tokens to consume.');
         }
     }
+    const enableAdaptiveThinking = configs.getObject('conf_EnableAdaptiveThinking');
+    if (enableThinking && enableAdaptiveThinking) {
+        throw new Error('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time.');
+    }
+    const effort = configs.get('conf_Effort');
     const temperature = retrieveTemperature();
     if (enableThinking && temperature !== DEFAULT['conf_Temperature']) {
         throw new Error(`Temperature must be ${DEFAULT['conf_Temperature']} when Extended Thinking Mode is enabled.`);
@@ -144,6 +169,8 @@ const main = () => {
         maxTokens,
         enableThinking,
         budgetTokens,
+        enableAdaptiveThinking,
+        effort,
         temperature,
         stopSequences,
         systemPrompt,
@@ -411,6 +438,8 @@ const fileToObj = file => ({
  * @param maxTokens
  * @param enableThinking
  * @param budgetTokens
+ * @param enableAdaptiveThinking
+ * @param effort
  * @param temperature
  * @param stopSequences
  * @param systemPrompt
@@ -425,6 +454,8 @@ const converse = (
     maxTokens,
     enableThinking,
     budgetTokens,
+    enableAdaptiveThinking,
+    effort,
     temperature,
     stopSequences,
     systemPrompt,
@@ -450,6 +481,26 @@ const converse = (
                     budget_tokens: budgetTokens
                 }
             }
+        });
+    }
+
+    if (enableAdaptiveThinking) {
+        Object.assign(payload, {
+            additionalModelRequestFields: {
+                thinking: {
+                    type: 'adaptive'
+                }
+            }
+        });
+    }
+
+    if (effort !== '') {
+        if (payload.additionalModelRequestFields === undefined) {
+            payload.additionalModelRequestFields = {};
+        }
+        Object.assign(payload.additionalModelRequestFields, {
+            anthropic_beta: ['effort-2025-11-24'],
+            output_config: {effort}
         });
     }
 
@@ -483,14 +534,12 @@ const converse = (
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
 
-    // extended thinking が有効な場合、回答以外に、推論の過程を表す content も返る
-    // そのため、text プロパティ（回答）を持つコンテンツを探して、最初のものを返す
-    const responseContent = output.message.content.find(content => content.text !== undefined);
-    if (responseContent === undefined) {
-        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
-    }
-    const answer1 = responseContent.text;
-    if (answer1 === null || answer1 === '') {
+    // text プロパティを持つ content をすべて連結して回答とする
+    const answer1 = output.message.content
+        .filter(content => content.text !== undefined)
+        .map(content => content.text)
+        .join('');
+    if (answer1 === null || answer1.trim() === '') {
         throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
     }
     return answer1;
