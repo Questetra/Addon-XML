@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2026-04-02</last-modified>
+    <last-modified>2026-04-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -494,7 +494,7 @@ const converse = (
         });
     }
 
-    if (effort !== '') {
+    if (effort !== null && effort !== '') {
         if (payload.additionalModelRequestFields === undefined) {
             payload.additionalModelRequestFields = {};
         }
@@ -633,6 +633,21 @@ const enableThinking = (debugTokens) => {
 };
 
 /**
+ * 適応型思考モードを有効にする
+ */
+const enableAdaptiveThinking = () => {
+    configs.putObject('conf_EnableAdaptiveThinking', true);
+};
+
+/**
+ * エフォートを指定する
+ * @param {String} effort エフォート
+ */
+const setEffort = (effort) => {
+    configs.put('conf_Effort', effort);
+};
+
+/**
  * 異常系のテスト
  * @param errorMsg
  */
@@ -656,6 +671,8 @@ const MODEL_4_1_OPUS = 'anthropic.claude-opus-4-1-20250805-v1:0';
 const MODEL_4_5_HAIKU = 'anthropic.claude-haiku-4-5-20251001-v1:0';
 const MODEL_4_5_SONNET = 'anthropic.claude-sonnet-4-5-20250929-v1:0';
 const MODEL_4_5_OPUS = 'anthropic.claude-opus-4-5-20251101-v1:0';
+const MODEL_SONNET_4_6 = 'anthropic.claude-sonnet-4-6';
+const MODEL_OPUS_4_6 = 'anthropic.claude-opus-4-6-v1';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -1022,7 +1039,7 @@ const assertRequest = ({
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
+                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = [], enableAdaptiveThinking = false, effort = '') => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -1033,8 +1050,14 @@ const assertRequest = ({
     if (enableThinking) {
         expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('enabled');
         expect(bodyObj.additionalModelRequestFields.thinking.budget_tokens).toEqual(budgetTokens);
-    } else {
+    } else if (enableAdaptiveThinking) {
+        expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('adaptive');
+    } else if (effort === null || effort === '') {
         expect(bodyObj.additionalModelRequestFields).toEqual(undefined);
+    }
+    if (effort !== null && effort !== '') {
+        expect(bodyObj.additionalModelRequestFields.anthropic_beta).toEqual(['effort-2025-11-24']);
+        expect(bodyObj.additionalModelRequestFields.output_config.effort).toEqual(effort);
     }
     expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
     expect(bodyObj.inferenceConfig.stopSequences).toEqual(stopSequences);
@@ -1504,6 +1527,85 @@ test('Success - 3.5 Sonnet v2, regional cross region inference', () => {
  */
 test('Success - 3.5 Sonnet, regional cross region inference', () => {
     assertGlobalCrossRegionInference(MODEL_3_5_SONNET, false);
+});
+
+/**
+ * 拡張思考モードと適応型思考モードを同時に有効にした場合はエラー
+ */
+test('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_SONNET_4_6, false, '', '', '', '', message);
+    enableThinking('');
+    enableAdaptiveThinking();
+
+    assertError('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time.');
+});
+
+/**
+ * 成功 - 適応型思考モードを有効にし、必須項目のみ指定
+ */
+test('Success - adaptive thinking enabled, only with required configs', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_SONNET_4_6, false, '', '', '', '', message);
+    enableAdaptiveThinking();
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_SONNET_4_6, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], true);
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(MODEL_SONNET_4_6, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - エフォートを指定
+ */
+test('Success - with effort', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_4_5_OPUS, false, '', '', '', '', message);
+    setEffort('medium');
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_4_5_OPUS, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], false, 'medium');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_4_5_OPUS, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 適応型思考モードを有効にし、エフォートを指定
+ */
+test('Success - adaptive thinking enabled with effort', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_OPUS_4_6, false, '', '', '', '', message);
+    enableAdaptiveThinking();
+    setEffort('high');
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_OPUS_4_6, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], true, 'high');
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(MODEL_OPUS_4_6, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
 });
 
 ]]>    </test>
