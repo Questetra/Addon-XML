@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Collab Chat: Post</label>
     <label locale="ja">コラボチャット: 投稿</label>
-    <last-modified>2026-04-03</last-modified>
+    <last-modified>2026-04-07</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item posts a message or comment to Collab Chat.</summary>
     <summary locale="ja">この工程は、コラボチャットにメッセージまたはコメントを投稿します。</summary>
@@ -19,7 +19,7 @@
             <label>C2: Message ID to reply to (when posting a comment)</label>
             <label locale="ja">C2: 投稿先メッセージ ID（コメントを投稿する場合）</label>
         </config>
-        <config name="conf_Markdown" required="true" el-enabled="true"
+        <config name="conf_Markdown" required="false" el-enabled="true"
                 form-type="TEXTAREA">
             <label>C3: Post Content (Markdown)</label>
             <label locale="ja">C3: 投稿文（Markdown）</label>
@@ -39,7 +39,102 @@
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-feed-post/</help-page-url>
 
     <script><![CDATA[
-engine.log('test');
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const channelName = retrieveChannelName();
+    const messageId = retrieveMessageId();
+    const markdown = configs.get('conf_Markdown') ?? '';
+    const files = retrieveFiles();
+
+    if (markdown === '' && files.length === 0) {
+        throw new Error('Post content and attached files are both empty.');
+    }
+
+    ////// == 演算 / Calculating ==
+    const postId = post(channelName, messageId, markdown, files);
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_PostId', new java.math.BigDecimal(postId));
+};
+
+/**
+ * config から投稿先チャンネル名を読み出す
+ * 空の場合、この工程を処理しているプロセスのチャンネル名を返す
+ * @returns {String}
+ */
+const retrieveChannelName = () => {
+    const channelName = configs.get('conf_ChannelName') ?? '';
+    if (channelName !== '') {
+        return channelName;
+    }
+    return `p${processInstance.getProcessInstanceId()}`;
+};
+
+/**
+ * config から投稿先メッセージ ID を読み出す
+ * 未設定の場合、null を返す
+ * @returns {Number|null}
+ */
+const retrieveMessageId = () => {
+    const def = configs.getObject('conf_MessageId');
+    if (def === null) {
+        return null;
+    }
+    const messageId = engine.findData(def);
+    if (messageId === null) {
+        return null;
+    }
+    return messageId.longValue();
+};
+
+/**
+ * config から添付ファイルを読み出す
+ * 未設定の場合、空配列を返す
+ * @returns {Array<QfileView>}
+ */
+const retrieveFiles = () => {
+    const def = configs.getObject('conf_Files');
+    if (def === null) {
+        return [];
+    }
+    return engine.findData(def) ?? [];
+};
+
+/**
+ * コラボチャットに投稿する
+ * @param {String} channelName
+ * @param {Number|null} messageId
+ * @param {String} markdown
+ * @param {Array} files
+ * @returns {Number} 投稿したメッセージ／コメントの ID
+ */
+const post = (channelName, messageId, markdown, files) => {
+    let feedWrapper = feedService.begin()
+        .setChannel(channelName);
+    if (messageId !== null) {
+        feedWrapper = feedWrapper.setMessageId(messageId);
+    }
+    if (markdown !== '') {
+        feedWrapper = feedWrapper.setMarkdown(markdown);
+    }
+    files.forEach(file => feedWrapper.attachFile(file));
+    return feedWrapper.post();
+};
+
+/**
+ * データ項目への保存
+ * @param {String} configName
+ * @param {*} data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
     ]]>    </script>
 
     <icon>
