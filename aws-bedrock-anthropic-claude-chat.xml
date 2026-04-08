@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Amazon Bedrock: Anthropic Claude: Chat</label>
     <label locale="ja">Amazon Bedrock: Anthropic Claude: チャット</label>
-    <last-modified>2025-12-01</last-modified>
+    <last-modified>2026-04-03</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to an Anthropic Claude model on Amazon Bedrock
         and stores the response in the specified data item.</summary>
@@ -27,12 +27,6 @@
         <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
             <label>C4: Model</label>
             <label locale="ja">C4: モデル</label>
-            <item value="anthropic.claude-3-haiku-20240307-v1:0">
-                <label>Claude Haiku 3</label>
-            </item>
-            <item value="anthropic.claude-3-5-haiku-20241022-v1:0">
-                <label>Claude Haiku 3.5</label>
-            </item>
             <item value="anthropic.claude-sonnet-4-20250514-v1:0">
                 <label>Claude Sonnet 4</label>
             </item>
@@ -48,6 +42,12 @@
             <item value="anthropic.claude-opus-4-5-20251101-v1:0">
                 <label>Claude Opus 4.5</label>
             </item>
+            <item value="anthropic.claude-sonnet-4-6">
+                <label>Claude Sonnet 4.6</label>
+            </item>
+            <item value="anthropic.claude-opus-4-6-v1">
+                <label>Claude Opus 4.6</label>
+            </item>
         </config>
         <config name="conf_UseCrossRegion" form-type="TOGGLE">
             <label>C5: Use cross-region inference</label>
@@ -58,25 +58,46 @@
             <label locale="ja">C6: 使用するトークン数の上限（空白の場合、2048）</label>
         </config>
         <config name="conf_EnableThinking" form-type="TOGGLE">
-            <label>C7: Enable reasoning in Extended Thinking Mode</label>
-            <label locale="ja">C7: 拡張思考モードでの推論を有効にする</label>
+            <label>C7E: Enable reasoning in Extended Thinking Mode</label>
+            <label locale="ja">C7E: 拡張思考モードでの推論を有効にする</label>
         </config>
         <config name="conf_BudgetTokens" required="false" form-type="TEXTFIELD" depends-on="conf_EnableThinking">
-            <label>C7-b: Maximum number of tokens for reasoning (1024 if blank)</label>
-            <label locale="ja">C7-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+            <label>C7E-b: Maximum number of tokens for reasoning (1024 if blank)</label>
+            <label locale="ja">C7E-b: 推論に使用するトークン数の上限（空白の場合、1024）</label>
+        </config>
+        <config name="conf_EnableAdaptiveThinking" form-type="TOGGLE">
+            <label>C7A: Enable reasoning in Adaptive Thinking Mode</label>
+            <label locale="ja">C7A: 適応型思考モードでの推論を有効にする</label>
+        </config>
+        <config name="conf_Effort" required="false" form-type="SELECT_ITEM">
+            <label>C8: Effort</label>
+            <label locale="ja">C8: エフォート</label>
+            <item value="low">
+                <label>low</label>
+            </item>
+            <item value="medium">
+                <label>medium</label>
+            </item>
+            <item value="high">
+                <label>high (default)</label>
+                <label locale="ja">high (デフォルト)</label>
+            </item>
+            <item value="max">
+                <label>max</label>
+            </item>
         </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C8: Temperature (0.0 - 1.0) (1.0 if blank)</label>
-            <label locale="ja">C8: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
+            <label>C9: Temperature (0.0 - 1.0) (1.0 if blank)</label>
+            <label locale="ja">C9: 温度（0.0 〜 1.0）（空白の場合、1.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C9: Stop Sequences (write one per line)</label>
-            <label locale="ja">C9: 停止シーケンス（1 行に 1 つ）</label>
+            <label>C10: Stop Sequences (write one per line)</label>
+            <label locale="ja">C10: 停止シーケンス（1 行に 1 つ）</label>
         </config>
         <config name="conf_SystemPrompt" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C10: System Prompt</label>
-            <label locale="ja">C10: システムプロンプト</label>
+            <label>C11: System Prompt</label>
+            <label locale="ja">C11: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -127,9 +148,14 @@ const main = () => {
             throw new Error('Maximum number of tokens for reasoning must be less than maximum number of tokens to consume.');
         }
     }
+    const enableAdaptiveThinking = configs.getObject('conf_EnableAdaptiveThinking');
+    if (enableThinking && enableAdaptiveThinking) {
+        throw new Error('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time.');
+    }
+    const effort = configs.get('conf_Effort');
     const temperature = retrieveTemperature();
-    if (enableThinking && temperature !== DEFAULT['conf_Temperature']) {
-        throw new Error(`Temperature must be ${DEFAULT['conf_Temperature']} when Extended Thinking Mode is enabled.`);
+    if ((enableThinking || enableAdaptiveThinking) && temperature !== DEFAULT['conf_Temperature']) {
+        throw new Error(`Temperature must be ${DEFAULT['conf_Temperature']} when Extended or Adaptive Thinking Mode is enabled.`);
     }
     const stopSequences = retrieveStopSequences();
     const systemPrompt = configs.get('conf_SystemPrompt');
@@ -144,6 +170,8 @@ const main = () => {
         maxTokens,
         enableThinking,
         budgetTokens,
+        enableAdaptiveThinking,
+        effort,
         temperature,
         stopSequences,
         systemPrompt,
@@ -411,6 +439,8 @@ const fileToObj = file => ({
  * @param maxTokens
  * @param enableThinking
  * @param budgetTokens
+ * @param enableAdaptiveThinking
+ * @param effort
  * @param temperature
  * @param stopSequences
  * @param systemPrompt
@@ -425,6 +455,8 @@ const converse = (
     maxTokens,
     enableThinking,
     budgetTokens,
+    enableAdaptiveThinking,
+    effort,
     temperature,
     stopSequences,
     systemPrompt,
@@ -450,6 +482,26 @@ const converse = (
                     budget_tokens: budgetTokens
                 }
             }
+        });
+    }
+
+    if (enableAdaptiveThinking) {
+        Object.assign(payload, {
+            additionalModelRequestFields: {
+                thinking: {
+                    type: 'adaptive'
+                }
+            }
+        });
+    }
+
+    if (effort !== null && effort !== '') {
+        if (payload.additionalModelRequestFields === undefined) {
+            payload.additionalModelRequestFields = {};
+        }
+        Object.assign(payload.additionalModelRequestFields, {
+            anthropic_beta: ['effort-2025-11-24'], // 4.5 系のモデルで必要
+            output_config: {effort}
         });
     }
 
@@ -483,14 +535,12 @@ const converse = (
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
 
-    // extended thinking が有効な場合、回答以外に、推論の過程を表す content も返る
-    // そのため、text プロパティ（回答）を持つコンテンツを探して、最初のものを返す
-    const responseContent = output.message.content.find(content => content.text !== undefined);
-    if (responseContent === undefined) {
-        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
-    }
-    const answer1 = responseContent.text;
-    if (answer1 === null || answer1 === '') {
+    // text プロパティを持つ content をすべて連結して回答とする
+    const answer1 = output.message.content
+        .filter(content => content.text !== undefined)
+        .map(content => content.text)
+        .join('');
+    if (answer1 === null || answer1.trim() === '') {
         throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
     }
     return answer1;
@@ -584,6 +634,21 @@ const enableThinking = (debugTokens) => {
 };
 
 /**
+ * 適応型思考モードを有効にする
+ */
+const enableAdaptiveThinking = () => {
+    configs.putObject('conf_EnableAdaptiveThinking', true);
+};
+
+/**
+ * エフォートを指定する
+ * @param {String} effort エフォート
+ */
+const setEffort = (effort) => {
+    configs.put('conf_Effort', effort);
+};
+
+/**
  * 異常系のテスト
  * @param errorMsg
  */
@@ -600,13 +665,13 @@ const assertError = (errorMsg) => {
     }
 };
 
-const MODEL_3_HAIKU = 'anthropic.claude-3-haiku-20240307-v1:0';;
-const MODEL_3_5_HAIKU = 'anthropic.claude-3-5-haiku-20241022-v1:0';
 const MODEL_4_SONNET = 'anthropic.claude-sonnet-4-20250514-v1:0';
 const MODEL_4_1_OPUS = 'anthropic.claude-opus-4-1-20250805-v1:0';
 const MODEL_4_5_HAIKU = 'anthropic.claude-haiku-4-5-20251001-v1:0';
 const MODEL_4_5_SONNET = 'anthropic.claude-sonnet-4-5-20250929-v1:0';
 const MODEL_4_5_OPUS = 'anthropic.claude-opus-4-5-20251101-v1:0';
+const MODEL_4_6_SONNET = 'anthropic.claude-sonnet-4-6';
+const MODEL_4_6_OPUS = 'anthropic.claude-opus-4-6-v1';
 
 /**
  * リージョンコードの形式が不正 - ハイフンを含まない
@@ -721,7 +786,7 @@ test('Maximum number of tokens for reasoning is invalid - less than 1024', () =>
 /**
  * 推論に使用するトークン数の上限が不正 - 消費するトークン数の上限と同じ
  */
-test('Maximum number of tokens for reasoning is invalid - equal to maximun number of tokens', () => {
+test('Maximum number of tokens for reasoning is invalid - equal to maximum number of tokens', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
@@ -734,7 +799,7 @@ test('Maximum number of tokens for reasoning is invalid - equal to maximun numbe
 /**
  * 推論に使用するトークン数の上限が不正 - 消費するトークン数の上限より大きい
  */
-test('Maximum number of tokens for reasoning is invalid -  greater than maximun number of tokens', () => {
+test('Maximum number of tokens for reasoning is invalid -  greater than maximum number of tokens', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
@@ -777,7 +842,7 @@ test('Invalid temperature - bigger than 1', () => {
 /**
  * 温度が不正 - 拡張思考モードが有効なのに、1 でない
  */
-test('Invalid temperature - not 1 when thinking is enabled', () => {
+test('Invalid temperature - not 1 when extended thinking is enabled', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
@@ -787,7 +852,23 @@ test('Invalid temperature - not 1 when thinking is enabled', () => {
     prepareConfigs(key, secret, region, MODEL_4_1_OPUS, false, maxTokens, temperature, '', message);
     enableThinking('');
 
-    assertError('Temperature must be 1 when Extended Thinking Mode is enabled.');
+    assertError('Temperature must be 1 when Extended or Adaptive Thinking Mode is enabled.');
+});
+
+/**
+ * 温度が不正 - 適応型思考モードが有効なのに、1 でない
+ */
+test('Invalid temperature - not 1 when adaptive thinking is enabled', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const maxTokens = '';
+    const temperature = '0.5';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_4_6_SONNET, false, maxTokens, temperature, '', message);
+    enableAdaptiveThinking();
+
+    assertError('Temperature must be 1 when Extended or Adaptive Thinking Mode is enabled.');
 });
 
 /**
@@ -973,7 +1054,7 @@ const assertRequest = ({
                            method,
                            contentType,
                            body
-                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = []) => {
+                       }, region, model, maxTokens, enableThinking, budgetTokens, temperature, stopSequences, systemPrompt, message, files = [], enableAdaptiveThinking = false, effort = '') => {
     expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -984,8 +1065,14 @@ const assertRequest = ({
     if (enableThinking) {
         expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('enabled');
         expect(bodyObj.additionalModelRequestFields.thinking.budget_tokens).toEqual(budgetTokens);
-    } else {
+    } else if (enableAdaptiveThinking) {
+        expect(bodyObj.additionalModelRequestFields.thinking.type).toEqual('adaptive');
+    } else if (effort === null || effort === '') {
         expect(bodyObj.additionalModelRequestFields).toEqual(undefined);
+    }
+    if (effort !== null && effort !== '') {
+        expect(bodyObj.additionalModelRequestFields.anthropic_beta).toEqual(['effort-2025-11-24']);
+        expect(bodyObj.additionalModelRequestFields.output_config.effort).toEqual(effort);
     }
     expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
     expect(bodyObj.inferenceConfig.stopSequences).toEqual(stopSequences);
@@ -1102,11 +1189,11 @@ test('No response content - no content with text field', () => {
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_3_5_HAIKU, true, maxTokens, temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, MODEL_4_1_OPUS, true, maxTokens, temperature, stopSequences, '', message);
     enableThinking('');
 
     const responseObj = {
-        model: `us.${MODEL_3_5_HAIKU}`,
+        model: `us.${MODEL_4_1_OPUS}`,
         stopReason: 'max_tokens',
         output: {
             message:{
@@ -1121,7 +1208,7 @@ test('No response content - no content with text field', () => {
         }
     };
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, `us.${MODEL_3_5_HAIKU}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], 1, [], '', message);
+        assertRequest(request, region, `us.${MODEL_4_1_OPUS}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], 1, [], '', message);
         return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
     });
 
@@ -1131,7 +1218,7 @@ test('No response content - no content with text field', () => {
 /**
  * レスポンスに回答を含まないため、エラー - text フィールドの値が空の場合
  */
-test('No response content - no content with text field', () => {
+test('No response content - content with text field is empty', () => {
     const key = 'key-12345';
     const secret = 'secret-67890';
     const region = 'us-east-1';
@@ -1179,12 +1266,12 @@ test('Success - only with required configs', () => {
     const temperature = '';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    const answerDef = prepareConfigs(key, secret, region, MODEL_3_HAIKU, false, maxTokens, temperature, stopSequences, '', message);
+    const answerDef = prepareConfigs(key, secret, region, MODEL_4_5_HAIKU, false, maxTokens, temperature, stopSequences, '', message);
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region, MODEL_3_HAIKU, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_3_HAIKU, answer));
+        assertRequest(request, region, MODEL_4_5_HAIKU, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_4_5_HAIKU, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -1206,7 +1293,7 @@ test('Success - only with required configs - CrossRegionModel - Markdown', () =>
     const temperature = '1';
     const stopSequences = '';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_3_5_HAIKU, true, maxTokens, temperature, stopSequences, '', message);
+    prepareConfigs(key, secret, region, MODEL_4_1_OPUS, true, maxTokens, temperature, stopSequences, '', message);
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
     const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
@@ -1215,8 +1302,8 @@ test('Success - only with required configs - CrossRegionModel - Markdown', () =>
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region,`us.${MODEL_3_5_HAIKU}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_3_5_HAIKU}`, answer));
+        assertRequest(request, region,`us.${MODEL_4_1_OPUS}`, DEFAULT['conf_MaxTokens'], false, undefined, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(`us.${MODEL_4_1_OPUS}`, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -1326,7 +1413,7 @@ test('Success - thinking enabled, only with required configs', () => {
     const secret = 'secret-fghij';
     const region = 'us-west-1';
     const message = 'Hi. How are you?';
-    prepareConfigs(key, secret, region, MODEL_3_HAIKU, true, '', '', '', '', message);
+    prepareConfigs(key, secret, region, MODEL_4_1_OPUS, true, '', '', '', '', message);
     enableThinking('');
 
     // 回答を保存するデータ項目に、文字型 Markdown を指定
@@ -1336,8 +1423,8 @@ test('Success - thinking enabled, only with required configs', () => {
 
     const answer = 'Fine, thanks.';
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, region,`us.${MODEL_3_HAIKU}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], DEFAULT['conf_Temperature'], [], '', message);
-        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(`us.${MODEL_3_HAIKU}`, answer));
+        assertRequest(request, region,`us.${MODEL_4_1_OPUS}`, DEFAULT['conf_MaxTokens'], true, DEFAULT['conf_BudgetTokens'], DEFAULT['conf_Temperature'], [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(`us.${MODEL_4_1_OPUS}`, answer));
     });
 
     expect(main()).toEqual(undefined);
@@ -1455,6 +1542,85 @@ test('Success - 3.5 Sonnet v2, regional cross region inference', () => {
  */
 test('Success - 3.5 Sonnet, regional cross region inference', () => {
     assertGlobalCrossRegionInference(MODEL_3_5_SONNET, false);
+});
+
+/**
+ * 拡張思考モードと適応型思考モードを同時に有効にした場合はエラー
+ */
+test('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(key, secret, region, MODEL_4_6_SONNET, false, '', '', '', '', message);
+    enableThinking('');
+    enableAdaptiveThinking();
+
+    assertError('Extended Thinking Mode and Adaptive Thinking Mode cannot be enabled at the same time.');
+});
+
+/**
+ * 成功 - 適応型思考モードを有効にし、必須項目のみ指定
+ */
+test('Success - adaptive thinking enabled, only with required configs', () => {
+    const key = 'key-abcde';
+    const secret = 'secret-fghij';
+    const region = 'us-west-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_4_6_SONNET, false, '', '', '', '', message);
+    enableAdaptiveThinking();
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_4_6_SONNET, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], true);
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(MODEL_4_6_SONNET, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - エフォートを指定
+ */
+test('Success - with effort', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_4_5_OPUS, false, '', '', '', '', message);
+    setEffort('medium');
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_4_5_OPUS, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], false, 'medium');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(MODEL_4_5_OPUS, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 適応型思考モードを有効にし、エフォートを指定
+ */
+test('Success - adaptive thinking enabled with effort', () => {
+    const key = 'key-12345';
+    const secret = 'secret-67890';
+    const region = 'us-east-1';
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs(key, secret, region, MODEL_4_6_OPUS, false, '', '', '', '', message);
+    enableAdaptiveThinking();
+    setEffort('high');
+
+    const answer = 'Fine, thanks.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_4_6_OPUS, DEFAULT['conf_MaxTokens'], false, undefined, DEFAULT['conf_Temperature'], [], '', message, [], true, 'high');
+        return httpClient.createHttpResponse(200, 'application/json', createResponseWithReasoning(MODEL_4_6_OPUS, answer));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
 });
 
 ]]>    </test>
