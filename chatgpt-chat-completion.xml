@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2026-01-21</last-modified>
+    <last-modified>2026-04-14</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -381,31 +381,73 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
 
     const responseCode = response.getStatusCode();
     const responseBody = response.getResponseAsString();
+    // テスト用
+    engine.log(responseBody);
     if (responseCode !== 200) {
         engine.log(responseBody);
         throw new Error(`Failed to request. status: ${responseCode}`);
     }
     const responseObj = JSON.parse(responseBody);
-    const {usage} = responseObj;
-    let finishReason = responseObj.status;
-    let answer1 = responseObj.output_text;
-    if (answer1 === undefined || answer1 === null || answer1 === '') {
-        const outputs = responseObj.output ?? [];
-        if (outputs.length > 0) {
-            finishReason = outputs[0].finish_reason ?? finishReason;
-            const contentItems = outputs[0].content ?? [];
-            const outputText = contentItems.find(item => item.type === 'output_text');
-            answer1 = outputText?.text;
+    const {status, usage, output} = responseObj;
+    if (status !== 'completed') {
+        let errorMsg = `The request has not been completed. status: ${status}`;
+        if (responseObj.incomplete_details !== undefined) {
+            errorMsg += `, reason: {responseObj.incomplete_details.reason}`;
         }
+        throw new Error(errorMsg);
     }
-    engine.log(`Finish Reason: ${finishReason}`);
+    if (output === undefined || output.length === 0) {
+        engine.log(responseBody);
+        throw new Error('The response has no output.');
+    }
+    const outputMessages = [];
+    output.forEach(({type, content, summary}) => {
+        switch (type) {
+            case 'message':
+                if (content === undefined || content.length === 0) {
+                    break;
+                }
+                content.forEach(c => {
+                    if (c.type === 'output_text' && c.text !== undefined) {
+                        outputMessages.push(c.text);
+                        return;
+                    }
+                    // 'output_text' 以外の場合は、エラーにする。想定されるのは 'output_refusal'
+                    if (c.refusal !== undefined) {
+                        engine.log(`Refusal Message: ${c.refusal}`);
+                    }
+                    throw new Error(`Output message content has no text. type: ${c.type}`);
+                });
+                break;
+            case 'reasoning':
+                if (content !== undefined && content.length > 0) {
+                    content.forEach(c => {
+                        if (c.text !== undefined) {
+                            engine.log(`Reasoning Text: ${c.text}`);
+                        }
+                    });
+                }
+                if (summary !== undefined && summary.length > 0) {
+                    summary.forEach(s => {
+                        if (s.text !== undefined) {
+                            engine.log(`Reasoning Summary: ${s.text}`);
+                        }
+                    });
+                }
+                break;
+            default: // 通常、ありえない
+                engine.log(`Unexpected output type: ${type}`);
+                engine.log(JSON.stringify(output));
+        }
+    });
+    const answer1 = outputMessages.join('');
     if (usage !== undefined) {
         engine.log(`Prompt Tokens: ${usage.input_tokens}`);
         engine.log(`Completion Tokens: ${usage.output_tokens}`);
         engine.log(`Completion Tokens Details: ${JSON.stringify(usage.output_tokens_details)}`);
     }
     if (answer1 === undefined || answer1 === null || answer1 === '') {
-        throw new Error(`No response content generated. Finish Reason: ${finishReason}`);
+        throw new Error('No response content generated.');
     }
     return answer1;
 };
