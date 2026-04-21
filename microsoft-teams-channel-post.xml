@@ -2,32 +2,32 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <label>Microsoft Teams: Post</label>
-    <label locale="ja">Microsoft Teams: 投稿</label>
-    <last-modified>2026-04-20</last-modified>
+    <label>Microsoft Teams: Post to Channel</label>
+    <label locale="ja">Microsoft Teams: チャンネルに投稿</label>
+    <last-modified>2026-04-21</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <summary>This item posts a message, or a reply to a message, in a channel or chat on Microsoft Teams.</summary>
-    <summary locale="ja">この工程は、Microsoft Teams のチャンネルまたはチャットに、メッセージまたはメッセージへの返信を投稿します。</summary>
+    <summary>This item posts a message, or a reply to a message, in a channel on Microsoft Teams.</summary>
+    <summary locale="ja">この工程は、Microsoft Teams のチャンネルに、メッセージまたはメッセージへの返信を投稿します。</summary>
     <configs>
         <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
-                oauth2-setting-name="https://graph.microsoft.com/Sites.ReadWrite.All">
+                oauth2-setting-name="https://graph.microsoft.com/ChannelMessage.Send">
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
-        <config name="conf_TargetUrl" required="false" form-type="SELECT"
+        <config name="conf_TargetUrl" required="true" form-type="SELECT"
                 select-data-type="STRING_TEXTFIELD" editable="true">
-            <label>C1: URL of Channel / Chat / Message to post to</label>
-            <label locale="ja">C1: 投稿先チャンネル／チャット／返信先メッセージの URL</label>
+            <label>C2: Channel URL to post to / Message URL to reply to</label>
+            <label locale="ja">C2: 投稿先チャンネル／返信先メッセージの URL</label>
         </config>
-        <config name="conf_Markdown" required="false" el-enabled="true"
+        <config name="conf_Subject" required="false" el-enabled="true"
+                form-type="TEXTFIELD">
+            <label>C3: Subject of Message (ignored when posting a reply)</label>
+            <label locale="ja">C3: メッセージの件名（メッセージへの返信の場合、無視されます）</label>
+        </config>
+        <config name="conf_Markdown" required="true" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C3: Post Content (Markdown)</label>
-            <label locale="ja">C3: 投稿文（Markdown）</label>
-        </config>
-        <config name="conf_Files" required="false" form-type="SELECT"
-                select-data-type="FILE">
-            <label>C4: Data item that stores files to attach to the post</label>
-            <label locale="ja">C4: 投稿に添付するファイルが保存されているデータ項目</label>
+            <label>C4: Post Content (Markdown)</label>
+            <label locale="ja">C4: 投稿文（Markdown）</label>
         </config>
         <config name="conf_PostUrl" required="false" form-type="SELECT"
                 select-data-type="STRING_TEXTFIELD">
@@ -35,14 +35,14 @@
             <label locale="ja">C5: 投稿したメッセージ／返信の URL を保存するデータ項目</label>
         </config>
     </configs>
-    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-teams-post/</help-page-url>
-    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-microsoft-teams-post/</help-page-url>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-teams-channel-post/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-microsoft-teams-channel-post/</help-page-url>
 
     <script><![CDATA[
 // OAuth2 config sample at [OAuth 2.0 Setting]
 // - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
 // - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
-// - Scope: https://graph.microsoft.com/ChannnelMessage.Send offline_access
+// - Scope: ChannnelMessage.Send offline_access
 // - Consumer Key: (Get by Microsoft Azure Active Directory)
 // - Consumer Secret: (Get by Microsoft Azure Active Directory)
 
@@ -51,29 +51,44 @@ const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
 const main = () => {
     //// == 工程コンフィグの参照 / Config Retrieving ==
     const oauth2 = configs.getObject('conf_OAuth2');
-    const targetUrl = configs.get('conf_TargetUrl');
+    const targetUrl = retrieveTargetUrl();
+    const subject = configs.get('conf_Subject');
     const markdownText = configs.get('conf_Markdown') ?? '';
+    if (markdownText === '') {
+        throw new Error('Post Content is empty.');
+    }
 
     //// == 演算 / Calculating ==
-    const {teamId, channelId, chatId, messageId} = parseTargetUrl(targetUrl);
-    const postUrl = post(oauth2, teamId, channelId, chatId, messageId, markdownText);
+    const {teamId, channelId, messageId} = parseTargetUrl(targetUrl);
+    const postUrl = post(oauth2, teamId, channelId, messageId, subject, markdownText);
 
     //// == ワークフローデータへの代入 / Data Updating ==
     saveData('conf_PostUrl', postUrl);
 };
 
 /**
- * 投稿先の URL をパースし、種類に応じて teamId, channelId, chatId, messageId を返す
- * チャットに「メッセージへの返信」は存在しないので本アイテムでは「チャットメッセージ URL」をサポートしなくても良いが、
- * 仕様のわかりやすさのためにサポートしている
- * ----
+ * config から投稿先 URL を読み出す
+ * 空の場合はエラー
+ * @returns {String}
+ */
+const retrieveTargetUrl = () => {
+    let targetUrl = configs.get('conf_TargetUrl');
+    const def = configs.getObject('conf_TargetUrl');
+    if (def !== null) {
+        targetUrl = engine.findData(def);
+    }
+    if (targetUrl === null || targetUrl === '') {
+        throw new Error('Target URL is empty.');
+    }
+    return targetUrl;
+};
+
+/**
+ * 投稿先の URL をパースし、teamId, channelId, messageId を返す
  * チャンネル URL: https://{domain}/{path}/channel/{channelId}/{channelName}?groupId={teamId}&tenantId={tenantId}
- * チャット URL: https://{domain}/{path}/chat/{chatId}/conversations
  * チャンネルメッセージ URL: https://{domain}/{path}/message/{channelId}/{messageId}?...&groupId={teamId}&...
- * チャットメッセージ URL: https://{domain}/{path}/message/{chatId}/{messageId}?context={"contextType":"chat"}
- * ----
  * @param {String} targetUrl
- * @returns {Object} teamId, channelId, chatId, messageId
+ * @returns {Object} teamId, channelId, messageId
  */
 const parseTargetUrl = (targetUrl) => {
     const [pathPart, queryPart] = targetUrl.split('?');
@@ -83,38 +98,28 @@ const parseTargetUrl = (targetUrl) => {
     // メッセージ URL の判定
     const messageIndex = pathSegments.indexOf('message');
     if (messageIndex !== -1 && messageIndex + 2 < pathSegments.length) {
-        const firstId = decodeURIComponent(pathSegments[messageIndex + 1]);
+        const channelId = decodeURIComponent(pathSegments[messageIndex + 1]);
         const messageId = decodeURIComponent(pathSegments[messageIndex + 2]);
-        // groupId があればチャンネルメッセージ、なければチャットメッセージ
         const teamId = queryParams.groupId;
-        if (teamId !== undefined) {
-            engine.log(`teamId: ${teamId}, channelId: ${firstId}, messageId: ${messageId}`);
-            return { teamId, channelId: firstId, chatId: null, messageId };
+        if (teamId === undefined) {
+            throw new Error(`groupId not found in target URL: ${targetUrl}`);
         }
-        engine.log(`chatId: ${firstId}, messageId: ${messageId}`);
-        return { teamId: null, channelId: null, chatId: firstId, messageId };
-    }
-
-    // チャット URL の判定
-    const chatIndex = pathSegments.indexOf('chat');
-    if (chatIndex !== -1 && chatIndex + 1 < pathSegments.length) {
-        const chatId = decodeURIComponent(pathSegments[chatIndex + 1]);
-        engine.log(`chatId: ${chatId}`);
-        return { teamId: null, channelId: null, chatId, messageId: null };
+        engine.log(`teamId: ${teamId}, channelId: ${channelId}, messageId: ${messageId}`);
+        return { teamId, channelId, messageId };
     }
 
     // チャンネル URL の判定
     const channelIndex = pathSegments.indexOf('channel');
     if (channelIndex === -1 || channelIndex + 1 >= pathSegments.length) {
-        throw new Error(`Invalid URL: ${targetUrl}`);
+        throw new Error(`Invalid Target URL: ${targetUrl}`);
     }
     const channelId = decodeURIComponent(pathSegments[channelIndex + 1]);
     const teamId = queryParams.groupId;
     if (teamId === undefined) {
-        throw new Error(`groupId not found in URL: ${targetUrl}`);
+        throw new Error(`groupId not found in target URL: ${targetUrl}`);
     }
     engine.log(`teamId: ${teamId}, channelId: ${channelId}`);
-    return { teamId, channelId, chatId: null, messageId: null };
+    return { teamId, channelId, messageId: null };
 };
 
 /**
@@ -137,31 +142,32 @@ const parseQueryParams = (queryPart) => {
 /**
  * メッセージを投稿する
  * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
- * @param {String|null} teamId
- * @param {String|null} channelId
- * @param {String|null} chatId
+ * @param {String} teamId
+ * @param {String} channelId
  * @param {String|null} messageId
+ * @param {Strung} subject
  * @param {String} markdownText
  * @returns {String} 投稿したメッセージの URL
  */
-const post = (oauth2, teamId, channelId, chatId, messageId, markdownText) => {
+const post = (oauth2, teamId, channelId, messageId, subject, markdownText) => {
     let url;
-    if (chatId !== null) { // チャットへの投稿（messageId は無視）
-        url = `${GRAPH_URI}chats/${encodeURIComponent(chatId)}/messages`;
-    } else if (messageId !== null) { // チャンネルメッセージへの返信
+    if (messageId !== null) { // チャンネルメッセージへの返信
         url = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/replies`;
     } else { // チャンネルへの投稿
         url = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
     }
-    const body = {
+    const reqBody = {
         body: {
             contentType: 'html',
             content: markdown.toHtml(markdownText)
         }
     };
+    if (subject !== '' && messageId === null) {
+        reqBody.subject = subject;
+    }
     const response = httpClient.begin()
         .authSetting(oauth2)
-        .body(JSON.stringify(body), 'application/json; charset=UTF-8')
+        .body(JSON.stringify(reqBody), 'application/json; charset=UTF-8')
         .post(url);
     const status = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -169,6 +175,7 @@ const post = (oauth2, teamId, channelId, chatId, messageId, markdownText) => {
         engine.log(responseStr);
         throw new Error(`Failed to post message. status: ${status}`);
     }
+    engine.log(responseStr); // テスト用
     return JSON.parse(responseStr).webUrl;
 };
 
