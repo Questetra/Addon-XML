@@ -1,0 +1,446 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Microsoft Teams: Post to Channel</label>
+    <label locale="ja">Microsoft Teams: チャンネルに投稿</label>
+    <last-modified>2026-04-21</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item posts a message, or a reply to a message, in a channel on Microsoft Teams.</summary>
+    <summary locale="ja">この工程は、Microsoft Teams のチャンネルに、メッセージまたはメッセージへの返信を投稿します。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://graph.microsoft.com/ChannelMessage.Send">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_TargetUrl" required="true" form-type="SELECT"
+                select-data-type="STRING_TEXTFIELD" editable="true">
+            <label>C2: Channel URL to post to / Message URL to reply to</label>
+            <label locale="ja">C2: 投稿先チャンネル／返信先メッセージの URL</label>
+        </config>
+        <config name="conf_Subject" required="false" el-enabled="true"
+                form-type="TEXTFIELD">
+            <label>C3: Subject of Message (ignored when posting a reply)</label>
+            <label locale="ja">C3: メッセージの件名（メッセージへの返信の場合、無視されます）</label>
+        </config>
+        <config name="conf_Markdown" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>C4: Post Content (Markdown)</label>
+            <label locale="ja">C4: 投稿文（Markdown）</label>
+        </config>
+        <config name="conf_PostUrl" required="false" form-type="SELECT"
+                select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save the URL of the posted message / reply</label>
+            <label locale="ja">C5: 投稿したメッセージ／返信の URL を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-microsoft-teams-channel-post/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-microsoft-teams-channel-post/</help-page-url>
+
+    <script><![CDATA[
+// OAuth2 config sample at [OAuth 2.0 Setting]
+// - Authorization Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/authorize
+// - Token Endpoint URL: https://login.microsoftonline.com/{your-tenant-id}/oauth2/v2.0/token
+// - Scope: ChannnelMessage.Send offline_access
+// - Consumer Key: (Get by Microsoft Azure Active Directory)
+// - Consumer Secret: (Get by Microsoft Azure Active Directory)
+
+const GRAPH_URI = 'https://graph.microsoft.com/v1.0/';
+
+const main = () => {
+    //// == 工程コンフィグの参照 / Config Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const targetUrl = retrieveTargetUrl();
+    const subject = configs.get('conf_Subject');
+    const markdownText = configs.get('conf_Markdown') ?? '';
+    if (markdownText === '') {
+        throw new Error('Post Content is empty.');
+    }
+
+    //// == 演算 / Calculating ==
+    const {teamId, channelId, messageId} = parseTargetUrl(targetUrl);
+    const postUrl = post(oauth2, teamId, channelId, messageId, subject, markdownText);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_PostUrl', postUrl);
+};
+
+/**
+ * config から投稿先 URL を読み出す
+ * 空の場合はエラー
+ * @returns {String}
+ */
+const retrieveTargetUrl = () => {
+    let targetUrl = configs.get('conf_TargetUrl');
+    const def = configs.getObject('conf_TargetUrl');
+    if (def !== null) {
+        targetUrl = engine.findData(def);
+    }
+    if (targetUrl === null || targetUrl === '') {
+        throw new Error('Target URL is empty.');
+    }
+    return targetUrl;
+};
+
+/**
+ * 投稿先の URL をパースし、teamId, channelId, messageId を返す
+ * チャンネル URL: https://{domain}/{path}/channel/{channelId}/{channelName}?groupId={teamId}&tenantId={tenantId}
+ * チャンネルメッセージ URL: https://{domain}/{path}/message/{channelId}/{messageId}?...&groupId={teamId}&...
+ * @param {String} targetUrl
+ * @returns {Object} teamId, channelId, messageId
+ */
+const parseTargetUrl = (targetUrl) => {
+    const [pathPart, queryPart] = targetUrl.split('?');
+    const pathSegments = pathPart.split('/');
+    const queryParams = parseQueryParams(queryPart);
+
+    // メッセージ URL の判定
+    const messageIndex = pathSegments.indexOf('message');
+    if (messageIndex !== -1 && messageIndex + 2 < pathSegments.length) {
+        const channelId = decodeURIComponent(pathSegments[messageIndex + 1]);
+        const messageId = decodeURIComponent(pathSegments[messageIndex + 2]);
+        const teamId = queryParams.groupId;
+        if (teamId === undefined) {
+            throw new Error(`groupId not found in target URL: ${targetUrl}`);
+        }
+        engine.log(`teamId: ${teamId}, channelId: ${channelId}, messageId: ${messageId}`);
+        return { teamId, channelId, messageId };
+    }
+
+    // チャンネル URL の判定
+    const channelIndex = pathSegments.indexOf('channel');
+    if (channelIndex === -1 || channelIndex + 1 >= pathSegments.length) {
+        throw new Error(`Invalid Target URL: ${targetUrl}`);
+    }
+    const channelId = decodeURIComponent(pathSegments[channelIndex + 1]);
+    const teamId = queryParams.groupId;
+    if (teamId === undefined) {
+        throw new Error(`groupId not found in target URL: ${targetUrl}`);
+    }
+    engine.log(`teamId: ${teamId}, channelId: ${channelId}`);
+    return { teamId, channelId, messageId: null };
+};
+
+/**
+ * クエリ文字列をパースしてオブジェクトにする
+ * @param {String|undefined} queryPart
+ * @returns {Object}
+ */
+const parseQueryParams = (queryPart) => {
+    if (queryPart === undefined) {
+        return {};
+    }
+    const params = {};
+    queryPart.split('&').forEach(param => {
+        const [key, ...rest] = param.split('=');
+        params[key] = rest.join('='); // value に = が含まれる場合を考慮
+    });
+    return params;
+};
+
+/**
+ * メッセージを投稿する
+ * @param {AuthSettingWrapper} oauth2  OAuth2 設定情報
+ * @param {String} teamId
+ * @param {String} channelId
+ * @param {String|null} messageId
+ * @param {Strung} subject
+ * @param {String} markdownText
+ * @returns {String} 投稿したメッセージの URL
+ */
+const post = (oauth2, teamId, channelId, messageId, subject, markdownText) => {
+    let url;
+    if (messageId !== null) { // チャンネルメッセージへの返信
+        url = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/replies`;
+    } else { // チャンネルへの投稿
+        url = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
+    }
+    const reqBody = {
+        body: {
+            contentType: 'html',
+            content: markdown.toHtml(markdownText)
+        }
+    };
+    if (subject !== '' && messageId === null) {
+        reqBody.subject = subject;
+    }
+    const response = httpClient.begin()
+        .authSetting(oauth2)
+        .body(JSON.stringify(reqBody), 'application/json; charset=UTF-8')
+        .post(url);
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status !== 201) {
+        engine.log(responseStr);
+        throw new Error(`Failed to post message. status: ${status}`);
+    }
+    engine.log(responseStr); // テスト用
+    return JSON.parse(responseStr).webUrl;
+};
+
+/**
+ * データ項目への保存
+ * @param {String} configName
+ * @param {*} data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+    <icon>
+        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
+    </icon>
+
+    <test><![CDATA[
+
+const SAMPLE_TEAM_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const SAMPLE_CHANNEL_ID = '19:channelId123@thread.tacv2';
+const SAMPLE_MESSAGE_ID = '1681234567890';
+const SAMPLE_CHANNEL_URL = `https://teams.microsoft.com/l/channel/${encodeURIComponent(SAMPLE_CHANNEL_ID)}/General?groupId=${SAMPLE_TEAM_ID}&tenantId=11111111-2222-3333-4444-555555555555`;
+const SAMPLE_MESSAGE_URL = `https://teams.microsoft.com/l/message/${encodeURIComponent(SAMPLE_CHANNEL_ID)}/${SAMPLE_MESSAGE_ID}?tenantId=11111111-2222-3333-4444-555555555555&groupId=${SAMPLE_TEAM_ID}&parentMessageId=${SAMPLE_MESSAGE_ID}`;
+
+/**
+ * 設定の準備 - 投稿先 URL は直接入力
+ * @param {String} targetUrl
+ * @param {String} subject
+ * @param {String} markdownText
+ * @param {Boolean} savePostUrl
+ * @returns {DataDefinitionView|null} postUrlDef
+ */
+const prepareConfigs = (targetUrl, subject, markdownText, savePostUrl) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Microsoft Teams',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/ChannelMessage.Send offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_TargetUrl', targetUrl);
+    configs.put('conf_Subject', subject);
+    configs.put('conf_Markdown', markdownText);
+
+    if (savePostUrl) {
+        const postUrlDef = engine.createDataDefinition('投稿 URL', 1, 'q_postUrl', 'STRING_TEXTFIELD');
+        configs.putObject('conf_PostUrl', postUrlDef);
+        return postUrlDef;
+    }
+    return null;
+};
+
+/**
+ * 異常系のテスト
+ * @param {String} errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * POST リクエストの検証
+ * @param {Object} request
+ * @param {String} teamId
+ * @param {String} channelId
+ * @param {String|null} messageId
+ * @param {String} subject
+ * @param {String} markdownText
+ */
+const assertPostRequest = ({url, method, contentType, headers, body}, teamId, channelId, messageId, subject, markdownText) => {
+    let expectedUrl;
+    if (messageId !== null) {
+        expectedUrl = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/replies`;
+    } else {
+        expectedUrl = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
+    }
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json; charset=UTF-8');
+    expect(headers.Authorization).toEqual('Bearer access_token');
+    const bodyObj = JSON.parse(body);
+    expect(bodyObj.body.contentType).toEqual('html');
+    expect(bodyObj.body.content).toEqual(markdown.toHtml(markdownText));
+    if (subject !== '' && messageId === null) {
+        expect(bodyObj.subject).toEqual(subject);
+    } else {
+        expect(bodyObj.subject).toEqual(undefined);
+    }
+};
+
+/**
+ * 投稿先 URL が空（データ項目の値が空）
+ */
+test('Error - Target URL is empty (data item with null value)', () => {
+    prepareConfigs('', '', '**Hello**', false);
+    // conf_TargetUrl をデータ項目に差し替え（値未設定 → null）
+    const targetUrlDef = engine.createDataDefinition('投稿先 URL', 2, 'q_targetUrl', 'STRING_TEXTFIELD');
+    configs.putObject('conf_TargetUrl', targetUrlDef);
+
+    assertError('Target URL is empty.');
+});
+
+/**
+ * 投稿文が空
+ */
+test('Error - Post Content is empty', () => {
+    prepareConfigs(SAMPLE_CHANNEL_URL, '', '', false);
+    assertError('Post Content is empty.');
+});
+
+/**
+ * URL に channel も message もない
+ */
+test('Error - Invalid Target URL', () => {
+    const url = 'https://teams.microsoft.com/l/something/else';
+    prepareConfigs(url, '', '**Hello**', false);
+    assertError(`Invalid Target URL: ${url}`);
+});
+
+/**
+ * チャンネル URL に groupId がない
+ */
+test('Error - Channel URL without groupId', () => {
+    const url = `https://teams.microsoft.com/l/channel/${encodeURIComponent(SAMPLE_CHANNEL_ID)}/General?tenantId=11111111-2222-3333-4444-555555555555`;
+    prepareConfigs(url, '', '**Hello**', false);
+    assertError(`groupId not found in target URL: ${url}`);
+});
+
+/**
+ * メッセージ URL に groupId がない
+ */
+test('Error - Message URL without groupId', () => {
+    const url = `https://teams.microsoft.com/l/message/${encodeURIComponent(SAMPLE_CHANNEL_ID)}/${SAMPLE_MESSAGE_ID}?tenantId=11111111-2222-3333-4444-555555555555`;
+    prepareConfigs(url, '', '**Hello**', false);
+    assertError(`groupId not found in target URL: ${url}`);
+});
+
+/**
+ * POST リクエストでエラー
+ */
+test('Error - POST request fails', () => {
+    prepareConfigs(SAMPLE_CHANNEL_URL, '', '**Hello**', false);
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, '', '**Hello**');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to post message. status: 400');
+});
+
+/**
+ * 成功 - チャンネルに投稿、件名なし、投稿 URL 保存なし
+ */
+test('Success - Channel post, no subject, postUrl not saved', () => {
+    prepareConfigs(SAMPLE_CHANNEL_URL, '', '**Hello**', false);
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/1234567890';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, '', '**Hello**');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '1234567890', webUrl}));
+    });
+    main();
+});
+
+/**
+ * 成功 - チャンネルに投稿、件名あり、投稿 URL 保存あり
+ */
+test('Success - Channel post, with subject, postUrl saved', () => {
+    const postUrlDef = prepareConfigs(SAMPLE_CHANNEL_URL, 'Test Subject', '**Hello**', true);
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/1234567890';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, 'Test Subject', '**Hello**');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '1234567890', webUrl}));
+    });
+    main();
+    expect(engine.findData(postUrlDef)).toEqual(webUrl);
+});
+
+/**
+ * 成功 - 投稿先 URL をデータ項目から取得
+ */
+test('Success - Target URL from data item', () => {
+    prepareConfigs('', '', '**Hello**', false);
+    // conf_TargetUrl をデータ項目に差し替え
+    const targetUrlDef = engine.createDataDefinition('投稿先 URL', 2, 'q_targetUrl', 'STRING_TEXTFIELD');
+    engine.setData(targetUrlDef, SAMPLE_CHANNEL_URL);
+    configs.putObject('conf_TargetUrl', targetUrlDef);
+
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/1234567890';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, '', '**Hello**');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '1234567890', webUrl}));
+    });
+    main();
+});
+
+/**
+ * 成功 - メッセージへの返信、件名なし
+ */
+test('Success - Reply, no subject', () => {
+    prepareConfigs(SAMPLE_MESSAGE_URL, '', '**Reply**', false);
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/9876543210';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, SAMPLE_MESSAGE_ID, '', '**Reply**');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '9876543210', webUrl}));
+    });
+    main();
+});
+
+/**
+ * 成功 - メッセージへの返信、件名あり（件名は無視される）
+ */
+test('Success - Reply with subject (subject ignored)', () => {
+    const postUrlDef = prepareConfigs(SAMPLE_MESSAGE_URL, 'Ignored Subject', '**Reply**', true);
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/9876543210';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, SAMPLE_MESSAGE_ID, 'Ignored Subject', '**Reply**');
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '9876543210', webUrl}));
+    });
+    main();
+    expect(engine.findData(postUrlDef)).toEqual(webUrl);
+});
+
+    ]]></test>
+</service-task-definition>
