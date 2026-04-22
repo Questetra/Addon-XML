@@ -319,6 +319,18 @@ const assertError = (errorMsg) => {
 };
 
 /**
+ * conf_FileUrls にデータ項目を設定する
+ * @param {String|null} fileUrlsStr 改行区切りの URL 文字列（null で値未設定）
+ */
+const setFileUrls = (fileUrlsStr) => {
+    const def = engine.createDataDefinition('ファイル URL', 3, 'q_fileUrls', 'STRING_TEXTAREA');
+    if (fileUrlsStr !== null) {
+        engine.setData(def, fileUrlsStr);
+    }
+    configs.putObject('conf_FileUrls', def);
+};
+
+/**
  * POST リクエストの検証
  * @param {Object} request
  * @param {String} teamId
@@ -326,8 +338,9 @@ const assertError = (errorMsg) => {
  * @param {String|null} messageId
  * @param {String} subject
  * @param {String} markdownText
+ * @param {Array<String>} fileUrls
  */
-const assertPostRequest = ({url, method, contentType, headers, body}, teamId, channelId, messageId, subject, markdownText) => {
+const assertPostRequest = ({url, method, contentType, headers, body}, teamId, channelId, messageId, subject, markdownText, fileUrls = []) => {
     let expectedUrl;
     if (messageId !== null) {
         expectedUrl = `${GRAPH_URI}teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/replies`;
@@ -345,6 +358,14 @@ const assertPostRequest = ({url, method, contentType, headers, body}, teamId, ch
         expect(bodyObj.subject).toEqual(subject);
     } else {
         expect(bodyObj.subject).toEqual(undefined);
+    }
+    if (fileUrls.length > 0) {
+        expect(bodyObj.attachments).toEqual(fileUrls.map(fileUrl => ({
+            contentType: 'reference',
+            contentUrl: fileUrl
+        })));
+    } else {
+        expect(bodyObj.attachments).toEqual(undefined);
     }
 };
 
@@ -477,6 +498,39 @@ test('Success - Reply with subject (subject ignored)', () => {
     });
     main();
     expect(engine.findData(postUrlDef)).toEqual(webUrl);
+});
+
+/**
+ * 成功 - ファイル URL 付きで投稿
+ */
+test('Success - Channel post with file URLs', () => {
+    prepareConfigs(SAMPLE_CHANNEL_URL, '', '**Hello**', false);
+    const fileUrl1 = 'https://example.sharepoint.com/sites/team/Shared%20Documents/file1.txt';
+    const fileUrl2 = 'https://example.sharepoint.com/sites/team/Shared%20Documents/file2.pdf';
+    setFileUrls(`${fileUrl1}\n${fileUrl2}`);
+
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/1234567890';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, '', '**Hello**', [fileUrl1, fileUrl2]);
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '1234567890', webUrl}));
+    });
+    main();
+});
+
+/**
+ * 成功 - ファイル URL に空行が含まれる場合、空行は無視される
+ */
+test('Success - File URLs with empty lines filtered', () => {
+    prepareConfigs(SAMPLE_CHANNEL_URL, '', '**Hello**', false);
+    const fileUrl = 'https://example.sharepoint.com/sites/team/Shared%20Documents/file1.txt';
+    setFileUrls(`\n${fileUrl}\n\n`);
+
+    const webUrl = 'https://teams.microsoft.com/l/message/channelId/1234567890';
+    httpClient.setRequestHandler((request) => {
+        assertPostRequest(request, SAMPLE_TEAM_ID, SAMPLE_CHANNEL_ID, null, '', '**Hello**', [fileUrl]);
+        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify({id: '1234567890', webUrl}));
+    });
+    main();
 });
 
     ]]></test>
