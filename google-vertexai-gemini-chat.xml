@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2026-01-27</last-modified>
+    <last-modified>2026-04-28</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -437,21 +437,6 @@ const invokeModel = (
     const thoughts = [];
 
     for (const { candidates, usageMetadata } of json) {
-        // 回答本文と思考の要約を取得
-        if (candidates[0].content === undefined) {
-            engine.log('No content in the candidate.');
-        } else {
-            for (const part of candidates[0].content.parts) {
-                if (part.text === undefined) {
-                    continue;
-                } else if (part.thought) {
-                    thoughts.push(part.text);
-                } else {
-                    answers.push(part.text);
-                }
-            }
-        }
-
         // finishReason とメタデータをログ出力
         const finishReason = candidates[0].finishReason;
         if (finishReason !== undefined) {
@@ -469,6 +454,21 @@ const invokeModel = (
             }
             if (usageMetadata.totalTokenCount !== undefined) {
                 engine.log(`Total Token Count: ${usageMetadata.totalTokenCount}`);
+            }
+        }
+
+        // 回答本文と思考の要約を取得
+        if (candidates[0].content === undefined || candidates[0].content.parts === undefined) {
+            engine.log('No content in the candidate.');
+        } else {
+            for (const part of candidates[0].content.parts) {
+                if (part.text === undefined) {
+                    continue;
+                } else if (part.thought) {
+                    thoughts.push(part.text);
+                } else {
+                    answers.push(part.text);
+                }
             }
         }
     }
@@ -1427,13 +1427,91 @@ test('No response content generated - content is undefined', () => {
                 candidates: [
                     {
                         content: undefined,
-                        finishReason: 'FINISH_REASON_MAX_TOKENS',
+                        finishReason: 'MAX_TOKENS',
                         safetyRatings: [],
                         citationMetadata: {
                             citations: [],
                         },
                     },
                 ],
+            },
+        ];
+
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('No response content generated.');
+});
+
+/**
+ * API リクエストが 200 レスポンスを返すが、トークン切れで回答が空の場合
+ * parts フィールドがない場合
+ */
+test('No response content generated - no parts in the content', () => {
+    const privateKeyId = 'key-12345';
+    const serviceAccount = 'service@questetra.com';
+    const region = 'asia-northeast1';
+    const projectId = 'project-67890';
+    const model = 'gemini-2.0-flash-lite';
+    const maxTokens = '100';
+    const temperature = '1';
+    const message = 'Hi. How are you?';
+    prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        maxTokens,
+        temperature,
+        '',
+        message
+    );
+
+    const token = 'token';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(request, token, region, projectId, model, 100, '', 1, [], message);
+
+        const responseObj = [
+            {
+                candidates: [
+                    {
+                        content: {
+                            role: "model"
+                        },
+                        finishReason: 'MAX_TOKENS',
+                        safetyRatings: [],
+                    },
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 1465,
+                    "totalTokenCount": 2962,
+                    "trafficType": "ON_DEMAND",
+                    "promptTokensDetails": [
+                      {
+                        "modality": "TEXT",
+                        "tokenCount": 949
+                      },
+                      {
+                        "modality": "IMAGE",
+                        "tokenCount": 516
+                      }
+                    ],
+                    "thoughtsTokenCount": 1497
+                },
             },
         ];
 
@@ -1496,7 +1574,7 @@ test('No response content generated - text field is blank', () => {
                                 },
                             ],
                         },
-                        finishReason: 'FINISH_REASON_MAX_TOKENS',
+                        finishReason: 'MAX_TOKENS',
                         safetyRatings: [],
                         citationMetadata: {
                             citations: [],
