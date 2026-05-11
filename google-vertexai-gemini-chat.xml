@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2026-04-28</last-modified>
+    <last-modified>2026-05-11</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -38,40 +38,37 @@
             <item value="gemini-2.5-flash-lite">
                 <label>Gemini 2.5 Flash-Lite</label>
             </item>
-        </config>
-        <!-- Gemini 3 追加時にコメントアウトを外し、config ラベルの連番をずらす -->
-        <!--
-        <config name="conf_ThinkingLevel" required="false" form-type="SELECT_ITEM">
-            <label>C5: Thinking Level (Only Supported for Gemini 3 series)</label>
-            <label locale="ja">C5: 思考レベル（Gemini 3 シリーズのみ指定可能）</label>
-            <item value="MINIMAL">
-                <label>minimal (Only for Gemini 3 Flash)</label>
-                <label locale="ja">minimal（Gemini 3 Flash のみ）</label>
+            <item value="gemini-3.1-flash-lite">
+                <label>Gemini 3.1 Flash-Lite</label>
             </item>
-            <item value="LOW">
+        </config>
+        <config name="conf_ThinkingLevel" required="false" form-type="SELECT_ITEM">
+            <label>C5: Thinking Level (Only for Gemini 3 and later series)</label>
+            <label locale="ja">C5: 思考レベル（Gemini 3 シリーズ以降のみ指定可能）</label>
+            <item value="minimal">
+                <label>minimal</label>
+            </item>
+            <item value="low">
                 <label>low</label>
             </item>
-            <item value="MEDIUM">
-                <label>medium (Only for Gemini 3 Flash)</label>
-                <label locale="ja">medium（Gemini 3 Flash のみ）</label>
+            <item value="medium">
+                <label>medium</label>
             </item>
-            <item value="HIGH">
-                <label>high (default)</label>
-                <label locale="ja">high（デフォルト）</label>
+            <item value="high">
+                <label>high</label>
             </item>
         </config>
-        -->
         <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
-            <label>C5: Maximum number of tokens for generating response</label>
-            <label locale="ja">C5: 回答の生成に使用するトークン数の上限</label>
+            <label>C6: Maximum number of tokens for generating response</label>
+            <label locale="ja">C6: 回答の生成に使用するトークン数の上限</label>
         </config>
         <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
-            <label>C6: Temperature (0.0 - 2.0)</label>
-            <label locale="ja">C6: 温度（0.0 〜 2.0）</label>
+            <label>C7: Temperature (0.0 - 2.0)</label>
+            <label locale="ja">C7: 温度（0.0 〜 2.0）</label>
         </config>
         <config name="conf_StopSequences" required="false" form-type="TEXTAREA">
-            <label>C7: Stop Sequences (write one per line, up to five)</label>
-            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
+            <label>C8: Stop Sequences (write one per line, up to five)</label>
+            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ、最大 5 つ）</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -2322,6 +2319,153 @@ test('Success - with media resolution', () => {
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('The image is a mountain.');
+});
+
+/**
+ * 成功 - Gemini 3.1 Flash-Lite, thinkingLevel を指定、思考の要約を保存するデータ項目を指定
+ */
+test('Success - Gemini 3.1 Flash-Lite with thinkingLevel and thoughtDef', () => {
+    const privateKeyId = 'key-31001';
+    const region = 'us-central1';
+    const projectId = 'project-31001';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-3.1-flash-lite';
+    const message = 'Please explain briefly.';
+    const thinkingLevel = 'medium';
+    const thoughtDef = engine.createDataDefinition('思考要約', 2, 'q_thought', 'STRING_TEXTAREA');
+    engine.setData(thoughtDef, '事前文字列');
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        thinkingLevel,
+        '',
+        thoughtDef
+    );
+
+    const token = 'token-31001';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            thinkingLevel,
+            null,
+            [],
+            message,
+            [],
+            '',
+            true
+        );
+        const responseObj = [
+            {
+                candidates: [
+                    {
+                        content: {
+                            parts: [
+                                {
+                                    text: 'Thinking about the answer...',
+                                    thought: true,
+                                },
+                                {
+                                    text: 'Here is a brief explanation.',
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ];
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Here is a brief explanation.');
+    expect(engine.findData(thoughtDef)).toEqual('Thinking about the answer...');
+});
+
+/**
+ * 成功 - Gemini 3.1 Flash-Lite, thinkingLevel を指定、思考の要約を保存するデータ項目は指定なし
+ */
+test('Success - Gemini 3.1 Flash-Lite with thinkingLevel, no thoughtDef', () => {
+    const privateKeyId = 'key-31002';
+    const region = 'us-central1';
+    const projectId = 'project-31002';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-3.1-flash-lite';
+    const message = 'Summarize this topic.';
+    const thinkingLevel = 'high';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message,
+        thinkingLevel
+    );
+
+    const token = 'token-31002';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            thinkingLevel,
+            null,
+            [],
+            message
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('Here is the summary.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Here is the summary.');
 });
 
 ]]></test>
