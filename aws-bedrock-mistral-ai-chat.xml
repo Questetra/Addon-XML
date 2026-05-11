@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon Bedrock: Mistral AI: Chat</label>
+    <label locale="ja">Amazon Bedrock: Mistral AI: チャット</label>
+    <!--
+    <last-modified>2026-05-11</last-modified>
+    -->
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item sends a message to a Mistral AI model on Amazon Bedrock
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Mistral AI
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="mistral.mistral-large-3-675b-instruct">
+                <label>Mistral Large 3</label>
+            </item>
+        </config>
+        <config name="conf_UseCrossRegion" form-type="TOGGLE">
+            <label>C5: Use cross-region inference</label>
+            <label locale="ja">C5: クロスリージョン推論を利用する</label>
+        </config>
+        <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
+            <label>C6: Maximum number of tokens for generating response</label>
+            <label locale="ja">C6: 回答の生成に使用するトークン数の上限</label>
+        </config>
+        <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
+            <label>C7: Temperature (0.0 - 1.0)</label>
+            <label locale="ja">C7: 温度（0.0 〜 1.0）</label>
+        </config>
+        <config name="conf_Stop" required="false" form-type="TEXTAREA">
+            <label>C8: Stop Sequences (write one per line, up to ten)</label>
+            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ、最大 10 個）</label>
+        </config>
+        <config name="conf_SystemPrompt" required="false" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>C11: System Prompt</label>
+            <label locale="ja">C11: システムプロンプト</label>
+        </config>
+        <config name="conf_Message1" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>U1: User Message</label>
+            <label locale="ja">U1: ユーザメッセージ</label>
+        </config>
+        <config name="conf_Images1" required="false" form-type="SELECT"
+                select-data-type="FILE">
+            <label>I1: Images to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
+        </config>
+        <config name="conf_Answer1" required="true" form-type="SELECT"
+                select-data-type="STRING_MULTILINE">
+            <label>A1: Data item to save response</label>
+            <label locale="ja">A1: 回答を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-mistral-ai-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-bedrock-mistral-ai-chat/</help-page-url>
+
+    <script><![CDATA[
+const SERVICE = 'bedrock';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject('conf_AccessKey').getToken();
+    const awsSecret = configs.getObject('conf_SecretKey').getToken();
+    const region = retrieveRegion();
+    let model = retrieveModel();
+    const useCrossRegion = configs.getObject("conf_UseCrossRegion");
+    if (useCrossRegion) {
+        model = decideCrossRegionModel(model, region);
+    }
+
+    const maxTokens = retrieveMaxTokens();
+    const temperature = retrieveTemperature();
+    const stop = retrieveStop();
+    const systemPrompt = configs.get('conf_SystemPrompt');
+    const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
+
+    ////// == 演算 / Calculating ==
+    const answer = converse(
+        awsKey,
+        awsSecret,
+        region,
+        model,
+        maxTokens,
+        temperature,
+        stop,
+        systemPrompt,
+        userMessage
+    );
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveRegion = () => {
+    const region = configs.get('conf_Region');
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp('^[a-z]{2}-[a-z]{4,16}-[1-9]$');
+    if (!reg.test(region)) {
+        throw new Error('Region Code is invalid.');
+    }
+    return region;
+}
+
+/**
+ * config からモデル ID を読み出す
+ * モデル ID として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveModel = () => {
+    const model = configs.get('conf_Model');
+    const reg = new RegExp('^[a-z0-9.:-]+$');
+    if (!reg.test(model)) {
+        throw new Error('Model is invalid. It contains an invalid character.');
+    }
+    const MODEL_PREFIX = 'mistral.';
+    if (!model.startsWith(MODEL_PREFIX)){
+        throw new Error(`Model is invalid. It must start with "${MODEL_PREFIX}".`);
+    }
+    return model;
+}
+
+/**
+ * クロスリージョン推論モデル ID を決定する
+ * @return {String}
+ */
+const decideCrossRegionModel = (model, region) => {
+    if (region.startsWith('us-')) {
+        return `us.${model}`;
+    } else if(region.startsWith('eu-')) {
+        return `eu.${model}`;
+    }
+    throw new Error(`Cross-region inference is not supported in ${region}.`);
+}
+
+/**
+ * config から最大トークン数を読み出す
+ * 正の整数でない場合、エラー
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveMaxTokens = () => {
+    const maxTokens = configs.get('conf_MaxTokens');
+    if (maxTokens === '') {
+        return null;
+    }
+    const regExp = new RegExp(/^[1-9][0-9]*$/);
+    if (!regExp.test(maxTokens)) {
+        throw new Error('Maximum number of tokens for generating output must be a positive integer.');
+    }
+    return parseInt(maxTokens, 10);
+};
+
+/**
+ * config から温度を読み出す
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveTemperature = () => {
+    const temperature = configs.get('conf_Temperature');
+    if (temperature === '') {
+        return null;
+    }
+    const regExp = /^(0(\.\d+)?|1(\.0+)?)$/;
+    if (!regExp.test(temperature)) {
+        throw new Error('Temperature must be a number from 0 to 1.');
+    }
+    return parseFloat(temperature);
+};
+
+const MAX_STOP_NUM = 10;
+
+/**
+ * config から停止シーケンスを読み出す
+ * @returns {Array<String>}
+ */
+const retrieveStop = () => {
+    const stopStr = configs.get('conf_Stop');
+    if (stopStr === '') {
+        return [];
+    }
+    const stop = stopStr.split('\n')
+        .filter(s => s !== '');
+    if (stop.length > MAX_STOP_NUM) {
+        throw new Error(`Too many stop sequences. The maximum number is ${MAX_STOP_NUM}.`);
+    }
+    return stop;
+};
+
+
+const MAX_IMAGE_NUM = 8; // Mistral AI の制限。1 リクエストにつき添付画像 8 個まで
+const MAX_IMAGE_SIZE = 10000000; // Mistral AI の制限。1 ファイルにつき 10 Mb まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * config からユーザメッセージ（添付画像を含む）を読み出す
+ * ユーザメッセージが空の場合、添付画像が不正な場合はエラー
+ * @returns {Object} ユーザメッセージオブジェクト
+ */
+const retrieveUserMessage = () => {
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+    const imageFiles = retrieveImageFiles();
+    validateFiles(imageFiles, 'image', MAX_IMAGE_NUM, MAX_IMAGE_SIZE);
+    const inlineImages = imageFiles.map(file => ({
+        image: fileToObj(file)
+    }));
+    const userMessage = {
+        role: 'user',
+        content: [
+            {
+                text: message
+            },
+            ...inlineImages
+        ]
+    };
+    return userMessage;
+
+};
+
+/**
+ * config からファイルを読み出し、画像と PDF に振り分ける
+ * 以下の場合はエラー
+ * - Content-Type が許可されていない場合
+ * @returns {Array<Qfile>, Array<Qfile>} ファイルオブジェクトの配列
+ */
+const retrieveImageFiles = () => {
+    const imageFiles = [];
+
+    const filesDef = configs.getObject('conf_Images1');
+    if (filesDef === null) {
+        return imageFiles;
+    }
+    const files = engine.findData(filesDef);
+    if (files === null) {
+        return imageFiles;
+    }
+    files.forEach(file => {
+        const contentType = file.getContentType().split(';')[0];
+        if (ALLOWED_MEDIA_TYPES.includes(contentType)){
+            imageFiles.push(file);
+        } else {
+            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+        }
+    });
+    return imageFiles;
+};
+
+/**
+ * ファイルの総数、サイズをチェックする
+ * 以下の場合はエラー
+ * - 添付ファイルの総数が多すぎる場合
+ * - ファイルサイズが大きすぎる場合
+ * @param {Array<Qfile>} ファイルオブジェクトの配列
+ * @param errorLabel
+ * @param maxNum
+ * @param maxSize
+ */
+const validateFiles = (files, errorLabel, maxNum, maxSize) => {
+    if (files.length > maxNum) {
+        throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
+    }
+    files.forEach(file => {
+        if (file.getLength() > maxSize) {
+            throw new Error(`Attached ${errorLabel} file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        }
+    });
+}
+
+/**
+ * ファイルから inline コンテンツに必要な source, format を読み出し、ファイルオブジェクトを返す
+ * @param {Qfile} file  ファイルオブジェクト
+ */
+const fileToObj = file => ({
+    format : file.getContentType().split('/')[1],
+    source: {
+        bytes: base64.encodeToString(fileRepository.readFile(file))
+    }
+});
+
+
+/**
+ * モデルの実行
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param temperature
+ * @param stop
+ * @param systemPrompt
+ * @param userMessage
+ * @returns {String} answer
+ */
+const converse = (
+    awsKey,
+    awsSecret,
+    region,
+    model,
+    maxTokens,
+    temperature,
+    stop,
+    systemPrompt,
+    userMessage
+) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
+    const payload = {
+        inferenceConfig: {
+            maxTokens,
+            temperature
+        },
+        messages: [userMessage]
+    };
+
+    if (systemPrompt !== '') {
+        Object.assign(payload, {
+            system: [
+                {text :`${systemPrompt}`}
+            ]
+        });
+    }
+    if (stop.length > 0) {
+        Object.assign(payload, {
+            additionalModelRequestFields: {stop}
+        });
+    }
+
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to converse. status: ${status}`);
+    }
+    const {output, stopReason, usage} = JSON.parse(respTxt);
+    const reasoningContentItem = output.message.content.find(content => content.reasoningContent !== undefined);
+    const reasoningText = reasoningContentItem?.reasoningContent?.reasoningText?.text;
+    if (reasoningText !== undefined) {
+        engine.log(`Thinking: ${reasoningText}`);
+    }
+    engine.log(`Stop Reason: ${stopReason}`);
+    engine.log(`Input Tokens: ${usage.inputTokens}`);
+    engine.log(`Output Tokens: ${usage.outputTokens}`);
+
+    // text プロパティを持つ content をすべて連結して回答とする
+    const answer1 = output.message.content
+        .filter(content => content.text !== undefined)
+        .map(content => content.text)
+        .join('');
+    if (answer1 === null || answer1.trim() === '') {
+        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
+    }
+    return answer1;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]>    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+]]>    </test>
+</service-task-definition>
