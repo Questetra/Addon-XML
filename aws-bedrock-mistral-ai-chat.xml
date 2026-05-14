@@ -32,6 +32,21 @@
             <item value="mistral.mistral-large-3-675b-instruct">
                 <label>Mistral Large 3</label>
             </item>
+            <item value="mistral.ministral-3-14b-instruct">
+                <label>Ministral 3 14B</label>
+            </item>
+            <item value="mistral.ministral-3-8b-instruct">
+                <label>Ministral 3 8B</label>
+            </item>
+            <item value="mistral.ministral-3-3b-instruct">
+                <label>Ministral 3 3B</label>
+            </item>
+            <item value="mistral.magistral-small-2509">
+                <label>Magistral Small 2509</label>
+            </item>
+            <item value="mistral.pixtral-large-2502-v1:0">
+                <label>Pixtral Large 2502</label>
+            </item>
         </config>
         <config name="conf_UseCrossRegion" form-type="TOGGLE">
             <label>C5: Use cross-region inference</label>
@@ -45,14 +60,10 @@
             <label>C7: Temperature (0.0 - 1.0)</label>
             <label locale="ja">C7: 温度（0.0 〜 1.0）</label>
         </config>
-        <config name="conf_Stop" required="false" form-type="TEXTAREA">
-            <label>C8: Stop Sequences (write one per line, up to ten)</label>
-            <label locale="ja">C8: 停止シーケンス（1 行に 1 つ、最大 10 個）</label>
-        </config>
         <config name="conf_SystemPrompt" required="false" el-enabled="true"
                 form-type="TEXTAREA">
-            <label>C11: System Prompt</label>
-            <label locale="ja">C11: システムプロンプト</label>
+            <label>C8: System Prompt</label>
+            <label locale="ja">C8: システムプロンプト</label>
         </config>
         <config name="conf_Message1" required="true" el-enabled="true"
                 form-type="TEXTAREA">
@@ -89,7 +100,6 @@ const main = () => {
 
     const maxTokens = retrieveMaxTokens();
     const temperature = retrieveTemperature();
-    const stop = retrieveStop();
     const systemPrompt = configs.get('conf_SystemPrompt');
     const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
 
@@ -101,7 +111,6 @@ const main = () => {
         model,
         maxTokens,
         temperature,
-        stop,
         systemPrompt,
         userMessage
     );
@@ -191,26 +200,7 @@ const retrieveTemperature = () => {
     return parseFloat(temperature);
 };
 
-const MAX_STOP_NUM = 10;
-
-/**
- * config から停止シーケンスを読み出す
- * @returns {Array<String>}
- */
-const retrieveStop = () => {
-    const stopStr = configs.get('conf_Stop');
-    if (stopStr === '') {
-        return [];
-    }
-    const stop = stopStr.split('\n')
-        .filter(s => s !== '');
-    if (stop.length > MAX_STOP_NUM) {
-        throw new Error(`Too many stop sequences. The maximum number is ${MAX_STOP_NUM}.`);
-    }
-    return stop;
-};
-
-
+// https://docs.mistral.ai/studio-api/conversations/vision#faq
 const MAX_IMAGE_NUM = 8; // Mistral AI の制限。1 リクエストにつき添付画像 8 個まで
 const MAX_IMAGE_SIZE = 10000000; // Mistral AI の制限。1 ファイルにつき 10 Mb まで
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -312,7 +302,6 @@ const fileToObj = file => ({
  * @param model
  * @param maxTokens
  * @param temperature
- * @param stop
  * @param systemPrompt
  * @param userMessage
  * @returns {String} answer
@@ -324,7 +313,6 @@ const converse = (
     model,
     maxTokens,
     temperature,
-    stop,
     systemPrompt,
     userMessage
 ) => {
@@ -344,11 +332,6 @@ const converse = (
             ]
         });
     }
-    if (stop.length > 0) {
-        Object.assign(payload, {
-            additionalModelRequestFields: {stop}
-        });
-    }
 
     const response = httpClient.begin()
         .awsSignV4(awsKey, awsSecret, region, SERVICE)
@@ -362,11 +345,7 @@ const converse = (
         throw new Error(`Failed to converse. status: ${status}`);
     }
     const {output, stopReason, usage} = JSON.parse(respTxt);
-    const reasoningContentItem = output.message.content.find(content => content.reasoningContent !== undefined);
-    const reasoningText = reasoningContentItem?.reasoningContent?.reasoningText?.text;
-    if (reasoningText !== undefined) {
-        engine.log(`Thinking: ${reasoningText}`);
-    }
+    // 推論の要約 reasoningContent を返すモデルは今のところなし
     engine.log(`Stop Reason: ${stopReason}`);
     engine.log(`Input Tokens: ${usage.inputTokens}`);
     engine.log(`Output Tokens: ${usage.outputTokens}`);
