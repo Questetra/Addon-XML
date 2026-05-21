@@ -1,0 +1,860 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <label>Amazon Bedrock: Alibaba Qwen: Chat</label>
+    <label locale="ja">Amazon Bedrock: Alibaba Qwen: チャット</label>
+    <last-modified>2026-05-19</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <summary>This item sends a message to an Alibaba Qwen model on Amazon Bedrock
+        and stores the response in the specified data item.</summary>
+    <summary locale="ja">この工程は、Amazon Bedrock 上で動作する Alibaba Qwen
+        のモデルにメッセージを送信し、回答をデータ項目に保存します。
+    </summary>
+    <configs>
+        <config name="conf_AccessKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C1: Access Key</label>
+            <label locale="ja">C1: アクセスキー</label>
+        </config>
+        <config name="conf_SecretKey" required="true" form-type="OAUTH2" auth-type="TOKEN">
+            <label>C2: Secret Access Key</label>
+            <label locale="ja">C2: シークレットアクセスキー</label>
+        </config>
+        <config name="conf_Region" required="true" form-type="TEXTFIELD">
+            <label>C3: Region Code</label>
+            <label locale="ja">C3: リージョンコード</label>
+        </config>
+        <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
+            <label>C4: Model</label>
+            <label locale="ja">C4: モデル</label>
+            <item value="qwen.qwen3-vl-235b-a22b">
+                <label>Qwen3 VL 235B A22B</label>
+            </item>
+            <item value="qwen.qwen3-235b-a22b-2507-v1:0">
+                <label>Qwen3 235B A22B (2507)</label>
+            </item>
+        </config>
+        <config name="conf_MaxTokens" required="false" form-type="TEXTFIELD">
+            <label>C5: Maximum number of tokens for generating response</label>
+            <label locale="ja">C5: 回答の生成に使用するトークン数の上限</label>
+        </config>
+        <config name="conf_Temperature" required="false" form-type="TEXTFIELD">
+            <label>C6: Temperature (0.0 - 1.0)</label>
+            <label locale="ja">C6: 温度（0.0 〜 1.0）</label>
+        </config>
+        <config name="conf_Stop" required="false" form-type="TEXTAREA">
+            <label>C7: Stop Sequences (write one per line)</label>
+            <label locale="ja">C7: 停止シーケンス（1 行に 1 つ）</label>
+        </config>
+        <config name="conf_SystemPrompt" required="false" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>C8: System Prompt</label>
+            <label locale="ja">C8: システムプロンプト</label>
+        </config>
+        <config name="conf_Message1" required="true" el-enabled="true"
+                form-type="TEXTAREA">
+            <label>U1: User Message</label>
+            <label locale="ja">U1: ユーザメッセージ</label>
+        </config>
+        <config name="conf_Images1" required="false" form-type="SELECT"
+                select-data-type="FILE">
+            <label>I1: Images to attach to user message</label>
+            <label locale="ja">I1: ユーザメッセージに添付する画像</label>
+        </config>
+        <config name="conf_Answer1" required="true" form-type="SELECT"
+                select-data-type="STRING_MULTILINE">
+            <label>A1: Data item to save response</label>
+            <label locale="ja">A1: 回答を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-aws-bedrock-alibaba-qwen-chat/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-aws-bedrock-alibaba-qwen-chat/</help-page-url>
+
+    <script><![CDATA[
+const SERVICE = 'bedrock';
+
+const main = () => {
+    ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
+    const awsKey = configs.getObject('conf_AccessKey').getToken();
+    const awsSecret = configs.getObject('conf_SecretKey').getToken();
+    const region = retrieveRegion();
+    const model = retrieveModel();
+
+    const maxTokens = retrieveMaxTokens();
+    const temperature = retrieveTemperature();
+    const stop = retrieveStop();
+    const systemPrompt = configs.get('conf_SystemPrompt');
+    const userMessage = retrieveUserMessage(); // 添付画像の取得も含む
+
+    ////// == 演算 / Calculating ==
+    const answer = converse(
+        awsKey,
+        awsSecret,
+        region,
+        model,
+        maxTokens,
+        temperature,
+        stop,
+        systemPrompt,
+        userMessage
+    );
+
+    ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer);
+}
+
+/**
+ * config からリージョンコードを読み出す
+ * リージョンコードの形式として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveRegion = () => {
+    const region = configs.get('conf_Region');
+    // 今後リージョンが増えることも考えて、中央の最大文字数には余裕をみている
+    const reg = new RegExp('^[a-z]{2}-[a-z]{4,16}-[1-9]$');
+    if (!reg.test(region)) {
+        throw new Error('Region Code is invalid.');
+    }
+    return region;
+}
+
+/**
+ * config からモデル ID を読み出す
+ * モデル ID として不正な場合はエラー
+ * @return {String}
+ */
+const retrieveModel = () => {
+    const model = configs.get('conf_Model');
+    const reg = new RegExp('^[a-z0-9.:-]+$');
+    if (!reg.test(model)) {
+        throw new Error('Model is invalid. It contains an invalid character.');
+    }
+    const MODEL_PREFIX = 'qwen.';
+    if (!model.startsWith(MODEL_PREFIX)){
+        throw new Error(`Model is invalid. It must start with "${MODEL_PREFIX}".`);
+    }
+    return model;
+}
+
+/**
+ * config から最大トークン数を読み出す
+ * 正の整数でない場合、エラー
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveMaxTokens = () => {
+    const maxTokens = configs.get('conf_MaxTokens');
+    if (maxTokens === '') {
+        return null;
+    }
+    const regExp = new RegExp(/^[1-9][0-9]*$/);
+    if (!regExp.test(maxTokens)) {
+        throw new Error('Maximum number of tokens for generating output must be a positive integer.');
+    }
+    return parseInt(maxTokens, 10);
+};
+
+/**
+ * config から温度を読み出す
+ * 未定義の場合、null を返す
+ * @returns {Number}
+ */
+const retrieveTemperature = () => {
+    const temperature = configs.get('conf_Temperature');
+    if (temperature === '') {
+        return null;
+    }
+    const regExp = /^(0(\.\d+)?|1(\.0+)?)$/;
+    if (!regExp.test(temperature)) {
+        throw new Error('Temperature must be a number from 0 to 1.');
+    }
+    return parseFloat(temperature);
+};
+
+/**
+ * config から停止シーケンスを読み出す
+ * @returns {Array<String>}
+ */
+const retrieveStop = () => {
+    const stopStr = configs.get('conf_Stop');
+    if (stopStr === '') {
+        return [];
+    }
+    const stop = stopStr.split('\n')
+        .filter(s => s !== '');
+    return stop;
+};
+
+// https://www.alibabacloud.com/help/en/model-studio/vision
+const MAX_IMAGE_NUM = 250; // Qwen の制限。1 リクエストにつき添付画像 250 個まで
+const MAX_IMAGE_SIZE = 10485760; // Qwen の制限。1 ファイルにつき 10 MB まで
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * config からユーザメッセージ（添付画像を含む）を読み出す
+ * ユーザメッセージが空の場合、添付画像が不正な場合はエラー
+ * @returns {Object} ユーザメッセージオブジェクト
+ */
+const retrieveUserMessage = () => {
+    const message = configs.get('conf_Message1');
+    if (message === '') {
+        throw new Error('User Message is empty.');
+    }
+    const imageFiles = retrieveImageFiles();
+    validateFiles(imageFiles, 'image', MAX_IMAGE_NUM, MAX_IMAGE_SIZE);
+    const inlineImages = imageFiles.map(file => ({
+        image: fileToObj(file)
+    }));
+    const userMessage = {
+        role: 'user',
+        content: [
+            {
+                text: message
+            },
+            ...inlineImages
+        ]
+    };
+    return userMessage;
+
+};
+
+/**
+ * config から画像ファイルを読み出す
+ * 以下の場合はエラー
+ * - Content-Type が許可されていない場合
+ * @returns {Array<Qfile>} ファイルオブジェクトの配列
+ */
+const retrieveImageFiles = () => {
+    const imageFiles = [];
+
+    const filesDef = configs.getObject('conf_Images1');
+    if (filesDef === null) {
+        return imageFiles;
+    }
+    const files = engine.findData(filesDef);
+    if (files === null) {
+        return imageFiles;
+    }
+    files.forEach(file => {
+        const contentType = file.getContentType().split(';')[0];
+        if (ALLOWED_MEDIA_TYPES.includes(contentType)){
+            imageFiles.push(file);
+        } else {
+            throw new Error(`Content-Type of the attached file "${file.getName()}" is not allowed.`);
+        }
+    });
+    return imageFiles;
+};
+
+/**
+ * ファイルの総数、サイズをチェックする
+ * 以下の場合はエラー
+ * - 添付ファイルの総数が多すぎる場合
+ * - ファイルサイズが大きすぎる場合
+ * @param {Array<Qfile>} ファイルオブジェクトの配列
+ * @param errorLabel
+ * @param maxNum
+ * @param maxSize
+ */
+const validateFiles = (files, errorLabel, maxNum, maxSize) => {
+    if (files.length > maxNum) {
+        throw new Error(`Too many ${errorLabel}s attached. The maximum number is ${maxNum}.`);
+    }
+    files.forEach(file => {
+        if (file.getLength() > maxSize) {
+            throw new Error(`Attached ${errorLabel} file "${file.getName()}" is too large. The maximum size is ${maxSize} bytes.`);
+        }
+    });
+}
+
+/**
+ * ファイルから inline コンテンツに必要な source, format を読み出し、ファイルオブジェクトを返す
+ * @param {Qfile} file  ファイルオブジェクト
+ */
+const fileToObj = file => ({
+    format : file.getContentType().split(';')[0].split('/')[1],
+    source: {
+        bytes: base64.encodeToString(fileRepository.readFile(file))
+    }
+});
+
+
+/**
+ * モデルの実行
+ * @param awsKey
+ * @param awsSecret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param temperature
+ * @param stop
+ * @param systemPrompt
+ * @param userMessage
+ * @returns {String} answer
+ */
+const converse = (
+    awsKey,
+    awsSecret,
+    region,
+    model,
+    maxTokens,
+    temperature,
+    stop,
+    systemPrompt,
+    userMessage
+) => {
+    const URL = `https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`;
+    const inferenceConfig = {};
+    if (maxTokens !== null) {
+        inferenceConfig.maxTokens = maxTokens;
+    }
+    if (temperature !== null) {
+        inferenceConfig.temperature = temperature;
+    }
+    const payload = {
+        inferenceConfig,
+        messages: [userMessage]
+    };
+
+    if (systemPrompt !== '') {
+        Object.assign(payload, {
+            system: [
+                {text :`${systemPrompt}`}
+            ]
+        });
+    }
+
+    if (stop.length > 0) {
+        Object.assign(payload, {
+            additionalModelRequestFields: { stop }
+        });
+    }
+
+    const response = httpClient.begin()
+        .awsSignV4(awsKey, awsSecret, region, SERVICE)
+        .body(JSON.stringify(payload), 'application/json')
+        .post(URL);
+
+    const status = response.getStatusCode();
+    const respTxt = response.getResponseAsString();
+    if (status !== 200) {
+        engine.log(respTxt);
+        throw new Error(`Failed to converse. status: ${status}`);
+    }
+    const {output, stopReason, usage} = JSON.parse(respTxt);
+    // 推論の要約 reasoningContent を返すモデルは今のところなし
+    engine.log(`Stop Reason: ${stopReason}`);
+    engine.log(`Input Tokens: ${usage.inputTokens}`);
+    engine.log(`Output Tokens: ${usage.outputTokens}`);
+
+    // text プロパティを持つ content をすべて連結して回答とする
+    const answer1 = output.message.content
+        .filter(content => content.text !== undefined)
+        .map(content => content.text)
+        .join('');
+    if (answer1 === null || answer1.trim() === '') {
+        throw new Error(`No response content generated. Stop Reason: ${stopReason}`);
+    }
+    return answer1;
+};
+
+/**
+ * データ項目への保存
+ * @param configName
+ * @param data
+ */
+const saveData = (configName, data) => {
+    const def = configs.getObject(configName);
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]>    </script>
+
+    <icon>
+        iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABE9JREFUWEfN
+        l3tMlWUcxz/v4SCXA38gtyPTiXo2m8YdEp3cUzGxOdw0E5tRNqlsMDGlRRE5kFJjqUDLKEJsYuCN
+        xD8qA5oMGeBhXpIdbiuRrORSkOKBt71vHuIcDnRU2un5893v8nl/z/f3e55HwMpLsDS/V1CQo6Pe
+        MR6EKBECAG/A5b5/D9AhQBOI5weVg+VdDQ2DlsT+VwDvBZFqpXJkpyiwFbC3JChwRxAp0OsVOR1X
+        v+uezGdSgLl+YVtB2CuAysLERmYiDICY2qatKZjIf0IAjX9EniiKSQ+T2NRHEIR83aWql83FMgug
+        8Q8vEUWenYrkhhiCwFHdpeqN4+BMP0zln1tSCaMKSHsuIORP5Z+bxhIRk8ZqYhRAUrvCdkT3sIKz
+        FFoS5sg9hcbQHaMAGt/wD0SBZEsDPYqdIJKra65OkWLIANKQcdCrfjPt85zMXcTGRGCjtGFo6B6f
+        lRwnfMkibv58i2073ubwwRw8Pdx4bUcGcbHRrIlbQfnpc2xcvwZnJxV37w6Rd7iYwuJSU947fyoH
+        XKVhJQNo/MISRIRiU6uQQF96evvRtXXw8YE9eKk9adG147NwPum79/Hum9txUqnI2nuQVSuiUXu6
+        09f/OwqFgoQtycya6SWH/PGnrnEFExA36bQ1R+4DhH8iQqKp1aJgf57bsJaZXmpEUcTe3o6S0lO8
+        tHkDpScqeGp5FPrhYWrrGglbEkJ9YzNKpZLVK2PQtXVypvJrjpVXMDAwfioLUKjTVr8gA8zzC2/k
+        7/k+uubMnkVBbha9fX18efIsq2JjUHu48Xp6Nvuz07n1y69Ms53GjZvduLtNZ4bak4MfFVF2upLl
+        0WGsfXoli58I5JuqC6SkZZqTTFOrtjrQAHB7zMEiG0vO72Wmcb6mls+/KCd3z1s4ONjz4qs72ZWS
+        xJLQICrOfUvXzW6eT1jHja5unkncxrKopVy+2iLrpCh/H38MDLA5KdUcQE+rtnq6AUA0Z7E7PZWV
+        yyLR6/VcbNDi4e5Kbl4hPgvmy1tTeKSU1vZOMtJSqG/UytU58P47LF0cwjRbW2739PJhwaccP3nW
+        bNO0aquFSQEepdUs8R0LMG4LUrdtoa5BS82Fi5bEMrKRxCkJVaqYnZ0dZacqydp3yDSO0RaME6HU
+        AW9sf0Uuf+mJr2Q1P8haHx/HDLUHi4IDaL58jez9eabu/4hQ42e+DVUqRzJ2JbMseinDwyNcu66j
+        SXuFKz+0UFNbP9pekl3Y4hCCA3zxffwx5s2ZTW9fP8fKzrDiyQhZB1Xf1xkBGLXhRIPI4KGZ603i
+        pnVEhoXi6uKCjY3CbDGkyXdd1yYnlioWvzoWZ2cVRUfLJh9EE41ic1mkaRcaEoC/z0KcVI6yia69
+        k+strXLLWriMR7HkZNXDSAKw+nEsQVj1QjIquCm8jJrqwdzl9P93Kf0vKvHA13IDhFUfJgYIqz7N
+        xorIao9TCyfbQ5v9BWbg5jDAzldXAAAAAElFTkSuQmCC
+    </icon>
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param key
+ * @param secret
+ * @param region
+ * @param model
+ * @param maxTokens
+ * @param temperature
+ * @param stop
+ * @param systemPrompt
+ * @param message
+ * @returns {ProcessDataDefinitionView} answerDef
+ */
+const prepareConfigs = (key, secret, region, model, maxTokens, temperature, stop, systemPrompt, message) => {
+    // 認証設定を作成し、指定
+    const keyAuth = httpClient.createAuthSettingToken('Access Key', key);
+    configs.putObject('conf_AccessKey', keyAuth);
+    const secretAuth = httpClient.createAuthSettingToken('Secret Access Key', secret);
+    configs.putObject('conf_SecretKey', secretAuth);
+
+    configs.put('conf_Region', region);
+    configs.put('conf_Model', model);
+    configs.put('conf_MaxTokens', maxTokens);
+    configs.put('conf_Temperature', temperature);
+    configs.put('conf_Stop', stop);
+    configs.put('conf_SystemPrompt', systemPrompt);
+    configs.put('conf_Message1', message);
+
+    // 回答を保存するデータ項目を作成し、指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_response', 'STRING_TEXTAREA');
+    configs.putObject('conf_Answer1', answerDef);
+    engine.setData(answerDef, '事前文字列');
+    return answerDef;
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+const MODEL_VL = 'qwen.qwen3-vl-235b-a22b';
+const MODEL_235B = 'qwen.qwen3-235b-a22b-2507-v1:0';
+const MODEL_NEXT = 'qwen.qwen3-next-80b-a3b'; // モデル選択肢にはないが、固定値で指定可能
+const MODEL_32B = 'qwen.qwen3-32b-v1:0'; // モデル選択肢にはないが、固定値で指定可能
+
+/**
+ * リージョンコードの形式が不正 - ハイフンを含まない
+ */
+test('Region Code is invalid - no hyphens', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'invalidregioncode', MODEL_VL, '', '', '', '', 'Hello');
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * リージョンコードの形式が不正 - ハイフンの間の文字列が長すぎる
+ */
+test('Region Code is invalid - too many characters', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'eu-toomanycharacters-1', MODEL_VL, '', '', '', '', 'Hello');
+    assertError('Region Code is invalid.');
+});
+
+/**
+ * モデルの指定が不正 - 不正な文字を含む
+ */
+test('Model is invalid - contains an invalid character', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', 'qwen.qwen3-テスト', '', '', '', '', 'Hello');
+    assertError('Model is invalid. It contains an invalid character.');
+});
+
+/**
+ * モデルの指定が不正 - qwen. で始まらない
+ */
+test('Model is invalid - does not start with the prefix', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', 'invalid-model-2.0:1', '', '', '', '', 'Hello');
+    assertError('Model is invalid. It must start with "qwen.".');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - 数字でない文字を含む場合
+ */
+test('Maximum number of tokens must be a positive integer - includes a non-numeric character', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '1.1', '', '', '', 'Hello');
+    assertError('Maximum number of tokens for generating output must be a positive integer.');
+});
+
+/**
+ * トークン数の最大値が正の整数でない - ゼロ
+ */
+test('Maximum number of tokens must be a positive integer - 0', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '0', '', '', '', 'Hello');
+    assertError('Maximum number of tokens for generating output must be a positive integer.');
+});
+
+/**
+ * 温度が不正 - 数字、小数点でない文字を含む
+ */
+test('Invalid temperature - includes a non-numeric character', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '-0.1', '', '', 'Hello');
+    assertError('Temperature must be a number from 0 to 1.');
+});
+
+/**
+ * 温度が不正 - 1 を超える
+ */
+test('Invalid temperature - bigger than 1', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '1.1', '', '', 'Hello');
+    assertError('Temperature must be a number from 0 to 1.');
+});
+
+/**
+ * メッセージが空
+ */
+test('Message is empty', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '', '', '', '');
+    assertError('User Message is empty.');
+});
+
+/**
+ * 指定サイズのファイルを作成
+ * @param name
+ * @param contentType
+ * @param size
+ * @return qfile
+ */
+const createQfile = (name, contentType, size) => {
+    let text = '';
+    if (size >= 4000) {
+      text = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(100); // 40 * 100 = 4000
+    }
+    while (text.length < size) {
+        if (text.length !== 0 && text.length * 2 <= size) {
+            text += text;
+        } else if (text.length + 1000 <= size) {
+            text += 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'.repeat(25); // 40 * 25 = 1000
+        } else {
+            text += 'a';
+        }
+    }
+    return engine.createQfile(name, contentType, text);
+};
+
+/**
+ * 画像を添付
+ * @param {Array<Qfile>} files
+ */
+const attachFiles = (files) => {
+    const filesDef = engine.createDataDefinition('添付画像', 2, 'q_files', 'FILE');
+    engine.setData(filesDef, files);
+    configs.putObject('conf_Images1', filesDef);
+};
+
+/**
+ * 添付画像ファイルの数が多すぎる
+ */
+test('Too many images attached', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '', '', '', 'Describe the images.');
+    const images = [];
+    for (let i = 0; i < MAX_IMAGE_NUM + 1; i++) {
+        images.push(createQfile(`画像${i}.png`, 'image/png', 100));
+    }
+    attachFiles(images);
+    assertError(`Too many images attached. The maximum number is ${MAX_IMAGE_NUM}.`);
+});
+
+/**
+ * 添付画像ファイルのサイズが大きすぎる
+ */
+test('Attached image is too large', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '', '', '', 'Describe the images.');
+    const image1 = createQfile('画像1.png', 'image/png', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', MAX_IMAGE_SIZE + 1);
+    attachFiles([image1, image2]);
+    assertError(`Attached image file "画像2.jpg" is too large. The maximum size is ${MAX_IMAGE_SIZE} bytes.`);
+});
+
+/**
+ * 添付ファイルに許可されていない Content-Type のファイルを含む
+ */
+test('Content-Type of an attached file is not allowed', () => {
+    prepareConfigs('key-12345', 'secret-67890', 'us-east-1', MODEL_VL, '', '', '', '', 'Describe the images.');
+    const image1 = createQfile('画像1.png', 'image/png;filename="画像1.png"', 100);
+    const image2 = createQfile('画像2.jpg', 'image/jpeg', 200);
+    const image3 = createQfile('画像3.gif', 'image/gif', 300);
+    const image4 = createQfile('画像4.webp', 'image/webp', 100);
+    const notAllowed = createQfile('doc.pdf', 'application/pdf', 200);
+    attachFiles([image1, image2, image3, image4, notAllowed]);
+    assertError('Content-Type of the attached file "doc.pdf" is not allowed.');
+});
+
+/**
+ * API リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.contentType
+ * @param request.body
+ * @param {String} region
+ * @param {String} model
+ * @param {Number} maxTokens
+ * @param {Number} temperature
+ * @param {Array<String>} stop
+ * @param {String} systemPrompt
+ * @param {String} message
+ * @param {Array<Qfile>} files
+ */
+const assertRequest = ({url, method, contentType, body}, region, model, maxTokens, temperature, stop, systemPrompt, message, files = []) => {
+    expect(url).toEqual(`https://bedrock-runtime.${region}.amazonaws.com/model/${model}/converse`);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    const bodyObj = JSON.parse(body);
+
+    if (maxTokens !== null) {
+        expect(bodyObj.inferenceConfig.maxTokens).toEqual(maxTokens);
+    } else {
+        expect(bodyObj.inferenceConfig.maxTokens).toEqual(undefined);
+    }
+    if (temperature !== null) {
+        expect(bodyObj.inferenceConfig.temperature).toEqual(temperature);
+    } else {
+        expect(bodyObj.inferenceConfig.temperature).toEqual(undefined);
+    }
+
+    if (stop.length > 0) {
+        expect(bodyObj.additionalModelRequestFields.stop).toEqual(stop);
+    } else {
+        expect(bodyObj.additionalModelRequestFields).toEqual(undefined);
+    }
+
+    if (systemPrompt !== '') {
+        expect(bodyObj.system[0].text).toEqual(systemPrompt);
+    } else {
+        expect(bodyObj.system).toEqual(undefined);
+    }
+
+    expect(bodyObj.messages[0].role).toEqual('user');
+    expect(bodyObj.messages[0].content[0].text).toEqual(message);
+
+    expect(bodyObj.messages[0].content.length).toEqual(files.length + 1);
+    files.forEach((file, i) => {
+        expect(bodyObj.messages[0].content[i + 1].image.format).toEqual(file.getContentType().split(';')[0].split('/')[1]);
+        expect(bodyObj.messages[0].content[i + 1].image.source.bytes).toEqual(base64.encodeToString(fileRepository.readFile(file)));
+    });
+};
+
+/**
+ * API のレスポンスボディを作成
+ * @param {String} answerText
+ * @returns {String} response
+ */
+const createResponse = (answerText) => {
+    const responseObj = {
+        stopReason: 'end_turn',
+        output: {
+            message: {
+                content: [
+                    {text: answerText}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    return JSON.stringify(responseObj);
+};
+
+/**
+ * API リクエストでエラー
+ */
+test('Fail to request', () => {
+    const region = 'us-east-1';
+    const message = 'Hello';
+    prepareConfigs('key-12345', 'secret-67890', region, MODEL_VL, '1280', '', '', '', message);
+
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_VL, 1280, null, [], '', message);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+    assertError('Failed to converse. status: 400');
+});
+
+/**
+ * レスポンスに回答を含まないため、エラー - text フィールドを持つ content がない場合
+ */
+test('No response content - no content with text field', () => {
+    const region = 'us-east-1';
+    const message = 'Hello';
+    prepareConfigs('key-12345', 'secret-67890', region, MODEL_VL, '', '', '', '', message);
+
+    const responseObj = {
+        stopReason: 'max_tokens',
+        output: {
+            message: {
+                content: [
+                    {toolUse: {}}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_VL, null, null, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+    assertError('No response content generated. Stop Reason: max_tokens');
+});
+
+/**
+ * レスポンスに回答を含まないため、エラー - text フィールドの値が空の場合
+ */
+test('No response content - content with text field is empty', () => {
+    const region = 'us-east-1';
+    const message = 'Hello';
+    prepareConfigs('key-12345', 'secret-67890', region, MODEL_32B, '', '', '', '', message);
+
+    const responseObj = {
+        stopReason: 'max_tokens',
+        output: {
+            message: {
+                content: [
+                    {text: ''}
+                ]
+            }
+        },
+        usage: {
+            inputTokens: 1024,
+            outputTokens: 2048
+        }
+    };
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_32B, null, null, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+    assertError('No response content generated. Stop Reason: max_tokens');
+});
+
+/**
+ * 成功 - 必須項目のみ指定
+ * maxTokens, temperature は未指定のため inferenceConfig に含まれない
+ */
+test('Success - only with required configs', () => {
+    const region = 'us-east-1';
+    const message = 'Hello';
+    const answerDef = prepareConfigs('key-12345', 'secret-67890', region, MODEL_VL, '', '', '', '', message);
+
+    const answer = 'Hi there!';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_VL, null, null, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 最大トークン数、温度を指定
+ */
+test('Success - with max tokens and temperature', () => {
+    const region = 'us-east-1';
+    const message = 'Are you a robot?\n\nHow old are you?';
+    const answerDef = prepareConfigs('key-12345', 'secret-67890', region, MODEL_NEXT, '500', '0.5', '', '', message);
+
+    const answer = "I'm an AI model. I don't have an age.";
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_NEXT, 500, 0.5, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 温度、停止シーケンス、システムプロンプトを指定
+ * 添付画像のデータ項目は指定しているが、添付ファイルなし
+ */
+test('Success - with temperature, stop sequences and system prompt, empty attached files', () => {
+    const region = 'eu-central-2';
+    const stop = 'さようなら\nありがとう\nおやすみなさい';
+    const systemPrompt = "You are a translator. Translate the user's input into Japanese.";
+    const message = 'Hi. How are you?';
+    const answerDef = prepareConfigs('key-12345', 'secret-67890', region, MODEL_32B, '', '0', stop, systemPrompt, message);
+    attachFiles([]);
+
+    const answer = 'こんにちは。お元気ですか？';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_32B, null, 0, ['さようなら', 'ありがとう', 'おやすみなさい'], systemPrompt, message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 添付画像あり
+ * 回答を保存するデータ項目に、文字型 Markdown を指定
+ */
+test('Success - with attached images - Markdown', () => {
+    const region = 'ap-northeast-1';
+    const message = 'Describe each image attached.';
+    prepareConfigs('key-54321', 'secret-99999', region, MODEL_VL, '', '', '', '', message);
+
+    // 回答を保存するデータ項目に、文字型 Markdown を指定
+    const answerDef = engine.createDataDefinition('回答', 1, 'q_answer', 'STRING_MARKDOWN');
+    engine.setData(answerDef, '事前文字列');
+    configs.putObject('conf_Answer1', answerDef);
+
+    // 添付画像を指定
+    const files = [];
+    files.push(createQfile('画像0.png', 'image/png', 100));
+    files.push(createQfile('画像1.jpg', 'image/jpeg', 200));
+    files.push(createQfile('画像2.gif', 'image/gif', 300));
+    files.push(createQfile('画像3.webp', 'image/webp', 100));
+    files.push(createQfile('最大サイズの画像.jpg', 'image/jpeg;filename="最大サイズの画像.jpg"', MAX_IMAGE_SIZE));
+    attachFiles(files);
+
+    const answer = 'The 1st image shows a cat. The 2nd image shows a dog.';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_VL, null, null, [], '', message, files);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+/**
+ * 成功 - 温度 1.0 を指定
+ */
+test('Success - temperature 1.0', () => {
+    const region = 'us-east-1';
+    const message = 'Hello';
+    const answerDef = prepareConfigs('key-12345', 'secret-67890', region, MODEL_235B, '', '1', '', '', message);
+
+    const answer = 'Hi!';
+    httpClient.setRequestHandler((request) => {
+        assertRequest(request, region, MODEL_235B, null, 1, [], '', message);
+        return httpClient.createHttpResponse(200, 'application/json', createResponse(answer));
+    });
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual(answer);
+});
+
+]]>    </test>
+</service-task-definition>
