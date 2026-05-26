@@ -180,7 +180,7 @@ const retrieveSize = () => {
         (width <= MAX_DIMENSION && height <= MAX_OTHER_DIMENSION) ||
         (width <= MAX_OTHER_DIMENSION && height <= MAX_DIMENSION);
     if (!isValidSize) {
-        throw new Error(`Size is invalid. It exceeds maximum. MAX: ${MAX_DIMENSION}x${MAX_OTHER_DIMENION} or ${MAX_OTHER_DIMENION}x${MAX_DIMENSION}`);
+        throw new Error(`Size is invalid. It exceeds maximum. MAX: ${MAX_DIMENSION}x${MAX_OTHER_DIMENSION} or ${MAX_OTHER_DIMENSION}x${MAX_DIMENSION}`);
     }
 
     // 4. 比率チェック（1:3 ～ 3:1）
@@ -329,13 +329,13 @@ const saveFileData = (configName, newFile) => {
  * @param {String} prompt
  * @param {String} size
  * @param {String} format
- * @param {String} style
+ * @param {String} background
  * @param {String} quality
  * @param {String} fileName
  * @param {null|Array<Object>} files
  * @returns {DataDefinitionView} fileDef
  */
-const prepareConfigs = (authKey, organizationId, model, prompt, size, format, style, quality, fileName, files) => {
+const prepareConfigs = (authKey, organizationId, model, prompt, size, format, background, quality, fileName, files) => {
     const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
     configs.putObject('conf_Auth', authSetting);
 
@@ -344,7 +344,7 @@ const prepareConfigs = (authKey, organizationId, model, prompt, size, format, st
     configs.put('conf_Prompt', prompt);
     configs.put('conf_Size', size);
     configs.put('conf_Format', format);
-    configs.put('conf_Style', style);
+    configs.put('conf_Background', background);
     configs.put('conf_Quality', quality);
     configs.put('conf_FileName', fileName);
 
@@ -372,11 +372,20 @@ const assertError = (errorMsg) => {
 };
 
 /**
+ * モデル ID が不正
+ * 不正な文字を含む
+ */
+test('Model is invalid', () => {
+    prepareConfigs('key', '', 'gpt-image-2!', 'Prompt', '1024x1024', '', '', '', 'test.png', null);
+    assertError('Model is invalid. It contains an invalid character.');
+});
+
+/**
  * OraganizationId が不正
  * マルチバイト文字を含む
  */
 test('OrganizationId is invalid', () => {
-    prepareConfigs('key', 'そしき', 'dall-e-2', 'Prompt', '512x512', '', '', '', 'test.png', null);
+    prepareConfigs('key', 'そしき', 'gpt-image-2', 'Prompt', '1024x1024', '', '', '', 'test.png', null);
     assertError("node.event.intermediate.message.throwing.http.header.invalid");
 });
 
@@ -384,15 +393,55 @@ test('OrganizationId is invalid', () => {
  * プロンプトが空
  */
 test('Prompt is empty', () => {
-    prepareConfigs('key', '', 'dall-e-2', '', '512x512', '', '', '', 'test.png', null);
+    prepareConfigs('key', '', 'gpt-image-2', '', '1024x1024', '', '', '', 'test.png', null);
     assertError('Prompt is empty.');
+});
+
+/**
+ * サイズが不正 - WIDTHxHEIGHT 形式でない
+ */
+test('Size is invalid - bad format', () => {
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024-1024', '', '', '', 'test.png', null);
+    assertError('Size is invalid. It must be WIDTHxHEIGHT.');
+});
+
+/**
+ * サイズが不正 - 16の倍数でない
+ */
+test('Size is invalid - not divisible by 16', () => {
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1000x1024', '', '', '', 'test.png', null);
+    assertError('Size is invalid. Both width and height must be divisible by 16.');
+});
+
+/**
+ * サイズが不正 - 最大値超過
+ */
+test('Size is invalid - exceeds maximum', () => {
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '3856x3856', '', '', '', 'test.png', null);
+    assertError('Size is invalid. It exceeds maximum. MAX: 3840x2160 or 2160x3840');
+});
+
+/**
+ * サイズが不正 - アスペクト比が範囲外
+ */
+test('Size is invalid - aspect ratio out of range', () => {
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '2048x512', '', '', '', 'test.png', null);
+    assertError('Size is invalid. Its aspect ratio out of range. Allowed: 1:3 to 3:1');
+});
+
+/**
+ * 背景透過 + JPEG の組み合わせエラー
+ */
+test('Background transparent with JPEG format', () => {
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024x1024', 'jpeg', 'transparent', '', 'test.jpg', null);
+    assertError('When background is transparent, image format must be either PNG (default) or WEBP.');
 });
 
 /**
  * ファイル名が空
  */
 test('FileName is empty', () => {
-    prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', '', '', null);
+    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024x1024', '', '', '', '', null);
     assertError('File name is empty.');
 });
 
@@ -410,7 +459,7 @@ test('FileName is empty', () => {
  * @param {String} prompt
  * @param {String} size
  * @param {String} format
- * @param {String} style
+ * @param {String} background
  * @param {String} quality
  */
 const assertRequest = ({
@@ -419,7 +468,7 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, prompt, size, format, style, quality) => {
+                       }, authKey, organizationId, model, prompt, size, format, background, quality) => {
     expect(url).toEqual('https://api.openai.com/v1/images/generations');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -432,9 +481,10 @@ const assertRequest = ({
     expect(bodyObj.prompt).toEqual(prompt);
     expect(bodyObj.size).toEqual(size);
     expect(bodyObj.output_format).toEqual(format);
-    expect(bodyObj.style).toEqual(undefined); // 旧モデル用のパラメータが設定されていないことを確認
+    expect(bodyObj.background).toEqual(background);
     expect(bodyObj.quality).toEqual(quality);
     expect(bodyObj.n).toEqual(1);
+    expect(bodyObj.style).toEqual(undefined); // 旧モデル用のパラメータが設定されていないことを確認
     expect(bodyObj.response_format).toEqual(undefined); // 旧モデル用のパラメータが設定されていないことを確認
 };
 
@@ -442,10 +492,10 @@ const assertRequest = ({
  * API リクエストでエラー
  */
 test('Fail to request', () => {
-    prepareConfigs('invalidKey', '', 'dall-e-2', 'Prompt', '512x512', '', '', '', 'test.png', null);
+    prepareConfigs('invalidKey', '', 'gpt-image-2', 'Prompt', '1024x1024', '', '', '', 'test.png', null);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'invalidKey', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined, undefined);
+        assertRequest(request, 'invalidKey', '', 'gpt-image-2', 'Prompt', '1024x1024', undefined, undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -461,7 +511,12 @@ const createResponse = (image) => {
         "created": Math.floor(Date.now() / 1000),
         "data": [{
             b64_json: base64.encodeToString(image)
-        }]
+        }],
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "total_tokens": 300
+        }
     };
     return JSON.stringify(responseObj);
 };
@@ -481,13 +536,14 @@ const assertFile = (file, name, contentType, body) => {
 };
 
 /**
- * 成功
+ * 成功 - 最小限の設定
+ * gpt-image-2 / サイズ・形式・背景・品質はすべて未指定
  */
-test('Success to request', () => {
-    const fileDef = prepareConfigs('key', '', 'dall-e-2', 'Prompt', '512x512', '', '', '', 'test.png', null);
+test('Success - gpt-image-2, minimum config', () => {
+    const fileDef = prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '', '', '', '', 'test.png', null);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key', '', 'dall-e-2', 'Prompt', '512x512', undefined, undefined, undefined);
+        assertRequest(request, 'key', '', 'gpt-image-2', 'Prompt', undefined, undefined, undefined, undefined);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
     });
     main();
@@ -498,19 +554,19 @@ test('Success to request', () => {
     assertFile(files.get(0), 'test.png', 'image/png', 'image');
 });
 
-
 /**
- * 成功 - 組織 ID / スタイル / 品質を指定
+ * 成功 - 組織 ID / サイズ / 形式 / 背景 / 品質を指定
+ * gpt-image-1-mini / WEBP + 透過背景
  * 生成された画像を保存するデータ項目に、他のファイルがすでに添付されている場合
  */
-test('Success to request - with organization ID, Style, Quality', () => {
-    const fileDef = prepareConfigs('key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', '', 'vivid', 'hd', 'image.png', null);
+test('Success - gpt-image-1-mini, with organization ID, all params', () => {
+    const fileDef = prepareConfigs('key2', 'org', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'transparent', 'high', 'image.webp', null);
     // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
     engine.setData(fileDef, [engine.createQfile('既存のファイル.json', 'image/png', '{}')]);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key2', 'org', 'dall-e-3', '綺麗な画像', '1024x1024', undefined, 'vivid', 'hd');
-        return httpClient.createHttpResponse(200, 'application/json', createResponse("png"));
+        assertRequest(request, 'key2', 'org', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'transparent', 'high');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("webp-data"));
     });
     main();
 
@@ -518,26 +574,26 @@ test('Success to request - with organization ID, Style, Quality', () => {
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(2);
     assertFile(files.get(0), '既存のファイル.json', 'image/png', '{}');
-    assertFile(files.get(1), 'image.png', 'image/png', 'png');
+    assertFile(files.get(1), 'image.webp', 'image/webp', 'webp-data');
 });
 
 /**
- * 成功 - サイズ / 画像形式 / 品質を指定
- * gpt-image-1
+ * 成功 - 編集可能な SELECT_ITEM で任意のモデル ID を指定
+ * gpt-image-1.5 / JPEG + 不透過背景
  */
-test('Success to request - Size, Format, Quality', () => {
-    const fileDef = prepareConfigs('key', '', 'gpt-image-1', 'Prompt', '1024x1792', 'webp', '', 'high', 'test.webp', null);
+test('Success - gpt-image-1.5, custom model ID', () => {
+    const fileDef = prepareConfigs('key', '', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'opaque', 'medium', 'test.jpg', null);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key', '', 'gpt-image-1', 'Prompt', '1024x1792', 'webp', undefined, 'high');
-        return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
+        assertRequest(request, 'key', '', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'opaque', 'medium');
+        return httpClient.createHttpResponse(200, 'application/json', createResponse("jpeg-data"));
     });
     main();
 
     // データ項目の値をチェック
     const files = engine.findData(fileDef);
     expect(files.size()).toEqual(1);
-    assertFile(files.get(0), 'test.webp', 'image/webp', 'image');
+    assertFile(files.get(0), 'test.jpg', 'image/jpeg', 'jpeg-data');
 });
 
     ]]></test>
