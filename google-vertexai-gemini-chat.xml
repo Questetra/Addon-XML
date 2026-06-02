@@ -4,7 +4,7 @@
     <addon-version>2</addon-version>
     <label>Google Vertex AI: Gemini: Chat</label>
     <label locale="ja">Google Vertex AI: Gemini: チャット</label>
-    <last-modified>2026-05-11</last-modified>
+    <last-modified>2026-06-02</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <summary>This item sends a message to a Gemini model on Google Vertex AI
         and stores the response in the specified data item.</summary>
@@ -40,6 +40,9 @@
             </item>
             <item value="gemini-3.1-flash-lite">
                 <label>Gemini 3.1 Flash-Lite</label>
+            </item>
+            <item value="gemini-3.5-flash">
+                <label>Gemini 3.5 Flash</label>
             </item>
         </config>
         <config name="conf_ThinkingLevel" required="false" form-type="SELECT_ITEM">
@@ -147,6 +150,8 @@ const main = () => {
     saveData('conf_Thought1', thought);
 };
 
+const MULTI_REGIONS = ['eu', 'us'];
+
 /**
  * config からリージョンコードを読み出す
  * リージョンコードの形式として不正な場合はエラー
@@ -155,7 +160,8 @@ const main = () => {
 const retrieveRegion = () => {
     const region = configs.get('conf_Region');
     // 今後リージョンが増えることも考えて、文字数には余裕をみている
-    const reg = new RegExp('^(?:global|[a-z]{2,20}-[a-z]{2,20}[1-9]{1,2})$');
+    const multiRegionPattern = MULTI_REGIONS.join('|');
+    const reg = new RegExp(`^(?:global|${multiRegionPattern}|[a-z]{2,20}-[a-z]{2,20}[1-9]{1,2})$`);
     if (!reg.test(region)) {
         throw new Error('Region Code is invalid.');
     }
@@ -368,7 +374,9 @@ const invokeModel = (
     mediaResolution
 ) => {
     let domain = 'aiplatform.googleapis.com';
-    if (region !== 'global') {
+    if (MULTI_REGIONS.includes(region)) {
+        domain = `aiplatform.${region}.rep.googleapis.com`;
+    } else if (region !== 'global') {
         domain = `${region}-${domain}`;
     }
     const URL = `https://${domain}/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`;
@@ -1194,9 +1202,14 @@ const assertRequest = (
     mediaResolution = '',
     includeThoughts = false
 ) => {
-    const domainPrefix = region === 'global' ? '' : `${region}-`;
+    let domain = 'aiplatform.googleapis.com';
+    if (region === 'eu' || region === 'us') {
+        domain = `aiplatform.${region}.rep.googleapis.com`;
+    } else if (region !== 'global') {
+        domain = `${region}-aiplatform.googleapis.com`;
+    }
     expect(url).toEqual(
-        `https://${domainPrefix}aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`
+        `https://${domain}/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:streamGenerateContent`
     );
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
@@ -2466,6 +2479,126 @@ test('Success - Gemini 3.1 Flash-Lite with thinkingLevel, no thoughtDef', () => 
 
     expect(main()).toEqual(undefined);
     expect(engine.findData(answerDef)).toEqual('Here is the summary.');
+});
+
+/**
+ * 成功 - マルチリージョン eu
+ */
+test('Success - multi-region eu', () => {
+    const privateKeyId = 'key-eu001';
+    const region = 'eu';
+    const projectId = 'project-eu001';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-3.5-flash';
+    const message = 'Hello from EU region.';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message
+    );
+
+    const token = 'token-eu001';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            '',
+            null,
+            [],
+            message
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('Hello from the model.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Hello from the model.');
+});
+
+/**
+ * 成功 - マルチリージョン us
+ */
+test('Success - multi-region us', () => {
+    const privateKeyId = 'key-us001';
+    const region = 'us';
+    const projectId = 'project-us001';
+    const serviceAccount = 'service@questetra.com';
+    const model = 'gemini-3.1-flash-lite';
+    const message = 'Hello from US region.';
+    const answerDef = prepareConfigs(
+        SCOPE,
+        privateKeyId,
+        PRIVATE_KEY,
+        serviceAccount,
+        region,
+        projectId,
+        model,
+        '',
+        '',
+        '',
+        message
+    );
+
+    const token = 'token-us001';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            return httpClient.createHttpResponse(
+                200,
+                'application/json',
+                JSON.stringify({
+                    access_token: token,
+                })
+            );
+        }
+        assertRequest(
+            request,
+            token,
+            region,
+            projectId,
+            model,
+            null,
+            '',
+            null,
+            [],
+            message
+        );
+        return httpClient.createHttpResponse(
+            200,
+            'application/json',
+            createResponse('Hello from the model.')
+        );
+    });
+
+    expect(main()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Hello from the model.');
 });
 
 ]]></test>
