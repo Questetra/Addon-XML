@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2026-05-29</last-modified>
+    <last-modified>2026-06-02</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -21,11 +21,6 @@
                 auth-type="TOKEN">
             <label>C1: Authorization Setting in which Project API Key is set</label>
             <label locale="ja">C1: プロジェクトに紐づく API キーを設定した認証設定</label>
-        </config>
-        <config deprecated="true" name="conf_OrganizationId" required="false" form-type="TEXTFIELD">
-            <label>C-deprecated: Organization ID (Default organization if blank)
-            </label>
-            <label locale="ja">C-deprecated: 組織 ID（空白の場合、デフォルトの組織）</label>
         </config>
         <config name="conf_Model" required="true" form-type="SELECT_ITEM" editable="true">
             <label>C2: Model</label>
@@ -95,7 +90,6 @@
 function main() {
     ////// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const auth = configs.getObject('conf_Auth');   /// REQUIRED
-    const organizationId = configs.get('conf_OrganizationId');
     const model = retrieveModel();
     const prompt = configs.get('conf_Prompt');
     if (prompt === '') {
@@ -111,7 +105,7 @@ function main() {
     }
 
     ////// == 演算 / Calculating ==
-    const newFile = generateImage(auth, organizationId, model, prompt, size, format, quality, fileName);
+    const newFile = generateImage(auth, model, prompt, size, format, quality, fileName);
 
     saveFileData('conf_File', newFile);
 }
@@ -170,7 +164,6 @@ const retrieveSelectItem = (configName) => {
 /**
  * 画像生成
  * @param auth
- * @param organizationId
  * @param model
  * @param prompt
  * @param size
@@ -178,7 +171,7 @@ const retrieveSelectItem = (configName) => {
  * @param quality
  * @returns {String} answer1
  */
-const generateImage = (auth, organizationId, model, prompt, size, format, quality, fileName) => {
+const generateImage = (auth, model, prompt, size, format, quality, fileName) => {
     // https://platform.openai.com/docs/guides/safety-best-practices
     // Sending end-user IDs in your requests can be a useful tool to help OpenAI monitor and detect abuse.
     const user = `m${processInstance.getProcessModelInfoId().toString()}`;
@@ -194,12 +187,9 @@ const generateImage = (auth, organizationId, model, prompt, size, format, qualit
         n: 1,
     };
 
-    let request = httpClient.begin().authSetting(auth)
-        .body(JSON.stringify(requestJson), 'application/json');
-    if (organizationId !== null && organizationId !== '') {
-        request = request.header('OpenAI-Organization', organizationId);
-    }
-    const response = request.post('https://api.openai.com/v1/images/generations');
+    const response = httpClient.begin().authSetting(auth)
+        .body(JSON.stringify(requestJson), 'application/json')
+        .post('https://api.openai.com/v1/images/generations');
 
     const responseCode = response.getStatusCode();
     const responseBody = response.getResponseAsString();
@@ -282,7 +272,6 @@ const saveFileData = (configName, newFile) => {
 /**
  * 設定の準備
  * @param {String} authKey
- * @param {String} organizationId
  * @param {String} model
  * @param {String} prompt
  * @param {String} size
@@ -292,11 +281,9 @@ const saveFileData = (configName, newFile) => {
  * @param {null|Array<Object>} files
  * @returns {DataDefinitionView} fileDef
  */
-const prepareConfigs = (authKey, organizationId, model, prompt, size, format, quality, fileName, files) => {
+const prepareConfigs = (authKey, model, prompt, size, format, quality, fileName, files) => {
     const authSetting = httpClient.createAuthSettingToken('ChatGPT', authKey);
     configs.putObject('conf_Auth', authSetting);
-
-    configs.put('conf_OrganizationId', organizationId);
     configs.put('conf_Model', model);
     configs.put('conf_Prompt', prompt);
     configs.put('conf_Size', size);
@@ -332,24 +319,15 @@ const assertError = (errorMsg) => {
  * 不正な文字を含む
  */
 test('Model is invalid', () => {
-    prepareConfigs('key', '', 'gpt-image-2!', 'Prompt', '1024x1024', '', '', 'test.png', null);
+    prepareConfigs('key', 'gpt-image-2!', 'Prompt', '1024x1024', '', '', 'test.png', null);
     assertError('Model is invalid. It contains an invalid character.');
-});
-
-/**
- * OraganizationId が不正
- * マルチバイト文字を含む
- */
-test('OrganizationId is invalid', () => {
-    prepareConfigs('key', 'そしき', 'gpt-image-2', 'Prompt', '1024x1024', '', '', 'test.png', null);
-    assertError("node.event.intermediate.message.throwing.http.header.invalid");
 });
 
 /**
  * プロンプトが空
  */
 test('Prompt is empty', () => {
-    prepareConfigs('key', '', 'gpt-image-2', '', '1024x1024', '', '', 'test.png', null);
+    prepareConfigs('key', 'gpt-image-2', '', '1024x1024', '', '', 'test.png', null);
     assertError('Prompt is empty.');
 });
 
@@ -357,7 +335,7 @@ test('Prompt is empty', () => {
  * サイズが不正 - WIDTHxHEIGHT 形式でない
  */
 test('Size is invalid - bad format', () => {
-    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024-1024', '', '', 'test.png', null);
+    prepareConfigs('key', 'gpt-image-2', 'Prompt', '1024-1024', '', '', 'test.png', null);
     assertError('Size is invalid. It must be WIDTHxHEIGHT.');
 });
 
@@ -365,7 +343,7 @@ test('Size is invalid - bad format', () => {
  * サイズが不正 - width が 0 始まり
  */
 test('Size is invalid - width starts with 0', () => {
-    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '0512x1024', '', '', 'test.png', null);
+    prepareConfigs('key', 'gpt-image-2', 'Prompt', '0512x1024', '', '', 'test.png', null);
     assertError('Size is invalid. It must be WIDTHxHEIGHT.');
 });
 
@@ -373,7 +351,7 @@ test('Size is invalid - width starts with 0', () => {
  * サイズが不正 - height が 0 始まり
  */
 test('Size is invalid - height starts with 0', () => {
-    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024x0512', '', '', 'test.png', null);
+    prepareConfigs('key', 'gpt-image-2', 'Prompt', '1024x0512', '', '', 'test.png', null);
     assertError('Size is invalid. It must be WIDTHxHEIGHT.');
 });
 
@@ -381,7 +359,7 @@ test('Size is invalid - height starts with 0', () => {
  * ファイル名が空
  */
 test('FileName is empty', () => {
-    prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '1024x1024', '', '', '', null);
+    prepareConfigs('key', 'gpt-image-2', 'Prompt', '1024x1024', '', '', '', null);
     assertError('File name is empty.');
 });
 
@@ -394,7 +372,6 @@ test('FileName is empty', () => {
  * @param request.headers
  * @param request.body
  * @param {String} authKey
- * @param {String} organizationId
  * @param {String} model
  * @param {String} prompt
  * @param {String} size
@@ -407,14 +384,11 @@ const assertRequest = ({
                            contentType,
                            headers,
                            body
-                       }, authKey, organizationId, model, prompt, size, format, quality) => {
+                       }, authKey, model, prompt, size, format, quality) => {
     expect(url).toEqual('https://api.openai.com/v1/images/generations');
     expect(method).toEqual('POST');
     expect(contentType).toEqual('application/json');
     expect(headers['Authorization']).toEqual(`Bearer ${authKey}`);
-    if (organizationId !== '') {
-        expect(headers['OpenAI-Organization']).toEqual(organizationId);
-    }
     const bodyObj = JSON.parse(body);
     expect(bodyObj.model).toEqual(model);
     expect(bodyObj.prompt).toEqual(prompt);
@@ -430,10 +404,10 @@ const assertRequest = ({
  * API リクエストでエラー
  */
 test('Fail to request', () => {
-    prepareConfigs('invalidKey', '', 'gpt-image-2', 'Prompt', '1024x1024', '', '', 'test.png', null);
+    prepareConfigs('invalidKey', 'gpt-image-2', 'Prompt', '1024x1024', '', '', 'test.png', null);
 
     httpClient.setRequestHandler((request) => {
-        assertRequest(request, 'invalidKey', '', 'gpt-image-2', 'Prompt', '1024x1024', undefined, undefined);
+        assertRequest(request, 'invalidKey', 'gpt-image-2', 'Prompt', '1024x1024', undefined, undefined);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
     assertError('Failed to request. status: 400');
@@ -478,10 +452,10 @@ const assertFile = (file, name, contentType, body) => {
  * gpt-image-2 / サイズ・形式・品質はすべて未指定
  */
 test('Success - gpt-image-2, minimum config', () => {
-    const fileDef = prepareConfigs('key', '', 'gpt-image-2', 'Prompt', '', '', '', 'test.png', null);
+    const fileDef = prepareConfigs('key', 'gpt-image-2', 'Prompt', '', '', '', 'test.png', null);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key', '', 'gpt-image-2', 'Prompt', undefined, undefined, undefined);
+        assertRequest(request, 'key', 'gpt-image-2', 'Prompt', undefined, undefined, undefined);
         return httpClient.createHttpResponse(200, 'application/json', createResponse("image"));
     });
     main();
@@ -493,17 +467,17 @@ test('Success - gpt-image-2, minimum config', () => {
 });
 
 /**
- * 成功 - 組織 ID / サイズ / 形式 / 品質を指定
+ * 成功 - サイズ / 形式 / 品質を指定
  * gpt-image-1-mini / WEBP
  * 生成された画像を保存するデータ項目に、他のファイルがすでに添付されている場合
  */
-test('Success - gpt-image-1-mini, with organization ID, all params', () => {
-    const fileDef = prepareConfigs('key2', 'org', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'high', 'image.webp', null);
+test('Success - gpt-image-1-mini, all params', () => {
+    const fileDef = prepareConfigs('key2', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'high', 'image.webp', null);
     // 生成された画像を保存するデータ項目に、他のファイルをあらかじめ添付しておく
     engine.setData(fileDef, [engine.createQfile('既存のファイル.json', 'image/png', '{}')]);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key2', 'org', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'high');
+        assertRequest(request, 'key2', 'gpt-image-1-mini', '綺麗な画像', '1536x1024', 'webp', 'high');
         return httpClient.createHttpResponse(200, 'application/json', createResponse("webp-data"));
     });
     main();
@@ -520,10 +494,10 @@ test('Success - gpt-image-1-mini, with organization ID, all params', () => {
  * gpt-image-1.5 / JPEG
  */
 test('Success - gpt-image-1.5, custom model ID', () => {
-    const fileDef = prepareConfigs('key', '', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'medium', 'test.jpg', null);
+    const fileDef = prepareConfigs('key', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'medium', 'test.jpg', null);
 
     httpClient.setRequestHandler(request => {
-        assertRequest(request, 'key', '', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'medium');
+        assertRequest(request, 'key', 'gpt-image-1.5', 'Prompt', '1024x1536', 'jpeg', 'medium');
         return httpClient.createHttpResponse(200, 'application/json', createResponse("jpeg-data"));
     });
     main();
