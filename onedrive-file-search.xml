@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Microsoft 365 OneDrive for Business: Search File / Folder</label>
     <label locale="ja">Microsoft 365 OneDrive for Business: ファイル / フォルダ検索</label>
-    <!--<last-modified>2026-07-13</last-modified>-->
+    <last-modified>2026-07-13</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -64,7 +64,7 @@ const main = () => {
     }
 
     //// == 演算 / Calculating ==
-    const parentFolderInfo = getParentFolderInfoByUrl(oauth2, parentFolderUrl);
+    const parentFolderInfo = getFolderInfoByUrl(oauth2, parentFolderUrl);
     const {foundUrl, status} = search(oauth2, parentFolderInfo, name);
 
     //// == ワークフローデータへの代入 / Data Updating ==
@@ -109,7 +109,7 @@ const getFolderInfoByUrl = (oauth2, folderUrl) => {
         }
         folderInfo = { driveId: `drives/${driveId}`, folderId: id };
     }
-    return folderPath;
+    return folderInfo;
 };
 
 /**
@@ -123,7 +123,6 @@ const getObjBySharingUrl = (oauth2, sharingUrl) => {
     const encodedSharingUrl = encodeSharingUrl(sharingUrl);
     const response = httpClient.begin()
         .authSetting(oauth2)
-        .queryParan('$expand', 'children')
         .get(`${GRAPH_URI}shares/${encodedSharingUrl}/driveItem`);
     const httpStatus = response.getStatusCode();
     const responseStr = response.getResponseAsString();
@@ -147,8 +146,75 @@ const encodeSharingUrl = (sharingUrl) => {
     return `u!${encodedSharingUrl}`;
 };
 
-const seach = (oauth2, parentFolderInfo, name) => {
+const STATUS_FOUND_FOLDER = 'FOUND_FOLDER';
+const STATUS_FOUND_FILE = 'FOUND_FILE';
+const STATUS_FOUND_OTHER = 'FOUND_OTHER';
+const STATUS_NOT_FOUND = 'NOT_FOUND';
 
+/**
+  * 検索する
+  * 親フォルダ直下の子アイテムを "@odata.nextLink" が無くなるまで（または HTTP リクエスト数の上限に達するまで）ページングしながら走査し、
+  * 名前が一致するドライブアイテムを探す
+  * @param {AuthSettingWrapper} oauth2 OAuth2 認証設定
+  * @param {Object} parentFolderInfo 親フォルダの情報 {driveId, folderId}
+  * @param {String} name 検索する名前
+  * @return {Object} result 検索結果 {status, foundUrl}
+  */
+const search = (oauth2, parentFolderInfo, name) => {
+    const { driveId, folderId } = parentFolderInfo;
+    let url = `${GRAPH_URI}${driveId}/items/${folderId}/children`;
+    let isFirstRequest = true;
+    const limit = httpClient.getRequestingLimit();
+    for (let count = 0; count < limit; count++) {
+        let request = httpClient.begin().authSetting(oauth2);
+        if (isFirstRequest) {
+            // 2 回目以降は @odata.nextLink に必要なクエリが含まれているため、$select は初回のみ付与する
+            request = request.queryParam('$select', 'name,file,folder,webUrl');
+        }
+        isFirstRequest = false;
+
+        const response = request.get(url);
+        const status = response.getStatusCode();
+        const responseStr = response.getResponseAsString();
+        if (status >= 300) {
+            engine.log(responseStr);
+            throw new Error(`Failed to search. status: ${status}`);
+        }
+
+        const json = JSON.parse(responseStr);
+        const items = json.value || [];
+        const foundItem = items.find((item) => item.name === name);
+        if (foundItem !== undefined) {
+            const webUrl = foundItem.webUrl;
+            return {
+                status: classify(foundItem),
+                foundUrl: (webUrl === undefined || webUrl === '') ? null : webUrl
+            };
+        }
+
+        const nextLink = json['@odata.nextLink'];
+        if (nextLink === undefined || nextLink === null || nextLink === '') {
+            // 最終ページまで走査して見つからなかった場合は、正常な検索結果として NOT_FOUND を返す
+            return { status: STATUS_NOT_FOUND, foundUrl: null };
+        }
+        url = nextLink;
+    }
+    throw new Error('Too many drive items are in the specified folder. The search could not be completed.');
+};
+
+/**
+  * ドライブアイテムの facet（folder / file の有無）から検索結果ステータスを判定する
+  * @param {Object} item 名前が一致したドライブアイテム
+  * @return {String} 検索結果ステータス
+  */
+const classify = (item) => {
+    if (item.folder !== undefined && item.folder !== null) {
+        return STATUS_FOUND_FOLDER;
+    }
+    if (item.file !== undefined && item.file !== null) {
+        return STATUS_FOUND_FILE;
+    }
+    return STATUS_FOUND_OTHER;
 };
 
 /**
