@@ -55,7 +55,7 @@ const main = () => {
     const parentFolderUrl = retrieveParentFolderUrl();
     const name = configs.get('conf_Name');
     if (name === '' || name === null) {
-        throw new Error('Name to seach for is blank.');
+        throw new Error('Name to search for is blank.');
     }
     const statusDef = configs.getObject('conf_Status');
     const foundUrlDef = configs.getObject('conf_FoundUrl');
@@ -254,6 +254,401 @@ const saveData = (def, data) => {
     </icon>
 
     <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param {String} parentFolderUrl 親フォルダの URL（データ項目に保存する値）
+ * @param {String} name 検索する名前
+ * @return {
+ *     statusDef: {Object},
+ *     foundUrlDef: {Object}
+ * }
+ */
+const prepareConfigs = (parentFolderUrl, name) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'OneDrive',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+        'https://graph.microsoft.com/Files.ReadWrite.All offline_access',
+        'client_id',
+        'client_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_Name', name);
+
+    // 検索対象の親フォルダの URL を保存する文字型データ項目（単数行）を準備
+    const parentFolderUrlDef = engine.createDataDefinition('親フォルダの URL', 1, 'q_parent_folder_url', 'STRING_TEXTFIELD');
+    engine.setData(parentFolderUrlDef, parentFolderUrl);
+    configs.putObject('conf_ParentFolderUrl', parentFolderUrlDef);
+
+    // 検索結果のステータスを保存する文字型データ項目（単数行）を準備
+    const statusDef = engine.createDataDefinition('ステータス', 2, 'q_status', 'STRING_TEXTFIELD');
+    engine.setData(statusDef, '事前文字列');
+    configs.putObject('conf_Status', statusDef);
+
+    // 見つかった項目の URL を保存する文字型データ項目（単数行）を準備
+    const foundUrlDef = engine.createDataDefinition('見つかった項目の URL', 3, 'q_found_url', 'STRING_TEXTFIELD');
+    engine.setData(foundUrlDef, '事前文字列');
+    configs.putObject('conf_FoundUrl', foundUrlDef);
+
+    return {
+        statusDef,
+        foundUrlDef
+    };
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * 親フォルダのメタデータを取得する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param sharingUrl
+ */
+const assertGetRequest = ({ url, method }, sharingUrl) => {
+    expect(url).toEqual(`${GRAPH_URI}shares/${encodeSharingUrl(sharingUrl)}/driveItem`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * 子アイテムを検索する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param request.headers
+ * @param expectedUrl
+ */
+const assertSearchRequest = ({ url, method, headers }, expectedUrl) => {
+    expect(url).toEqual(expectedUrl);
+    expect(method).toEqual('GET');
+    expect(headers.get('Prefer')).toEqual('Include-Feature=AddToOneDrive');
+};
+
+/**
+ * Name to search for が空でエラーになる場合
+ */
+test('Name to search for is blank', () => {
+    prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent1', '');
+
+    assertError('Name to search for is blank.');
+});
+
+/**
+ * C4, C5 のいずれも設定されておらずエラーになる場合
+ */
+test('Neither of the data items to save the result is set', () => {
+    prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent2', 'test2');
+    configs.put('conf_Status', '');
+    configs.put('conf_FoundUrl', '');
+
+    assertError('Neither of the data items to save the result is set.');
+});
+
+/**
+ * 親フォルダのメタデータ取得リクエストが失敗する場合
+ */
+test('GET Failed - retrieving parent folder metadata', () => {
+    prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent3', 'test3');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent3');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError('Failed to get drive item. status: 400');
+});
+
+/**
+ * 親フォルダの URL に指定した項目がフォルダでない場合
+ */
+test('Parent Folder URL does not point to a folder', () => {
+    prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/notAFolder', 'test4');
+
+    httpClient.setRequestHandler((request) => {
+        assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/notAFolder');
+        const responseObj = {
+            'id': 'Id001',
+            'file': {},
+            'parentReference': {
+                'driveId': 'Drive001'
+            }
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('The drive item specified by Parent Folder URL is not a folder.');
+});
+
+/**
+ * 子アイテム検索リクエストが失敗する場合 - 親フォルダ URL をデータ項目で指定
+ */
+test('GET Failed - searching child items', () => {
+    prepareConfigs('https://test-my.sharepoint.com/personal/aaa/Documents/parent5', 'test5');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent5');
+            const responseObj = {
+                'id': 'Id002',
+                'folder': {},
+                'parentReference': {
+                    'driveId': 'Drive002'
+                }
+            };
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertSearchRequest(request, `${GRAPH_URI}drives/Drive002/items/Id002/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError('Failed to search. status: 400');
+});
+
+/**
+ * ファイルが見つかる場合 - 親フォルダ URL を固定値で指定
+ */
+test('Success - Found File - Specify Parent Folder URL with a fixed value', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs(null, 'file1.txt');
+    configs.put('conf_ParentFolderUrl', 'https://test-my.sharepoint.com/personal/aaa/Documents/parent6');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertGetRequest(request, 'https://test-my.sharepoint.com/personal/aaa/Documents/parent6');
+            const responseObj = {
+                'id': 'Id003',
+                'folder': {},
+                'parentReference': {
+                    'driveId': 'Drive003'
+                }
+            };
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertSearchRequest(request, `${GRAPH_URI}drives/Drive003/items/Id003/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'other.txt', 'file': {}, 'webUrl': 'https://example.com/other.txt' },
+                { 'name': 'file1.txt', 'file': {}, 'webUrl': 'https://example.com/file1.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FILE');
+    expect(engine.findData(foundUrlDef)).toEqual('https://example.com/file1.txt');
+});
+
+/**
+ * フォルダが見つかる場合 - 親フォルダ URL 未指定（ルートフォルダ直下を検索）
+ */
+test('Success - Found Folder - Parent Folder URL is blank (search under root)', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'folder1');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'folder1', 'folder': {}, 'webUrl': 'https://example.com/folder1' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundUrlDef)).toEqual('https://example.com/folder1');
+});
+
+/**
+ * ファイルでもフォルダでもない項目が見つかる場合（FOUND_OTHER）
+ */
+test('Success - Found Other', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'notebook1');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'notebook1', 'package': { 'type': 'oneNote' }, 'webUrl': 'https://example.com/notebook1' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_OTHER');
+    expect(engine.findData(foundUrlDef)).toEqual('https://example.com/notebook1');
+});
+
+/**
+ * 見つかった項目に webUrl が無い場合、見つかった項目の URL は null になる
+ */
+test('Success - Found Folder but webUrl is missing', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'folder2');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'folder2', 'folder': {} }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundUrlDef)).toEqual(null);
+});
+
+/**
+ * 検索対象の名前が最終ページまで見つからない場合（NOT_FOUND）
+ */
+test('Success - Not Found', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'notExist');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'other1', 'file': {} }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('NOT_FOUND');
+    expect(engine.findData(foundUrlDef)).toEqual(null);
+});
+
+/**
+ * ページングを行い、2 回目のリクエストで見つかる場合
+ * 2 回目以降のリクエストでは $select クエリが付与されないことも確認する
+ */
+test('Success - Found on the 2nd page', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'target');
+
+    const nextLink = `${GRAPH_URI}me/drive/items/root/children?%24skiptoken=abc123`;
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+            const responseObj = {
+                'value': [
+                    { 'name': 'other2', 'file': {} }
+                ],
+                '@odata.nextLink': nextLink
+            };
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertSearchRequest(request, nextLink);
+        const responseObj = {
+            'value': [
+                { 'name': 'target', 'folder': {}, 'webUrl': 'https://example.com/target' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(reqCount).toEqual(2);
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundUrlDef)).toEqual('https://example.com/target');
+});
+
+/**
+ * リクエスト数の上限を超えてしまう場合
+ */
+test('Too many drive items are in the specified folder', () => {
+    prepareConfigs('', 'neverFound');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler(() => {
+        const responseObj = {
+            'value': [
+                { 'name': `other${reqCount}`, 'file': {} }
+            ],
+            '@odata.nextLink': `${GRAPH_URI}me/drive/items/root/children?%24skiptoken=page${reqCount}`
+        };
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('Too many drive items are in the specified folder. The search could not be completed.');
+});
+
+/**
+ * C4（ステータス）のみが設定されている場合、C5（URL）は保存されない
+ */
+test('Success - Only conf_Status data item is set', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'file2.txt');
+    configs.put('conf_FoundUrl', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'file2.txt', 'file': {}, 'webUrl': 'https://example.com/file2.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FILE');
+    expect(engine.findData(foundUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * C5（URL）のみが設定されている場合、C4（ステータス）は保存されない
+ */
+test('Success - Only conf_FoundUrl data item is set', () => {
+    const { statusDef, foundUrlDef } = prepareConfigs('', 'file3.txt');
+    configs.put('conf_Status', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, `${GRAPH_URI}me/drive/items/root/children?%24select=name%2Cfile%2Cfolder%2CwebUrl`);
+        const responseObj = {
+            'value': [
+                { 'name': 'file3.txt', 'file': {}, 'webUrl': 'https://example.com/file3.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('事前文字列');
+    expect(engine.findData(foundUrlDef)).toEqual('https://example.com/file3.txt');
+});
+
     ]]></test>
 
 </service-task-definition>
