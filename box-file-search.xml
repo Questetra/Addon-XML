@@ -1,0 +1,564 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service-task-definition>
+    <label>Box: Search File / Folder</label>
+    <label locale="ja">Box: ファイル / フォルダ検索</label>
+    <last-modified>2026-07-23</last-modified>
+    <license>(C) Questetra, Inc. (MIT License)</license>
+    <engine-type>3</engine-type>
+    <addon-version>2</addon-version>
+    <summary>This item searches for an item (such as a file or a folder) with a specific name directly under the specified folder on Box.
+        The search result status is one of the following: FOUND_FILE / FOUND_FOLDER / FOUND_OTHER / NOT_FOUND
+    </summary>
+    <summary locale="ja">この工程は、Box の指定フォルダ直下に特定の名前の項目（ファイルやフォルダ）があるかどうか調べます。検索結果のステータスは、FOUND_FILE
+        / FOUND_FOLDER / FOUND_OTHER / NOT_FOUND のいずれかです。</summary>
+    <configs>
+        <config name="conf_OAuth2" required="true" form-type="OAUTH2" auth-type="OAUTH2"
+                oauth2-setting-name="https://app.box.com/api/oauth2/root_readonly">
+            <label>C1: OAuth2 Setting</label>
+            <label locale="ja">C1: OAuth2 設定</label>
+        </config>
+        <config name="conf_ParentFolderId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
+                editable="true">
+            <label>C2: Parent Folder ID (Root Folder if blank)</label>
+            <label locale="ja">C2: 検索対象の親フォルダの ID（空白の場合、ルートフォルダ直下を検索します）</label>
+        </config>
+        <config name="conf_Name" required="true" form-type="TEXTFIELD" el-enabled="true">
+            <label>C3: Name to search for</label>
+            <label locale="ja">C3: 検索する名前</label>
+        </config>
+        <config name="conf_Status" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C4: Data item to save search result status</label>
+            <label locale="ja">C4: 検索結果のステータスを保存するデータ項目</label>
+        </config>
+        <config name="conf_FoundId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C5: Data item to save ID of the found item</label>
+            <label locale="ja">C5: 見つかった項目の ID を保存するデータ項目</label>
+        </config>
+        <config name="conf_FoundUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
+            <label>C6: Data item to save URL of the found item</label>
+            <label locale="ja">C6: 見つかった項目の URL を保存するデータ項目</label>
+        </config>
+    </configs>
+    <help-page-url>https://support.questetra.com/en/bpmn-icons/box-file-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/box-file-search/</help-page-url>
+
+
+    <script><![CDATA[
+const main = () => {
+    //// == 工程コンフィグの参照 / Config Retrieving ==
+    const oauth2 = configs.getObject('conf_OAuth2');
+    const parentFolderId = retrieveParentFolderId();
+    const name = configs.get('conf_Name');
+    if (name === '' || name === null) {
+        throw new Error('Name to search for is blank.');
+    }
+    const statusDef = configs.getObject('conf_Status');
+    const foundIdDef = configs.getObject('conf_FoundId');
+    const foundUrlDef = configs.getObject('conf_FoundUrl');
+    if (statusDef === null && foundIdDef === null && foundUrlDef === null) {
+        throw new Error('None of the data items to save the result is set.');
+    }
+
+    //// == 演算 / Calculating ==
+    const {foundId, foundUrl, status} = search(oauth2, parentFolderId, name);
+
+    //// == ワークフローデータへの代入 / Data Updating ==
+    saveData(statusDef, status);
+    saveData(foundIdDef, foundId);
+    saveData(foundUrlDef, foundUrl);
+};
+
+/**
+ * config から親フォルダの ID を読み出す（空の場合はルートフォルダの ID "0" を返す）
+ * @returns {String}
+ */
+const retrieveParentFolderId = () => {
+    const confName = 'conf_ParentFolderId';
+    const parentFolderIdDef = configs.getObject(confName);
+    let parentFolderId = configs.get(confName);
+    if (parentFolderIdDef !== null) {
+        parentFolderId = engine.findData(parentFolderIdDef);
+    }
+    if (parentFolderId === '' || parentFolderId === null) {
+        parentFolderId = '0';
+    }
+    return parentFolderId;
+};
+
+const STATUS_FOUND_FOLDER = 'FOUND_FOLDER';
+const STATUS_FOUND_FILE = 'FOUND_FILE';
+const STATUS_FOUND_OTHER = 'FOUND_OTHER';
+const STATUS_NOT_FOUND = 'NOT_FOUND';
+
+/**
+  * 検索する
+  * 親フォルダ直下の子アイテムを "marker" が無くなるまで（または HTTP リクエスト数の上限に達するまで）ページングしながら走査し、
+  * 名前が一致するアイテムを探す
+  * @param {AuthSettingWrapper} oauth2 OAuth2 認証設定
+  * @param {String} parentFolderId 親フォルダの ID
+  * @param {String} name 検索する名前
+  * @return {Object} result 検索結果 {status, foundId, foundUrl}
+  */
+const search = (oauth2, parentFolderId, name) => {
+    const url = `https://api.box.com/2.0/folders/${parentFolderId}/items`;
+    let marker = '';
+    const limit = httpClient.getRequestingLimit();
+    for (let count = 0; count < limit; count++) {
+        const response = httpClient.begin()
+            .authSetting(oauth2)
+            .queryParam('fields', 'id,type,name')
+            .queryParam('limit', '1000')
+            .queryParam('usemarker', 'true')
+            .queryParam('marker', marker)
+            .get(url);
+        const status = response.getStatusCode();
+        const responseStr = response.getResponseAsString();
+        if (status >= 300) {
+            engine.log(responseStr);
+            throw new Error(`Failed to search. status: ${status}`);
+        }
+
+        const json = JSON.parse(responseStr);
+        const items = json.entries || [];
+        const foundItem = items.find((item) => item.name === name);
+        if (foundItem !== undefined) {
+            return {
+                status: classify(foundItem),
+                foundId: foundItem.id,
+                foundUrl: buildUrl(foundItem)
+            };
+        }
+
+        marker = json.next_marker;
+        if (marker === undefined || marker === null || marker === '') {
+            // 最終ページまで走査して見つからなかった場合は、正常な検索結果として NOT_FOUND を返す
+            return { status: STATUS_NOT_FOUND, foundId: null, foundUrl: null };
+        }
+    }
+    throw new Error('Too many files and folders are in the specified folder. The search could not be completed.');
+};
+
+/**
+  * アイテムの type から検索結果ステータスを判定する
+  * @param {Object} item 名前が一致したアイテム
+  * @return {String} 検索結果ステータス
+  */
+const classify = (item) => {
+    if (item.type === 'folder') {
+        return STATUS_FOUND_FOLDER;
+    }
+    if (item.type === 'file') {
+        return STATUS_FOUND_FILE;
+    }
+    return STATUS_FOUND_OTHER;
+};
+
+/**
+  * アイテムの type と ID から Box の表示 URL を組み立てる
+  * （file / folder 以外は表示 URL の形式が定まらないため null を返す）
+  * @param {Object} item 名前が一致したアイテム
+  * @return {String} 表示 URL（file / folder 以外は null）
+  */
+const buildUrl = (item) => {
+    if (item.type === 'folder') {
+        return `https://app.box.com/folder/${item.id}`;
+    }
+    if (item.type === 'file') {
+        return `https://app.box.com/file/${item.id}`;
+    }
+    return null;
+};
+
+/**
+ * データ項目への保存
+ * @param {ProcessDataDefinitionView} def
+ * @param {*} data
+ */
+const saveData = (def, data) => {
+    if (def === null) {
+        return;
+    }
+    engine.setData(def, data);
+};
+
+    ]]></script>
+
+
+    <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD/UlEQVRYR82XbWibVRTHf/fJ2jXJ
+        2qSd65x11aC0YgJWZUwEWZ0D/SJaHYKKmgykbL70Bf2k4IYwZOKWOhFRMM9QZxHUjSEo+7AOlA1E
+        7WSRThzdqq1tWWxjm7Zrk1y5N+SlydM2XdvN50sebs5z7u+e8z/n3iu4xo9Y1Pz+3x6F5BagAYQb
+        oX4BSTfIUaAbIboIeY8W63dhAH+vGyZaQLYihLsox1LBiCA4OjA9CmzOZ34Af9gP8kDRE+dPo0GM
+        AObtR+YimBvAfzaIEC1FrXghIymDmL42KzNrgMBZE8RzC/ld1P8SE9MbyP+mEGA5V16Ykg5MX2vu
+        8GwAlXNBaFErW6yxFE25msgCaLXHeq9YcMWCaGE6PenqyAEI70bwRrF+lmQn2YPp3a18ZAECYVWv
+        rrTj0I4bqHLaeOTgn0uay/JjFQXTV5kFUB1OyK9zjYeC9ThKBeW7epYfQHfPlBZSEbBQ/nBHCmDN
+        zpUCkLoiUgCBcBegenzmUQDO1QaHT0dpqC3T4yd7YrzyxZB+33V/Jds3VbBmtUH/SJzmQwN07ryR
+        7r4p2jtTNh88uwHPdaU8uP+iVRRPEvI2pgEuADflA6wrtxV8+GPvJBcuzfDY3RXYjBzgfxNU2A0M
+        AW2fD1Jht/FmUzWx6STuFyyiqDYw03tnGkDmz6QioADUZO98F8HtMHh521o9lpQwNSMxvx/l9PkJ
+        XtpWxSaPnZFYArfDRmQ8oeFcDhvvHv+Hts5Bax2FvGJeAFUFW97q5Yc/JrWDVx9ay74n1uv3Iz+P
+        0fRetkIiB+uxlxj80jfFvbfatc2Jnhhb91mGPwWUA1CQgoH9dawrX0VN+zmGxxLa/qnNLj5rrtHv
+        ShtPf9ifWdnfB+p02X7z6zhNd5Xr8U9PRXnmo6zN7DDIM4R8DXOK8NRrHu65xY7K+QNvX2SDaxXH
+        Wmqpu75U+1FhVsL78qcxDjfX8ORml05BeZmN6YTUDUalQenh/RMjC4jQogwb6x189eJGKp02YpeT
+        2AxBWYmgLzLDwGhcw8UTaJG57AaT0xIlJGXTcTyi09HcWMml8QTVLecKAWRuGVo0IvXF1tuc7N1e
+        rUspnpSE+y+z4+N+/hqJ88nzNdxX58BRajAYjbPn6DB7H1/P70PTPNzRpyf8tr2WjVUleF8/bwGQ
+        24jU33mt2Fq2yzYaJeTVx7v/0WaktmMxoaohsyEt23pnO4oiHTcXbsfK6JoeSNKUK3oky54D0tNd
+        vUMp8hAhnz8/rVfpWF648vkjkEmHPqiYSxBmFCn8V3YxyUDoq1krAnWcLrZCokjU1Sy4tKtZfsJS
+        l9NGhGgA6QZxR8pEngExipTdYHTNt+LiNbBCTSDf7X8FbX8wYecpbwAAAABJRU5ErkJggg==
+    </icon>
+
+
+    <test><![CDATA[
+
+/**
+ * 設定の準備
+ * @param {String} parentFolderId 親フォルダの ID（データ項目に保存する値）
+ * @param {String} name 検索する名前
+ * @return {
+ *     statusDef: {Object},
+ *     foundIdDef: {Object},
+ *     foundUrlDef: {Object}
+ * }
+ */
+const prepareConfigs = (parentFolderId, name) => {
+    const oauth2 = httpClient.createAuthSettingOAuth2(
+        'Box',
+        'https://account.box.com/api/oauth2/authorize',
+        'https://api.box.com/oauth2/token',
+        'root_readonly',
+        'consumer_key',
+        'consumer_secret',
+        'access_token'
+    );
+    configs.putObject('conf_OAuth2', oauth2);
+    configs.put('conf_Name', name);
+
+    // 検索対象の親フォルダの ID を保存する文字型データ項目（単数行）を準備
+    const parentFolderIdDef = engine.createDataDefinition('親フォルダの ID', 1, 'q_parent_folder_id', 'STRING_TEXTFIELD');
+    engine.setData(parentFolderIdDef, parentFolderId);
+    configs.putObject('conf_ParentFolderId', parentFolderIdDef);
+
+    // 検索結果のステータスを保存する文字型データ項目（単数行）を準備
+    const statusDef = engine.createDataDefinition('ステータス', 2, 'q_status', 'STRING_TEXTFIELD');
+    engine.setData(statusDef, '事前文字列');
+    configs.putObject('conf_Status', statusDef);
+
+    // 見つかった項目の ID を保存する文字型データ項目（単数行）を準備
+    const foundIdDef = engine.createDataDefinition('見つかった項目の ID', 3, 'q_found_id', 'STRING_TEXTFIELD');
+    engine.setData(foundIdDef, '事前文字列');
+    configs.putObject('conf_FoundId', foundIdDef);
+
+    // 見つかった項目の URL を保存する文字型データ項目（単数行）を準備
+    const foundUrlDef = engine.createDataDefinition('見つかった項目の URL', 4, 'q_found_url', 'STRING_TEXTFIELD');
+    engine.setData(foundUrlDef, '事前文字列');
+    configs.putObject('conf_FoundUrl', foundUrlDef);
+
+    return {
+        statusDef,
+        foundIdDef,
+        foundUrlDef
+    };
+};
+
+/**
+ * 異常系のテスト
+ * @param errorMsg
+ */
+const assertError = (errorMsg) => {
+    let failed = false;
+    try {
+        main();
+    } catch (e) {
+        failed = true;
+        expect(e.message).toEqual(errorMsg);
+    }
+    if (!failed) {
+        fail('No error was thrown.');
+    }
+};
+
+/**
+ * 子アイテムを検索する GET リクエストのテスト
+ * @param {Object} request
+ * @param request.url
+ * @param request.method
+ * @param folderId
+ * @param marker
+ */
+const assertSearchRequest = ({ url, method }, folderId, marker = '') => {
+    expect(url).toEqual(`https://api.box.com/2.0/folders/${folderId}/items?fields=id%2Ctype%2Cname&limit=1000&usemarker=true&marker=${marker}`);
+    expect(method).toEqual('GET');
+};
+
+/**
+ * Name to search for が空でエラーになる場合
+ */
+test('Name to search for is blank', () => {
+    prepareConfigs('12345', '');
+
+    assertError('Name to search for is blank.');
+});
+
+/**
+ * C4, C5, C6 のいずれも設定されておらずエラーになる場合
+ */
+test('None of the data items to save the result is set', () => {
+    prepareConfigs('12345', 'test2');
+    configs.put('conf_Status', '');
+    configs.put('conf_FoundId', '');
+    configs.put('conf_FoundUrl', '');
+
+    assertError('None of the data items to save the result is set.');
+});
+
+/**
+ * 子アイテム検索リクエストが失敗する場合
+ */
+test('GET Failed', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'test3');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        return httpClient.createHttpResponse(400, 'application/json', '{}');
+    });
+
+    assertError('Failed to search. status: 400');
+
+    // 文字型データ項目の値が変更されていないことを確認
+    expect(engine.findData(statusDef)).toEqual('事前文字列');
+    expect(engine.findData(foundIdDef)).toEqual('事前文字列');
+    expect(engine.findData(foundUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * ファイルが見つかる場合 - 親フォルダ ID 未指定（ルートフォルダ直下を検索）
+ */
+test('Success - Found File - Parent Folder ID is blank (search under root)', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('', 'file1.txt');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '0');
+        const responseObj = {
+            'entries': [
+                { 'id': '11111', 'type': 'file', 'name': 'other.txt' },
+                { 'id': '22222', 'type': 'file', 'name': 'file1.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FILE');
+    expect(engine.findData(foundIdDef)).toEqual('22222');
+    expect(engine.findData(foundUrlDef)).toEqual('https://app.box.com/file/22222');
+});
+
+/**
+ * フォルダが見つかる場合 - 親フォルダ ID を固定値で指定
+ */
+test('Success - Found Folder - Specify Parent Folder ID with a fixed value', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs(null, 'folder1');
+    configs.put('conf_ParentFolderId', '54321');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '54321');
+        const responseObj = {
+            'entries': [
+                { 'id': '33333', 'type': 'folder', 'name': 'folder1' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundIdDef)).toEqual('33333');
+    expect(engine.findData(foundUrlDef)).toEqual('https://app.box.com/folder/33333');
+});
+
+/**
+ * ファイルでもフォルダでもない項目が見つかる場合（FOUND_OTHER）
+ * 表示 URL の形式が定まらないため、見つかった項目の URL は null になる
+ */
+test('Success - Found Other', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'bookmark1');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '44444', 'type': 'web_link', 'name': 'bookmark1' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_OTHER');
+    expect(engine.findData(foundIdDef)).toEqual('44444');
+    expect(engine.findData(foundUrlDef)).toEqual(null);
+});
+
+/**
+ * 検索対象の名前が最終ページまで見つからない場合（NOT_FOUND）
+ */
+test('Success - Not Found', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'notExist');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '55555', 'type': 'file', 'name': 'other1.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('NOT_FOUND');
+    expect(engine.findData(foundIdDef)).toEqual(null);
+    expect(engine.findData(foundUrlDef)).toEqual(null);
+});
+
+/**
+ * ページングを行い、2 回目のリクエストで見つかる場合
+ */
+test('Success - Found on the 2nd page', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'target');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount++ === 0) {
+            assertSearchRequest(request, '12345', '');
+            const responseObj = {
+                'entries': [
+                    { 'id': '66666', 'type': 'file', 'name': 'other2.txt' }
+                ],
+                'next_marker': 'marker123'
+            };
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+        }
+        assertSearchRequest(request, '12345', 'marker123');
+        const responseObj = {
+            'entries': [
+                { 'id': '77777', 'type': 'folder', 'name': 'target' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(reqCount).toEqual(2);
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundIdDef)).toEqual('77777');
+    expect(engine.findData(foundUrlDef)).toEqual('https://app.box.com/folder/77777');
+});
+
+/**
+ * リクエスト数の上限を超えてしまう場合
+ */
+test('Too many files and folders are in the specified folder', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'neverFound');
+
+    let reqCount = 0;
+    httpClient.setRequestHandler(() => {
+        const responseObj = {
+            'entries': [
+                { 'id': `${reqCount}`, 'type': 'file', 'name': `other${reqCount}` }
+            ],
+            'next_marker': `marker${reqCount}`
+        };
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('Too many files and folders are in the specified folder. The search could not be completed.');
+
+    // 文字型データ項目の値が変更されていないことを確認
+    expect(engine.findData(statusDef)).toEqual('事前文字列');
+    expect(engine.findData(foundIdDef)).toEqual('事前文字列');
+    expect(engine.findData(foundUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * C4（ステータス）のみが設定されている場合、C5（ID）・C6（URL）は保存されない
+ */
+test('Success - Only conf_Status data item is set', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file2.txt');
+    configs.put('conf_FoundId', '');
+    configs.put('conf_FoundUrl', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '88888', 'type': 'file', 'name': 'file2.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FILE');
+    expect(engine.findData(foundIdDef)).toEqual('事前文字列');
+    expect(engine.findData(foundUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * C5（ID）のみが設定されている場合、C4（ステータス）・C6（URL）は保存されない
+ */
+test('Success - Only conf_FoundId data item is set', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file3.txt');
+    configs.put('conf_Status', '');
+    configs.put('conf_FoundUrl', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '99999', 'type': 'file', 'name': 'file3.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('事前文字列');
+    expect(engine.findData(foundIdDef)).toEqual('99999');
+    expect(engine.findData(foundUrlDef)).toEqual('事前文字列');
+});
+
+/**
+ * C6（URL）のみが設定されている場合、C4（ステータス）・C5（ID）は保存されない
+ */
+test('Success - Only conf_FoundUrl data item is set', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file4.txt');
+    configs.put('conf_Status', '');
+    configs.put('conf_FoundId', '');
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '10101', 'type': 'file', 'name': 'file4.txt' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('事前文字列');
+    expect(engine.findData(foundIdDef)).toEqual('事前文字列');
+    expect(engine.findData(foundUrlDef)).toEqual('https://app.box.com/file/10101');
+});
+
+    ]]></test>
+
+</service-task-definition>
