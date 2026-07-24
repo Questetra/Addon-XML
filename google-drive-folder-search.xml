@@ -41,7 +41,7 @@
     </configs>
 
     <script><![CDATA[
-function main() {
+const main = () => {
     //// == 工程コンフィグ・ワークフローデータの参照 / Config & Data Retrieving ==
     const oauthV2 = configs.getObject("OAuth_V2");
     let parentFolderId = configs.get("ParentFolderId");
@@ -83,7 +83,7 @@ function main() {
     //// == ワークフローデータへの代入 / Data Updating ==
     setFolderData(idDataDef, folderIdList);
     setFolderData(urlDataDef, folderUrlList);
-}
+};
 
 const URL_TOKEN_REQUEST = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -154,7 +154,7 @@ const getAccessToken = (auth) => {
  * @param {String} parentFolderId 親フォルダの ID
  * @return {String} driveId ドライブ ID (共有ドライブになければ null)
  */
-function getDriveId(oauthV2, parentFolderId) {
+const getDriveId = (oauthV2, parentFolderId) => {
     if (parentFolderId === "root") {
         return null;
     }
@@ -167,7 +167,7 @@ function getDriveId(oauthV2, parentFolderId) {
         .get(url);
     const status = response.getStatusCode();
     const responseTxt = response.getResponseAsString();
-    if (status >= 300) {
+    if (status !== 200) {
         const errorMsg = `Failed to get parent folder with parent folder ID:${parentFolderId}. status:${status}`;
         engine.log(responseTxt);
         throw new Error(errorMsg);
@@ -177,7 +177,7 @@ function getDriveId(oauthV2, parentFolderId) {
         return null;
     }
     return driveId;
-}
+};
 
 /**
  * Google ドライブのフォルダを検索
@@ -189,7 +189,7 @@ function getDriveId(oauthV2, parentFolderId) {
  * @return {String} folders[].id フォルダの ID
  * @return {String} folders[].webViewLink フォルダの表示 URL
  */
-function searchFolder(oauthV2, driveId, parentFolderId, folderName) {
+const searchFolder = (oauthV2, driveId, parentFolderId, folderName) => {
     const folderNameRep = folderName.replace(/['\\]/g, "\\$&"); // ' と \ をエスケープ
     const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '${folderNameRep}' and '${parentFolderId}' in parents`;
     const url = "https://www.googleapis.com/drive/v3/files";
@@ -198,7 +198,7 @@ function searchFolder(oauthV2, driveId, parentFolderId, folderName) {
     request = request.oauth2JwtBearer(oauthV2, () => getAccessToken(oauthV2));
     request = request.queryParam("q", q)
         .queryParam("pageSize", "1000")
-        .queryParam("fields", "files(id,webViewLink)");
+        .queryParam("fields", "nextPageToken,files(id,webViewLink)");
     if (driveId !== null) { // 親フォルダが共有ドライブにある場合
         request = request
             .queryParam("includeItemsFromAllDrives", "true")
@@ -209,21 +209,26 @@ function searchFolder(oauthV2, driveId, parentFolderId, folderName) {
     const response = request.get(url);
     const status = response.getStatusCode();
     const responseTxt = response.getResponseAsString();
-    if (status >= 300) {
+    if (status !== 200) {
         const errorMsg = `Failed to search. status:${status}`;
         engine.log(responseTxt);
         throw new Error(errorMsg);
     }
-    const folders = JSON.parse(responseTxt).files;
+    const json = JSON.parse(responseTxt);
+    // 通常ありえないが、同名のフォルダが 1000 件以上見つかり、1 ページで取得しきれなかった場合はエラーにする
+    if (json.nextPageToken !== undefined && json.nextPageToken !== null) {
+        throw new Error("Too many folders with the specified name found.");
+    }
+    const folders = json.files;
     return folders;
-}
+};
 
 /**
  * フォルダの情報をデータ項目にセットする
  * @param {ProcessDataDefinitionView} dataDef 保存先データ項目の ProcessDataDefinitionView
  * @param {Array<String>} folderInfoList 保存するフォルダ情報の配列
  */
-function setFolderData(dataDef, folderInfoList) {
+const setFolderData = (dataDef, folderInfoList) => {
     if (dataDef !== null) {
         //Multiple Judge
         if (dataDef.matchDataType("STRING_TEXTFIELD") && folderInfoList.length > 1) {
@@ -232,7 +237,7 @@ function setFolderData(dataDef, folderInfoList) {
         const folderInfoStr = folderInfoList.join("\n");
         engine.setData(dataDef, folderInfoStr);
     }
-}
+};
 
     ]]></script>
 
@@ -520,9 +525,9 @@ const assertSearchFolderRequest = ({ url, method, headers }, token, driveId, par
         .replace(/\)/g, '%29');
     const q = `mimeType+%3D+%27application%2Fvnd.google-apps.folder%27+and+trashed+%3D+false+and+name+%3D+%27${encodedFolderName}%27+and+%27${parentFolderId}%27+in+parents`;
     if (driveId !== null) { // 親フォルダが共有ドライブにある場合
-        expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=drive&driveId=${driveId}`);
+        expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken%2Cfiles%28id%2CwebViewLink%29&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=drive&driveId=${driveId}`);
     } else {
-        expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=files%28id%2CwebViewLink%29`);
+        expect(url).toEqual(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken%2Cfiles%28id%2CwebViewLink%29`);
     }
     expect(method).toEqual('GET');
     expect(headers.Authorization).toEqual(`Bearer ${token}`);
@@ -777,14 +782,58 @@ test('Could not find Folder', () => {
             return httpClient.createHttpResponse(200, 'application/json', '{}');
         }
         assertSearchFolderRequest(request, token, null, folderId, folderName);
-        // 親フォルダ内にリストが無い		
+        // 親フォルダ内にリストが無い
         const responsePostObj = {
             "files": []
         };
-        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responsePostObj));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responsePostObj));
     });
     // <script> のスクリプトを実行し、エラーがスローされることを確認
     assertError('Could not find Folder:folder6 with Parent Folder ID:uvwx56789012');
+});
+
+/**
+ * GET API 成功 - レスポンスに nextPageToken が含まれる場合（同名フォルダが1ページで取得しきれない場合）はエラー
+ *（親フォルダのドライブ ID を取得する）
+ *（フォルダを検索する）
+ */
+test('Too many folders with the specified name found (nextPageToken present)', () => {
+    const privateKeyId = 'key-67890';
+    const serviceAccount = 'service2@questetra.com';
+    const folderId = 'uvwx56789013';
+    const folderName = 'folder6b';
+    prepareConfigs(SCOPE, privateKeyId, PRIVATE_KEY, serviceAccount, folderId, folderName);
+
+    let reqCount = 0;
+    const token = 'token5b';
+    httpClient.setRequestHandler((request) => {
+        if (reqCount % 2 === 0) {
+            assertTokenRequest(request, SCOPE, serviceAccount);
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({
+                'access_token': token
+            }));
+        }
+        if (reqCount++ === 1) {
+            assertGetDriveIdRequest(request, token, folderId);
+            // マイドライブの場合、ドライブIDが無い
+            return httpClient.createHttpResponse(200, 'application/json', '{}');
+        }
+        assertSearchFolderRequest(request, token, null, folderId, folderName);
+        // 1 ページ目に 1000 件見つかり、nextPageToken が返る（同名フォルダが1ページで取得しきれない）
+        const responsePostObj = {
+            "files": [
+                {
+                    "id": "Folder1_nextpage",
+                    "webViewLink": "https://drive.google.com/drive/folders/Folder1_nextpage"
+                }
+            ],
+            "nextPageToken": "token-for-next-page"
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responsePostObj));
+    });
+    // <script> のスクリプトを実行し、エラーがスローされることを確認
+    assertError('Too many folders with the specified name found.');
 });
 
 /**
@@ -910,7 +959,7 @@ test('Success - Set a Folder to single-line string Data Item', () => {
                 }
             ]
         };
-        return httpClient.createHttpResponse(201, 'application/json', JSON.stringify(responsePostObj));
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responsePostObj));
     });
     // <script> のスクリプトを実行
     main();
