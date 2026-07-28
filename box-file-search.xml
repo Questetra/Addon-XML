@@ -2,7 +2,7 @@
 <service-task-definition>
     <label>Box: Search File / Folder</label>
     <label locale="ja">Box: ファイル / フォルダ検索</label>
-    <last-modified>2026-07-23</last-modified>
+    <last-modified>2026-07-28</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
@@ -17,8 +17,7 @@
             <label>C1: OAuth2 Setting</label>
             <label locale="ja">C1: OAuth2 設定</label>
         </config>
-        <config name="conf_ParentFolderId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD"
-                editable="true">
+        <config name="conf_ParentFolderId" required="false" form-type="TEXTFIELD" el-enabled="true">
             <label>C2: Parent Folder ID (Root Folder if blank)</label>
             <label locale="ja">C2: 検索対象の親フォルダの ID（空白の場合、ルートフォルダ直下を検索します）</label>
         </config>
@@ -26,21 +25,25 @@
             <label>C3: Name to search for</label>
             <label locale="ja">C3: 検索する名前</label>
         </config>
+        <config name="conf_SearchFolder" form-type="TOGGLE">
+            <label>C4: Search folders only, and abort if not found</label>
+            <label locale="ja">C4: フォルダのみを検索対象にし、見つからなかった場合は異常終了する</label>
+        </config>
         <config name="conf_Status" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C4: Data item to save search result status</label>
-            <label locale="ja">C4: 検索結果のステータスを保存するデータ項目</label>
+            <label>C5: Data item to save search result status</label>
+            <label locale="ja">C5: 検索結果のステータスを保存するデータ項目</label>
         </config>
-        <config name="conf_FoundId" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C5: Data item to save ID of the found item</label>
-            <label locale="ja">C5: 見つかった項目の ID を保存するデータ項目</label>
+        <config name="conf_FoundId" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C6: Data item to save ID of the found item</label>
+            <label locale="ja">C6: 見つかった項目の ID を保存するデータ項目</label>
         </config>
-        <config name="conf_FoundUrl" required="false" form-type="SELECT" select-data-type="STRING_TEXTFIELD">
-            <label>C6: Data item to save URL of the found item</label>
-            <label locale="ja">C6: 見つかった項目の URL を保存するデータ項目</label>
+        <config name="conf_FoundUrl" required="false" form-type="SELECT" select-data-type="STRING">
+            <label>C7: Data item to save URL of the found item</label>
+            <label locale="ja">C7: 見つかった項目の URL を保存するデータ項目</label>
         </config>
     </configs>
-    <help-page-url>https://support.questetra.com/en/bpmn-icons/box-file-search/</help-page-url>
-    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/box-file-search/</help-page-url>
+    <help-page-url>https://support.questetra.com/en/bpmn-icons/service-task-box-file-search/</help-page-url>
+    <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-box-file-search/</help-page-url>
 
 
     <script><![CDATA[
@@ -52,6 +55,7 @@ const main = () => {
     if (name === '' || name === null) {
         throw new Error('Name to search for is blank.');
     }
+    const searchFolderOnly = configs.getObject('conf_SearchFolder');
     const statusDef = configs.getObject('conf_Status');
     const foundIdDef = configs.getObject('conf_FoundId');
     const foundUrlDef = configs.getObject('conf_FoundUrl');
@@ -60,7 +64,7 @@ const main = () => {
     }
 
     //// == 演算 / Calculating ==
-    const {foundId, foundUrl, status} = search(oauth2, parentFolderId, name);
+    const {foundId, foundUrl, status} = search(oauth2, parentFolderId, name, searchFolderOnly);
 
     //// == ワークフローデータへの代入 / Data Updating ==
     saveData(statusDef, status);
@@ -97,9 +101,10 @@ const STATUS_NOT_FOUND = 'NOT_FOUND';
   * @param {AuthSettingWrapper} oauth2 OAuth2 認証設定
   * @param {String} parentFolderId 親フォルダの ID
   * @param {String} name 検索する名前
+  * @param {Boolean} searchFolderOnly フォルダのみを検索対象にし、見つからなかった場合は異常終了する
   * @return {Object} result 検索結果 {status, foundId, foundUrl}
   */
-const search = (oauth2, parentFolderId, name) => {
+const search = (oauth2, parentFolderId, name, searchFolderOnly) => {
     const url = `https://api.box.com/2.0/folders/${parentFolderId}/items`;
     let marker = '';
     const limit = httpClient.getRequestingLimit();
@@ -120,7 +125,7 @@ const search = (oauth2, parentFolderId, name) => {
 
         const json = JSON.parse(responseStr);
         const items = json.entries || [];
-        const foundItem = items.find((item) => item.name === name);
+        const foundItem = items.find((item) => item.name === name && (!searchFolderOnly || item.type === 'folder'));
         if (foundItem !== undefined) {
             return {
                 status: classify(foundItem),
@@ -131,6 +136,9 @@ const search = (oauth2, parentFolderId, name) => {
 
         marker = json.next_marker;
         if (marker === undefined || marker === null || marker === '') {
+            if (searchFolderOnly) {
+                throw new Error(`Folder "${name}" was not found.`);
+            }
             // 最終ページまで走査して見つからなかった場合は、正常な検索結果として NOT_FOUND を返す
             return { status: STATUS_NOT_FOUND, foundId: null, foundUrl: null };
         }
@@ -212,13 +220,14 @@ const saveData = (def, data) => {
  * 設定の準備
  * @param {String} parentFolderId 親フォルダの ID（データ項目に保存する値）
  * @param {String} name 検索する名前
+ * @param {Boolean} searchFolderOnly フォルダのみを検索対象にし、見つからなかった場合は異常終了する（省略時は false）
  * @return {
  *     statusDef: {Object},
  *     foundIdDef: {Object},
  *     foundUrlDef: {Object}
  * }
  */
-const prepareConfigs = (parentFolderId, name) => {
+const prepareConfigs = (parentFolderId, name, searchFolderOnly = false) => {
     const oauth2 = httpClient.createAuthSettingOAuth2(
         'Box',
         'https://account.box.com/api/oauth2/authorize',
@@ -230,6 +239,7 @@ const prepareConfigs = (parentFolderId, name) => {
     );
     configs.putObject('conf_OAuth2', oauth2);
     configs.put('conf_Name', name);
+    configs.putObject('conf_SearchFolder', searchFolderOnly);
 
     // 検索対象の親フォルダの ID を保存する文字型データ項目（単数行）を準備
     const parentFolderIdDef = engine.createDataDefinition('親フォルダの ID', 1, 'q_parent_folder_id', 'STRING_TEXTFIELD');
@@ -298,7 +308,7 @@ test('Name to search for is blank', () => {
 });
 
 /**
- * C4, C5, C6 のいずれも設定されておらずエラーになる場合
+ * C5, C6, C7 のいずれも設定されておらずエラーになる場合
  */
 test('None of the data items to save the result is set', () => {
     prepareConfigs('12345', 'test2');
@@ -485,7 +495,51 @@ test('Too many files and folders are in the specified folder', () => {
 });
 
 /**
- * C4（ステータス）のみが設定されている場合、C5（ID）・C6（URL）は保存されない
+ * C4（フォルダのみを検索対象にする）が有効な場合、名前が一致するファイルを無視してフォルダを見つける
+ */
+test('Success - Found Folder - C4 (Search only folders) is enabled', () => {
+    const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'target2', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '11112', 'type': 'file', 'name': 'target2' },
+                { 'id': '22223', 'type': 'folder', 'name': 'target2' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    main();
+
+    expect(engine.findData(statusDef)).toEqual('FOUND_FOLDER');
+    expect(engine.findData(foundIdDef)).toEqual('22223');
+    expect(engine.findData(foundUrlDef)).toEqual('https://app.box.com/folder/22223');
+});
+
+/**
+ * C4（フォルダのみを検索対象にする）が有効な場合、名前が一致するフォルダが無ければ異常終了する
+ * （名前が一致するファイルがあっても検索対象外のため無視される）
+ */
+test('C4 (Search only folders) is enabled and no matching folder is found - aborts', () => {
+    prepareConfigs('12345', 'notFolder', true);
+
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, '12345');
+        const responseObj = {
+            'entries': [
+                { 'id': '33334', 'type': 'file', 'name': 'notFolder' }
+            ]
+        };
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+
+    assertError('Folder "notFolder" was not found.');
+});
+
+/**
+ * C5（ステータス）のみが設定されている場合、C6（ID）・C7（URL）は保存されない
  */
 test('Success - Only conf_Status data item is set', () => {
     const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file2.txt');
@@ -510,7 +564,7 @@ test('Success - Only conf_Status data item is set', () => {
 });
 
 /**
- * C5（ID）のみが設定されている場合、C4（ステータス）・C6（URL）は保存されない
+ * C6（ID）のみが設定されている場合、C5（ステータス）・C7（URL）は保存されない
  */
 test('Success - Only conf_FoundId data item is set', () => {
     const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file3.txt');
@@ -535,7 +589,7 @@ test('Success - Only conf_FoundId data item is set', () => {
 });
 
 /**
- * C6（URL）のみが設定されている場合、C4（ステータス）・C5（ID）は保存されない
+ * C7（URL）のみが設定されている場合、C5（ステータス）・C6（ID）は保存されない
  */
 test('Success - Only conf_FoundUrl data item is set', () => {
     const { statusDef, foundIdDef, foundUrlDef } = prepareConfigs('12345', 'file4.txt');
