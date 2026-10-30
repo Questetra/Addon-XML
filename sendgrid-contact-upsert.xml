@@ -2,13 +2,13 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2024-05-09</last-modified>
+    <last-modified>2026-10-30</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Add or Update Contact</label>
     <label locale="ja">Twilio SendGrid: 宛先追加/更新</label>
     <summary>This item adds or updates a contact on SendGrid. If a contact with the specified email address already exists, the contact will be updated.</summary>
     <summary locale="ja">この工程は、SendGrid の宛先を追加または更新します。指定したメールアドレスの宛先がすでにある場合、その宛先が更新されます。</summary>
-    <help-page-url>https://support.questetra.com/bpmn-icons/service-task-sendgrid-contact-upsert/</help-page-url>
+    <help-page-url>https://support.questetra.com/en/bpmn-icons/service-task-sendgrid-contact-upsert/</help-page-url>
     <help-page-url locale="ja">https://support.questetra.com/ja/bpmn-icons/service-task-sendgrid-contact-upsert/</help-page-url>
     <configs>
         <config name="conf_Auth" required="true" form-type="OAUTH2" auth-type="TOKEN">
@@ -286,7 +286,8 @@ function checkStatus(auth, jobId) {
         engine.log(responseStr);
         throw new Error(`Failed to get upsert status. status: ${status}`);
     }
-    const jobStatus = JSON.parse(responseStr).status;
+    const job = JSON.parse(responseStr);
+    const jobStatus = job.status;
     switch (jobStatus) {
         case 'pending': // 処理中
             return false;
@@ -294,7 +295,33 @@ function checkStatus(auth, jobId) {
             return true;
         default: // errored or failed
             engine.log(responseStr);
+            logErrorDetails(job);
             throw new Error('Failed to complete upserting the contact.');
+    }
+}
+
+/**
+  * ジョブのエラー詳細（errors_url の CSV）を取得してログに出力する
+  * 取得に失敗しても、元のエラーを隠さないよう例外は投げない
+  * @param {Object} job ジョブの処理状況（レスポンスの JSON をパースしたもの）
+  */
+function logErrorDetails(job) {
+    const errorsUrl = job.results ? job.results.errors_url : undefined;
+    if (!errorsUrl) {
+        return;
+    }
+    try {
+        // errors_url は署名付き URL のため、認証設定は付けない（付けると S3 に拒否される）
+        const response = httpClient.begin().get(errorsUrl);
+        const status = response.getStatusCode();
+        const responseStr = response.getResponseAsString();
+        if (status !== 200) {
+            engine.log(`Failed to get error details. status: ${status}`);
+            return;
+        }
+        engine.log(`Error details:\n${responseStr}`);
+    } catch (e) {
+        engine.log(`Failed to get error details. ${e}`);
     }
 }
 
@@ -669,6 +696,72 @@ test('Fail to complete upserting in main()', () => {
 });
 
 /**
+  * ジョブが異常終了し、errors_url からエラー詳細を取得してログ出力する
+  */
+test('Fail to complete upserting - error details are logged', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    const errorsUrl = 'https://example.com/errors.csv?X-Amz-Signature=abc';
+    const csv = 'primary_email,errors_occurred\na@example.com,"some error"';
+    let reqCount = 0;
+    let errorsUrlRequested = false;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'job1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json',
+                JSON.stringify({status: 'failed', results: {errors_url: errorsUrl}}));
+        }
+        // errors_url へのリクエスト
+        expect(request.url).toEqual(errorsUrl);
+        expect(request.method).toEqual('GET');
+        errorsUrlRequested = true;
+        return httpClient.createHttpResponse(200, 'text/csv', csv);
+    });
+
+    assertError(main, 'Failed to complete upserting the contact.');
+    expect(reqCount).toEqual(2);
+    expect(errorsUrlRequested).toEqual(true);
+});
+
+/**
+  * ジョブが異常終了し、errors_url の取得にも失敗しても、元のエラーを投げる
+  */
+test('Fail to complete upserting - error details cannot be fetched', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    const errorsUrl = 'https://example.com/errors.csv?X-Amz-Signature=abc';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job1"}');
+        }
+        if (reqCount === 1) {
+            assertCheckStatusRequest(request, 'job1');
+            reqCount++;
+            return httpClient.createHttpResponse(200, 'application/json',
+                JSON.stringify({status: 'failed', results: {errors_url: errorsUrl}}));
+        }
+        return httpClient.createHttpResponse(403, 'application/xml', '<Error><Code>AccessDenied</Code></Error>');
+    });
+
+    assertError(main, 'Failed to complete upserting the contact.');
+});
+
+/**
   * 成功
   * リスト ID を文字型データ項目で指定
   * その他のフィールドはすべて空
@@ -842,6 +935,73 @@ test('Fail to complete upserting in proceed()', () => {
         return httpClient.createHttpResponse(200, 'application/json', '{"status": "errored"}');
     });
     assertError(proceed, 'Failed to complete upserting the contact.');
+});
+
+/**
+  * 2 回目のステータス確認で、ジョブが異常終了（errors_url あり）
+  * proceed() でも errors_url からエラー詳細を取得する
+  */
+test('Fail to complete upserting in proceed() - error details are fetched', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    const errorsUrl = 'https://example.com/errors.csv?X-Amz-Signature=abc';
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job7"}');
+        }
+        assertCheckStatusRequest(request, 'job7');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "pending"}');
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('job7');
+
+    let errorsUrlRequested = false;
+    httpClient.setRequestHandler((request) => {
+        if (request.url === errorsUrl) {
+            expect(request.method).toEqual('GET');
+            errorsUrlRequested = true;
+            return httpClient.createHttpResponse(200, 'text/csv', 'primary_email,errors_occurred\na@example.com,"some error"');
+        }
+        assertCheckStatusRequest(request, 'job7');
+        return httpClient.createHttpResponse(200, 'application/json',
+            JSON.stringify({status: 'errored', results: {errors_url: errorsUrl}}));
+    });
+    assertError(proceed, 'Failed to complete upserting the contact.');
+    expect(errorsUrlRequested).toEqual(true);
+});
+
+/**
+  * ジョブが異常終了したが、results に errors_url がない
+  * errors_url へのリクエストは送らず、元のエラーを投げる
+  */
+test('Fail to complete upserting - results has no errors_url', () => {
+    const email = createString(MAX_EMAIL_LENGTH);
+    prepareConfigs(email, 'list1\nlist2', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1', 'list2'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job8"}');
+        }
+        // errors_url がないので、ステータス確認以外のリクエストは来ない
+        assertCheckStatusRequest(request, 'job8');
+        reqCount++;
+        return httpClient.createHttpResponse(200, 'application/json',
+            JSON.stringify({status: 'failed', results: {requested_count: 1, errored_count: 1}}));
+    });
+
+    assertError(main, 'Failed to complete upserting the contact.');
+    expect(reqCount).toEqual(2);
 });
 
 /**
