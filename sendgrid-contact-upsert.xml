@@ -2,7 +2,7 @@
 <service-task-definition>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
-    <last-modified>2026-10-30</last-modified>
+    <last-modified>2026-11-02</last-modified>
     <license>(C) Questetra, Inc. (MIT License)</license>
     <label>Twilio SendGrid: Add or Update Contact</label>
     <label locale="ja">Twilio SendGrid: 宛先追加/更新</label>
@@ -69,14 +69,17 @@ const MAX_NAME_LENGTH = 50;
 const MAX_POSTAL_CODE_LENGTH = 60; // API ドキュメントに記載がないが、試したところ 60 文字だった
 const MAX_CITY_LENGTH = 60;
 const MAX_FIELD_VALUE_LENGTH = 1000;
+const OTHER_IDENTIFIER_KEYS = ['phone_number_id', 'external_id', 'anonymous_id'];
 
-function main(){
+const main = () => {
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.getObject('conf_Auth');
     const listIds = retrieveListIds();
     const contact = retrieveContact();
 
     //// == Calculating / 演算 ==
+    // 他のシステムでメールアドレス以外の識別子が設定された宛先も更新できるよう、既存の識別子を取得して加える
+    Object.assign(contact, retrieveOtherIdentifiers(auth, contact.email));
     const jobId = upsertContact(auth, listIds, contact);
 
     // 処理状況を確認し、未完了なら proceed() に進む
@@ -84,9 +87,9 @@ function main(){
         engine.saveTemporaryData(jobId);
         return false;
     }
-}
+};
 
-function proceed() {
+const proceed = () => {
     //// == Config Retrieving / 工程コンフィグの参照 ==
     const auth = configs.getObject('conf_Auth');
 
@@ -100,7 +103,7 @@ function proceed() {
     if (checkStatus(auth, jobId) === false) {
         return false;
     }
-}
+};
 
 /**
   * config に設定されたリスト ID 一覧を読み出す
@@ -108,7 +111,7 @@ function proceed() {
   * - データ項目が設定されていて値が空の場合、空のリストを返す（空の値で更新するため）
   * @return {Array<String>} listIds
   */
-function retrieveListIds() {
+const retrieveListIds = () => {
     const listIdsDef = configs.getObject('conf_ListIds');
     if (listIdsDef === null) {
         return null;
@@ -135,7 +138,7 @@ function retrieveListIds() {
         });
         return listIds;
     }
-}
+};
 
 /**
   * config に設定された宛先情報を、API リクエストボディに設定する形式で読み出す
@@ -152,7 +155,7 @@ function retrieveListIds() {
   * @return {String} contact.address_line_1
   * @return {String} contact.address_line_2
   */
-function retrieveContact() {
+const retrieveContact = () => {
     const email = retrieveConfig('conf_Email', true, MAX_EMAIL_LENGTH, 'Email Address');
     const alternateEmails = retrieveAlternateEmails();
     const lastName = retrieveConfig('conf_LastName', false, MAX_NAME_LENGTH, 'Last Name');
@@ -185,7 +188,7 @@ function retrieveContact() {
     });
 
     return contact;
-}
+};
 
 /**
   * config に設定された文字型データ項目の値を読み出す
@@ -198,7 +201,7 @@ function retrieveContact() {
   * @param {String} label エラー出力用ラベル
   * @return {String} value
   */
-function retrieveConfig(confName, required, maxLength, label) {
+const retrieveConfig = (confName, required, maxLength, label) => {
     const dataDef = configs.getObject(confName);
     if (dataDef === null) { // required が true の場合、dataDef は null にならない
         return null;
@@ -214,7 +217,7 @@ function retrieveConfig(confName, required, maxLength, label) {
         throw new Error(`${label} must be within ${maxLength} characters.`);
     }
     return value;
-}
+};
 
 /**
   * config に設定された代替メールアドレスの一覧を読み出す
@@ -222,7 +225,7 @@ function retrieveConfig(confName, required, maxLength, label) {
   * - データ項目が設定されていて値が空の場合、空のリストを返す（空の値で更新するため）
   * @return {Array<String>} alternateEmails
   */
-function retrieveAlternateEmails() {
+const retrieveAlternateEmails = () => {
     const alternateEmailsDef = configs.getObject('conf_AlternateEmails');
     if (alternateEmailsDef === null) {
         return null;
@@ -241,7 +244,53 @@ function retrieveAlternateEmails() {
         throw new Error(`Each alternate email must be within ${MAX_EMAIL_LENGTH} characters.`);
     }
     return alternateEmails;
-}
+};
+
+/**
+  * メールアドレスで宛先を検索し、メールアドレス以外の識別子を取得する
+  * 既存の宛先を更新するには、その宛先が持つ識別子をすべて指定する必要があるため
+  * @param {AuthSettingWrapper} auth 認証設定
+  * @param {String} email メールアドレス
+  * @return {Object} 値が設定されている識別子のみ。宛先が存在しない場合は空のオブジェクト
+  */
+const retrieveOtherIdentifiers = (auth, email) => {
+    const requestBody = {
+        "identifiers": [email.toLowerCase()] // 宛先のメールアドレスは小文字で保存される
+    };
+    const response = httpClient.begin()
+        .authSetting(auth)
+        .body(JSON.stringify(requestBody), 'application/json')
+        .post('https://api.sendgrid.com/v3/marketing/contacts/search/identifiers/email');
+
+    const status = response.getStatusCode();
+    const responseStr = response.getResponseAsString();
+    if (status === 404) { // 宛先が存在しない
+        return {};
+    }
+    if (status !== 200) {
+        engine.log(responseStr);
+        throw new Error(`Failed to get contact. status: ${status}`);
+    }
+
+    // 検索したメールアドレスごとの結果が返る（見つかった場合は contact、見つからない場合は error）
+    // 1 つのメールアドレスでしか検索していないため、ステータスが 200 なら必ず contact を持つはずだが、一応チェック
+    // result の例: { "a@example.com": { contact: { id: "...", email: "a@example.com", phone_number_id: "+81...", ... } } }
+    const result = JSON.parse(responseStr).result;
+    const found = Object.keys(result)
+        .map(key => result[key])
+        .find(entry => entry.contact !== undefined);
+    if (found === undefined) {
+        return {};
+    }
+    const identifiers = {};
+    OTHER_IDENTIFIER_KEYS.forEach(key => {
+        const value = found.contact[key];
+        if (typeof value === 'string' && value !== '') {
+            identifiers[key] = value;
+        }
+    });
+    return identifiers;
+};
 
 /**
   * 宛先を追加/更新する
@@ -250,7 +299,7 @@ function retrieveAlternateEmails() {
   * @param {Object} contact 宛先情報
   * @return {String} jobId
   */
-function upsertContact(auth, listIds, contact) {
+const upsertContact = (auth, listIds, contact) => {
     const requestBody = {
         "list_ids": listIds,
         "contacts": [contact]
@@ -267,7 +316,7 @@ function upsertContact(auth, listIds, contact) {
         throw new Error(`Failed to upsert contact. status: ${status}`);
     }
     return JSON.parse(responseStr).job_id;
-}
+};
 
 /**
   * ジョブの処理状況を確認する
@@ -275,7 +324,7 @@ function upsertContact(auth, listIds, contact) {
   * @param {String} jobId ジョブ ID
   * @return {boolean} true: 完了, false: 未完了
   */
-function checkStatus(auth, jobId) {
+const checkStatus = (auth, jobId) => {
     const response = httpClient.begin()
         .authSetting(auth)
         .get(`https://api.sendgrid.com/v3/marketing/contacts/imports/${jobId}`);
@@ -298,14 +347,14 @@ function checkStatus(auth, jobId) {
             logErrorDetails(job);
             throw new Error('Failed to complete upserting the contact.');
     }
-}
+};
 
 /**
   * ジョブのエラー詳細（errors_url の CSV）を取得してログに出力する
   * 取得に失敗しても、元のエラーを隠さないよう例外は投げない
   * @param {Object} job ジョブの処理状況（レスポンスの JSON をパースしたもの）
   */
-function logErrorDetails(job) {
+const logErrorDetails = (job) => {
     const errorsUrl = job.results ? job.results.errors_url : undefined;
     if (!errorsUrl) {
         return;
@@ -323,7 +372,7 @@ function logErrorDetails(job) {
     } catch (e) {
         engine.log(`Failed to get error details. ${e}`);
     }
-}
+};
 
     ]]></script>
 
@@ -558,6 +607,38 @@ test('Address 2nd Line is too long', () => {
 });
 
 /**
+  * メールアドレスで宛先を検索する API リクエストのテスト
+  * @param {Object} request
+  * @param request.url
+  * @param request.method
+  * @param request.contentType
+  * @param request.body
+  * @param identifier 検索するメールアドレス（小文字）
+  */
+const assertSearchRequest = ({url, method, contentType, body}, identifier) => {
+    expect(url).toEqual(SEARCH_URL);
+    expect(method).toEqual('POST');
+    expect(contentType).toEqual('application/json');
+    expect(JSON.parse(body)).toEqual({identifiers: [identifier]});
+};
+
+const SEARCH_URL = 'https://api.sendgrid.com/v3/marketing/contacts/search/identifiers/email';
+
+/**
+  * メールアドレスで宛先を検索する API リクエストの場合に、宛先が存在しない応答（404）を返す
+  * 他のリクエストの場合は null を返す
+  * @param {Object} request
+  * @return {HttpResponseWrapper|null}
+  */
+const respondToSearchRequest = ({url, method}) => {
+    if (url !== SEARCH_URL) {
+        return null;
+    }
+    expect(method).toEqual('POST');
+    return httpClient.createHttpResponse(404, 'application/json', '{"errors":[{"message":"no contacts found"}]}');
+};
+
+/**
   * 宛先を追加/更新する API リクエストのテスト
   * @param {Object} request
   * @param request.url
@@ -628,6 +709,10 @@ test('Fail to upsert contact', () => {
     const listIds = ['list1', 'list2'];
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         assertUpsertRequest(request, listIds, contact);
         return httpClient.createHttpResponse(400, 'application/json', '{}');
     });
@@ -650,6 +735,162 @@ const assertCheckStatusRequest = ({url, method}, jobId) => {
 };
 
 /**
+  * 検索結果から宛先の応答を作成する
+  * @param {String} key result のキー（検索したメールアドレス）
+  * @param {Object} entry contact または error
+  * @return {HttpResponseWrapper}
+  */
+const createSearchResponse = (key, entry) => {
+    return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({result: {[key]: entry}}));
+};
+
+/**
+  * 成功
+  * 既存の宛先がメールアドレス以外の識別子を持つ場合、それらも指定して更新する
+  */
+test('Succeed - Other identifiers of the existing contact are set', () => {
+    const email = 'test@example.com';
+    prepareConfigs(email, 'list1', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    Object.assign(contact, {phone_number_id: '+819012345678', external_id: 'ext1', anonymous_id: 'anon1'});
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertSearchRequest(request, email);
+            reqCount++;
+            return createSearchResponse(email, {contact: {
+                id: 'contact1', email, first_name: 'Jane',
+                phone_number_id: '+819012345678', external_id: 'ext1', anonymous_id: 'anon1'
+            }});
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job10"}');
+        }
+        assertCheckStatusRequest(request, 'job10');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(2);
+});
+
+/**
+  * 成功
+  * 既存の宛先が持つ識別子の一部のみ指定する
+  * 空の値や、存在しない識別子は指定しない
+  */
+test('Succeed - Only identifiers with values are set', () => {
+    const email = 'test@example.com';
+    prepareConfigs(email, 'list1', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    Object.assign(contact, {external_id: 'ext1'});
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertSearchRequest(request, email);
+            reqCount++;
+            return createSearchResponse(email, {contact: {
+                id: 'contact1', email, phone_number_id: '', external_id: 'ext1'
+            }});
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job11"}');
+        }
+        assertCheckStatusRequest(request, 'job11');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(2);
+});
+
+/**
+  * 成功
+  * メールアドレスに大文字が含まれる場合、検索は小文字で行い、更新は指定したメールアドレスで行う
+  */
+test('Succeed - Email with capital letters is searched in lower case', () => {
+    const email = 'Test@Example.com';
+    prepareConfigs(email, 'list1', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    Object.assign(contact, {phone_number_id: '+819012345678'});
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertSearchRequest(request, 'test@example.com');
+            reqCount++;
+            return createSearchResponse('test@example.com', {contact: {
+                id: 'contact1', email: 'test@example.com', phone_number_id: '+819012345678'
+            }});
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job12"}');
+        }
+        assertCheckStatusRequest(request, 'job12');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(2);
+});
+
+/**
+  * 成功
+  * 検索結果が 200 でも、メールアドレスの結果が error の場合は、識別子を追加せずに更新する
+  */
+test('Succeed - Search result of the email is an error', () => {
+    const email = 'test@example.com';
+    prepareConfigs(email, 'list1', null, null, null, null, null, null, null, null, null);
+
+    const listIds = ['list1'];
+    const contact = createContact(email, [], '', '', '', '', '', '', '', '');
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        if (reqCount === 0) {
+            assertSearchRequest(request, email);
+            reqCount++;
+            return createSearchResponse(email, {error: 'not found'});
+        }
+        if (reqCount === 1) {
+            assertUpsertRequest(request, listIds, contact);
+            reqCount++;
+            return httpClient.createHttpResponse(202, 'application/json', '{"job_id": "job13"}');
+        }
+        assertCheckStatusRequest(request, 'job13');
+        return httpClient.createHttpResponse(200, 'application/json', '{"status": "completed"}');
+    });
+    expect(main()).toEqual(undefined);
+    expect(reqCount).toEqual(2);
+});
+
+/**
+  * 宛先を検索する API リクエストでエラー
+  * 更新のリクエストは送らない
+  */
+test('Fail to search contact', () => {
+    const email = 'test@example.com';
+    prepareConfigs(email, 'list1', null, null, null, null, null, null, null, null, null);
+
+    let reqCount = 0;
+    httpClient.setRequestHandler((request) => {
+        assertSearchRequest(request, email);
+        reqCount++;
+        return httpClient.createHttpResponse(403, 'application/json', '{"errors":[{"message":"access forbidden"}]}');
+    });
+
+    assertError(main, 'Failed to get contact. status: 403');
+    expect(reqCount).toEqual(1);
+});
+
+/**
   * ジョブの処理状況を確認する API リクエストでエラー
   */
 test('Fail to get upsert status', () => {
@@ -660,6 +901,10 @@ test('Fail to get upsert status', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -683,6 +928,10 @@ test('Fail to complete upserting in main()', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -709,6 +958,10 @@ test('Fail to complete upserting - error details are logged', () => {
     let reqCount = 0;
     let errorsUrlRequested = false;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -744,6 +997,10 @@ test('Fail to complete upserting - error details cannot be fetched', () => {
     const errorsUrl = 'https://example.com/errors.csv?X-Amz-Signature=abc';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -774,6 +1031,10 @@ test('Succeed - List IDs set by STRING, the other fields are blank', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -809,6 +1070,10 @@ test('Succeed - List IDs set by STRING with its value null, the other fields set
     const contact = createContact(email, alternateEmails, lastName, firstName, country, postalCode, region, city, address1, address2);
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -841,6 +1106,10 @@ test('Succeed - Only Email is set', () => {
 
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, undefined, {email}); // メールアドレスのみ
             reqCount++;
@@ -871,6 +1140,10 @@ test('Succeed - List IDs set by SELECT, the other fields are blank', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -897,6 +1170,10 @@ test('Succeed - List IDs set by SELECT with none selected, the other fields are 
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -919,6 +1196,10 @@ test('Fail to complete upserting in proceed()', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -950,6 +1231,10 @@ test('Fail to complete upserting in proceed() - error details are fetched', () =
     const errorsUrl = 'https://example.com/errors.csv?X-Amz-Signature=abc';
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -963,6 +1248,10 @@ test('Fail to complete upserting in proceed() - error details are fetched', () =
 
     let errorsUrlRequested = false;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (request.url === errorsUrl) {
             expect(request.method).toEqual('GET');
             errorsUrlRequested = true;
@@ -988,6 +1277,10 @@ test('Fail to complete upserting - results has no errors_url', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
@@ -1017,6 +1310,10 @@ test('Succeed - Complete in 3rd request', () => {
     const contact = createContact(email, [], '', '', '', '', '', '', '', '');
     let reqCount = 0;
     httpClient.setRequestHandler((request) => {
+        const searchResponse = respondToSearchRequest(request);
+        if (searchResponse !== null) {
+            return searchResponse;
+        }
         if (reqCount === 0) {
             assertUpsertRequest(request, listIds, contact);
             reqCount++;
