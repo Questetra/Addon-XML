@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <service-task-definition>
     <license>(C) Questetra, Inc. (MIT License)</license>
-    <last-modified>2026-04-14</last-modified>
+    <last-modified>2026-11-13</last-modified>
     <engine-type>3</engine-type>
     <addon-version>2</addon-version>
 
@@ -200,8 +200,30 @@ function main() {
 
     ////// == 演算 / Calculating ==
     const answer1 = createChat(auth, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1);
+    if (answer1 === false) { // 回答を生成中。proceed() で結果を取得する
+        return false;
+    }
 
     ////// == ワークフローデータへの代入 / Data Updating ==
+    saveData('conf_Answer1', answer1 ?? '');
+}
+
+/**
+ * 回答の生成が完了するまで、定期的に呼び出される
+ * 保存しておいたレスポンス ID で、モデルレスポンスを取得する
+ */
+function proceed() {
+    const auth = configs.getObject('conf_Auth');
+    const organizationId = configs.get('conf_OrganizationId');
+    const responseId = engine.restoreTemporaryData();
+    if (responseId === null || responseId === '') {
+        throw new Error('Response ID has not been saved.');
+    }
+
+    const answer1 = retrieveResponse(auth, organizationId, responseId);
+    if (answer1 === false) { // まだ生成中
+        return false;
+    }
     saveData('conf_Answer1', answer1 ?? '');
 }
 
@@ -316,7 +338,7 @@ const retrieveImageUrls = (configName) => {
  * @param message1
  * @param imageUrls1
  * @param imageDetail1
- * @returns {String} answer1
+ * @returns {String|false} answer1 生成中の場合は false
  */
 const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, verbosity, temperature, stopSequences, requestUser, gptRole, message1, imageUrls1, imageDetail1) => {
     //// OpenAI API > Documentation > API REFERENCE > RESPONSES
@@ -327,6 +349,7 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
         safety_identifier: requestUser,
         model,
         max_output_tokens: maxTokens,
+        background: true, // バックグラウンドモードで実行。完了していなければ proceed() で結果を取得する
         temperature,
         input: []
     };
@@ -379,23 +402,63 @@ const createChat = (auth, organizationId, model, maxTokens, reasoningEffort, ver
 
     const responseCode = response.getStatusCode();
     const responseBody = response.getResponseAsString();
-    // テスト用
-    engine.log(responseBody);
     if (responseCode !== 200) {
         engine.log(responseBody);
-        throw new Error(`Failed to request. status: ${responseCode}`);
+        throw new Error(`Failed to create a response. status: ${responseCode}`);
     }
-    const responseObj = JSON.parse(responseBody);
-    const {status, usage, output} = responseObj;
-    if (usage !== undefined) {
+    return handleModelResponse(JSON.parse(responseBody), responseBody);
+};
+
+/**
+ * モデルレスポンスを取得する (Retrieve a model response)
+ * https://platform.openai.com/docs/api-reference/responses/get
+ * @param auth
+ * @param organizationId
+ * @param responseId
+ * @returns {String|false} answer1 生成中の場合は false
+ */
+const retrieveResponse = (auth, organizationId, responseId) => {
+    let request = httpClient.begin().authSetting(auth);
+    if (organizationId !== null && organizationId !== '') {
+        request = request.header('OpenAI-Organization', organizationId);
+    }
+    const response = request.get(`https://api.openai.com/v1/responses/${encodeURIComponent(responseId)}`);
+
+    const responseCode = response.getStatusCode();
+    const responseBody = response.getResponseAsString();
+    if (responseCode !== 200) {
+        engine.log(responseBody);
+        throw new Error(`Failed to retrieve the response. status: ${responseCode}`);
+    }
+    return handleModelResponse(JSON.parse(responseBody), responseBody);
+};
+
+/**
+ * モデルレスポンスを処理し、回答を取り出す
+ * status が queued または in_progress の場合は、レスポンス ID を一時データに保存し、false を返す
+ * @param {Object} responseObj
+ * @param {String} responseBody
+ * @returns {String|false} answer1 生成中の場合は false
+ */
+const handleModelResponse = (responseObj, responseBody) => {
+    const {id, status, usage, output} = responseObj;
+    if (status === 'queued' || status === 'in_progress') {
+        engine.log(`The response is not completed yet. status: ${status}, id: ${id}`);
+        engine.saveTemporaryData(id);
+        return false;
+    }
+    if (usage !== undefined && usage !== null) {
         engine.log(`Prompt Tokens: ${usage.input_tokens}`);
         engine.log(`Completion Tokens: ${usage.output_tokens}`);
         engine.log(`Completion Tokens Details: ${JSON.stringify(usage.output_tokens_details)}`);
     }
     if (status !== 'completed') {
         let errorMsg = `The request has not been completed. status: ${status}`;
-        if (responseObj.incomplete_details !== undefined) {
+        if (responseObj.incomplete_details !== undefined && responseObj.incomplete_details !== null) {
             errorMsg += `, reason: ${responseObj.incomplete_details.reason}`;
+        }
+        if (responseObj.error !== undefined && responseObj.error !== null) {
+            errorMsg += `, error: ${responseObj.error.message}`;
         }
         throw new Error(errorMsg);
     }
@@ -696,6 +759,7 @@ const assertRequest = ({
     expect(bodyObj.safety_identifier).toEqual(`m${processInstance.getProcessModelInfoId().toString()}`);
     expect(bodyObj.model).toEqual(model);
     expect(bodyObj.max_output_tokens).toEqual(maxTokens);
+    expect(bodyObj.background).toEqual(true);
     if (reasoningEffort === undefined) {
         expect(bodyObj.reasoning).toEqual(undefined);
     } else {
@@ -813,9 +877,10 @@ const createResponse = (answerText) => {
             "id": "resp-123",
             "object": "response",
             "created": 1677652288,
+            "status": "completed",
             "output": [{
+                "type": "message",
                 "role": "assistant",
-                "finish_reason": "stop",
                 "content": [{
                     "type": "output_text",
                     "text": answerText
@@ -850,6 +915,61 @@ test('Success to request', () => {
 
     // データ項目の値をチェック
     expect(engine.findData(answerDef)).toEqual("\n\nHello there, how may I assist you today?");
+});
+
+/**
+ * 成功 - バックグラウンド実行。queued, in_progress を経て proceed() で完了
+ */
+test('Success to request - background, proceed()', () => {
+    const answerDef = prepareConfigs('key6', 'org-2', 'gpt-5', '', '', '', '', '', '', 'Hi!');
+
+    httpClient.setRequestHandler(request => {
+        assertRequest(request, 'key6', 'org-2', 'gpt-5', MAX_TOKENS_DEFAULT, undefined, undefined, 1, undefined, '', 'Hi!', []);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({id: 'resp-bg-1', object: 'response', status: 'queued'}));
+    });
+    expect(main()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('resp-bg-1');
+    expect(engine.findData(answerDef)).toEqual('事前文字列');
+
+    const assertRetrieveRequest = ({url, method, headers}) => {
+        expect(url).toEqual('https://api.openai.com/v1/responses/resp-bg-1');
+        expect(method).toEqual('GET');
+        expect(headers['Authorization']).toEqual('Bearer key6');
+        expect(headers['OpenAI-Organization']).toEqual('org-2');
+    };
+
+    // まだ生成中
+    httpClient.setRequestHandler(request => {
+        assertRetrieveRequest(request);
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify({id: 'resp-bg-1', object: 'response', status: 'in_progress'}));
+    });
+    expect(proceed()).toEqual(false);
+    expect(engine.restoreTemporaryData()).toEqual('resp-bg-1');
+    expect(engine.findData(answerDef)).toEqual('事前文字列');
+
+    // 完了
+    httpClient.setRequestHandler(request => {
+        assertRetrieveRequest(request);
+        const responseObj = JSON.parse(createResponse('Hi! How can I help you?'));
+        responseObj.id = 'resp-bg-1';
+        responseObj.status = 'completed';
+        return httpClient.createHttpResponse(200, 'application/json', JSON.stringify(responseObj));
+    });
+    expect(proceed()).toEqual(undefined);
+    expect(engine.findData(answerDef)).toEqual('Hi! How can I help you?');
+});
+
+/**
+ * proceed() - レスポンス ID が保存されていない
+ */
+test('proceed() - Response ID has not been saved', () => {
+    prepareConfigs('key6', '', 'gpt-5', '', '', '', '', '', '', 'Hi!');
+    try {
+        proceed();
+        fail('No error was thrown.');
+    } catch (e) {
+        expect(e.message).toEqual('Response ID has not been saved.');
+    }
 });
 
 /**
